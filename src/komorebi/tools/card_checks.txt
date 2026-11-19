@@ -26,6 +26,7 @@
 1 examples/11_movement/movement.py --pattern A B AB AAAB --cores 4 --tiles 48 --block 8 --check-only
 1 examples/12_overlays/overlays.py --cores 12 --rounds 10
 1 examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100
+1 examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100 --cluster 3
 1 examples/14_message_handlers/message_handlers.py --count 6 --threads 400 --steps 10
 1 examples/15_leader/leader.py --rect 0,0,1,10 --casts 2000 --jobs 4
 1 examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
@@ -188,8 +189,10 @@ tensix examples/06_graph/graph.py --stall
 tensix tutorial/32_hello_thread/hello_thread.py
 tensix tutorial/33_thread_submits/thread_submits.py
 tensix examples/08_parallel_thread/parallel_thread.py --words 16384 --repeats 1
+tensix examples/08_parallel_thread/parallel_thread.py --twelve --words 16384 --repeats 1
 tensix tutorial/42_commands_to_a_thread/commands_to_a_thread.py
 tensix examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100
+tensix examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100 --cluster 3
 tensix tests/hardware/thread/commands/open_points_case.py
 tensix tests/hardware/thread/commands/unanswered_case.py
 tensix examples/21_thread_load/thread_load.py --cores 12

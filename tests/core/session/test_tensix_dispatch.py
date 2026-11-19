@@ -214,7 +214,7 @@ def test_prepare_takes_an_islands_word_into_the_kernels_arguments():
     c = tensix.constants()
     assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdLinkIsland"]
     assert c["kTdIsland"] > c["kTdThreadScale"]
-    assert c["kTdLinkEntries"] + 3 * c["kTdLinkIslandsMax"] == c["kTdArgs"]
+    assert c["kTdLinkEntries"] + 3 * c["kTdLinkIslandsMax"] == c["kTdFarThread"]
 
 
 def link_line(islands, island=1):
@@ -438,6 +438,19 @@ def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
     ):
         tensix.refuse_load(wide, None, wide, {})
     tensix.refuse_load(wide, None, wide, {}, trisc=False)  # an X280 thread: served
+
+
+def test_x280_threads_on_clusters_1_to_3_are_sources_1_to_3(tmp_path):
+    three = program(threads={c: a_thread(tmp_path) for c in (1, 2, 3)})
+    tensix.refuse_load(three, None, three, {}, trisc=False)  # X280 clusters 1 to 3
+    with pytest.raises(NotServed, match=r"threads on clusters \[1, 2, 3\] \(one,"):
+        tensix.refuse_load(three, None, three, {})  # on TRISC 1: one, cluster 1
+    shared = program(threads={2: a_thread(tmp_path, shared=("s",))})
+    with pytest.raises(NotServed, match="a thread's shared regions"):
+        tensix.refuse_load(shared, None, shared, {}, trisc=False)
+    c = tensix.constants()  # clusters 2 and 3's areas, after the engines'
+    assert c["kTbBytes"] + c["kTaBytes"] + c["kTeBytes"] == c["kTbFar"]
+    assert c["kTdFarThread"] + 4 == c["kTdThreads"] < c["kTdArgs"]  # tile, work each
 
 
 def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(

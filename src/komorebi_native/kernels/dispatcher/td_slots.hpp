@@ -27,6 +27,7 @@ namespace td {
     constexpr uint32_t kRecordThread = 8;  // the thread's (source 1): its event to its ring
     constexpr uint32_t kRecordEngine = 16;  // the engines' (source 4): its event to theirs
     constexpr uint32_t kRecordLink = 32;  // the link's (td_link.hpp): its event to out
+    constexpr uint32_t kRecordCluster = 64;  // with kRecordThread: x (cluster - 1)
 
     // The hand-over at `hand` (the block's kTbHand). A word has one writer; a reader
     // invalidates its L1 cache, then reads the word that publishes, then the rest.

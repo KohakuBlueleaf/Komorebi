@@ -54,7 +54,10 @@ constexpr uint32_t kTdLinkSlots = 71;  // an inbox part's packets
 // tile
 constexpr uint32_t kTdLinkEntries = 72;
 constexpr uint32_t kTdLinkIslandsMax = 8;
-constexpr uint32_t kTdArgs = 96;
+// Threads on X280 clusters 2 and 3: tile and work area as kTdThread*, two words each
+constexpr uint32_t kTdFarThread = 96;
+constexpr uint32_t kTdThreads = 100;  // bit c: a thread on cluster c (sources 1 to 3)
+constexpr uint32_t kTdArgs = 101;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -75,8 +78,10 @@ constexpr uint32_t kTbScratch = 19008;  // out's NoC reads of a core's live word
 constexpr uint32_t kTbStage = 19072;    // a reset list's bytes on their way to a core
 constexpr uint32_t kTbWatch = 21120;  // the watch's line (kTk*), TRISC 2 (td_watch.hpp)
 constexpr uint32_t kTbOut = 21184;    // out's large state, off its stack (OutState)
-constexpr uint32_t kTbInspect = 22464;  // the inspect block (KMD_LIM_INSPECT's form)
-constexpr uint32_t kTbBytes = 129024;
+constexpr uint32_t kTbInspect = 23232;  // the inspect block (KMD_LIM_INSPECT's form)
+constexpr uint32_t kTbBytes = 129792;
+// The areas of threads on clusters 2 and 3, after the engines' (td::thread_area).
+constexpr uint32_t kTbFar = 211904;
 
 // The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
 // and "in" (sweeps, writes the events and the host words).
@@ -228,7 +233,7 @@ static_assert(kTbLines + 16 * KM_CORES_MAX == kTbSample, "the status lines");
 static_assert(kTbSample + 8 * KM_CORES_MAX == kTbScratch, "the first looks");
 static_assert(kTbScratch + 64 == kTbStage && kTbStage + kTdStageBytes == kTbWatch);
 static_assert(
-    kTbWatch + 64 == kTbOut && kTbOut + 1280 == kTbInspect, "the watch's line"
+    kTbWatch + 64 == kTbOut && kTbOut + 2048 == kTbInspect, "the watch's line"
 );
 static_assert(kTbInspect % 64 == 0, "the inspect");
 static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
@@ -240,7 +245,9 @@ static_assert(kTeTable % 64 == 0 && kTeState % 64 == 0 && kTeUpload % 64 == 0);
 static_assert(kTeUpload + kTeUploadBytes == kTeBytes, "the upload region ends it");
 static_assert(kTlRing + 64 * kTlDepth == kTlEvents, "the link ring");
 static_assert(kTlEvents + 16 * kTlEventDepth == kTlTold && kTlTold + 64 == kTlCount);
-static_assert(kTdLinkEntries + 3 * kTdLinkIslandsMax == kTdArgs, "the link's entries");
+static_assert(kTdLinkEntries + 3 * kTdLinkIslandsMax == kTdFarThread, "the link's");
+static_assert(kTdFarThread + 4 == kTdThreads && kTdThreads + 1 == kTdArgs);
+static_assert(kTbBytes + kTaBytes + kTeBytes == kTbFar, "clusters 2 and 3's areas");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

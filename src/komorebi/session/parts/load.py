@@ -460,10 +460,12 @@ class LoadMixin:
         # for every core to be idle, which a persistent grid never is
         regions = x280_module._bank_regions(self, owner, works, ipi=not trisc)
         dispatch = self._open_dispatch(module)
+        if tensix and on_card:  # sources 1 to 3 (refuse_load)
+            dispatch.clusters = tuple(sorted(work.cluster for work in works))
         if trisc and on_card:  # one thread on cluster 1 (refuse_load)
             dispatch.thread = tensix_module.thread_kernel(works[0], several)
             dispatch.thread_includes = [str(Path(i)) for i in works[0].includes]
-        elif tensix and on_card:  # one thread on X280 cluster 1, its runtime booted
+        elif tensix and on_card:  # threads on X280 clusters 1 to 3, the runtime booted
             dispatch.x280 = (
                 mock.Dispatch(self.device)
                 if mock.active()
@@ -675,7 +677,7 @@ class LoadMixin:
                     )  # fmt: skip
                     thread_run.ring = rings[cluster][0] if cluster in rings else None
                     if getattr(dispatch, "x280", None) is not None:  # a Tensix one's
-                        thread_run.ring = dispatch.thread_ring()
+                        thread_run.ring = dispatch.thread_ring(cluster)
                     thread_run.peers = peers.get(cluster)
                     thread_run.records = records
                     if self.island is not None:

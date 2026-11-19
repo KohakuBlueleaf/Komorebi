@@ -492,10 +492,11 @@ can give the fallback the same file through ctypes, so both run one program
 ## On the Tensix dispatcher's core
 
 With the Tensix dispatcher (`km.Session(dispatcher="tensix")`) on a chip with an X280
-(Blackhole), a program's one thread on cluster 1 runs on that X280 cluster as under the
-X280 dispatcher: the runtime boots the cluster with no X280 kernel, the thread's command
-ring is in the dispatcher core's L1 (the thread writes its lines over the NoC), and the
-dispatcher copies the ring's consumed count, its events and their count into the
+(Blackhole), a program's threads on clusters 1, 2 and 3 run on those X280 clusters as
+under the X280 dispatcher: the runtime boots the clusters with no X280 kernel, each
+thread's command ring is in the dispatcher core's L1 (the thread writes its lines over
+the NoC; it is the dispatcher's source 1, 2 or 3, taken in turn with the host's), and
+the dispatcher copies each ring's consumed count, its events and their count into that
 cluster's own memory. All the thread does on its own cluster (`kmx_parallel`, the vector
 extension, regions, fetches and pushes) is as under the X280 dispatcher. Commands to it
 (`kmx_program`) go as under the X280 dispatcher: each one a line in the cluster's own
@@ -505,8 +506,8 @@ own clock, `kmx_time`'s, as under the X280 dispatcher; the host's stay in the ch
 wall-clock ticks. A thread's load to a busy core is rejected busy (reason 11) with a
 wake owed, as under the X280 dispatcher, so `kmx_load` returns after the core's command;
 its other commands that cannot go now wait in the dispatcher instead of being rejected.
-Threads on clusters 2 and 3, shared regions and X280 ports are refused by name. Measured
-on card 1: `tutorial/32_hello_thread` and `tutorial/33_thread_submits` returned 42,
+Shared regions and X280 ports are refused by name. Measured on card 1:
+`tutorial/32_hello_thread` and `tutorial/33_thread_submits` returned 42,
 `examples/08_parallel_thread` reported ok, and `tutorial/42_commands_to_a_thread`,
 `examples/13_thread_commands` and the cases of
 `tests/hardware/thread/commands` (8 lines held, a ninth rejected; an unanswered line

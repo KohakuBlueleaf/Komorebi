@@ -30,7 +30,9 @@ namespace {
     // Out's large state, in L1 (kTbOut) and not on its stack: Wormhole's BRISC has
     // 4 KiB of local memory for the firmware's data, out's data and out's stack.
     struct OutState {
-        td::Lines lines;  // the host's commands to the thread (kmx_program)
+        td::Lines lines[td::kClusters];       // commands to the threads (kmx_program)
+        td::ThreadArea works[td::kClusters];  // the threads' consumed words, lines
+        uint32_t caused[td::kClusters];       // the events owed to each thread
         td::OutSlots slots;
         td::Engines engines;
         td::Queue queue;
@@ -70,11 +72,14 @@ void kernel_main() {
     }
     // in the zeroed block, constructed once
     OutState& state = *new (reinterpret_cast<void*>(block + kTbOut)) OutState;
-    // A thread on TRISC 1 (td_thread.hpp): source 1, its ring and events in its area
-    const bool thread_on = arg(kTdThreadScale) != 0;
+    // A thread on TRISC 1 (td_thread.hpp) or on X280 cluster c: source c, its ring
+    // and events in its area
+    const uint32_t threads = arg(kTdThreads);  // bit c: a thread on cluster c
     const uint32_t thread_area = block + kTbBytes;
-    for (uint32_t i = kTaRing / 4; thread_on && i < kTaState / 4; i++) {
-        km::l1(thread_area)[i] = 0;  // an earlier load's lines and events
+    for (uint32_t c = 1; c <= td::kClusters; c++) {
+        for (uint32_t i = kTaRing / 4; (threads >> c & 1u) && i < kTaState / 4; i++) {
+            km::l1(td::thread_area(block, c))[i] = 0;  // an earlier load's lines
+        }
     }
     const uint32_t host_depth = arg(kTdHostDepth), event_depth = arg(kTdEventDepth);
     const uint64_t area = td::pcie() | arg(kTdArea);
@@ -179,19 +184,29 @@ void kernel_main() {
     queue.base = block + kTbQueue;
     td::Source sources[td::kSources];
     sources[td::kSourceHost].init(km::l1(block + kTbRing), host_depth);
-    td::ThreadArea work;  // the thread's events and consumed word (in writes events)
-    work.base = thread_area + kTaWork;
-    work.event_depth = kTaEventDepth;
-    work.place(arg(kTdThreadTile), arg(kTdThreadWork));
-    if (thread_on) {
-        sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
+    // each thread's events and consumed word (in writes events), its lines
+    td::ThreadArea* works = state.works;
+    td::Lines* lines = state.lines;
+    uint32_t* thread_caused = state.caused;
+    for (uint32_t c = 0; c < td::kClusters; c++) {
+        const uint32_t at = td::thread_area(block, c + 1);
+        const uint32_t tile = td::thread_tile_arg(c + 1);
+        works[c].base = at + kTaWork;
+        works[c].event_depth = kTaEventDepth;
+        works[c].place(arg(tile), arg(tile + 1));
+        if (threads >> (c + 1) & 1u) {
+            sources[td::kSourceThread + c].init(km::l1(at + kTaRing), kTaRingDepth);
+        }
+        lines[c].init();
+        thread_caused[c] = 0;
     }
-    volatile tt_l1_ptr uint32_t* thread_read = km::l1(thread_area + kTaRead);
-    td::Lines& lines = state.lines;  // the host's commands to the thread
-    lines.init();
+    // the events a thread took: word 0 of its read line
+    auto thread_read = [&](uint32_t c) {
+        return km::l1(td::thread_area(block, c + 1) + kTaRead)[0];
+    };
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
-    uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
-    bool thread_waits = false;  // a LOAD of the thread rejected busy: its WAKE owed
+    uint32_t turn = 0, pending_source = td::kSourceHost;
+    uint32_t thread_waits = 0;  // bit c: a LOAD of cluster c's rejected busy, WAKE owed
     // Commands across islands (td_link.hpp): its state and ring in the link block
     const uint32_t link_base = arg(kTdLinkBase);
     td::Link* link = reinterpret_cast<td::Link*>(link_base + kTlState);
@@ -237,13 +252,21 @@ void kernel_main() {
         asm volatile("" ::: "memory");
         hand.word(kTwPosted) = ++posted;
     };
-    // A line's event to its source: DONE or TIMEOUT, `ticks` its time or its word.
-    auto post_line = [&](uint32_t slot, uint32_t kind, uint32_t ticks) {
+    // A line of cluster c + 1's thread: its event to its source, DONE or TIMEOUT,
+    // `ticks` its time or its word.
+    auto post_line = [&](uint32_t c, uint32_t slot, uint32_t kind, uint32_t ticks) {
         post(
-            lines.request[slot],
-            kind | lines.auxiliary(slot) << 8,
+            lines[c].request[slot],
+            kind | lines[c].auxiliary(slot) << 8,
             ticks,
-            lines.source[slot]
+            lines[c].source[slot]
+        );
+    };
+    // The lines of the thread a group names (KM_GROUP_CLUSTER(c), c 1 to 3), or none.
+    auto lines_of = [&](uint32_t group) -> td::Lines* {
+        const uint32_t c = (group & 0xFFFFu) - KM_GROUP_CLUSTER_BASE - 1u;
+        return (
+            c < td::kClusters && group == KM_GROUP_CLUSTER(c + 1) ? &lines[c] : nullptr
         );
     };
     // `bytes` at `address` of this core into the same address of every worker.
@@ -934,9 +957,14 @@ void kernel_main() {
         // The slots in freed; the bound lowered a step once it has held (the X280's
         // rule).
         if (slots.refresh() != 0) {
-            if (thread_waits && posted - hand.word(kTwTaken) < kTxEventsMax) {
-                post(0, KMD_EVENT_WAKE, 0, td::kSourceThread);  // a slot freed: again
-                thread_waits = false;
+            for (uint32_t c = 0; c < td::kClusters; c++) {  // a slot freed: again
+                if (
+                    (thread_waits >> c & 1u) &&
+                    posted - hand.word(kTwTaken) < kTxEventsMax
+                ) {
+                    post(0, KMD_EVENT_WAKE, 0, td::kSourceThread + c);
+                    thread_waits &= ~(1u << c);
+                }
             }
             // the dynamic run's RUN done, or its end command (no event) freed
             run_on = (
@@ -977,9 +1005,12 @@ void kernel_main() {
             );
             bool rooms[td::kSources] = {};
             rooms[td::kSourceHost] = room && posts;
-            rooms[td::kSourceThread] = (
-                posts && thread_caused - thread_read[0] < kTaEventDepth
-            );
+            for (uint32_t c = 0; c < td::kClusters; c++) {
+                rooms
+                    [
+                        td::kSourceThread + c
+                    ] = (posts && thread_caused[c] - thread_read(c) < kTaEventDepth);
+            }
             rooms[td::kSourceEngine] = (
                 posts &&
                 (td::Engines::own(td::kSourceEngine, engine_handler) || engines.room())
@@ -997,8 +1028,8 @@ void kernel_main() {
                 }
                 volatile tt_l1_ptr uint32_t* next_line = from.line();
                 if (
-                    source != td::kSourceHost && lines.full() &&
-                    (next_line[2] & 0xFFFFu) >= KM_GROUP_CLUSTER_BASE &&
+                    source != td::kSourceHost && lines_of(next_line[2]) != nullptr &&
+                    lines_of(next_line[2])->full() &&
                     (next_line[1] & 0xFFu) <= KM_HANDLER_USER_MAX &&
                     !(
                         source == td::kSourceEngine &&
@@ -1013,7 +1044,8 @@ void kernel_main() {
                 if (source == td::kSourceHost) {
                     consumed = pending_request;
                     hand.word(kTwConsumed) = consumed;
-                } else if (source == td::kSourceThread) {
+                } else if (td::is_thread(source)) {
+                    const td::ThreadArea& work = works[source - td::kSourceThread];
                     *work.consumed() = pending_request;  // its line free again
                     work.mirror(KMD_WORK_CONSUMED, 4);
                 } else if (source == td::kSourceEngine) {
@@ -1057,14 +1089,15 @@ void kernel_main() {
             // the thread's and the engines': their events to their rings; none of the
             // host's own commands
             const bool from_host = pending_source == td::kSourceHost;
-            const bool from_thread = pending_source == td::kSourceThread;
+            const bool from_thread = td::is_thread(pending_source);
             const bool from_engine = pending_source == td::kSourceEngine;
+            const uint32_t own = from_thread ? pending_source - td::kSourceThread : 0;
             // another island's part (td_link.hpp): its event to the link, its deadline
             // the time it had left
             const bool from_link = pending_source == td::kSourceLink;
             uint32_t& owed = (
                 from_thread
-                    ? thread_caused
+                    ? thread_caused[own]
                     : from_engine
                         ? engines.caused
                         : from_link
@@ -1086,12 +1119,13 @@ void kernel_main() {
             );
             if (from_thread && handler == KMD_HANDLER_ANSWER) {  // its line, no event
                 pending_request = 0;
-                const uint32_t slot = lines.answered(work, argument);
+                const uint32_t slot = lines[own].answered(works[own], argument);
                 if (slot < KMD_WORK_IN_DEPTH) {
                     post_line(
+                        own,
                         slot,
                         KM_EVENT_DONE,
-                        lines.ticks(slot, pending[5], now, arg(kTdThreadScale))
+                        lines[own].ticks(slot, pending[5], now, arg(kTdThreadScale))
                     );
                 }
                 active = true;
@@ -1103,13 +1137,15 @@ void kernel_main() {
                 handler <= KM_HANDLER_USER_MAX && !(queued && from_engine)
             ) {
                 uint32_t why = 0;
+                td::Lines* to = lines_of(pending[2]);
+                const uint32_t target = to != nullptr ? to - lines : 0;
                 if (flags & (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_QUEUE)) {
                     why = KMD_REJECT_FLAGS;
                 } else if (exit_request != 0) {
                     why = KMD_REJECT_EXITED;
-                } else if (!thread_on || pending[2] != KM_GROUP_CLUSTER(1)) {
-                    why = KMD_REJECT_GROUP;  // one thread, on cluster 1
-                } else if (lines.full()) {
+                } else if (to == nullptr || !(threads >> (target + 1) & 1u)) {
+                    why = KMD_REJECT_GROUP;  // a cluster with no thread
+                } else if (to->full()) {
                     why = KMD_REJECT_THREAD;  // the host's (the others wait, at take)
                 }
                 if (why != 0) {
@@ -1119,8 +1155,8 @@ void kernel_main() {
                     do {
                         sequence++;
                     } while (sequence == 0);
-                    lines.put(
-                        work,
+                    to->put(
+                        works[target],
                         pending,
                         pending_source,
                         request,
@@ -1407,7 +1443,7 @@ void kernel_main() {
                 // the X280's (the host's waits); with room for both events
                 if (
                     load_waits && from_thread &&
-                    thread_caused - thread_read[0] + (thread_waits ? 1 : 2) <=
+                    owed - thread_read(own) + (thread_waits >> own & 1u ? 1 : 2) <=
                         kTaEventDepth
                 ) {
                     post(
@@ -1416,8 +1452,8 @@ void kernel_main() {
                         0,
                         pending_source
                     );
-                    owed += thread_waits ? 1 : 2;
-                    thread_waits = true;
+                    owed += thread_waits >> own & 1u ? 1 : 2;
+                    thread_waits |= 1u << own;
                     rejected++;
                     pending_request = 0;
                     active = true;
@@ -1445,7 +1481,11 @@ void kernel_main() {
                 if (slot < depth) {
                     // as masks: no lookup table in .data, below out's stack
                     const uint32_t mark = (
-                        (from_thread ? td::kRecordThread : 0u) |
+                        (
+                            from_thread
+                                ? td::kRecordThread | own * td::kRecordCluster
+                                : 0u
+                        ) |
                         (from_engine ? td::kRecordEngine : 0u) |
                         (from_link ? td::kRecordLink : 0u)
                     );
@@ -1548,13 +1588,22 @@ void kernel_main() {
                 );
             }
         }
-        if ((lines.busy & ~lines.late) && posted - hand.word(kTwTaken) < kTxEventsMax) {
-            const uint32_t slot = lines.late_one(now);  // one a pass
-            if (slot < KMD_WORK_IN_DEPTH) {
-                post_line(
-                    slot, KM_EVENT_TIMEOUT, lines.waited(slot, now, arg(kTdThreadScale))
-                );
-                active = true;
+        for (uint32_t c = 0; c < td::kClusters; c++) {  // a late line, one a pass
+            td::Lines& line = lines[c];
+            if (
+                (line.busy & ~line.late) && posted - hand.word(kTwTaken) < kTxEventsMax
+            ) {
+                const uint32_t slot = line.late_one(now);
+                if (slot < KMD_WORK_IN_DEPTH) {
+                    post_line(
+                        c,
+                        slot,
+                        KM_EVENT_TIMEOUT,
+                        line.waited(slot, now, arg(kTdThreadScale))
+                    );
+                    active = true;
+                    break;
+                }
             }
         }
         if (inspect.active) {

@@ -106,7 +106,7 @@ namespace td {
         // by `scale`) or the wall clock.
         uint32_t waited(uint32_t slot, uint64_t now, uint32_t scale) const {
             const uint32_t time = static_cast<uint32_t>(now - submitted[slot]);
-            return source[slot] == kSourceThread ? thread_ticks(time, scale) : time;
+            return is_thread(source[slot]) ? thread_ticks(time, scale) : time;
         }
 
         // The DONE's ticks of line `slot`: the answer's word with KM_FLAG_RESULT, else

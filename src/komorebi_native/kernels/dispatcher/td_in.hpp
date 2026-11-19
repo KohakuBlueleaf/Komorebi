@@ -59,9 +59,9 @@ namespace td {
         uint32_t scale = 0;  // a thread's clock (thread_ticks): its events' times
         uint64_t area = 0;
         uint32_t pushed = 0, told = 0, published = 0, taken = 0;
-        ThreadArea work;     // the thread's (source 1): its events, from out's records
-        ThreadArea engines;  // the engines' (source 4)
-        uint32_t thread_told = 0, engines_told = 0;
+        ThreadArea works[kClusters];  // the threads' (sources 1 to 3): their events
+        ThreadArea engines;           // the engines' (source 4)
+        uint32_t thread_told[kClusters] = {}, engines_told = 0;
         uint32_t link = 0, link_told = 0;  // the link block (0: none), its events
         uint32_t results = 0, last_result = 0, passes = 0, sweeps = 0;
 #ifdef KM_TD_ACK_COUNT
@@ -91,11 +91,14 @@ namespace td {
             events = km::l1(block + kTbEvents);
             result = km::l1(block + kTbResult);
             watch = km::l1(block + kTbWatch);
-            work.base = block + kTbBytes + kTaWork;
-            work.event_depth = kTaEventDepth;
+            for (uint32_t c = 0; c < kClusters; c++) {
+                const uint32_t tile = thread_tile_arg(c + 1);
+                works[c].base = thread_area(block, c + 1) + kTaWork;
+                works[c].event_depth = kTaEventDepth;
+                works[c].place(arg(tile), arg(tile + 1));
+            }
             engines.base = block + kTbBytes + kTaBytes + kTeWork;
             engines.event_depth = kTeEventDepth;
-            work.place(arg(kTdThreadTile), arg(kTdThreadWork));
             link = arg(kTdLinkIsland) != 0 ? arg(kTdLinkBase) : 0;
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
@@ -148,12 +151,14 @@ namespace td {
                 km::l1(link + kTlTold)[0] = index;
                 return;
             }
-            if (source != kSourceThread && source != kSourceEngine) {
+            const bool thread = is_thread(source);
+            if (!thread && source != kSourceEngine) {
                 push(request, status, ticks);
                 return;
             }
-            const ThreadArea& to = source == kSourceThread ? work : engines;
-            uint32_t& told_count = source == kSourceThread ? thread_told : engines_told;
+            const uint32_t c = thread ? source - kSourceThread : 0;
+            const ThreadArea& to = thread ? works[c] : engines;
+            uint32_t& told_count = thread ? thread_told[c] : engines_told;
             const uint32_t index = ++told_count;
             volatile tt_l1_ptr uint32_t* event = to.event(index);
             event[1] = request;
@@ -162,16 +167,14 @@ namespace td {
             asm volatile("" ::: "memory");
             event[0] = index;
             if (
-                source == kSourceThread && work.remote != 0
+                thread && to.remote != 0
             ) {  // the event landed there before the count telling it
-                work.mirror(
-                    KMD_WORK_EVENTS + (index & (work.event_depth - 1u)) * 16, 16
-                );
+                to.mirror(KMD_WORK_EVENTS + (index & (to.event_depth - 1u)) * 16, 16);
                 noc_async_write_barrier();
             }
             *to.told() = index;
-            if (source == kSourceThread) {
-                work.mirror(KMD_WORK_TOLD, 4);
+            if (thread) {
+                to.mirror(KMD_WORK_TOLD, 4);
             }
         }
 
@@ -297,7 +300,7 @@ namespace td {
                 record->request,
                 KM_EVENT_TIMEOUT | timeout_of(slot) << 8 |
                     (giving & KM_EVENT_SEQUENCE_MASK) << 16,
-                to == kSourceThread ? thread_ticks(time, scale) : time
+                is_thread(to) ? thread_ticks(time, scale) : time
             );
             slots.seen[slot] = giving;
             hand.done()[slot] = giving;
@@ -355,7 +358,7 @@ namespace td {
                                 to,
                                 request,
                                 status,
-                                to == kSourceThread && (flags & kRecordResult) == 0
+                                is_thread(to) && (flags & kRecordResult) == 0
                                     ? thread_ticks(ticks, scale)
                                     : ticks
                             );  // fmt: skip

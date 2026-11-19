@@ -103,6 +103,24 @@ namespace td {
     constexpr uint32_t kSourceEngine = 4;  // 2 and 3: threads on X280 clusters 2 and 3
     constexpr uint32_t kSourceLink = 5;
     constexpr uint32_t kSources = 6;
+    constexpr uint32_t kClusters = 3;  // a thread on cluster c is source c
+
+    // Source `source` is a thread's (clusters 1 to 3).
+    inline bool is_thread(uint32_t source) {
+        return source - kSourceThread < kClusters;
+    }
+
+    // Cluster c's thread area: 1 right after the block, 2 and 3 after the engines'.
+    inline uint32_t thread_area(uint32_t block, uint32_t cluster) {
+        return block + (cluster <= 1 ? kTbBytes : kTbFar + (cluster - 2) * kTaBytes);
+    }
+
+    // The argument of cluster c's thread tile (its work area's: the next one).
+    inline uint32_t thread_tile_arg(uint32_t cluster) {
+        return cluster <= 1 ? kTdThreadTile : kTdFarThread + 2 * (cluster - 2);
+    }
+
+    static_assert(kTdThreadTile + 1 == kTdThreadWork, "a tile, then its work area");
 
     // `ticks` of the wall clock in a thread's own clock, the X280's timer (kmx_time):
     // `scale` its ticks a wall-clock tick, times 2^32 (kTdThreadScale).
@@ -114,7 +132,7 @@ namespace td {
     inline uint32_t record_source(uint32_t flags) {
         return (
             flags & kRecordThread
-                ? kSourceThread
+                ? kSourceThread + (flags / kRecordCluster) % 4
                 : flags & kRecordEngine
                     ? kSourceEngine
                     : flags & kRecordLink

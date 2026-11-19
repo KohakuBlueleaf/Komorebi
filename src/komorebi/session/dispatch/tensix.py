@@ -120,20 +120,25 @@ def rectangles(nocs, loopback=False):
     return out
 
 
+CLUSTERS = (1, 2, 3)  # a thread on X280 cluster c is source c of out
+
+
 def thread_refusal(owner, trisc=True):
-    """Why the threads of `owner` cannot run, or None: one thread, on cluster 1, with no
-    ports or shared regions; on TRISC 1 (`trisc`) no vector unit."""
+    """Why the threads of `owner` cannot run, or None: threads on X280 clusters 1 to 3
+    (on TRISC 1, `trisc`: one, cluster 1, no vector unit), with no ports or shared
+    regions."""
     threads = owner.threads
     if owner.x280_ports is not None:
         return "X280 ports"
     if not threads:
         return None
-    if len(threads) > 1 or 1 not in threads:
+    if trisc and (len(threads) > 1 or 1 not in threads):
         return f"threads on clusters {sorted(threads)} (one, cluster 1, on its core)"
-    thread = threads[1]
-    if thread.shared:
+    if not set(threads) <= set(CLUSTERS):
+        return f"threads on clusters {sorted(threads)} (clusters 1 to 3)"
+    if any(thread.shared for thread in threads.values()):
         return "a thread's shared regions"
-    for path in thread.source_paths() if trisc else ():  # TRISC 1 has no vector unit
+    for path in threads[1].source_paths() if trisc else ():  # TRISC 1: no vector unit
         if VECTOR.search(path.read_text(errors="replace")):
             return f"the vector extension (riscv_vector.h in {path.name})"
     return None
@@ -276,6 +281,7 @@ class TensixDispatch:
         self.thread_includes = []  # the thread's own include directories
         self.thread_area = None  # its area's L1 address (kTa*), on its core alone
         self.x280 = None  # an X280 thread's runtime (the native Dispatch, no kernel)
+        self.clusters = ()  # the clusters with a thread (sources 1 to 3)
         self._lim = None  # a mock's thread area: bytes, as the work_* calls see it
 
     @property
@@ -420,6 +426,8 @@ class TensixDispatch:
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
         size += c["kTaBytes"] + c["kTeBytes"]  # the thread's area, then the engines'
+        if self.x280 is not None:  # the areas of threads on clusters 2 and 3
+            size += 2 * c["kTaBytes"]
         if self.thread is not None or self.x280 is not None:
             self.thread_area = block + c["kTbBytes"]
         link = self.options["link"]
@@ -473,13 +481,19 @@ class TensixDispatch:
             values["kTdThreadScale"] = round(
                 thread_module.TIMER_HZ * 2**32 / (mhz * 1e6)
             )
-        if self.x280 is not None:  # in and out copy the area's words to the X280's
-            info = self.x280.work_info(1)
-            values["kTdThreadTile"] = info["virtual_x"] | info["virtual_y"] << 16
-            values["kTdThreadWork"] = (
-                info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
-            )
+            values["kTdThreads"] = sum(1 << cluster for cluster in self.clusters)
         args = [0] * c["kTdArgs"]
+        for cluster in self.clusters if self.x280 is not None else ():
+            info = self.x280.work_info(cluster)  # in and out copy its words there
+            at = (
+                c["kTdThreadTile"]
+                if cluster == 1
+                else c["kTdFarThread"] + 2 * cluster - 4
+            )
+            args[at] = (
+                info["virtual_x"] | info["virtual_y"] << 16
+            )  # td::thread_tile_arg
+            args[at + 1] = info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
         for name, value in values.items():
             args[c[name]] = int(value) & abi.M32
         for r, rect in enumerate(rects):
@@ -549,20 +563,28 @@ class TensixDispatch:
                 f"a thread on cluster {cluster} (one, cluster 1, on its core)"
             )
 
-    # An X280 thread on cluster 1 (Blackhole): the runtime boots its cluster with no
+    def area_of(self, cluster):
+        """The L1 address of cluster `cluster`'s thread area (td::thread_area)."""
+        c = constants()
+        if cluster == 1:
+            return self.thread_area
+        return self.block + c["kTbFar"] + (cluster - 2) * c["kTaBytes"]
+
+    # An X280 thread on cluster c (Blackhole): the runtime boots its cluster with no
     # X280 kernel; its ring is in this core's area, its events in the cluster's LIM.
 
-    def thread_ring(self):
+    def thread_ring(self, cluster=1):
         """The X280 thread's RingPlacement: commands and the read line in this core's
         area (written over the NoC), consumed and events in the cluster's own LIM."""
         c, h = constants(), abi.headers()
-        info = self.x280.work_info(1)
+        info = self.x280.work_info(cluster)
         work = info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
+        area = self.area_of(cluster)
         return thread_module.RingPlacement(
-            self.thread_area + c["kTaRing"],
+            area + c["kTaRing"],
             work + h["KMD_WORK_CONSUMED"],
             work + h["KMD_WORK_EVENTS"],
-            self.thread_area + c["kTaRead"],
+            area + c["kTaRead"],
             c["kTaRingDepth"],
             c["kTaEventDepth"],
             remote=int(self.nocs.words[self.core]),
