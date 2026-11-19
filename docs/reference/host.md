@@ -441,8 +441,12 @@ whose session and tensors take the calls below with the same names and keywords
   list to `load`, `run.load`: a load waits until no command in flight shares a core with
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
-  (`km.NotServed`), at the load or the call: X280 threads but one on its own core
-  ([X280 threads](../threads.md#on-the-tensix-dispatchers-core)), islands and links. It
+  (`km.NotServed`), at the load or the call: shared regions; on a chip with no X280
+  (Wormhole), X280 threads but one on its own core, X280 ports and X280 ranks
+  ([X280 threads](../threads.md#on-the-tensix-dispatchers-core)); on a card split into
+  islands, X280 threads, X280 ports and X280 ranks; on Wormhole, a card split into
+  islands, whose writer is over NCRISC's 16 KiB
+  ([islands](islands.md#under-the-tensix-dispatcher)). It
   serves a host-fed stream or graph (`run.run_hostfed`), whose commands are plain ones,
   and the resident stream and graph engines (`run.upload`, `run.start`): they run on
   TRISC 0 of its core as a third source of commands beside the host and the thread, over
@@ -464,7 +468,7 @@ whose session and tensors take the calls below with the same names and keywords
   dispatcher does. Their X280 ranks (on Blackhole, cluster 1's thread) write their
   lines there too, and it stores the run line (start and end) into that thread's area.
   `session.dispatcher` names the one in use ("x280" or "tensix", read-only; an island
-  session's is "x280"); `session.ranks` is the cores a load's program runs on (the
+  session's is that of its islands); `session.ranks` is the cores a load's program runs on (the
   grid's, less a Tensix dispatcher's core); `run.tick_mhz` is its dispatcher's ticks a
   microsecond, for the result block's tick counts.
 
@@ -510,7 +514,10 @@ whose session and tensors take the calls below with the same names and keywords
   finishes), which that open does not see. The Tensix dispatcher reads that word of each
   core at its start and of a core after its reset of it: the open raises `km.StartError`,
   a given-up command's error names it, "core N's compute unit is not ready (status
-  0x11); on Wormhole no reset by software clears this; the card needs a reset".
+  0x11: the instruction FIFOs of threads 1, 2 are full); on Wormhole no reset by
+  software clears this; the card needs a reset". The stop after that error does not wait
+  for the grid: the core's kernels cannot end, the session leaves the device open and
+  the process's exit waits for them.
   The variable is read once, at the process's first device open, and is the timeout of
   every wait the runtime makes for the cores in that process, not only the exit's; unset,
   it means no timeout, and only then would the close wait without one. A session that
@@ -1015,7 +1022,7 @@ All derive from `km.KomorebiError`.
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
 | `DispatcherStackError` | under the Tensix dispatcher, a RISC image of the dispatcher has no room left for its stack on the chip ([below](#the-dispatchers-stack)); a `ProgramError`, raised before anything is loaded | `margins`: each image's role, RISC, room, the firmware's frames and its deepest call chain |
-| `StartError` | the image is missing, an X280 cluster the load starts is not idle (the message names the live process that holds the card, or says that an earlier process left the dispatcher running, with the reset), a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
+| `StartError` | the image is missing, an X280 cluster the load starts is not idle (the message names the live process that holds the card, or says that an earlier process left the dispatcher running, with the reset), a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, the dispatcher did not report READY, or under the Tensix dispatcher a Wormhole core's compute unit is not ready ([`Session`](#session): the text names the core and its status) | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
 | `CommandTimeout` | a group missed its deadline. With `given_up` True, the dispatcher gave the command up and the run goes on. Otherwise the kernel stopped the grid, and the run is stopped and read back. Its text's "command N" is the handle `submit` returned: the run's N-th command from 1, the runtime's own counted (an X280 dispatcher's load hands it the reset lists first, so its first `submit` is command 2; the Tensix dispatcher keeps none, so its first is command 1; the sequence is 1 in both) | `handle`, `slot`, `sequence`, `group`, `given_up`, `cores`: each core of the group that did not report, with where its reader and writer gave up; given up, the group as the inspect at the deadline read it (`live`: where each kernel waited) |
@@ -1260,8 +1267,8 @@ another built.
 - `--arch wormhole_b0` builds for one Wormhole chip of a Galaxy (8 x 10 workers, no
   row harvested: chip 0 of tt-metal's `6u_cluster_desc.yaml` alone, shipped as
   `wormhole.yaml`). tt-metal's own N150 descriptor has a row harvested, a grid
-  Komorebi refuses on Wormhole. A load there is refused as on the chip (no X280
-  dispatcher; before it, a class whose tile functions have a word Wormhole runs
+  Komorebi refuses on Wormhole. A load there is refused as on the chip (the grid "is
+  not handled"; before it, a class whose tile functions have a word Wormhole runs
   otherwise: [Tile functions](tile.md#on-wormhole)); the feeder harness builds. The sizes it remembers are the chip's own
   (a script's entry names the architecture), never a Blackhole run's.
 

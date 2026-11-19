@@ -86,7 +86,8 @@ You can ask the card for these facts from Python. One fragment at a time:
 --8<-- "tutorial/03_the_card/card_facts.py:panels"
 ```
 
-The two panels, as the first and the last column of each.
+The panels, as the first and the last column of each (two on a P150A, one on a
+Wormhole chip).
 
 ```{ .python }
 --8<-- "tutorial/03_the_card/card_facts.py:l1"

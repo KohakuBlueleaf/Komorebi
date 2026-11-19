@@ -10,8 +10,15 @@ tags:
 # X280 threads reference
 
 Status: implemented on one Blackhole p150a, work clusters 1, 2 and 3, each with its
-command ring to the dispatcher (its sources 2, 3 and 4). The library's ring calls
-are also checked on the CPU against a fake kernel.
+command ring to the dispatcher (its sources 2, 3 and 4 under the X280 dispatcher, 1,
+2 and 3 under the Tensix dispatcher). The library's ring calls are also checked on the
+CPU against a fake kernel.
+
+On a chip with no X280 (Wormhole) the one thread, on cluster 1, runs on TRISC 1 of the
+Tensix dispatcher's core. There `kmx_load`, the messages calls, regions, `kmx_parallel`,
+`kmx_spawn` and the other many-core calls, fetches, stores, pushes and ports fail the
+thread's build, naming the call, and the load raises `km.NotServed`
+([on the Tensix dispatcher's core](../threads.md#on-the-tensix-dispatchers-core)).
 
 The guide is [X280 threads](../threads.md): what a thread is for, how regions change
 hands, the rules. This page lists the interface. The sources are

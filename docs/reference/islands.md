@@ -1295,8 +1295,7 @@ and 1, 2026-11-19:
 
 | Lines | Result |
 |---|---|
-| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense`, 06 `islands.py`, 09 `islands.py`, 24 `islands.py` (and with `--first 106 --ranks 26`, both islands' cores) | exact (21) |
-| 18 `thread_split.py --far` | refused: X280 ports |
+| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense`, 06 `islands.py`, 09 `islands.py`, 18 `thread_split.py --far`, 24 `islands.py` (and with `--first 106 --ranks 26`, both islands' cores) | exact (22) |
 
 `cross_cases.py` gives up a command whose far part cannot finish (a TIMEOUT naming
 island 1 at the deadline, then a command across and a local one are done in the same

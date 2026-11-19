@@ -1747,7 +1747,8 @@ stand-in card's cluster, or the driver files under `/sys`, which hold no lock.
 
 ## tt-metal's own calls between chips, and a Galaxy of Wormhole chips
 
-Komorebi does not run on Wormhole yet and does not use tt-metal's fabric. These entries
+Komorebi runs a Wormhole chip in part (a session on one chip, and islands of chips
+under the Tensix dispatcher) and does not use tt-metal's fabric. These entries
 are what was seen on a Galaxy of 32 Wormhole chips (firmware bundle 19.15.0, driver
 2.11.0) with stock tt-metal, ttnn 0.82.0, and with hand kernels at tt-metal v0.81.1, in
 2026-11. They are here because a program that uses such a machine beside Komorebi, or a
@@ -1843,7 +1844,7 @@ every twelfth page.
 **The guard.** No automatic guard: `kmr dram-check --card N` is the check, random data
 written through the host channel and read back twice, wrong words by bank and bit
 ([install](../install.md#checking-a-cards-dram)). It is written for Blackhole cards;
-Komorebi does not run on Wormhole yet.
+a Wormhole chip has no such check in Komorebi.
 
 ### A completion word sent after its data over an Ethernet link
 
@@ -1885,10 +1886,18 @@ them a kernel storing its count for 19.5 s) while the chip's telemetry reported 
 alike. A rate or a time computed from ticks at the reported clock is 1.47% off. On a
 Blackhole P150A the two agree (1,349.99 and 1,350.05 MHz measured at 1,350 reported).
 
-**The rule.** On Wormhole, measure the tick rate against the host's clock once, and
-convert ticks with it.
+A second hazard is in the 64-bit read. A Wormhole tile has one latch for the clock's
+high word, set by any RISC's read of the low word: with the five RISCs of a tile
+reading the clock, a read of the low word and then of the latched `WALL_CLOCK_H` gave a
+value 2^32 ticks (4.36 s) ahead, 58 times in 60 s on 79 tiles.
 
-**The guard.** None.
+**The rule.** On Wormhole, measure the tick rate against the host's clock once, and
+convert ticks with it. For a 64-bit count read the live high word (at
+`WALL_CLOCK_L + 4`) before and after the low word, and take the low word again when
+the two differ.
+
+**The guard.** None for the rate. `km::wall64` reads the count that way (0 such values
+in 5,530 carries of the low word on one chip).
 
 ### Code rewritten in a Wormhole core's L1 after it ran
 

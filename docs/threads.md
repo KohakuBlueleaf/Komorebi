@@ -547,6 +547,9 @@ EXIT and queued command came back rejected, its next command and the host's afte
 answered; `tutorial/42_commands_to_a_thread` answered, and an unanswered line was given
 up at its deadline, then the next one answered and a grid command done.
 
+On a Blackhole build whose tt-metal has no X280 runtime, a program with threads is
+refused by name (`km.NotServed`: "X280 threads") at the make or the load.
+
 ## Limits
 
 - The prefetcher registers keep their values until a card reset: once a thread set

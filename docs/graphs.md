@@ -226,7 +226,8 @@ the round, the phase, the error reason and the error node.
 
 ## In the dispatcher
 
-Core 1 of cluster 0 runs up to two graphs beside the streams, one `kmg_step`
+Core 1 of cluster 0 (under the Tensix dispatcher, TRISC 0 of its core) runs up to two
+graphs beside the streams, one `kmg_step`
 each per pass of its loop, and sends their commands into the engine's ring like a
 stream's; core 0 submits them in the engine's turn and answers each with its `KM_EVENT_DONE`
 (the result word in its ticks) or `KM_EVENT_TIMEOUT`. A queued command goes into the

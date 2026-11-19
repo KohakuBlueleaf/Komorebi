@@ -193,7 +193,11 @@ these are the wait's one-second slices running out, not an error (with tt-metal'
 - **A kernel that leaves a compute unit running** when the process ends, and a packer that
   writes past its buffer. After a `km.GridTimeout` the runtime resets the cores at the
   process's exit; a stuck loop is recovered by the next open, a compute unit left running
-  is not.
+  is not. On Wormhole the Tensix dispatcher finds such a core: the load raises
+  `km.StartError` ("core N's compute unit is not ready (status 0x11: the instruction
+  FIFOs of threads 1, 2 are full); on Wormhole no reset by software clears this; the
+  card needs a reset"), and a given-up command's error names it after the dispatcher's
+  reset of the core ([reset](../concepts/reset.md)). A reset of the card clears it.
 - **A NoC write whose source is not in L1**, such as a kernel's `static` variable (it lives
   in the CPU's local memory, which the NoC cannot read): the request never completes and
   the card answers no host read. Build the program with `KM_CHECK_NOC_SOURCES` defined to

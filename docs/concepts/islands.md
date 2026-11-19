@@ -297,7 +297,7 @@ core is idle. A line queued behind a push waits for the push, since the reader r
 both: 20.1 µs behind a push of 16 pages and 70.5 µs behind 80 (21.1 and 72.1 with the
 second link off).
 
-Islands do not run on Wormhole yet (below).
+Islands run on Wormhole in part (below).
 
 ## Messages across a link
 

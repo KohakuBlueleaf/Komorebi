@@ -9,7 +9,8 @@ tags:
 
 # Micro-op streams
 
-A stream is a small program that runs on the card's dispatch cluster and decides which
+A stream is a small program that runs on the card's dispatch cluster (under the Tensix
+dispatcher, on TRISC 0 of its core, with an upload region of 64 KiB) and decides which
 commands to submit to the Tensix grid: which handler, on which group, with which
 arguments, in which order and how many at once. The host builds it, uploads it once
 and waits for one event, instead of sending one command per command.

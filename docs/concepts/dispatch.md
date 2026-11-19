@@ -15,6 +15,13 @@ and events, micro-op streams and the job queue ([streams](../streams.md)), and g
 through a ring each ([X280 threads](../threads.md)). What is built, in detail, is in the
 [kernel README](../../src/komorebi_native/x280/kernel/README.md).
 
+Komorebi has a second dispatcher, on the grid's last Tensix core
+(`km.Session(dispatcher="tensix")`), which is the default where the build has no X280
+runtime and on Wormhole. It takes the same commands from the same sources (the host,
+X280 threads, the engines on its core's TRISC 0, another island) and
+`session.dispatcher` names the one in use ([`Session`](../reference/host.md#session)).
+This page describes the one on the X280.
+
 The Blackhole card has, besides its Tensix grid, four clusters of X280 cores (RISC-V
 with vector units). Komorebi uses one cluster to decide what the grid runs, and the
 others for work that suits a general-purpose core. This page describes the dispatcher and the clusters around it; [runtime](runtime.md) describes the Tensix side.
