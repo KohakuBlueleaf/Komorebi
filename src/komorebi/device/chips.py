@@ -202,6 +202,9 @@ class Chip(NamedTuple):
     # and its defines, for the code its CPU holds (Wormhole's NCRISC: 16 KiB)
     writer_opt: str | None
     writer_defines: tuple
+    # the level of the writer's overlay parts (None: the writer's own): a part runs
+    # from L1, outside the code memory writer_opt is for
+    writer_part_opt: str | None
 
 
 CHIPS = {
@@ -227,6 +230,7 @@ CHIPS = {
         dst_window=True,
         writer_opt=None,
         writer_defines=(),
+        writer_part_opt=None,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -252,6 +256,7 @@ CHIPS = {
         dst_window=False,
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
+        writer_part_opt="O2",
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

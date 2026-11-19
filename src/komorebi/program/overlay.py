@@ -55,6 +55,16 @@ SERVICE_SLOT_MOST = 10240
 ISLAND_SERVICE_SLOT_MOST = 45056
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
+# the part's own copies of the calls a compiler emits for a copy or a clear: each a
+# member of part_memory's archive, under the define that compiles it
+MEMORY = {"memcpy": "KM_PART_MEMCPY", "memset": "KM_PART_MEMSET"}
+# a call or jump of a disassembly with its target: "jal 100058 <f>", "jalr -132(ra) #
+# ffc02180 <memcpy>" (an auipc pair's)
+CALL = re.compile(
+    r"^\s*[0-9a-f]+:\s+[0-9a-f]+\s+(?:jal|jalr|j|jr|call|tail)\s"
+    r".*?\b([0-9a-f]+) <(.+)>$",
+    re.M,
+)
 ENTRY = "km_overlay_entry"
 INCLUDED = re.compile(r'^# \d+ "([^"<]+)"', re.M)  # a preprocessed file's line markers
 # File-static state of the math library that a part keeps its own copy of: the entry
@@ -261,6 +271,10 @@ class Recipe:
             tuple(defines),
         )
 
+    def at(self, level):
+        """This recipe compiled and linked at `level` (O2, Os, ...)."""
+        return replace(self, opt=level, link_opt=level)
+
     def provided(self):
         """The PROVIDE lines of the kernel's link script: symbols such as the
         instruction buffer, which the kernel's ELF lacks when it never used them."""
@@ -317,16 +331,20 @@ class Recipe:
             str(out),
         ]
 
-    def link_command(self, obj, script, out):
+    def link_command(self, obj, script, out, memory=None):
         """The runtime's link of this core with the builder's script, against the
-        persistent kernel's symbols."""
+        persistent kernel's symbols; `memory`: part_memory's archive, whose copies
+        the calls to MEMORY's names take."""
+        own = () if memory is None else (str(memory),)
         return [
             *self.compiler,
             f"-{self.link_opt}",
             *(word for word in self.lflags if not word.startswith(DROPPED_LINK)),
             f"-T{script}",
             f"-Wl,--just-symbols={self.elf}",
+            *(memory_wraps() if memory is not None else ()),
             str(obj),
+            *own,
             "-o",
             str(out),
         ]
@@ -336,7 +354,8 @@ class Recipe:
 class Linked:
     """What the checks read of one link of a part: its base, the entry symbol's
     address (None: none), relocation sections left, the symbols it defines {name:
-    (value, kind, binding)}, the names the object refers to, its extent and image."""
+    (value, kind, binding)}, the names the object refers to, its extent and image,
+    the TABLES it defines and its calls out of the part as linked."""
 
     base: int
     entry: int | None
@@ -346,6 +365,7 @@ class Linked:
     extent: int
     image: bytes
     tables: dict = field(default_factory=dict)  # TABLES it defines: {name: bytes}
+    calls: tuple = ()  # ((name, address), ...): its calls and jumps out of the part
 
 
 @dataclass(frozen=True)
@@ -360,9 +380,9 @@ class Persistent:
 
 def check(name, part, first, second, persistent, slot_bytes=None, resets=()):
     """Refuses a part (OverlayError) that has no entry at its first byte, relocations
-    left, a call into the persistent kernel's text, its own copy of the runtime's
-    state (but RESETS, TABLES of the kernel's bytes and `resets`, which its build
-    resets), two links at two addresses that differ, or more bytes than its slot."""
+    left, a call into the persistent kernel's text or out of the part, its own copy of
+    the runtime's state (but RESETS, TABLES of the kernel's bytes and `resets`, which
+    its build resets), links at two addresses that differ, or more than its slot."""
     where = f"overlay {name}, {part} part"
     if first.entry != first.base:
         raise OverlayError(f"{where}: no entry {ENTRY} at its first byte")
@@ -378,6 +398,13 @@ def check(name, part, first, second, persistent, slot_bytes=None, resets=()):
         raise OverlayError(
             f"{where}: calls {calls[:4]} in the persistent kernel's text, which the "
             "runtime places elsewhere at run time; compile the call in instead"
+        )
+    if first.calls:  # as linked: a call the compiler made (a copy's memcpy) too
+        named = [f"{name} at {at:#x}" for name, at in first.calls[:4]]
+        raise OverlayError(
+            f"{where}: calls {named} outside the part (the persistent kernel's text "
+            "or the firmware's), whose offset changes with the part's address; "
+            "compile the call in instead"
         )
     copies = [
         symbol
@@ -508,7 +535,57 @@ def linked_facts(recipe, elf, base, undefined):
         extent - base,
         image,
         table_bytes(recipe, elf, symbols),
+        calls_out(recipe, elf, base, extent),
     )
+
+
+def calls_out(recipe, elf, base, end):
+    """((name, address), ...) of the calls and jumps of a linked part whose target is
+    outside [base, end), as the disassembly names them, in address order."""
+    out = {}
+    for at, name in CALL.findall(run([recipe.tool("objdump"), "-d", str(elf)])):
+        target = int(at, 16)
+        if not base <= target < end:
+            out[target] = name.split("+")[0]
+    return tuple((name, at) for at, name in sorted(out.items()))
+
+
+def memory_wraps():
+    """The link's switches that send MEMORY's calls to part_memory's copies."""
+    return tuple(f"-Wl,--wrap={name}" for name in MEMORY)
+
+
+def part_memory(recipe, cache):
+    """The archive of the part's own MEMORY functions for `recipe` (a member each,
+    linked only when called), built once under `cache`: a compiler may call memcpy
+    or memset for a copy or a clear at any level, and the persistent kernel's copy
+    is at another offset at each link of the part."""
+    include = _env.include_directory()
+    if include is None:
+        raise FileNotFoundError("the native kernels are not beside the package")
+    source = include.parent / "kernels" / "program" / "part_memory.cpp"
+    digest = hashlib.sha256(repr(recipe).encode() + source.read_bytes())
+    work = Path(cache) / f"memory-{digest.hexdigest()[:16]}"
+    library = work / "libkm_part_memory.a"
+    if library.is_file():
+        return library
+    work.mkdir(parents=True, exist_ok=True)
+    members = []
+    for name, define in MEMORY.items():
+        obj = work / f"{name}.o"
+        if not obj.is_file():
+            run_into(obj, lambda path, d=define: no_lto(recipe, source, path, d), work)
+        members.append(str(obj))
+    run_into(library, lambda path: [recipe.tool("ar"), "rcs", str(path), *members])
+    return library
+
+
+def no_lto(recipe, source, out, define):
+    """The runtime's compile of `source` under `define`, to machine code (no LTO): an
+    archive member the linker takes as it is."""
+    command = recipe.compile_command(source, out, {define: 1})
+    command[-4:-4] = ["-fno-lto"]
+    return command
 
 
 def table_bytes(recipe, elf, symbols):
@@ -625,13 +702,16 @@ def build_part(
         )
     names = run([recipe.tool("gcc-nm"), "-u", str(obj)]).split()
     undefined = [name for name in names if name != "U"]
+    memory = part_memory(recipe, cache)
     links = []
     for base in (LINK_BASE, LINK_BASE + ALIGN):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
         write_into(script, SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
         if not elf.is_file():
             run_into(
-                elf, lambda path, ld=script: recipe.link_command(obj, ld, path), work
+                elf,
+                lambda path, ld=script: recipe.link_command(obj, ld, path, memory),
+                work,
             )
         links.append(linked_facts(recipe, elf, base, undefined))
     persistent = persistent_facts(recipe)
@@ -698,6 +778,7 @@ def keep(index, linked, preprocessed, elf):
             "undefined": list(linked.undefined),
             "extent": linked.extent,
             "image": linked.image.hex(),
+            "calls": [list(call) for call in linked.calls],
         },
         "elf": str(elf),
         "files": {path: file_digest(path) for path in included(preprocessed)},
@@ -726,6 +807,7 @@ def built(index):
         tuple(saved["undefined"]),
         saved["extent"],
         bytes.fromhex(saved["image"]),
+        calls=tuple(tuple(call) for call in saved.get("calls", ())),
     )
     return linked, Path(record["elf"])
 

@@ -474,6 +474,15 @@ class _Dispatches(list):
         return not failed
 
 
+def part_recipes(recipes, arch):
+    """`recipes` ({target: Recipe}) with the writer's parts at the chip `arch`'s level
+    for them (chips.Chip.writer_part_opt, when it has one)."""
+    level = chips.chip(arch).writer_part_opt
+    if level is None or "ncrisc" not in recipes:
+        return recipes
+    return {**recipes, "ncrisc": recipes["ncrisc"].at(level)}
+
+
 def _group_recipes(kernels, count):
     """{target: Recipe} of each group's runtime kernels, by group number: the
     runtime lists a program's kernels in no fixed order."""

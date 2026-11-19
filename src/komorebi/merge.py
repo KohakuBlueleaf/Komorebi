@@ -550,6 +550,7 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
     for obj in objects:
         names = overlay.run([recipe.tool("gcc-nm"), "-u", str(obj)]).split()
         undefined |= {n for n in names if n != "U"}
+    memory = overlay.part_memory(recipe, cache)
     links = []
     for base in (overlay.LINK_BASE, overlay.LINK_BASE + overlay.ALIGN):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
@@ -560,7 +561,7 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
         if not elf.is_file():
             overlay.run_into(
                 elf,
-                lambda path, ld=script: link_command(recipe, objects, ld, path),
+                lambda path, ld=script: link_command(recipe, objects, ld, path, memory),
                 work,
             )
         linked = overlay.linked_facts(recipe, elf, base, sorted(undefined))
@@ -619,8 +620,9 @@ def own_unit(recipe, obj, keep):
     return out
 
 
-def link_command(recipe, objects, script, out):
-    """Recipe.link_command over several objects, unreached sections dropped."""
+def link_command(recipe, objects, script, out, memory):
+    """Recipe.link_command over several objects, unreached sections dropped, with
+    part_memory's archive `memory`."""
     return [
         *recipe.compiler,
         f"-{recipe.link_opt}",
@@ -628,7 +630,9 @@ def link_command(recipe, objects, script, out):
         "-Wl,--gc-sections",
         f"-T{script}",
         f"-Wl,--just-symbols={recipe.elf}",
+        *overlay.memory_wraps(),
         *(str(obj) for obj in objects),
+        str(memory),
         "-o",
         str(out),
     ]

@@ -962,6 +962,7 @@ class _Backend:
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)
                 recipes[recipe.target] = recipe
+        recipes = kernel_module.part_recipes(recipes, self.device.arch())
         built = overlay.build_overlays(
             [*program.overlays.values(), overlay.service()],
             program.overlay_slots,
@@ -1106,7 +1107,7 @@ class _Backend:
         declared = placed.programs[0].overlay_slots
         built, symbols = [], []
         for number, group in enumerate(placed.groups):
-            recipes = by_group[number]
+            recipes = kernel_module.part_recipes(by_group[number], self.device.arch())
             if placed.switch:  # a part runs on any group's kernels: the same globals
                 symbols.append(
                     {

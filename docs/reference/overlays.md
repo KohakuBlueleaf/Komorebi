@@ -128,14 +128,19 @@ The builder compiles a part with the commands the runtime uses for that kernel a
 same flags, includes and defines). It adds position-independent code (`-fpie`), hidden
 visibility, and a linker script that keeps the address table (`.got`) inside the image. It
 links the part against the persistent kernel's symbols (`--just-symbols`) at two addresses
-64 bytes apart. It refuses a part, with an `OverlayError` that names the overlay and the part,
-when:
+64 bytes apart. A copy or a clear that the compiler turns into a call to `memcpy` or
+`memset`, at any level, takes the part's own copy of that function, linked in only when
+called (`overlay.part_memory`, `src/komorebi_native/kernels/program/part_memory.cpp`,
+through `--wrap`). On Wormhole a writer part is built at `O2` (`chips.Chip.writer_part_opt`),
+not at the persistent writer's `Os`: a part runs from L1, and its slot bounds its size.
+It refuses a part, with an `OverlayError` that names the overlay and the part, when:
 
 | Check | Why |
 |---|---|
 | no entry at the image's first byte | the slot's first byte is called |
 | relocations left | nothing relocates a part at run time |
 | it calls a function in the persistent kernel's text | the kernel's code is not part of the overlay's contract; header-only calls are compiled into the part instead |
+| a call or jump of the linked part leaves it (read from its disassembly, so a call the compiler made at the link is seen; named with its address) | the kernel's or the firmware's code is at another offset at each address of the part |
 | it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts. A movement part uses the kernel's words of which halves were filled and drained (`km_movement.hpp`, linked against its symbols), or words of its own when the kernel never moves; the build's 22 constant tables of the buffers are not state when their bytes are the kernel's (else refused, naming the table); a math part's `throttled_mop_status` is built set unknown at entry, and the kernel's after the call |
 | its two links are not byte-identical | it would not run in any slot |
 | its code, data and `.bss` are larger than its slot | it would overwrite the next slot |

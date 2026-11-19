@@ -37,7 +37,8 @@ if tool == "g++":
     else:
         script = next(word[2:] for word in args if word.startswith("-T"))
         base = re.search(r"ORIGIN = (0x[0-9a-f]+)", Path(script).read_text())[1]
-        slowly(out, b"BASE=%s\n" % base.encode() + Path(args[-3]).read_bytes())
+        obj = next(word for word in args if word.endswith(".o"))
+        slowly(out, b"BASE=%s\n" % base.encode() + Path(obj).read_bytes())
 elif tool == "readelf":
     flags, elf = args
     if flags == "-SW" and elf.endswith("kernel.elf"):
@@ -47,16 +48,18 @@ elif tool == "readelf":
     elif flags == "-hlSW":
         at = base_of(elf)
         print(f"  LOAD 0x001000 {at:#010x} {at:#010x} 0x000040 0x000040 RWE 0x1000")
+elif tool == "ar":
+    slowly(args[1], b"!<arch>\n")
 elif tool == "objcopy":
     slowly(args[-1], Path(args[-2]).read_bytes().split(b"\n", 1)[1][:64])
 """
 
 
 def toolchain(folder):
-    """A Recipe whose g++, readelf, gcc-nm and objcopy are the stand-ins above."""
+    """A Recipe whose g++ and binutils are the stand-ins above (objdump: no calls)."""
     script = folder / "tools.py"
     script.write_text(TOOLS)
-    for name in ("g++", "readelf", "gcc-nm", "objcopy"):
+    for name in ("g++", "readelf", "gcc-nm", "objcopy", "objdump", "ar"):
         path = folder / f"fake-{name}"
         path.write_text(f'#!/bin/sh\nexec {sys.executable} {script} {name} "$@"\n')
         path.chmod(0o755)

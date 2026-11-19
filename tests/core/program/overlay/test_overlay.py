@@ -63,6 +63,13 @@ def test_a_call_into_the_persistent_text_is_refused():
         check(linked(undefined=("helper",)))
 
 
+def test_a_call_out_of_the_linked_part_is_refused_naming_its_callee():
+    """A call the compiler made at the link (a struct copy's memcpy), which the
+    object's undefined names do not list."""
+    with pytest.raises(OverlayError, match=r"calls \['memcpy at 0xffc02180'\] outside"):
+        check(linked(calls=(("memcpy", 0xFFC02180),)))
+
+
 def test_a_second_copy_of_runtime_state_is_refused():
     copy = {"noc_reads_num_issued": (BASE + 64, "OBJECT", "LOCAL")}
     with pytest.raises(OverlayError, match="its own copy of the runtime's state"):
