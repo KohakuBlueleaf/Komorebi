@@ -232,6 +232,33 @@ KERNELS = {"unpack": "compute", "math": "compute", "pack": "compute"}
 EVENT_ISLAND = 0x80  # km_abi.h's KM_EVENT_ISLAND: a TIMEOUT's auxiliary names an island
 
 
+def _only_normal_stop(core):
+    """Whether a not-reported core shows nothing but its reader's stop between commands
+    (gave up (stop) in next): the stop of a run that ended, not a wait of the command.
+    """
+    if core.get("writer") or core.get("compute") or core.get("live"):
+        return False
+    gave = core.get("reader")
+    return bool(gave) and gave["code"] == "stop" and gave["where"] == "next"
+
+
+def _named_cores(cores):
+    """The not-reported cores as text: those with a wait or give-up of their own first;
+    when there is one, a core with only a reader's normal stop is counted, not listed.
+    """
+    quiet = [core for core in cores if _only_normal_stop(core)]
+    waited = [core for core in cores if not _only_normal_stop(core)]
+    if not waited:
+        return "; ".join(describe_core(core) for core in cores) or "none named"
+    text = "; ".join(describe_core(core) for core in waited)
+    if quiet:
+        text += (
+            f"; {len(quiet)} more cores did not report and show only their reader's "
+            "normal stop in next (not listed)"
+        )
+    return text
+
+
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: command, slot, sequence, group, and cores:
     after the stop, those that did not report and where each waited; `given_up`: the
@@ -252,7 +279,7 @@ class CommandTimeout(KernelFailed):
         ranks=False,
         links=(),
     ):
-        named = "; ".join(describe_core(core) for core in cores) or "none named"
+        named = _named_cores(cores)
         unit = "ranks" if ranks else "cores"
         first, count = group if group else (None, None)
         what = (
