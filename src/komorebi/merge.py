@@ -622,7 +622,8 @@ def own_unit(recipe, obj, keep):
 
 def link_command(recipe, objects, script, out, memory):
     """Recipe.link_command over several objects, unreached sections dropped, with
-    part_memory's archive `memory`."""
+    part_memory's `memory`."""
+    wraps, own = overlay.memory_words(memory)
     return [
         *recipe.compiler,
         f"-{recipe.link_opt}",
@@ -630,9 +631,9 @@ def link_command(recipe, objects, script, out, memory):
         "-Wl,--gc-sections",
         f"-T{script}",
         f"-Wl,--just-symbols={recipe.elf}",
-        *overlay.memory_wraps(),
+        *wraps,
         *(str(obj) for obj in objects),
-        str(memory),
+        *own,
         "-o",
         str(out),
     ]

@@ -330,16 +330,16 @@ class Recipe:
 
     def link_command(self, obj, script, out, memory=None):
         """The runtime's link of this core with the builder's script, against the
-        persistent kernel's symbols; `memory`: part_memory's archive, whose copies
-        the calls to MEMORY's names take."""
-        own = () if memory is None else (str(memory),)
+        persistent kernel's symbols; `memory`: part_memory's (names, archive), whose
+        copies the calls to those names take."""
+        wraps, own = memory_words(memory)
         return [
             *self.compiler,
             f"-{self.link_opt}",
             *(word for word in self.lflags if not word.startswith(DROPPED_LINK)),
             f"-T{script}",
             f"-Wl,--just-symbols={self.elf}",
-            *(memory_wraps() if memory is not None else ()),
+            *wraps,
             str(obj),
             *own,
             "-o",
@@ -556,16 +556,23 @@ def calls_out(recipe, elf, base, end):
     return tuple((name, at) for at, name in sorted(out.items()))
 
 
-def memory_wraps():
-    """The link's switches that send MEMORY's calls to part_memory's copies."""
-    return tuple(f"-Wl,--wrap={name}" for name in MEMORY)
+def memory_words(memory):
+    """The link's words for part_memory's (names, archive): a --wrap a name before
+    the objects, the archive after them; none for None."""
+    if memory is None:
+        return (), ()
+    names, library = memory
+    return tuple(f"-Wl,--wrap={name}" for name in names), (str(library),)
 
 
 def part_memory(recipe, cache):
-    """The archive of the part's own MEMORY functions for `recipe` (a member each,
-    linked only when called), built once under `cache`: a compiler may call memcpy
-    or memset for a copy or a clear at any level, and the persistent kernel's copy
-    is at another offset at each link of the part."""
+    """(names, archive) of the part's own copies of the MEMORY functions the
+    persistent kernel defines (a member each, linked only when called), built once
+    under `cache`; None when it defines none (a part links the library's own)."""
+    defined = elf_symbols(recipe, recipe.elf)
+    names = tuple(name for name in MEMORY if name in defined)
+    if not names:
+        return None
     include = _env.include_directory()
     if include is None:
         raise FileNotFoundError("the native kernels are not beside the package")
@@ -574,7 +581,7 @@ def part_memory(recipe, cache):
     work = Path(cache) / f"memory-{digest.hexdigest()[:16]}"
     library = work / "libkm_part_memory.a"
     if library.is_file():
-        return library
+        return names, library
     work.mkdir(parents=True, exist_ok=True)
     members = []
     for name, define in MEMORY.items():
@@ -583,7 +590,7 @@ def part_memory(recipe, cache):
             run_into(obj, lambda path, d=define: no_lto(recipe, source, path, d), work)
         members.append(str(obj))
     run_into(library, lambda path: [recipe.tool("ar"), "rcs", str(path), *members])
-    return library
+    return names, library
 
 
 def no_lto(recipe, source, out, define):

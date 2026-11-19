@@ -129,9 +129,10 @@ same flags, includes and defines). It adds position-independent code (`-fpie`), 
 visibility, and a linker script that keeps the address table (`.got`) inside the image. It
 links the part against the persistent kernel's symbols (`--just-symbols`) at two addresses
 64 bytes apart. A copy or a clear that the compiler turns into a call to `memcpy` or
-`memset`, at any level, takes the part's own copy of that function, linked in only when
-called (`overlay.part_memory`, `src/komorebi_native/kernels/program/part_memory.cpp`,
-through `--wrap`). On Wormhole a writer part is built at `O2` (`chips.Chip.writer_part_opt`),
+`memset`, at any level, links the C library's copy into the part; when the persistent
+kernel defines that function (Wormhole's writer), the part takes a copy of its own
+instead, linked in only when called (`overlay.part_memory`,
+`src/komorebi_native/kernels/program/part_memory.cpp`, through `--wrap`). On Wormhole a writer part is built at `O2` (`chips.Chip.writer_part_opt`),
 not at the persistent writer's `Os`: a part runs from L1, and its slot bounds its size.
 It refuses a part, with an `OverlayError` that names the overlay and the part, when:
 
