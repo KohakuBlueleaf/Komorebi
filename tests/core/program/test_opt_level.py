@@ -72,7 +72,9 @@ def test_wormhole_builds_the_writer_for_size_unless_the_program_says(tmp_path):
         "opt_level": "Os",
     }
     assert build(plain, "reader", [], "wormhole_b0") == {"defines": [cold]}
-    assert build(plain, "compute", [], "wormhole_b0") == {"defines": []}
+    assert build(plain, "compute", [], "wormhole_b0") == {
+        "defines": card_kernels.compute_defines("wormhole_b0")
+    }  # no writer level
     own = Program("q", kernels=kernels(tmp_path), opt={"movement": "O2"})
     assert build(own, "writer", [], "wormhole_b0")["opt_level"] == "O2"
 

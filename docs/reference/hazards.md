@@ -1940,14 +1940,17 @@ of 0x4000 bytes`); one just under it stops building at the next change of the ru
 or of a handler. The runtime's own code is most of it: the chain step classes' writer
 was 17,992 B at `Os`.
 
-**The rule.** Keep a margin of 1 KiB or more.
+**The rule.** A writer that grows past the 16 KiB moves up a writer level; at the
+highest, keep a margin of 1 KiB or more.
 
-**The guard.** On Wormhole the writer is built at `Os`, with the waits out of line, and
-its paths after a command's work run from the service overlay's writer part in L1
-([overlays](overlays.md#transfers-to-and-from-the-host)): the step classes' writer is
-16,140 B, cast_steps' 12,540 B, the dense classes' 13,708 and 14,312 B. A load states
-its writer's margin and warns under 1,024 B (`load.WRITER_MARGIN`). Two swiglu lines
-are still over, by 504 and 96 B.
+**The guard.** On Wormhole the writer is built at `Os`, with the waits out of line. A
+writer over the 16 KiB is built again at the next writer level, which runs more of its
+paths after a command's work from the service overlay's writer part in L1
+([overlays](overlays.md#transfers-to-and-from-the-host)); each retry costs a build of
+the program's kernels (3 to 4 s), once: the level is kept. The step classes' writer is
+16,140 B at level 3; the dense classes and cast_steps fit at level 0. A load states its
+writer's margin and level, and warns under 1,024 B at the highest level
+(`load.WRITER_MARGIN`). Two swiglu lines are still over at level 3, by 504 and 96 B.
 
 Described in [Overlays, transfers to and from the host](overlays.md#transfers-to-and-from-the-host).
 

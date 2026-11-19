@@ -358,14 +358,19 @@ that range adds nothing to them.
 
 On Wormhole the service overlay has a **writer part** too
 (`src/komorebi_native/kernels/program/service_writer.cpp`), as the writer's CPU
-(NCRISC) holds 16 KiB of code: the writer's paths that run after a command's work is
-done or has failed (`km::complete`, `Core::finish` with its clear of the buffers, the
-page-bound lookup of a missed bound) are compiled there, not into the resident writer
-(`chips.Chip.movers_defines`: `KM_WRITER_COLD`). The reader loads it at the start of
-every load, before the first command, into a writer slot held for the life of the load
-(3,392 bytes of L1 a core, the L1 budget table's `slots: writer` line); the writer
-calls it through one pointer. The moves and the waits stay resident. On Blackhole all
-of it stays resident and its kernels are as before, byte for byte.
+(NCRISC) holds 16 KiB of code. A program's writer is built at **writer level** 0,
+everything resident; only a writer over the 16 KiB is built again a level up, to
+`chips.Chip.writer_levels` (3 on Wormhole), and the level found is kept by program and
+chip in the remembered store (`kernel_buffer.json`, `writer_levels`), so a later load
+builds once, at it. Each level moves more of the writer's paths that run after a
+command's work out of the resident writer into the part (`KM_WRITER_COLD`,
+`kernels.WRITER_LEVELS`): 1 the page-bound lookup of a missed bound, 2 also
+`Core::finish` with its clear of the buffers, 3 also `km::complete`. The reader loads
+the part at the start of the load, before the first command, into a writer slot held
+for the life of the load (3,776 bytes of L1 a core at level 3, the L1 budget table's
+`slots: writer` line); the writer calls it through one pointer. The moves and the waits
+stay resident. A program that fits at level 0 has no part and runs as before. On
+Blackhole every program is at level 0 and its kernels are as before, byte for byte.
 
 - **Who may issue one.** The host: the session itself, for a read or a write. An X280
   thread too, when its command's region word is the session's region (the load hands

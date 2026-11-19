@@ -754,7 +754,7 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 | Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | |
 | Overlays, parts and classes added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
 | Dst words from a pack thread (`km::dst`): the unpacker and the packer in place of Blackhole's Dst window, whole tiles, every 32-bit word as it went in ([measured](experiments/core/dst_words/README.md#measured)) | |
-| A chain written by hand. Programs whose writer was over the 16 KiB of code the second data-movement CPU holds there: the writer's paths after a command's work (its completion, its finish, a missed page bound) run from the service overlay's writer part in L1 ([overlays](docs/reference/overlays.md#transfers-to-and-from-the-host)); the chain step classes, the dense classes and the swiglu classes build, and a load states its writer's margin | A writer still over the 16 KiB with those paths moved: it does not build (`swiglu_direct.py` by 504 B and `swiglu_rows.py card` by 96 B: the chain end is still resident) |
+| A chain written by hand. Programs whose writer was over the 16 KiB of code the second data-movement CPU holds there: the writer's paths after a command's work (its completion, its finish, a missed page bound) run from the service overlay's writer part in L1, at the lowest writer level that fits ([overlays](docs/reference/overlays.md#transfers-to-and-from-the-host)); the chain step classes, the dense classes and the swiglu classes build, and a load states its writer's margin and level | A writer still over the 16 KiB with those paths moved: it does not build (`swiglu_direct.py` by 504 B and `swiglu_rows.py card` by 96 B: the chain end is still resident) |
 | Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, rows recorded for more than Wormhole's 32 replay entries, a negated operand (a load macro's template's too), a shift, Blackhole's integer casts and comparisons in Wormhole's words: the same results as on Blackhole, word for word. The reciprocal (and sigmoid, silu, division) from Wormhole's own estimate: within 1.2e-7 of float64, as on Blackhole; tanh within its stated 3e-7 | A comparison with no register free for its Wormhole form, a load macro's template negating an operand another word reads: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)). A hand-written kernel's Blackhole vector word Wormhole computes otherwise (a MAD word's negate bit, `SFPGT`, `SFPARECIP`): refused at the load, naming the word and its source line |
 | | X280 threads: the chip has no X280 |
 | The attention project (`projects/attention`), its hand-written vector steps in Wormhole's forms: `run.py --shape t3` on 79 cores writes Blackhole's output, word for word; its class form (`attention_chain.py`) within the project's bounds. At `causal64` a few words in a million differ from Blackhole's by one bf16 unit (1 of 524,288; the class's 28 of 16,777,216): the reciprocal's first estimate is Wormhole's own | |
@@ -790,9 +790,9 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
   (119 on a P150A).
 
 - **A Wormhole core's writer holds 16 KiB of code** (NCRISC runs it from its own
-  memory): with its paths after a command's work in L1, the writers of the examples
-  and projects that build there are 10,824 to 16,140 B at `Os`; a load states the
-  margin and warns under 1 KiB
+  memory): a writer over it is built again with more of its paths after a command's
+  work in L1, at the lowest writer level that fits; a load states the margin and
+  level, and warns under 1 KiB at the highest
   ([hazards](docs/reference/hazards.md#a-writer-near-the-16-kib-of-code-a-wormhole-cores-ncrisc-holds)).
 
 ## TODO
