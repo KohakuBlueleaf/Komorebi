@@ -8,40 +8,7 @@
 
 use std::fmt;
 
-/// An element format, and a scalar type where it is one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Format {
-    /// `u8`.
-    U8,
-    /// `u16`.
-    U16,
-    /// `u32`.
-    U32,
-    /// `u64`.
-    U64,
-    /// `i8`.
-    I8,
-    /// `i16`.
-    I16,
-    /// `i32`.
-    I32,
-    /// `i64`.
-    I64,
-    /// `f16`.
-    F16,
-    /// `f32`.
-    F32,
-    /// `f64`.
-    F64,
-    /// `bf16`.
-    Bf16,
-    /// `bfp8`: a sign and 7 magnitude bits an element, one exponent for 16 elements.
-    Bfp8,
-    /// `bfp4`: as `bfp8` with 3 magnitude bits.
-    Bfp4,
-    /// `bfp2`: as `bfp8` with 1 magnitude bit.
-    Bfp2,
-}
+pub use crate::types::{Axis, Failure, Format, TileShape};
 
 /// How the interpreter holds the elements of a format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,100 +21,38 @@ pub enum Held {
     F64,
 }
 
-impl Format {
-    /// Every format, in the order of the enum.
-    pub const ALL: [Format; 15] = [
-        Format::U8,
-        Format::U16,
-        Format::U32,
-        Format::U64,
-        Format::I8,
-        Format::I16,
-        Format::I32,
-        Format::I64,
-        Format::F16,
-        Format::F32,
-        Format::F64,
-        Format::Bf16,
-        Format::Bfp8,
-        Format::Bfp4,
-        Format::Bfp2,
-    ];
-
-    /// The format's name in the text.
-    pub fn name(self) -> &'static str {
-        match self {
-            Format::U8 => "u8",
-            Format::U16 => "u16",
-            Format::U32 => "u32",
-            Format::U64 => "u64",
-            Format::I8 => "i8",
-            Format::I16 => "i16",
-            Format::I32 => "i32",
-            Format::I64 => "i64",
-            Format::F16 => "f16",
-            Format::F32 => "f32",
-            Format::F64 => "f64",
-            Format::Bf16 => "bf16",
-            Format::Bfp8 => "bfp8",
-            Format::Bfp4 => "bfp4",
-            Format::Bfp2 => "bfp2",
+/// How the interpreter holds an element of this format.
+pub fn held(format: Format) -> Held {
+    match format {
+        Format::F64 => Held::F64,
+        Format::F16 | Format::F32 | Format::Bf16 | Format::Bfp8 | Format::Bfp4 | Format::Bfp2 => {
+            Held::F32
         }
-    }
-
-    /// How the interpreter holds an element of this format.
-    pub fn held(self) -> Held {
-        match self {
-            Format::F64 => Held::F64,
-            Format::F16
-            | Format::F32
-            | Format::Bf16
-            | Format::Bfp8
-            | Format::Bfp4
-            | Format::Bfp2 => Held::F32,
-            _ => Held::Int,
-        }
-    }
-
-    /// The width in bits of an integer format; `None` for a float format.
-    pub fn bits(self) -> Option<u32> {
-        match self {
-            Format::U8 | Format::I8 => Some(8),
-            Format::U16 | Format::I16 => Some(16),
-            Format::U32 | Format::I32 => Some(32),
-            Format::U64 | Format::I64 => Some(64),
-            _ => None,
-        }
-    }
-
-    /// Whether this is a signed integer format.
-    pub fn is_signed(self) -> bool {
-        matches!(self, Format::I8 | Format::I16 | Format::I32 | Format::I64)
-    }
-
-    /// Whether this format is also a scalar type (`u8` to `i64`, `f16`, `f32`, `f64`).
-    pub fn is_scalar_type(self) -> bool {
-        !matches!(
-            self,
-            Format::Bf16 | Format::Bfp8 | Format::Bfp4 | Format::Bfp2
-        )
-    }
-
-    /// The bytes an element takes where the interpreter can lay it out exactly: an
-    /// integer's width, 4 for `f32` and 8 for `f64`. `None` for the formats whose
-    /// encoding the language does not give (`f16`, `bf16` and the block formats).
-    pub fn bytes(self) -> Option<usize> {
-        match self {
-            Format::F32 => Some(4),
-            Format::F64 => Some(8),
-            _ => self.bits().map(|bits| bits as usize / 8),
-        }
+        _ => Held::Int,
     }
 }
 
-impl fmt::Display for Format {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+/// A tile shape counted as the interpreter indexes: rows, columns and elements as
+/// `usize`. A count past the machine's addresses reads as `usize::MAX`, which no
+/// tile's elements reach.
+pub trait Extent {
+    /// Rows of elements.
+    fn height(self) -> usize;
+    /// Columns of elements.
+    fn width(self) -> usize;
+    /// Elements of a tile.
+    fn count(self) -> usize;
+}
+
+impl Extent for TileShape {
+    fn height(self) -> usize {
+        usize::try_from(self.rows).unwrap_or(usize::MAX)
+    }
+    fn width(self) -> usize {
+        usize::try_from(self.cols).unwrap_or(usize::MAX)
+    }
+    fn count(self) -> usize {
+        self.height().saturating_mul(self.width())
     }
 }
 
@@ -184,7 +89,7 @@ impl Scalar {
     /// The float `value` of `format`, held as the format holds it; `None` if `format`
     /// is an integer format.
     pub fn float(format: Format, value: f64) -> Option<Scalar> {
-        match format.held() {
+        match held(format) {
             Held::F32 => Some(Scalar::F32(format, value as f32)),
             Held::F64 => Some(Scalar::F64(value)),
             Held::Int => None,
@@ -231,22 +136,6 @@ pub fn int_value(format: Format, bits: u64) -> i128 {
     }
 }
 
-/// The shape of a tile: rows by columns of elements.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TileShape {
-    /// Rows of elements.
-    pub rows: usize,
-    /// Columns of elements.
-    pub cols: usize,
-}
-
-impl TileShape {
-    /// The number of elements of a tile.
-    pub fn elements(self) -> usize {
-        self.rows * self.cols
-    }
-}
-
 /// The elements of a tile, row by row, as the format holds them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Elements {
@@ -261,7 +150,7 @@ pub enum Elements {
 impl Elements {
     /// Zeros, `n` of them, held as `format` holds them.
     pub fn zeros(format: Format, n: usize) -> Elements {
-        match format.held() {
+        match held(format) {
             Held::Int => Elements::Int(vec![0; n]),
             Held::F32 => Elements::F32(vec![0.0; n]),
             Held::F64 => Elements::F64(vec![0.0; n]),
@@ -300,17 +189,17 @@ impl Tile {
         Tile {
             format,
             shape,
-            elements: Elements::zeros(format, shape.elements()),
+            elements: Elements::zeros(format, shape.count()),
         }
     }
 
     /// A tile of a float format from values given row by row; `None` when the format
     /// is an integer format or the count is not the shape's.
     pub fn from_f64(format: Format, shape: TileShape, values: &[f64]) -> Option<Tile> {
-        if values.len() != shape.elements() {
+        if values.len() != shape.count() {
             return None;
         }
-        let elements = match format.held() {
+        let elements = match held(format) {
             Held::F32 => Elements::F32(values.iter().map(|&v| v as f32).collect()),
             Held::F64 => Elements::F64(values.to_vec()),
             Held::Int => return None,
@@ -327,7 +216,7 @@ impl Tile {
     /// the shape's.
     pub fn from_ints(format: Format, shape: TileShape, values: &[i128]) -> Option<Tile> {
         let bits = format.bits()?;
-        if values.len() != shape.elements() {
+        if values.len() != shape.count() {
             return None;
         }
         let elements = Elements::Int(values.iter().map(|&v| (v as u64) & mask(bits)).collect());
@@ -340,10 +229,10 @@ impl Tile {
 
     /// The element at row `r`, column `c`, as a scalar; `None` outside the tile.
     pub fn get(&self, r: usize, c: usize) -> Option<Scalar> {
-        if r >= self.shape.rows || c >= self.shape.cols {
+        if r >= self.shape.height() || c >= self.shape.width() {
             return None;
         }
-        self.at(r * self.shape.cols + c)
+        self.at(r * self.shape.width() + c)
     }
 
     /// The element at flat position `i` (row by row), as a scalar; `None` past the
@@ -360,12 +249,12 @@ impl Tile {
     /// its format holds it.
     pub fn is_whole(&self) -> bool {
         let held = matches!(
-            (&self.elements, self.format.held()),
+            (&self.elements, held(self.format)),
             (Elements::Int(_), Held::Int)
                 | (Elements::F32(_), Held::F32)
                 | (Elements::F64(_), Held::F64)
         );
-        held && self.elements.len() == self.shape.elements()
+        held && self.elements.len() == self.shape.count()
     }
 
     /// Every element as an `f64`, row by row; `None` for an integer tile.
@@ -389,7 +278,7 @@ impl Tile {
     /// for a format whose encoding the language does not give (see `Format::bytes`).
     pub fn to_bytes(&self) -> Option<Vec<u8>> {
         let width = self.format.bytes()?;
-        let mut out = Vec::with_capacity(width * self.shape.elements());
+        let mut out = Vec::with_capacity(width * self.shape.count());
         match &self.elements {
             Elements::Int(v) => {
                 for &bits in v {
@@ -414,11 +303,11 @@ impl Tile {
     /// format has no exact layout or the count is not the tile's.
     pub fn from_bytes(format: Format, shape: TileShape, bytes: &[u8]) -> Option<Tile> {
         let width = format.bytes()?;
-        if bytes.len() != width * shape.elements() {
+        if bytes.len() != width * shape.count() {
             return None;
         }
         let chunks = bytes.chunks_exact(width);
-        let elements = match format.held() {
+        let elements = match held(format) {
             Held::Int => Elements::Int(
                 chunks
                     .map(|c| {
@@ -449,15 +338,6 @@ impl Tile {
             elements,
         })
     }
-}
-
-/// An axis of a tile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// `row`: one value for each row.
-    Row,
-    /// `col`: one value for each column.
-    Col,
 }
 
 /// What a reduction along an axis yields: a value for each row (or column), which is
@@ -507,8 +387,8 @@ impl Tensor {
     /// A tensor of zeros of the logical shape `rows` by `cols`, in tiles of `tile`.
     pub fn zeros(name: &str, format: Format, rows: usize, cols: usize, tile: TileShape) -> Tensor {
         let grid = (
-            rows.div_ceil(tile.rows.max(1)),
-            cols.div_ceil(tile.cols.max(1)),
+            rows.div_ceil(tile.height().max(1)),
+            cols.div_ceil(tile.width().max(1)),
         );
         Tensor {
             name: name.to_string(),
@@ -806,10 +686,10 @@ impl Member {
     /// An empty member of `n` scalars of `format`; `None` when `format` is no scalar
     /// type.
     pub fn scalars(name: &str, format: Format, n: usize, by_element: bool) -> Option<Member> {
-        if !format.is_scalar_type() {
+        if !format.as_scalar().is_some() {
             return None;
         }
-        let zero = match format.held() {
+        let zero = match held(format) {
             Held::Int => Scalar::Int(format, 0),
             Held::F32 => Scalar::F32(format, 0.0),
             Held::F64 => Scalar::F64(0.0),
@@ -848,52 +728,6 @@ impl Member {
         match &self.filled {
             Filled::Whole(filled) => *filled,
             Filled::Element(marks) => marks.get(i).copied().unwrap_or(false),
-        }
-    }
-}
-
-/// A failure by name: the invocation ends without a result. The names a control
-/// program compares with `o.reason`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Failure {
-    /// `view_end`: a view past its tensor's end.
-    ViewEnd,
-    /// `empty_state`: a read of state that is not filled.
-    EmptyState,
-    /// `send_refused`: a refused `send` whose result is not used.
-    SendRefused,
-    /// `capacity`: one of the backend's limits exceeded.
-    Capacity,
-    /// `given_up`: the service gave the invocation up.
-    GivenUp,
-    /// `dependency`: an invocation it waited for failed.
-    Dependency,
-    /// `not_a_peer`: an `offer` to a rank that is not a declared peer.
-    NotAPeer,
-    /// `over_bound`: a parameter above its declared largest value.
-    OverBound,
-    /// `divide_by_zero`: an integer divided by zero, by `/` or `%`.
-    DivideByZero,
-    /// `out_of_range`: an index past its end (`s[i]`, `words[i]`, `records[i]`,
-    /// `v[i]`, `put` at an item), a count that does not fit (records in a tile, a
-    /// fill's tiles, two zipped streams), or a negative shift.
-    OutOfRange,
-}
-
-impl Failure {
-    /// The failure's name, as a control program writes it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Failure::ViewEnd => "view_end",
-            Failure::EmptyState => "empty_state",
-            Failure::SendRefused => "send_refused",
-            Failure::Capacity => "capacity",
-            Failure::GivenUp => "given_up",
-            Failure::Dependency => "dependency",
-            Failure::NotAPeer => "not_a_peer",
-            Failure::OverBound => "over_bound",
-            Failure::DivideByZero => "divide_by_zero",
-            Failure::OutOfRange => "out_of_range",
         }
     }
 }

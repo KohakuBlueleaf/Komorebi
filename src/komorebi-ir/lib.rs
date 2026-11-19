@@ -10,6 +10,7 @@ pub mod check;
 pub mod deep;
 pub mod errors;
 pub mod interp;
+pub mod program;
 pub mod syntax;
 pub mod types;
 

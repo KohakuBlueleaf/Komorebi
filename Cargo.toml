@@ -26,6 +26,10 @@ path = "tests/ir/interp_values.rs"
 name = "golden"
 path = "tests/ir/golden.rs"
 
+[[test]]
+name = "program_validate"
+path = "tests/ir/program_validate.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

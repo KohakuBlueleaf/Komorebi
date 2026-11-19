@@ -954,7 +954,7 @@ fn words_on_more_than_one_tile_is_refused() {
         };
         let recs = ops::records(&heap, &v, &node, 1);
         if n == 1 {
-            assert_eq!(words.map(|w| w.len()), Ok(shape.elements()));
+            assert_eq!(words.map(|w| w.len()), Ok(shape.elements() as usize));
             assert!(recs.is_ok());
         } else {
             assert!(matches!(words, Err(Fault::Undefined(_))), "{n} tiles");

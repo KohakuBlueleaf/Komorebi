@@ -4,8 +4,8 @@
 
 pub use super::memory::Axis;
 use super::memory::{
-    int_value, mask, Block, Elements, Failure, Fault, Filled, Format, Heap, Held, Member,
-    MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile,
+    held, int_value, mask, Block, Elements, Extent, Failure, Fault, Filled, Format, Heap, Held,
+    Member, MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile,
     TileShape, View, ViewKind, Walk, Zip,
 };
 
@@ -206,8 +206,8 @@ impl Operand<'_> {
 
     fn held(&self) -> Option<Held> {
         match self {
-            Operand::Tile(t) => Some(t.format.held()),
-            Operand::Scalar(s) => s.format().map(Format::held),
+            Operand::Tile(t) => Some(held(t.format)),
+            Operand::Scalar(s) => s.format().map(held),
         }
     }
 
@@ -272,20 +272,17 @@ fn result_of(operands: &[Operand<'_>]) -> Result<(Format, TileShape), Fault> {
             return Err(Fault::undefined("a boolean operand of a tile operation"));
         }
     }
-    let int_tiles = tiles
+    let int_tiles = tiles.iter().filter(|t| held(t.format) == Held::Int).count();
+    let float_scalar = operands
         .iter()
-        .filter(|t| t.format.held() == Held::Int)
-        .count();
-    let float_scalar = operands.iter().any(
-        |o| matches!(o, Operand::Scalar(s) if s.format().map(Format::held) != Some(Held::Int)),
-    );
+        .any(|o| matches!(o, Operand::Scalar(s) if s.format().map(held) != Some(Held::Int)));
     if (int_tiles != 0 && int_tiles != tiles.len()) || (int_tiles != 0 && float_scalar) {
         return Err(Fault::undefined(
             "integers and floats in one tile operation",
         ));
     }
-    let wide = tiles.iter().any(|t| t.format.held() == Held::F64)
-        && tiles.iter().any(|t| t.format.held() == Held::F32);
+    let wide = tiles.iter().any(|t| held(t.format) == Held::F64)
+        && tiles.iter().any(|t| held(t.format) == Held::F32);
     let format = if wide { Format::F64 } else { first.format };
     Ok((format, first.shape))
 }
@@ -301,8 +298,8 @@ pub fn binary(op: Bin, a: Operand<'_>, b: Operand<'_>) -> Result<Tile, Fault> {
         return Err(Fault::undefined(format!("{op:?} on tiles")));
     }
     let (format, shape) = result_of(&[a, b])?;
-    let n = shape.elements();
-    let elements = match format.held() {
+    let n = shape.count();
+    let elements = match held(format) {
         Held::Int => {
             let (x, y) = (a.ints(format, n), b.ints(format, n));
             let v: Result<Vec<u64>, Fault> = x
@@ -513,7 +510,7 @@ pub fn select(
             return Err(Fault::undefined("tiles of different shapes"));
         }
     }
-    let n = shape.elements();
+    let n = shape.count();
     let test = compare_lanes(cmp, a, b, n)?;
     let (format, _) = result_of(&[x, y]).or_else(|_| {
         let tile = a.tile().or(b.tile());
@@ -578,7 +575,7 @@ pub enum Reduce {
 /// (row).
 pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Reduced, Fault> {
     whole(a)?;
-    let TileShape { rows, cols } = a.shape;
+    let (rows, cols) = (a.shape.height(), a.shape.width());
     let op = match kind {
         Reduce::Sum => Bin::Add,
         Reduce::Max => Bin::Max,
@@ -688,19 +685,19 @@ pub fn row(v: &Reduced) -> Result<Tile, Fault> {
 
 /// `v.col()` of a tile: column 0 spread along each row.
 pub fn spread_col(v: &Tile) -> Result<Tile, Fault> {
-    let cols = v.shape.cols;
+    let cols = v.shape.width();
     spread(v, |i| (i / cols.max(1)) * cols)
 }
 
 /// `w.row()` of a tile: row 0 spread to every row.
 pub fn spread_row(w: &Tile) -> Result<Tile, Fault> {
-    let cols = w.shape.cols;
+    let cols = w.shape.width();
     spread(w, |i| i % cols.max(1))
 }
 
 fn spread(t: &Tile, from: impl Fn(usize) -> usize) -> Result<Tile, Fault> {
     whole(t)?;
-    let n = t.shape.elements();
+    let n = t.shape.count();
     let elements = match &t.elements {
         Elements::Int(v) => Elements::Int((0..n).map(|i| v[from(i)]).collect()),
         Elements::F32(v) => Elements::F32((0..n).map(|i| v[from(i)]).collect()),
@@ -719,14 +716,17 @@ fn spread(t: &Tile, from: impl Fn(usize) -> usize) -> Result<Tile, Fault> {
 pub fn matmul(a: &Tile, b: &Tile) -> Result<Tile, Fault> {
     whole(a)?;
     whole(b)?;
-    if a.shape.cols != b.shape.rows {
+    if a.shape.width() != b.shape.height() {
         return Err(Fault::undefined(
             "a product of tiles whose shapes do not meet",
         ));
     }
-    let (n, k, m) = (a.shape.rows, a.shape.cols, b.shape.cols);
-    let shape = TileShape { rows: n, cols: m };
-    let (ha, hb) = (a.format.held(), b.format.held());
+    let (n, k, m) = (a.shape.height(), a.shape.width(), b.shape.width());
+    let shape = TileShape {
+        rows: n as u64,
+        cols: m as u64,
+    };
+    let (ha, hb) = (held(a.format), held(b.format));
     if (ha == Held::Int) != (hb == Held::Int) {
         return Err(Fault::undefined("a product of an integer and a float tile"));
     }
@@ -780,7 +780,7 @@ pub fn matmul(a: &Tile, b: &Tile) -> Result<Tile, Fault> {
 /// `a.T`: the tile turned, rows becoming columns.
 pub fn transpose(a: &Tile) -> Result<Tile, Fault> {
     whole(a)?;
-    let TileShape { rows, cols } = a.shape;
+    let (rows, cols) = (a.shape.height(), a.shape.width());
     let from = |i: usize| (i % rows) * cols + i / rows;
     let n = rows * cols;
     let elements = match &a.elements {
@@ -791,8 +791,8 @@ pub fn transpose(a: &Tile) -> Result<Tile, Fault> {
     Ok(Tile {
         format: a.format,
         shape: TileShape {
-            rows: cols,
-            cols: rows,
+            rows: a.shape.cols,
+            cols: a.shape.rows,
         },
         elements,
     })
@@ -810,8 +810,8 @@ pub fn zeros(format: Format, shape: TileShape) -> Tile {
 /// float, nor a float an integer.
 pub fn convert(t: &Tile, format: Format) -> Result<Tile, Fault> {
     whole(t)?;
-    let n = t.shape.elements();
-    let elements = match (format.held(), &t.elements) {
+    let n = t.shape.count();
+    let elements = match (held(format), &t.elements) {
         (Held::F32, Elements::F32(v)) => Elements::F32(v.clone()),
         (Held::F32, Elements::F64(v)) => Elements::F32(v.iter().map(|&x| x as f32).collect()),
         (Held::F64, Elements::F32(_) | Elements::F64(_)) => Elements::F64(Operand::Tile(t).f64s(n)),
@@ -903,7 +903,7 @@ fn tensor_bytes(tensor: &Tensor) -> Result<usize, Fault> {
         .format
         .bytes()
         .ok_or_else(|| Fault::undefined(format!("the bytes of a tensor of {}", tensor.format)))?;
-    Ok(width * tensor.tile.elements() * tensor.tile_count())
+    Ok(width * tensor.tile.count() * tensor.tile_count())
 }
 
 /// `t.items(size = B)` (`range` left out): every whole item of B bytes of the tensor;
@@ -964,14 +964,14 @@ fn one_tile(heap: &Heap, v: &View, what: &str) -> Result<Tile, Fault> {
 /// must be a scalar type.
 pub fn words(heap: &Heap, v: &View) -> Result<Vec<Scalar>, Fault> {
     let tile = one_tile(heap, v, "words()")?;
-    if !tile.format.is_scalar_type() {
+    if !tile.format.as_scalar().is_some() {
         return Err(Fault::undefined(format!(
             "the words of a tile of {}",
             tile.format
         )));
     }
     whole(&tile)?;
-    (0..tile.shape.elements()).map(|i| elem(&tile, i)).collect()
+    (0..tile.shape.count()).map(|i| elem(&tile, i)).collect()
 }
 
 /// `v.records(R, count = c)`: the first c records of a view of one tile, each its
@@ -990,7 +990,7 @@ pub fn records(
     let mut widths = Vec::new();
     for (name, format) in &record.fields {
         match format.bytes() {
-            Some(w) if format.is_scalar_type() => widths.push((*format, w)),
+            Some(w) if format.as_scalar().is_some() => widths.push((*format, w)),
             _ => return Err(Fault::undefined(format!("the field {name} of {format}"))),
         }
     }
@@ -1303,7 +1303,7 @@ pub fn zero(member: &mut Member) {
         }
         MemberData::Scalars(scalars) => {
             for s in scalars.iter_mut() {
-                *s = match member.format.held() {
+                *s = match held(member.format) {
                     Held::Int => Scalar::Int(member.format, 0),
                     Held::F32 => Scalar::F32(member.format, 0.0),
                     Held::F64 => Scalar::F64(0.0),
