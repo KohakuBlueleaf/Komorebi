@@ -254,9 +254,12 @@ def test_a_session_keys_its_memory_by_its_dispatcher(monkeypatch):
     from komorebi.session import session  # noqa: PLC0415 (heavy, this test's)
 
     shapes = []
-    monkeypatch.setattr(
-        session.remembered, "Memory", lambda log, expect, shape: shapes.append(shape)
-    )
+
+    def memory(log, expect, shape):
+        shapes.append(shape)
+        return types.SimpleNamespace(size=None)  # nothing remembered
+
+    monkeypatch.setattr(session.remembered, "Memory", memory)
     monkeypatch.setattr(session.Session, "_arch_known", lambda self: "blackhole")
     monkeypatch.setattr(session.Session, "arch", "blackhole")
     monkeypatch.delenv("KMR_DISPATCHER", raising=False)
@@ -270,8 +273,5 @@ def test_a_session_keys_its_memory_by_its_dispatcher(monkeypatch):
             monkeypatch.setenv("KMR_DISPATCHER", env)
         else:
             monkeypatch.delenv("KMR_DISPATCHER", raising=False)
-        try:
-            session.Session(dispatcher=asked)
-        except AttributeError:
-            pass  # the memory's size is what this test looks at
+        session.Session(dispatcher=asked)
     assert shapes == ["card", "card tensix", "card tensix", "card"]
