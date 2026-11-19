@@ -358,8 +358,11 @@ impl B<'_, '_> {
             OpKind::ReadTile => {
                 let v = self.part(&p, 0)?;
                 let i = self.part(&p, 1)?;
-                let Type::View(Some(f)) = self.ty(v) else {
-                    return refuse(span, "a tile of what is not a view of a format");
+                // through a view of no format, the tile has the format its place
+                // states, as the checker gives it
+                let f = match (self.ty(v), known) {
+                    (Type::View(Some(f)), _) | (Type::View(None), Some(Type::Tile(f))) => f,
+                    _ => return refuse(span, "a tile whose format neither view nor place gives"),
                 };
                 (Op::ReadTile(v, i), Type::Tile(f))
             }

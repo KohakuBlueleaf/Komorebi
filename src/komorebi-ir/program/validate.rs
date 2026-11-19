@@ -663,6 +663,11 @@ impl<'m> Validator<'m> {
             ),
             Op::ReadTile(..) => match a[0] {
                 Type::View(Some(f)) if int(1) => exact(&[Type::Tile(*f)]),
+                // through a view of no format, the tile has its place's format
+                Type::View(None) if int(1) => match d {
+                    [Type::Tile(_)] => Ok(()),
+                    _ => Err("`v[i]` that gives no tile".into()),
+                },
                 _ => Err("`v[i]` of a value that is not a view".into()),
             },
             Op::Words(_) => match a[0] {

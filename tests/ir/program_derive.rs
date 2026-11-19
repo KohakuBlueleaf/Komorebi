@@ -199,6 +199,19 @@ extern func fill(v: view, t: tile<f32>) -> tile<f32> @writes(v) @impl(\"x.fill\"
     store v <- t
     return t
 }
+
+extern func first(a: tile<f32>, nodes: view) -> tile<f32> @reads(nodes) @impl(\"v.first\") fallback {
+    let t: tile<f32> = nodes[0]
+    return t
+}
+
+extern func second(a: tile<f32>, nodes: view) -> tile<f32> @reads(nodes) @impl(\"v.second\") fallback {
+    return nodes[0]
+}
+
+extern func third(a: tile<f32>, nodes: view) -> tile<f32> @reads(nodes) @impl(\"v.third\") fallback {
+    return first(nodes[1], nodes)
+}
 ";
 
 #[test]
@@ -211,6 +224,22 @@ fn a_fallback_has_its_effects_on_its_view_parameters() {
     assert_eq!(a[0].body, BodyRef::Func(FuncId(1)));
     // the view is the parameter's `Arg`
     assert_eq!(a[0].view, InstId(0));
+    // a tile read through a view of no format, its format stated by its place: a
+    // typed `let`, a result, an argument
+    let kinds = |f: usize| -> Vec<(u32, Access)> {
+        m.funcs[f]
+            .effects
+            .tensors
+            .iter()
+            .map(|a| (a.param, a.access))
+            .collect()
+    };
+    assert_eq!(kinds(2), [(1, Access::Read)]);
+    assert_eq!(kinds(3), [(1, Access::Read)]);
+    assert_eq!(kinds(4), [(1, Access::Read), (1, Access::ExternRead)]);
+    for f in 2..5 {
+        assert_eq!(m.funcs[f].effects.tensors[0].view, InstId(1), "f{f}");
+    }
 }
 
 #[test]

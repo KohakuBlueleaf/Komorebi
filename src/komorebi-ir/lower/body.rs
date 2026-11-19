@@ -236,9 +236,8 @@ impl B<'_, '_> {
                 value,
                 attrs,
             } => {
-                if let Some(t) = ty {
-                    self.cx.scalar_type(t)?;
-                }
+                // the stated type is the checker's: the value has it already
+                let _ = ty;
                 let v = self.expr(value)?;
                 self.bind(&name.name, Slot::Value(v));
                 self.name_value(v, &name.name);
