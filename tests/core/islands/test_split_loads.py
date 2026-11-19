@@ -188,7 +188,8 @@ def test_a_split_cards_load_logs_its_kernels_as_a_cards_load():
     program = SimpleNamespace(
         sizes=KernelSizes({"BRISC": 50_000, "NCRISC": 60_000}, 164_992, 163_840)
     )
-    LoadMixin._log_kernel_buffer(SimpleNamespace(log=lines.append), program)
+    session = SimpleNamespace(log=lines.append, arch="blackhole")  # no writer code line
+    LoadMixin._log_kernel_buffer(session, program)
     assert lines == [
         "kernel buffer: 164992 of 163840 B (text: BRISC 50000, NCRISC 60000)"
     ]
