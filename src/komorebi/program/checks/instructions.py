@@ -1,7 +1,7 @@
 """Rejects a kernel whose linked ELF holds an instruction its Tensix core lacks (a core
-that meets one stops without a report). Each group is documented as absent for the
-Blackhole baby RISC-V cores; the build allows them where the pack thread's vector
-flags imply the F extension."""
+that meets one stops without a report), or a call of libgcc's 64-bit division. Each
+group is documented as absent for the Blackhole baby RISC-V cores; the build allows
+them where the pack thread's vector flags imply the F extension."""
 
 import hashlib
 import os
@@ -25,6 +25,10 @@ GROUPS = (
         re.compile(r"v(fr?div|fsqrt|frsqrt7|frec7)\."),
     ),
 )
+# A call of libgcc's 64-bit division (by a value not a power of two): not
+# position-independent, so an overlay part's two links differ; hundreds of cycles.
+LIBGCC_DIVISION = "libgcc's 64-bit division"
+_DIVISION_CALL = re.compile(r"<(__u?(?:div|mod)di3)>$")
 THREADS = {
     "brisc": "BRISC",
     "ncrisc": "NCRISC",
@@ -77,6 +81,10 @@ def scan(listing):
             group = group_of(found.group(2))
             if group:
                 out.append((int(found.group(1), 16), found.group(2), group, label))
+            called = _DIVISION_CALL.search(text.rstrip())
+            if called and found.group(2) in ("jal", "call", "tail", "j"):
+                address = int(found.group(1), 16)
+                out.append((address, called.group(1), LIBGCC_DIVISION, label))
     return out
 
 

@@ -98,3 +98,27 @@ def test_without_addr2line_a_finding_is_still_rejected(tmp_path, monkeypatch):
         "ratio",
         "",
     )
+
+
+@pytest.mark.tree
+def test_a_call_of_libgccs_64_bit_division_is_rejected_at_its_caller(tmp_path):
+    tree, gcc = toolchain()
+    source = tmp_path / "kernel.c"
+    source.write_text(
+        "unsigned long long rows(unsigned long long a, unsigned b) { return a / b; }\n"
+        "unsigned shifted(unsigned long long a) { return a / 8; }\n"
+        "void _start(void) {}\n"
+    )
+    elf = tmp_path / "brisc.elf"
+    flags = ["-mcpu=tt-bh-tensix", PACK_MARCH, "-mabi=ilp32", "-O2", "-g"]
+    link = ["-nostdlib", "-Wl,-e,_start", str(source), "-lgcc", "-o", str(elf)]
+    subprocess.run([str(gcc), *flags, *link], check=True)  # linked: the call is named
+    with pytest.raises(KernelInstructionError) as raised:
+        insn_check.check_kernels(
+            "p", [("reader.cpp", [str(elf)])], tree, tmp_path / "c"
+        )
+    (first,) = raised.value.findings  # by 8 a shift: no call
+    assert (first.thread, first.instruction) == ("BRISC", "__udivdi3")
+    assert first.group == insn_check.LIBGCC_DIVISION and first.function == "rows"
+    assert first.line.endswith("kernel.c:1")
+    assert "which the core lacks" not in str(raised.value)

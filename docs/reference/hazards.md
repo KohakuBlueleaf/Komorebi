@@ -423,6 +423,29 @@ build is seen; `KMR_INSN_CHECK=0` turns it off.
 
 Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
 
+### A 64-bit division by a value that is not a power of two
+
+**The hazard.** The cores are 32-bit: a division (or remainder) of a 64-bit word by
+anything but a power of two compiles to a call of libgcc's `__udivdi3` (or `__umoddi3`,
+`__divdi3`, `__moddi3`). That routine costs hundreds of cycles, and it is not
+position-independent: it loads its table at an absolute address, so an overlay part
+that calls it differs between its two links and cannot be placed. A count that is a
+power of two on one chip and not on another moves the call in and out: Wormhole's 12
+DRAM banks against Blackhole's 8.
+
+**The rule.** Divide 32-bit words (one `divu`): narrow the dividend where it is known to
+fit, or, for a sum of two 32-bit words such as a first page plus a page count, use
+`km_sum_divided(a, b, d, &rest)` of `komorebi/abi/km_abi.h`, which divides it with
+32-bit divisions only.
+
+**The guard.** Refused at the load with the instructions the cores lack:
+`km.KernelInstructionError` names the call (`__udivdi3`), the thread, and the function
+and source line that make it, in every kernel's linked ELF. An overlay part's two-link
+comparison refuses it too (`OverlayError`, "not position-independent").
+`KMR_INSN_CHECK=0` turns off the first, not the second.
+
+Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
+
 ### A wait that never completes
 
 **The hazard.** A wait in a kernel that nothing ever satisfies (a page that is never
