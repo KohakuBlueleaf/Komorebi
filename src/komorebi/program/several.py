@@ -455,11 +455,12 @@ COMPUTE_FLAGS = (
 )
 
 
-def compute_config(options):
+def compute_config(options, indices=CBS):
     """The compute kernel's options for the native Launch from Program.compute: the
     runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
     `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
-    name for every circular buffer, or {cb: name} with the others Default."""
+    name for every circular buffer of the chip (its `indices`), or {cb: name} with
+    the others Default."""
     options = dict(options)
     unpack = options.pop("unpack_to_dest_mode", None)
     fidelity = options.pop("math_fidelity", None)
@@ -474,7 +475,9 @@ def compute_config(options):
     }
     if unpack is not None:
         by_cb = (
-            unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
+            unpack
+            if isinstance(unpack, dict)
+            else dict.fromkeys(range(indices), unpack)
         )
         modes = ["Default"] * CBS
         for cb, name in by_cb.items():

@@ -143,6 +143,8 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     assert set(modes[:3] + modes[4:]) == {"Default"}
     every = several.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every["unpack_to_dest_mode"]) == {"UnpackToDestFp32"}
+    narrow = several.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"}, 32)
+    assert narrow["unpack_to_dest_mode"].count("UnpackToDestFp32") == 32  # a Wormhole's
     assert "unpack_to_dest_mode" not in several.compute_config({})
     with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is rejected
         several.compute_config({"fp32_dest_acc": True})

@@ -477,7 +477,14 @@ class _Backend:
             for index, fmt, page, pages in self._runtime_cbs():
                 launch.cb(served, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
-        kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
+        kernels.append(
+            (
+                "compute",
+                compute_args,
+                2,
+                compute_config(program.compute, self.card.device.buffer_indices()),
+            )
+        )
         for kernel, args, processor, config in kernels:
             launch.kernel(
                 str(sources[kernel]),
@@ -794,7 +801,10 @@ class _Backend:
             mine = range(group.first, group.first + group.count)
             for processor, kernel in enumerate(("reader", "writer", "compute")):
                 config = (
-                    compute_config(first.compute if first else {})
+                    compute_config(
+                        first.compute if first else {},
+                        self.card.device.buffer_indices(),
+                    )
                     if kernel == "compute"
                     else {}
                 )
