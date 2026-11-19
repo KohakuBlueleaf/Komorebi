@@ -1888,6 +1888,27 @@ in the same slots), and a class added to a live run (`run.addon` of a `Program`)
 cores beside the loaded class on 39: 1,000 calls of each. The hangs first taken for this
 hazard were the image layout of the next entry.
 
+### An overlay fetch that does not land on Wormhole (open)
+
+**The hazard.** A leader's overlays on the 10 cores of one column
+(`leader_overlay.py --rect 0,0,1,10 --choices cycle`, with and without `--addon shift`)
+hung in 4 of 725 runs on three chips of a Galaxy with the Tensix dispatcher
+(2026-11-19). At the command's deadline the column's readers waited for an overlay
+part's reads to land, or in the broadcast or the meeting after it, their compute in
+`cinput`; in one run all ten readers waited on the same 128-byte part, each reading bank
+0. No overlay record was being written and no reader had reached the cache invalidate.
+The run ended with its timeout, and the chip opened again for the next run.
+
+The same loop with seven lines more in the reader's give-up from that wait (four NoC
+read counters written to free words of the overlay area) ran 2,100 times on seven chips
+with no hang, where 4 in 725 would give about 12; 100 runs on a Blackhole P150A with the
+Tensix dispatcher gave none either. Whether the changed reader code moved the hazard or
+the runs were lucky is not known, and the cause was not found.
+
+**The rule.** None known.
+
+**The guard.** None: the command's deadline ends such a run with a timeout.
+
 ### Overlay images laid out for 8 DRAM banks on a chip with 12
 
 **The hazard.** The host writes every overlay part to DRAM as 8 copies, one a bank, and
