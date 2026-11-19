@@ -497,10 +497,15 @@ X280 dispatcher: the runtime boots the cluster with no X280 kernel, the thread's
 ring is in the dispatcher core's L1 (the thread writes its lines over the NoC), and the
 dispatcher copies the ring's consumed count, its events and their count into the
 cluster's own memory. All the thread does on its own cluster (`kmx_parallel`, the vector
-extension, regions, fetches and pushes) is as under the X280 dispatcher. Commands to it,
-threads on clusters 2 and 3, shared regions and X280 ports are refused by name.
-Measured on card 1: `tutorial/32_hello_thread` and `tutorial/33_thread_submits`
-returned 42 and `examples/08_parallel_thread` reported ok.
+extension, regions, fetches and pushes) is as under the X280 dispatcher. Commands to it
+(`kmx_program`) go as under the X280 dispatcher: each one a line in the cluster's own
+memory, its answer the command's event, a line past its deadline given up with its
+`KM_EVENT_TIMEOUT` (the cluster in `auxiliary`). Threads on clusters 2 and 3, shared
+regions and X280 ports are refused by name. Measured on card 1: `tutorial/32_hello_thread`
+and `tutorial/33_thread_submits` returned 42, `examples/08_parallel_thread` reported ok,
+and `tutorial/42_commands_to_a_thread`, `examples/13_thread_commands` and the cases of
+`tests/hardware/thread/commands` (8 lines held, a ninth rejected; an unanswered line
+given up, then the next answered) were exact.
 
 On a chip without an X280 (Wormhole), the one thread on cluster 1 runs on the
 dispatcher's own core: TRISC 1 runs the same C source, built by tt-metal as that core's
@@ -510,8 +515,9 @@ result block lie in the core's L1, after the dispatcher's block.
 
 It serves `kmx_main`, `kmx_args_get`, `kmx_result`, `kmx_progress`, `kmx_time` (the
 X280's 50 MHz ticks, from the chip's wall clock), `kmx_stop_requested`, `kmx_cluster`,
-`kmx_command`, and the command ring: `kmx_submit`, `kmx_wait` and `kmx_poll`, under the
-X280's ring protocol, the ring in the core's L1. The dispatcher takes the host's
+`kmx_command`, the command ring (`kmx_submit`, `kmx_wait` and `kmx_poll`) and commands to
+it (`kmx_program`), under the X280's ring protocol, the ring and the 8 lines of commands
+to it (512 B) in the thread's area of the core's L1. The dispatcher takes the host's
 commands and the thread's in turn; a thread's command goes to the cores as the host's
 does and its event comes back to the thread. The host's own commands are rejected as an
 event to the thread (`KM_EVENT_REJECTED`): EXIT, STOP and DEADLINE with
@@ -524,11 +530,12 @@ fetches, stores, pushes and ports need a NoC of the thread's own. Its statics li
 TRISC 1's local memory, 1,824 B of it on Wormhole and 3,872 B on Blackhole: a thread
 whose statics take more is refused with both numbers. TRISC 1 has no floating-point
 unit, so float arithmetic compiles to software. A load with threads on other clusters,
-commands to a thread (`kmx_program`), shared regions or X280 ports is refused by name.
-Measured on Wormhole chips: `tutorial/32_hello_thread` returned 42 in 30 runs on three
-chips and 20 on two more with the ring; `tutorial/33_thread_submits` returned 42 in 43
-runs on two chips; a thread's EXIT and queued command came back rejected, its next
-command and the host's after it answered.
+shared regions or X280 ports is refused by name. Measured on Wormhole chips:
+`tutorial/32_hello_thread` returned 42 in 30 runs on three chips and 20 on two more with
+the ring; `tutorial/33_thread_submits` returned 42 in 43 runs on two chips; a thread's
+EXIT and queued command came back rejected, its next command and the host's after it
+answered; `tutorial/42_commands_to_a_thread` answered, and an unanswered line was given
+up at its deadline, then the next one answered and a grid command done.
 
 ## Limits
 

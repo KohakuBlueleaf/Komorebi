@@ -110,7 +110,7 @@ def mixed(run, cluster, waves):
         for k in range(WINDOW):
             value = (wave * WINDOW + k) * 0x01000193 & M32
             if k % 2:
-                core = (wave + k) % run.cores
+                core = (wave + k) % run.ranks  # less a Tensix dispatcher's core
                 handles.append(
                     run.submit("affine", (core, 1), args=(value, k), result=True)
                 )

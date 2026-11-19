@@ -1963,7 +1963,8 @@ record's marks (`km::chain_mark`). Built at `O2` on Wormhole, a chain's command 
 given up now and then: 3 runs of 3 of `swiglu_direct.py`'s example programs on a chip
 (the next record's cores waiting in their moves), 0 of 3 with the part at `Os`. The same
 source at `O2` passes on Blackhole, and Wormhole's parts at levels 1 to 3 run at `O2`.
-Why is not known yet.
+Why is not known yet. Measured since: plain 7 of 7 given up; any image change, even one
+TRISC only with the movers byte-identical, 0 of 13.
 
 **The guard.** From writer level 4 the writer's parts are built at the writer's own
 level, `Os` on Wormhole (`kernels.PART_OWN_LEVEL_FROM`).

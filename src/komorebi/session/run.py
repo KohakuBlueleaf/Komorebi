@@ -122,10 +122,9 @@ def with_area(writes, address, area, h):
 
 def served(run, queued, cluster, part, call="submit"):
     """NotServed when a command (`call`) asks what the dispatcher does not serve."""
+    del cluster  # a command to the thread: both dispatchers serve it (kmx_program)
     if queued:
         _serves(run, "queue", f"{call}(queued=True)")
-    if cluster:
-        _serves(run, "threads", f"{call}(cluster=...)")
 
 
 def _serves(run, name, where):
@@ -502,7 +501,6 @@ class Run(EventsMixin, StopMixin):
         """(program field, handler number, [command words]) of a call as submit would
         send it, for an X280 thread to build the same command (kmx_command) of a class
         made after its image was built, an added one too; nothing is sent."""
-        _serves(self, "threads", "run.thread_words")
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
             method = handler if isinstance(handler, HandlerMethod) else handler.method

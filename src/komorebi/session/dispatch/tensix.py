@@ -122,7 +122,7 @@ def rectangles(nocs, loopback=False):
 
 def thread_refusal(owner, trisc=True):
     """Why the threads of `owner` cannot run, or None: one thread, on cluster 1, with no
-    ports, shared regions or commands to it; on TRISC 1 (`trisc`) no vector unit."""
+    ports or shared regions; on TRISC 1 (`trisc`) no vector unit."""
     threads = owner.threads
     if owner.x280_ports is not None:
         return "X280 ports"
@@ -131,8 +131,6 @@ def thread_refusal(owner, trisc=True):
     if len(threads) > 1 or 1 not in threads:
         return f"threads on clusters {sorted(threads)} (one, cluster 1, on its core)"
     thread = threads[1]
-    if thread.handlers:
-        return "commands to a thread (kmx_program)"
     if thread.shared:
         return "a thread's shared regions"
     for path in thread.source_paths() if trisc else ():  # TRISC 1 has no vector unit

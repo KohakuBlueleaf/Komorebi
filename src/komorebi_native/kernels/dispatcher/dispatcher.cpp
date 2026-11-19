@@ -13,6 +13,7 @@
 #include "td_engines.hpp"
 #include "td_in.hpp"
 #include "td_inspect.hpp"
+#include "td_lines.hpp"
 #include "td_reset.hpp"
 #include "td_queue.hpp"
 #include "td_slots.hpp"
@@ -170,6 +171,7 @@ void kernel_main() {
         sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
     }
     volatile tt_l1_ptr uint32_t* thread_read = km::l1(thread_area + kTaRead);
+    td::Lines lines;  // the host's commands to the thread (kmx_program)
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
 #ifdef KM_TD_ALONE
@@ -201,6 +203,40 @@ void kernel_main() {
         event[3] = source;
         asm volatile("" ::: "memory");
         hand.word(kTwPosted) = ++posted;
+    };
+    // The thread's answer to line `number` (0: it serves, the lines kept go to it):
+    // the command's DONE (ticks: the word with KM_FLAG_RESULT) unless its TIMEOUT went.
+    auto answer = [&](uint32_t number, uint32_t word, uint64_t now) {
+        if (number == 0) {
+            for (
+                uint32_t back = KMD_WORK_IN_DEPTH; !lines.serving && back > 0; back--
+            ) {
+                const uint32_t slot = (lines.next - back) & (KMD_WORK_IN_DEPTH - 1u);
+                if (lines.unstored & (1u << slot)) {
+                    td::Lines::store(work, slot);
+                }
+            }
+            lines.unstored = 0;
+            lines.serving = true;
+            return;
+        }
+        const uint32_t slot = number & (KMD_WORK_IN_DEPTH - 1u), bit = 1u << slot;
+        if (!(lines.busy & bit) || lines.number[slot] != number) {
+            return;
+        }
+        lines.busy &= ~bit;
+        if (lines.late & bit) {
+            lines.late &= ~bit;
+            return;
+        }
+        post(
+            lines.request[slot],
+            KM_EVENT_DONE | lines.auxiliary(slot) << 8,
+            lines.result & bit
+                ? word
+                : static_cast<uint32_t>(now - lines.submitted[slot]),
+            lines.source[slot]
+        );
     };
     // `bytes` at `address` of this core into the same address of every worker.
     auto to_workers = [&](uint32_t address, uint32_t bytes) {
@@ -642,6 +678,19 @@ void kernel_main() {
                     no_room++;
                     continue;
                 }
+                volatile tt_l1_ptr uint32_t* next_line = from.line();
+                if (
+                    source != td::kSourceHost && lines.full() &&
+                    (next_line[2] & 0xFFFFu) >= KM_GROUP_CLUSTER_BASE &&
+                    (next_line[1] & 0xFFu) <= KM_HANDLER_USER_MAX &&
+                    !(
+                        source == td::kSourceEngine &&
+                        (next_line[1] >> 8) & KM_FLAG_QUEUE
+                    )
+                ) {
+                    held++;  // a command to the thread, from the thread or the engines:
+                    continue;  // it waits in its ring for a line
+                }
                 pending_request = from.take(pending);
                 pending_source = source;
                 if (source == td::kSourceHost) {
@@ -701,6 +750,49 @@ void kernel_main() {
                         : caused
             );
             const uint64_t ticks = from_engine ? engines.deadline : deadline;
+            if (from_thread && handler == KMD_HANDLER_ANSWER) {  // its line, no event
+                pending_request = 0;
+                answer(argument, pending[5], now);
+                active = true;
+                continue;
+            }
+            // a command to the thread (kmx_program): its next line, not the cores'
+            if (
+                !is_exit && (pending[2] & 0xFFFFu) >= KM_GROUP_CLUSTER_BASE &&
+                handler <= KM_HANDLER_USER_MAX && !(queued && from_engine)
+            ) {
+                uint32_t why = 0;
+                if (flags & (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_QUEUE)) {
+                    why = KMD_REJECT_FLAGS;
+                } else if (exit_request != 0) {
+                    why = KMD_REJECT_EXITED;
+                } else if (!thread_on || pending[2] != KM_GROUP_CLUSTER(1)) {
+                    why = KMD_REJECT_GROUP;  // one thread, on cluster 1
+                } else if (lines.full()) {
+                    why = KMD_REJECT_THREAD;  // the host's (the others wait, at take)
+                }
+                if (why != 0) {
+                    post(request, KM_EVENT_REJECTED | why << 8, 0, pending_source);
+                    rejected++;
+                } else {
+                    do {
+                        sequence++;
+                    } while (sequence == 0);
+                    lines.put(
+                        work,
+                        pending,
+                        pending_source,
+                        request,
+                        sequence,
+                        now,
+                        ticks == 0 ? ~0ull >> 1 : ticks
+                    );
+                }
+                owed++;
+                pending_request = 0;
+                active = true;
+                continue;
+            }
             if (handler == KM_HANDLER_STOP && from_host) {
                 // the run's end: its EXIT done, nothing in flight; what waits is
                 // dropped
@@ -969,6 +1061,27 @@ void kernel_main() {
                     give,
                     now
                 );
+            }
+        }
+        // A line to the thread past its deadline: its TIMEOUT (the cluster named); the
+        // line stays taken until answered.
+        for (
+            uint32_t slot = 0; lines.busy & ~lines.late && slot < KMD_WORK_IN_DEPTH;
+            slot++
+        ) {
+            const uint32_t bit = 1u << slot;
+            if (
+                (lines.busy & ~lines.late & bit) && now > lines.deadline[slot] &&
+                posted - hand.word(kTwTaken) < kTxEventsMax
+            ) {
+                lines.late |= bit;
+                post(
+                    lines.request[slot],
+                    KM_EVENT_TIMEOUT | lines.auxiliary(slot) << 8,
+                    static_cast<uint32_t>(now - lines.submitted[slot]),
+                    lines.source[slot]
+                );
+                active = true;
             }
         }
         if (inspect.active) {

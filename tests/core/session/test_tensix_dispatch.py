@@ -133,27 +133,10 @@ def tensix_run():
     return Run(FakeBackend(port), BLACKHOLE, ranks=119, island_ranks=119)
 
 
-@pytest.mark.parametrize(
-    "call, ability",
-    [
-        (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
-    ],
-)
-def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
-    with pytest.raises(NotServed, match=f"does not serve {ability}"):
-        call(mock.Run(host=tensix_run()))  # a prebuild's run over the chip's
-
-
-@pytest.mark.parametrize(
-    "call, ability",
-    [
-        (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
-        (lambda run: run.thread_words(0), "X280 threads"),
-    ],
-)
-def test_a_run_refuses_by_name_what_it_does_not_serve(call, ability):
-    with pytest.raises(NotServed, match=f"does not serve {ability}"):
-        call(tensix_run())
+def test_a_run_and_its_stand_in_send_commands_to_the_thread():
+    for run in (tensix_run(), mock.Run(host=tensix_run())):  # a prebuild's run too
+        run.submit(0, cluster=1)  # kmx_program's: a line to the thread
+    assert len(tensix_run().thread_words(7)) == 3  # no refusal: as submit sends them
 
 
 def test_a_run_takes_groups_inside_its_ranks_only():
@@ -375,11 +358,8 @@ def a_thread(tmp_path, **fields):
 def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
     one = program(threads={1: a_thread(tmp_path)})
     tensix.refuse_load(one, None, one, {})
-    asked = a_thread(tmp_path, handlers={"relay": 7})
-    with pytest.raises(NotServed, match=r"commands to a thread \(kmx_program\)"):
-        tensix.refuse_load(
-            program(threads={1: asked}), None, program(threads={1: asked}), {}
-        )
+    asked = program(threads={1: a_thread(tmp_path, handlers={"relay": 7})})
+    tensix.refuse_load(asked, None, asked, {})  # commands to it (kmx_program): served
     shared = program(threads={1: a_thread(tmp_path, shared=("s",))})
     with pytest.raises(NotServed, match="a thread's shared regions"):
         tensix.refuse_load(shared, None, shared, {})

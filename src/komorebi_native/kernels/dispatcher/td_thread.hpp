@@ -302,9 +302,54 @@ void kmx_command(
 }
 
 #pragma weak kmx_main
+#pragma weak kmx_program
 }
 
 namespace td {
+
+    // The events of commands kmx_program submitted and did not wait for, set aside for
+    // kmx_poll / kmx_wait; past KMX_STASH the oldest is dropped (kmx.c's keep_events).
+    inline void keep_events(kmx_ring_t* ring) {
+        kmx_event event;
+        while (kmx_ring_take(ring, &event)) {
+            if (ring->stashed == KMX_STASH) {
+                for (uint32_t position = 1; position < KMX_STASH; position++) {
+                    ring->stash[position - 1] = ring->stash[position];
+                }
+                ring->stashed--;
+            }
+            ring->stash[ring->stashed++] = event;
+        }
+    }
+
+    // Answers the dispatcher's line `number` with `word`, the ring's events kept while
+    // it is full (kmx.c's answer): KMX_OK, or KMX_STOPPED.
+    inline int answer(kmx_ring_t* ring, uint32_t number, uint32_t word) {
+        int status = kmx_ring_answer(ring, number, word);
+        while (status == KMX_FULL) {
+            keep_events(ring);
+            if (kmx_stop_requested()) {
+                return KMX_STOPPED;
+            }
+            status = kmx_ring_answer(ring, number, word);
+        }
+        return status;
+    }
+
+    // With kmx_program, after kmx_main: line 0 answered (it serves), then each line
+    // the dispatcher hands it until a stop (kmx.c's serve_commands).
+    inline void serve(kmx_ring_t* ring, uint32_t (*program)(const km_command_t*)) {
+        int status = answer(ring, 0, 0);
+        while (status == KMX_OK) {
+            km_command_t command;
+            if (kmx_ring_command(ring, &command)) {
+                status = answer(ring, command.sequence, program(&command));
+                keep_events(ring);
+            } else if (kmx_stop_requested()) {
+                status = KMX_STOPPED;
+            }
+        }
+    }
 
     // TRISC 1: waits for the host's start line (or the dispatcher's end), checks the
     // argument block, runs kmx_main and writes the result block.
@@ -357,9 +402,17 @@ namespace td {
         ring.event_depth = kTaEventDepth;
         kmx_ring_open(thread.ring(), &ring);
         block->state = KMX_STATE_RUNNING;
-        const int code = kmx_main != 0 ? kmx_main(0) : 0;
+        // the body's entries through registers: an absent weak one is 0, and a direct
+        // call to 0 is a relocation the TRISC image cannot hold
+        int (*main)(int) = kmx_main;
+        uint32_t (*program)(const km_command_t*) = kmx_program;
+        asm volatile("" : "+r"(main), "+r"(program));
+        const int code = main != 0 ? main(0) : 0;
         if (thread.start()[kTaCodeSet] == 0) {
             block->code = static_cast<uint32_t>(code);
+        }
+        if (program != 0) {  // a stop is how a thread that serves commands ends
+            serve(thread.ring(), program);
         }
         block->ticks = static_cast<uint32_t>(kmx_time());
         block->state = (
