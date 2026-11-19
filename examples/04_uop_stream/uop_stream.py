@@ -214,8 +214,7 @@ def verdict(report, args):
 
 
 def run_ways(session, args):
-    grid_width, grid_height = session.grid
-    cores = grid_width * grid_height
+    cores = session.ranks  # the grid's, less a Tensix dispatcher's core
     ways = args.ways.split(",")
     tiles, input_tiles = args.tiles, max(args.in_tiles, args.tiles + STEP)
     window = input_tiles - tiles + 1

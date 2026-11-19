@@ -1417,8 +1417,8 @@ class Run(EventsMixin, StopMixin):
     def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
         """Runs a graph or a stream host-fed: its executor on the host, its commands
         through this run's host ring. Returns a HostfedResult (status, error, registers,
-        runs, commands, events); see `komorebi.engines.graph_hostfed`."""
-        _serves(self, "engines", "run.run_hostfed")
+        runs, commands, events); see `komorebi.engines.graph_hostfed`. Either
+        dispatcher serves it: it sends plain commands."""
         if stream_hostfed.is_stream(graph):
             return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)

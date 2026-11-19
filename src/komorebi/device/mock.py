@@ -244,7 +244,6 @@ class Run:
         command checked as this run's submit and done at once (HostfedResult)."""
         if self.host is None or self.parts:
             return NOTHING
-        self.host._refused("engines", "run.run_hostfed")  # as the card's, first
         return type(self.host).run_hostfed(self, graph, bindings, timeout, engine)
 
     def field_handler(self, number, program_field):

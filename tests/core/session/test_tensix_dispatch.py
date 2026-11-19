@@ -117,7 +117,6 @@ def tensix_run():
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
-        (lambda run: run.run_hostfed(None), "stream/graph engines"),
     ],
 )
 def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
@@ -132,7 +131,6 @@ def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
         (lambda run: run.upload(b"", "stream"), "stream/graph engines"),
-        (lambda run: run.run_hostfed(None), "stream/graph engines"),
         (lambda run: run.thread_words(0), "X280 threads"),
     ],
 )

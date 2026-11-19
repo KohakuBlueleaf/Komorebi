@@ -431,10 +431,12 @@ whose session and tensors take the calls below with the same names and keywords
   list to `load`, `run.load`: a load waits until no command in flight shares a core with
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
-  (`km.NotServed`), at the load or the call: X280 threads, islands and links, stream
-  and graph engines. It serves the trace (`trace=`) and gives a program's command up
-  at its deadline as the X280 dispatcher does: it reads the group (the deadline's inspect), writes the
-  slot's abort word, and once every core left the command the event is a
+  (`km.NotServed`), at the load or the call: X280 threads, islands and links, the
+  resident stream and graph engines (`run.upload`, `run.start`); it serves a host-fed
+  stream or graph (`run.run_hostfed`), whose commands are plain ones. It serves the
+  trace (`trace=`) and gives a program's command up at its deadline as the X280
+  dispatcher does: it reads the group (the deadline's inspect), writes the slot's abort
+  word, and once every core left the command the event is a
   `CommandTimeout` with `given_up` and the run goes on. With the reset lists
   (`recover=True`, kept in a DRAM tensor that it reads) a core still in the command
   after 20 ms, or one whose kernel ended, is reset and loaded again; without them, or
