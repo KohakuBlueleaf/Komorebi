@@ -3,6 +3,7 @@ is named by its return code and stderr, and each attempt keeps its own log; the
 tensix lines' card and dispatcher; the rule that judges a result's last JSON line."""
 
 import json
+import re
 import subprocess
 
 from komorebi.tools import card_check
@@ -59,15 +60,18 @@ def test_each_attempt_keeps_its_own_log(monkeypatch, tmp_path, capsys):
     assert "killed" not in capsys.readouterr().out
 
 
+def unfold(line):
+    return re.sub(r" --cards [01](?![,\d])", "", line)
+
+
 def test_the_tensix_lines_open_card_1_with_the_tensix_dispatcher(monkeypatch):
     monkeypatch.delenv("KMR_DISPATCHER", raising=False)
     tensix = card_check.read_list(card_check.LIST, "tensix")
-    ones = {check.line[2:] for check in card_check.read_list(card_check.LIST, "1")}
-    # a tensix line is a "1" line, its `--cards 0` read as `--cards 1` (its card)
-    same = [
-        check.line[len("tensix ") :].replace("--cards 1", "--cards 0")
-        for check in tensix
-    ]
+    ones = {
+        unfold(check.line[2:]) for check in card_check.read_list(card_check.LIST, "1")
+    }
+    # a tensix line is a "1" line, its `--cards` the shape's card (1, not 0) or none
+    same = [unfold(check.line[len("tensix ") :]) for check in tensix]
     assert tensix and all(line in ones for line in same)
     assert card_check.SHAPES["tensix"] == (1,)
     assert tensix[0].name.startswith("tensix_")  # its logs beside card 0's own
