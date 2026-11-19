@@ -418,7 +418,8 @@ def run_one(check, root, log_dir, watch):
 
 
 def verdict(code, error, text):
-    """Why a check failed (its exit, an exception, a JSON key not true), or None."""
+    """Why a check failed (its exit, an exception, a JSON key not true or not a
+    boolean), or None."""
     if error is not None:
         return error
     if code:
@@ -430,7 +431,11 @@ def verdict(code, error, text):
         out = json.loads(lines[-1])
     except ValueError:
         return None
-    false = [key for key, value in flat(out) if not holds(value)]
+    leaves = [leaf for key, value in flat(out) for leaf in leaves_of(value, key)]
+    odd = [name for name, leaf in leaves if not isinstance(leaf, bool)]
+    if odd:
+        return f"not a boolean: {', '.join(odd)}"
+    false = [name for name, leaf in leaves if not leaf]
     return f"not true: {', '.join(false)}" if false else None
 
 
@@ -450,14 +455,14 @@ def flat(out, prefix=""):
     return pairs
 
 
-def holds(value):
-    """True when every leaf of `value` is true or nonzero (an exact count, a dict of
-    exact flags)."""
+def leaves_of(value, name):
+    """The (key path, leaf) pairs under `value`: a verdict is a JSON boolean, so a
+    number, a string or null is a leaf too, and `verdict` refuses it."""
     if isinstance(value, dict):
-        return all(holds(item) for item in value.values())
+        return [p for k, v in value.items() for p in leaves_of(v, f"{name}.{k}")]
     if isinstance(value, list):
-        return all(holds(item) for item in value)
-    return bool(value)
+        return [p for i, v in enumerate(value) for p in leaves_of(v, f"{name}.{i}")]
+    return [(name, value)]
 
 
 @contextlib.contextmanager

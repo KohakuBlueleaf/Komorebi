@@ -623,7 +623,7 @@ def walk(session, args):
             "cycles_per_step": round(total / max(1, st["steps"]), 2),
             "ref_hits": int(ref_hit.sum()),
             "hit_disagree": int((ref_hit != dev_hit).sum()),
-            "best_exact": int((diff == 0).sum()),
+            "best_exact_count": int((diff == 0).sum()),
             "best_max_abs_error": float(diff.max()) if diff.size else 0.0,
             "leaf_wrong": leaf_bad,
             "leaf_tie_ok": leaf_tie,

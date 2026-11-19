@@ -112,7 +112,7 @@ def main():
         if run_report.get("run_microseconds")
     ]
     summary = {
-        "exact": sum(bool(run_report.get("exact")) for run_report in runs),
+        "exact_runs": sum(bool(run_report.get("exact")) for run_report in runs),
         "runs": len(runs),
     }
     if timed:

@@ -1,7 +1,8 @@
 """The card check's shared open on the mock: a child that dies before its BUILT lines
 is named by its return code and stderr, and each attempt keeps its own log; the
-tensix lines' card and dispatcher."""
+tensix lines' card and dispatcher; the rule that judges a result's last JSON line."""
 
+import json
 import subprocess
 
 from komorebi.tools import card_check
@@ -67,3 +68,28 @@ def test_the_tensix_lines_open_card_1_with_the_tensix_dispatcher(monkeypatch):
     assert tensix[0].name.startswith("tensix_")  # its logs beside card 0's own
     assert card_check.shape_environment("tensix")["KMR_DISPATCHER"] == "tensix"
     assert "KMR_DISPATCHER" not in card_check.shape_environment("1")
+
+
+def judged(out, code=0):
+    return card_check.verdict(code, None, "log line\n" + json.dumps(out) + "\n")
+
+
+def test_booleans_under_ok_and_exact_keys_are_judged_at_any_depth():
+    assert (
+        judged({"ok": True, "runs": [{"exact": True}], "a_exact": {"b": True}}) is None
+    )
+    assert judged({"ok": True, "runs": [{"exact": False}]}) == "not true: runs.0.exact"
+    assert judged({"ok": False, "x": 1}) == "not true: ok"
+
+
+def test_a_number_a_string_or_null_under_such_a_key_is_not_a_verdict():
+    assert judged({"summary": {"exact": 3}}) == "not a boolean: summary.exact"
+    assert judged({"lanes_exact": 0}) == "not a boolean: lanes_exact"
+    assert judged({"ok": "yes"}) == "not a boolean: ok"
+    assert judged({"ok": None}) == "not a boolean: ok"
+    assert judged({"exact": [True, 1]}) == "not a boolean: exact.1"
+
+
+def test_keys_that_are_not_verdicts_and_a_result_without_one_are_not_read():
+    assert judged({"count": 3, "rows": [{"wrong": 2}]}) is None
+    assert judged({"ok": True}, code=1) == "exit 1"

@@ -273,7 +273,7 @@ def compared(want, got):
         "words": hashlib.sha1(got.tobytes()).hexdigest()[:12],  # the chips' words alike
         "max_over_largest": float(error.max() / scale),
         "lanes_over_1e-6": int((error > 1e-6 * scale).sum()),
-        "lanes_exact": int((error == 0).sum()),
+        "lanes_exact_count": int((error == 0).sum()),
         "lanes": int(error.size),
         "rms_rel": float(np.sqrt((error**2).mean()) / np.sqrt((want**2).mean())),
     }

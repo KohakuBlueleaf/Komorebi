@@ -93,7 +93,7 @@ def main():
             log(f"run {index + 1}: {runs[-1]['line']}")
         mhz.append(aiclk_mhz(session.card))
     timed = [one["run_microseconds"] for one in runs if one["run_microseconds"]]
-    summary = {"exact": sum(one["exact"] for one in runs), "runs": len(runs)}
+    summary = {"exact_runs": sum(one["exact"] for one in runs), "runs": len(runs)}
     if timed:
         summary["run_microseconds"] = [
             min(timed),
