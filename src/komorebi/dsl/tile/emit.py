@@ -6,6 +6,7 @@ movers; the waits around it are the caller's."""
 import re
 
 from komorebi.device import chips
+from komorebi.dsl.tile.hazards import wormhole as wormhole_forms
 from komorebi.dsl.tile.macro import check_back_door, check_templates
 from komorebi.dsl.tile.unit import (
     OPS,
@@ -111,6 +112,13 @@ def _lines(items, depth, based=False, wormhole=None):
             out.append(f"{pad}for (uint32_t {var} = 0; {var} < {count}; ++{var}) {{")
             out += _lines(item.body, depth + 1, based, wormhole)
             out.append(f"{pad}}}")
+        elif isinstance(item, Insn) and item.wormhole:  # Wormhole's own words
+            out.append("#if defined(ARCH_WORMHOLE)")
+            out += _lines(item.wormhole, depth, based, wormhole)
+            out.append("#else")
+            plain = Insn(item.op, item.args, item.note, item.uses, item.runtime)
+            out += _lines([plain], depth, based)
+            out.append("#endif")
         elif isinstance(item, Insn) and wormhole and id(item) in wormhole.nops:
             out += _wormhole(pad, ["TTI_SFPNOP;"])  # a hold Wormhole does not make
             out += _lines([item], depth, based, _Without(wormhole, item))
@@ -216,6 +224,7 @@ def emit(unit):
     word with a VD of 12 or more that is no template store, and a buffer with two
     producers."""
     name = unit.name
+    wormhole_forms.forms(unit)
     unit.checks.append(
         Check(
             "macro-templates",

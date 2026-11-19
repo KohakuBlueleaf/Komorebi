@@ -246,6 +246,8 @@ class Insn:
     # the C++ of its immediate when the body's caller gives it (a run-time scalar's
     # half): emitted as TT_<op>, built on the core, its `imm16` field left 0
     runtime: str = ""
+    # Wormhole's words in its place where it runs this one otherwise (hazards.wormhole)
+    wormhole: tuple = ()
 
     def reads(self):
         """The register arguments read (value names or LReg numbers), and the LRegs it
@@ -703,6 +705,7 @@ def wormhole_run(items):
                         isinstance(w, Insn) and w.op != "REPLAY" for w in words
                     ):
                         raise UnitError(f"REPLAY of {count}: not followed by its words")
+                    words = [x for w in words for x in w.wormhole or (w,)]
                     added = [w for w, b in zip(words[1:], words) if held([b], w)]
                     recorded[start] = (words, *_fitted(words, added), added)
                     i += count
@@ -715,6 +718,8 @@ def wormhole_run(items):
                     if kept < len(words) and not item.args["load_mode"]:
                         run.tails[id(item)] = words[kept:]
                 before = [words[-1]]
+            elif isinstance(item, Insn) and item.wormhole:
+                before = walk(item.wormhole, before, keep)
             elif isinstance(item, Insn):
                 if keep and held(before, item):
                     run.nops.add(id(item))
@@ -769,7 +774,8 @@ def _runs(items, wormhole):
             run = []
             yield from _runs(item.body, wormhole)
         elif isinstance(item, (Insn, Product)):
-            for insn in item.chip_insns() if isinstance(item, Product) else (item,):
+            words = item.chip_insns() if isinstance(item, Product) else [item]
+            for insn in (x for w in words for x in w.wormhole or (w,)):
                 if id(insn) in wormhole.nops:
                     run.append(nop)
                 op, args, *rest = chip_word(insn)

@@ -151,6 +151,66 @@ class HiFi4(LoFi):
         return a @ w
 
 
+class Exp(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.exp(a)
+
+
+class Exp2(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.exp2(a)
+
+
+class Sigmoid(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.sigmoid(a)
+
+
+class Tanh(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.tanh(a)
+
+
+class Log(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.log(abs(a) + 0.25)
+
+
+class Sqrt(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.sqrt(abs(a))
+
+
+class Rsqrt(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.rsqrt(abs(a) + 0.25)
+
+
+class Reciprocal(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.reciprocal(a)
+
+
+class Where(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.where(a > b, a, b * 0.5)
+
+
+class Swiglu(Add):
+    @km.tile_function
+    def f(a, b):
+        return km.silu(a) * b
+
+
 def silu(x):
     return x / (1.0 + np.exp(-x))
 
@@ -165,6 +225,16 @@ CLASSES = {  # each function and what numpy computes (float64)
     "larger": (Larger, np.maximum),
     "chain": (Chain, lambda x, y: chain(x)),
     "difference": (Difference, lambda x, y: x - y),
+    "exp": (Exp, lambda x, y: np.exp(x)),
+    "exp2": (Exp2, lambda x, y: np.exp2(x)),
+    "sigmoid": (Sigmoid, lambda x, y: 1 / (1 + np.exp(-x))),
+    "tanh": (Tanh, lambda x, y: np.tanh(x)),
+    "log": (Log, lambda x, y: np.log(np.abs(x) + 0.25)),
+    "sqrt": (Sqrt, lambda x, y: np.sqrt(np.abs(x))),
+    "rsqrt": (Rsqrt, lambda x, y: 1 / np.sqrt(np.abs(x) + 0.25)),
+    "reciprocal": (Reciprocal, lambda x, y: 1 / x),
+    "where": (Where, lambda x, y: np.where(x > y, x, y * 0.5)),
+    "swiglu": (Swiglu, lambda x, y: silu(x) * y),
     "silu": (Silu, lambda x, y: silu(x)),
 }
 

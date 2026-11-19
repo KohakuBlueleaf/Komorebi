@@ -750,7 +750,7 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 | Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | A class added to a live run (`run.addon` of a `Program`): refused by name until it has run there ([why](docs/reference/hazards.md#code-rewritten-in-a-wormhole-cores-l1-after-it-ran)) |
 | Overlays, parts added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |
-| Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, and rows recorded for more than Wormhole's 32 replay entries: the same results as on Blackhole, word for word | Tile functions that need a comparison, a reciprocal or a negated operand: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
+| Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, rows recorded for more than Wormhole's 32 replay entries, a negated operand, a shift and Blackhole's integer casts in Wormhole's words: the same results as on Blackhole, word for word | Tile functions that need a comparison or a reciprocal: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
 | | X280 threads: the chip has no X280 |
 
 `kmr prebuild --arch wormhole_b0 <script>` builds a script's kernels for Wormhole on a

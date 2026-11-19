@@ -87,6 +87,7 @@ from komorebi.dsl.program_sources import (  # noqa: F401 (kept importable from h
 from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.forms.rows import chunk_cost
+from komorebi.dsl.tile.hazards import wormhole as wormhole_forms
 from komorebi.dsl.tile.unit import AICLK_MHZ, chip_words, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.islands import local as island_local
@@ -1613,6 +1614,8 @@ def tile_words(compiled):
     for handler, line, _, function, cxx in compiled.tile_calls:
         name = getattr(function.function, "__name__", cxx)
         called.setdefault(cxx, f"{name} (in {handler}, line {line})")
+    for _, unit in compiled.units.values():
+        wormhole_forms.forms(unit)  # the words a Wormhole core runs
     return [
         (
             called.get(cxx, cxx),
