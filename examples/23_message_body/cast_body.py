@@ -29,7 +29,7 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "--rect", default="0,0,12,1", help="first_x,first_y,columns,rows"
+        "--rect", help="first_x,first_y,columns,rows (default: the first row)"
     )
     parser.add_argument("--along", choices=("column", "row"), default="row")
     parser.add_argument("--casts", type=int, default=1000, help="bodies a job")
@@ -74,12 +74,14 @@ def folds(bodies, casts):
 
 def main():
     args = parse()
-    rect = tuple(int(field) for field in args.rect.split(","))
     generator = np.random.default_rng(args.seed)
     words = CONSTANTS["kBodyWords"]
     bodies = generator.integers(0, 1 << 32, (args.bodies, words), dtype=np.uint64)
     with km.Session(log=log) as session:
         grid = session.grid
+        rect = (0, 0, grid[0], 1)
+        if args.rect:
+            rect = tuple(int(field) for field in args.rect.split(","))
         nocs = session.nocs()
         group, broadcast_words, cells, sizes = plan(nocs, rect, args.along, args.window)
         log(f"group {group.first}:{group.count}, broadcasts of {sizes} cores")
