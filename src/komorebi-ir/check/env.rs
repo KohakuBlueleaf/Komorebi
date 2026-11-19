@@ -10,6 +10,7 @@ use crate::syntax::ast::{
 use crate::types::Format;
 
 use super::codes;
+use super::index::Index;
 use super::Checker;
 
 /// Where a type is written; it decides which types are allowed there.
@@ -103,6 +104,8 @@ pub(crate) struct Env {
     pub tile: Option<(u64, u64)>,
     /// The bytes of each record type whose fields are all scalars.
     pub record_bytes: HashMap<String, u64>,
+    /// The place of every declaration, by name.
+    pub ix: Index,
 }
 
 impl Env {
@@ -145,7 +148,10 @@ impl Names {
 impl Checker<'_> {
     /// Collects the module's declarations and checks the types they write.
     pub(crate) fn collect(&mut self, module: &Module) -> Env {
-        let mut env = Env::default();
+        let mut env = Env {
+            ix: Index::of(module),
+            ..Env::default()
+        };
         for item in module.items.nodes() {
             if let Item::Format(decl) = item {
                 for name in &decl.formats {

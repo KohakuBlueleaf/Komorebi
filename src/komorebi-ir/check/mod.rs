@@ -10,6 +10,7 @@ pub mod codes;
 mod attrs;
 mod body;
 mod env;
+mod index;
 mod messages;
 mod ops;
 pub mod ty;
@@ -19,29 +20,130 @@ use std::collections::{HashMap, HashSet};
 
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
-use crate::types::Format;
+use crate::types::{Failure, Format, MessageRef, ParamRef, RecordRef};
 use ty::Ty;
 
-/// What a name in a body stands for.
+/// What a name in a body stands for: the declaration it refers to, by its place.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Binding {
-    /// A `let`, a `var` or a loop variable of the body.
-    Local,
-    /// A parameter of the function, handler, run, chain or control program.
-    Param,
-    /// A state member of the program.
-    State,
+pub enum Name {
+    /// A `let`, a `var` or a loop's variable of the body, with the span of the name
+    /// that declares it.
+    Local {
+        /// Where the declaring name is written.
+        decl: Span,
+        /// Which of the three.
+        kind: LocalKind,
+    },
+    /// The parameter at this position of the function, handler, run, chain or control
+    /// program the body belongs to.
+    Param(u32),
+    /// The message an `on M(m)` body handles: its `m`.
+    Arrived,
     /// A parameter of the module.
-    ModuleParam,
-    /// A function of the module.
-    Func,
-    /// A program of the module (in `P.h(...)` of an `invoke`).
-    Program,
-    /// The message an `on M(m)` body handles.
-    Message,
-    /// A word of an operation: `worker`, `group`, `island`, `row`, `col`, `zeros`, a
-    /// provided combination (`sum` ...), a failure's name, a record type.
-    Word,
+    ModuleParam(ParamRef),
+    /// A state member: the program's place among the programs, and the member's among
+    /// the program's members (every state block's, in order).
+    State {
+        /// The program.
+        program: u32,
+        /// The member.
+        member: u32,
+    },
+    /// A function: its place among the module's `func`, `combine` and `extern func`.
+    Func(u32),
+    /// A program, by its place.
+    Program(u32),
+    /// A handler of a program, by its place among the program's handlers.
+    Handler {
+        /// The program.
+        program: u32,
+        /// The handler.
+        index: u32,
+    },
+    /// A dynamic run of a program, by its place among the program's runs.
+    Run {
+        /// The program.
+        program: u32,
+        /// The run.
+        index: u32,
+    },
+    /// A chain of a program, by its place among the program's chains.
+    Chain {
+        /// The program.
+        program: u32,
+        /// The chain.
+        index: u32,
+    },
+    /// A record type.
+    Record(RecordRef),
+    /// A message type.
+    Message(MessageRef),
+    /// A field of a message or a record, by its position.
+    Field(u32),
+    /// A failure's name.
+    Failure(Failure),
+    /// A word of the language.
+    Word(Word),
+    /// The name of a provided operation (`partition`, `stream`, `reduce` ...).
+    Operation,
+}
+
+/// Which kind of local a name declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalKind {
+    /// `let`: a value.
+    Let,
+    /// `var`: a slot, assigned again.
+    Var,
+    /// A `for` loop's variable: a value the loop gives each step.
+    Loop,
+}
+
+/// A word of the language that names no declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Word {
+    /// `worker`.
+    Worker,
+    /// `group`.
+    Group,
+    /// `island`.
+    Island,
+    /// `zeros`.
+    Zeros,
+    /// `row` (an axis or a direction).
+    Row,
+    /// `col`.
+    Col,
+    /// A provided combination of a reduce: `sum`.
+    Sum,
+    /// `max`.
+    Max,
+    /// `min`.
+    Min,
+    /// `and`.
+    And,
+    /// `or`.
+    Or,
+}
+
+impl Word {
+    /// The word written `text`, if it is one.
+    pub fn from_name(text: &str) -> Option<Word> {
+        Some(match text {
+            "worker" => Word::Worker,
+            "group" => Word::Group,
+            "island" => Word::Island,
+            "zeros" => Word::Zeros,
+            "row" => Word::Row,
+            "col" => Word::Col,
+            "sum" => Word::Sum,
+            "max" => Word::Max,
+            "min" => Word::Min,
+            "and" => Word::And,
+            "or" => Word::Or,
+            _ => return None,
+        })
+    }
 }
 
 /// A module that checks clean, with what the checker found out about it.
@@ -50,7 +152,7 @@ pub struct Checked {
     /// The syntax tree.
     pub module: Module,
     types: HashMap<(usize, usize), Ty>,
-    names: HashMap<(usize, usize), Binding>,
+    names: HashMap<(usize, usize), Name>,
 }
 
 impl Checked {
@@ -60,7 +162,7 @@ impl Checked {
     }
 
     /// What the name at `span` (a name expression of `module`) stands for.
-    pub fn binding(&self, span: Span) -> Option<&Binding> {
+    pub fn binding(&self, span: Span) -> Option<&Name> {
         self.names.get(&(span.start, span.end))
     }
 }
@@ -103,7 +205,7 @@ pub(crate) struct Checker<'a> {
     /// The names of the record types.
     record_names: HashSet<String>,
     types: HashMap<(usize, usize), Ty>,
-    names: HashMap<(usize, usize), Binding>,
+    names: HashMap<(usize, usize), Name>,
     /// What the body being checked does with its program's state: the members it
     /// reads (with where), and the members it fills.
     state_use: StateReads,
@@ -130,8 +232,8 @@ impl Checker<'_> {
     }
 
     /// Notes what a name stands for.
-    pub(crate) fn note_name(&mut self, span: Span, binding: Binding) {
-        self.names.insert((span.start, span.end), binding);
+    pub(crate) fn note_name(&mut self, span: Span, name: Name) {
+        self.names.insert((span.start, span.end), name);
     }
 }
 
@@ -141,7 +243,7 @@ mod tests {
     use crate::check;
     use crate::syntax::ast::{ExprKind, Item, ProgramItem, Stmt};
 
-    use super::Binding;
+    use super::Name;
 
     /// The codes a text gives, in order.
     fn codes(text: &str) -> Vec<&'static str> {
@@ -204,7 +306,7 @@ mod tests {
         let ExprKind::Name(name) = &n.kind else {
             panic!("a name");
         };
-        assert_eq!(checked.binding(name.span), Some(&Binding::Param));
+        assert_eq!(checked.binding(name.span), Some(&Name::Param(1)));
     }
 
     const FUNC: &str = "module m\n\ntile [32, 32]\nformat f32, u32\n\n\

@@ -285,3 +285,170 @@ fn deep_expressions_are_checked() {
         assert_eq!(found(&text), Vec::<String>::new());
     }
 }
+
+/// Every expression of the bodies of a module, in text order.
+mod walk {
+    use komorebi_ir::syntax::ast::{
+        Block, Expr, ExprKind, IndexItem, Item, Module, ProgramItem, RunPart, Stmt,
+    };
+
+    pub fn module(m: &Module, out: &mut Vec<Expr>) {
+        for item in m.items.nodes() {
+            match item {
+                Item::Func(f) | Item::Combine(f) => block(&f.body, out),
+                Item::Extern(f) => {
+                    if let Some(b) = &f.fallback {
+                        block(b, out);
+                    }
+                }
+                Item::Control(c) => block(&c.body, out),
+                Item::Program(p) => {
+                    for part in p.body.nodes() {
+                        match part {
+                            ProgramItem::Handler(h) => block(&h.body, out),
+                            ProgramItem::Run(r) => {
+                                for part in r.body.nodes() {
+                                    match part {
+                                        RunPart::Seed(b) => block(b, out),
+                                        RunPart::On(on) => block(&on.body, out),
+                                    }
+                                }
+                            }
+                            ProgramItem::Chain(c) => {
+                                for call in c.calls.nodes() {
+                                    for arg in call.args.values() {
+                                        expr(&arg.value, out);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn block(b: &Block, out: &mut Vec<Expr>) {
+        for s in b.stmts.nodes() {
+            match s {
+                Stmt::Let { value, .. } | Stmt::Var { value, .. } => expr(value, out),
+                Stmt::Assign { target, value, .. } | Stmt::Store { target, value } => {
+                    expr(target, out);
+                    expr(value, out);
+                }
+                Stmt::For { iter, body, .. } => {
+                    expr(iter, out);
+                    block(body, out);
+                }
+                Stmt::While { cond, body } => {
+                    expr(cond, out);
+                    block(body, out);
+                }
+                Stmt::If {
+                    cond,
+                    then,
+                    otherwise,
+                } => {
+                    expr(cond, out);
+                    block(then, out);
+                    if let Some(b) = otherwise {
+                        block(b, out);
+                    }
+                }
+                Stmt::Return(Some(e)) | Stmt::Expr(e) => expr(e, out),
+                Stmt::Return(None) | Stmt::Consume(_) => {}
+            }
+        }
+    }
+
+    fn expr(e: &Expr, out: &mut Vec<Expr>) {
+        out.push(e.clone());
+        match &e.kind {
+            ExprKind::Paren(inner) | ExprKind::Neg(inner) => expr(inner, out),
+            ExprKind::Tuple(items) | ExprKind::List(items) => {
+                for item in items.values() {
+                    expr(item, out);
+                }
+            }
+            ExprKind::Init { fields, .. } => {
+                for f in fields.values() {
+                    expr(&f.value, out);
+                }
+            }
+            ExprKind::Member { base, .. } => expr(base, out),
+            ExprKind::Call { callee, args } => {
+                expr(callee, out);
+                for arg in args.values() {
+                    expr(&arg.value, out);
+                }
+            }
+            ExprKind::Index { base, index } => {
+                expr(base, out);
+                for item in index.values() {
+                    match item {
+                        IndexItem::At(at) => expr(at, out),
+                        IndexItem::Slice { lo, hi, step } => {
+                            expr(lo, out);
+                            expr(hi, out);
+                            if let Some(step) = step {
+                                expr(step, out);
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::Binary { lhs, rhs, .. } => {
+                expr(lhs, out);
+                expr(rhs, out);
+            }
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Name(_)
+            | ExprKind::Await(_)
+            | ExprKind::Past(_) => {}
+        }
+    }
+}
+
+/// The names of the bodies of the clean modules that the result leaves unresolved.
+#[test]
+fn every_name_of_a_clean_module_is_resolved() {
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for sub in ["lessons", "reference", "run_fails"] {
+        for (path, text) in modules(sub) {
+            let Ok(checked) = check(&text) else {
+                continue;
+            };
+            let mut exprs = Vec::new();
+            walk::module(&checked.module, &mut exprs);
+            for e in &exprs {
+                let name = match &e.kind {
+                    komorebi_ir::syntax::ast::ExprKind::Name(n)
+                    | komorebi_ir::syntax::ast::ExprKind::Await(n)
+                    | komorebi_ir::syntax::ast::ExprKind::Past(n) => n,
+                    _ => continue,
+                };
+                seen += 1;
+                if checked.binding(name.span).is_none() {
+                    missing.push(format!(
+                        "{} `{}` at byte {}",
+                        stem(&path),
+                        name.name,
+                        name.span.start
+                    ));
+                }
+            }
+        }
+    }
+    assert!(seen > 500, "the walk sees the bodies ({seen} names)");
+    assert!(
+        missing.is_empty(),
+        "unresolved names:\n{}",
+        missing.join("\n")
+    );
+}

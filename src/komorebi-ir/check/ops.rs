@@ -12,7 +12,7 @@ use super::body::{
 };
 use super::codes;
 use super::env::FuncKind;
-use super::{Binding, Checker};
+use super::{Checker, Name};
 
 impl Checker<'_> {
     // ---- Operands -----------------------------------------------------------------
@@ -120,7 +120,7 @@ impl Checker<'_> {
         };
         match as_name(e) {
             Some(n) if words.contains(&n.name.as_str()) => {
-                self.note_name(n.span, Binding::Word);
+                self.note_word(n);
             }
             _ => self.error(
                 codes::WRONG_TYPE,
@@ -144,11 +144,11 @@ impl Checker<'_> {
             return;
         };
         if PROVIDED.contains(&n.name.as_str()) {
-            self.note_name(n.span, Binding::Word);
+            self.note_word(n);
             return;
         }
         match cx.env.funcs.get(&n.name) {
-            Some(f) if f.kind == FuncKind::Combine => self.note_name(n.span, Binding::Func),
+            Some(f) if f.kind == FuncKind::Combine => self.note_func(cx, n),
             Some(_) => self.error(
                 codes::REDUCE_WITH,
                 format!(
@@ -214,7 +214,7 @@ impl Checker<'_> {
             if !self.allowed(cx, Family::Compute, what, span) {
                 return Ty::Unknown;
             }
-            self.note_name(n.span, Binding::Func);
+            self.note_func(cx, n);
             self.positional_call(cx, what, span, args, &sig.params);
             return sig.ret;
         }
@@ -251,7 +251,7 @@ impl Checker<'_> {
         if !self.allowed(cx, family, what, span) {
             return Ty::Unknown;
         }
-        self.note_name(n.span, Binding::Word);
+        self.note_name(n.span, Name::Operation);
         if what == "forward"
             && args
                 .values()
@@ -665,11 +665,16 @@ impl Checker<'_> {
             );
             return Ty::Unknown;
         };
+        if let Some(place) = cx.env.ix.message_ref(cx.program.as_deref(), &name.name) {
+            self.note_name(name.span, Name::Message(place));
+        }
         let mut seen = HashSet::new();
         for f in fields.values() {
             let ty = self.expr(cx, &f.value);
-            match decl.iter().find(|(n, _)| *n == f.name.name) {
-                Some((_, want)) => {
+            match decl.iter().position(|(n, _)| *n == f.name.name) {
+                Some(at) => {
+                    let want = &decl[at].1;
+                    self.note_name(f.name.span, Name::Field(at as u32));
                     if !seen.insert(f.name.name.clone()) {
                         self.error(
                             codes::NAME_TWICE,
@@ -723,8 +728,8 @@ impl Checker<'_> {
         let mut message = None;
         if let Some(m) = o[0] {
             match as_name(m).and_then(|n| cx.lookup(&n.name).cloned().map(|l| (n, l))) {
-                Some((n, l)) if l.binding == Binding::Message => {
-                    self.note_name(n.span, Binding::Message);
+                Some((n, l)) if l.binding == Name::Arrived => {
+                    self.note_name(n.span, Name::Arrived);
                     self.note_type(m, &l.ty);
                     if let Ty::Message(name) = l.ty {
                         message = Some(name);
@@ -834,7 +839,12 @@ impl Checker<'_> {
                 );
                 return Ty::Unknown;
             };
-            self.note_name(program.span, Binding::Program);
+            if let Some(&place) = cx.env.ix.programs.get(&program.name) {
+                self.note_name(program.span, Name::Program(place));
+            }
+            if let Some(place) = cx.env.ix.invocable_of(&program.name, &name.name) {
+                self.note_name(name.span, place);
+            }
             let what = format!("{}.{}", program.name, name.name);
             self.positional_call(cx, &what, call.span, args, &target.params);
             ret = target.ret;
@@ -883,7 +893,7 @@ impl Checker<'_> {
                         if !self.allowed(cx, Family::IslandQuery, &format!("island.{what}"), span) {
                             return Ty::Unknown;
                         }
-                        self.note_name(word.span, Binding::Word);
+                        self.note_word(word);
                         let Some(o) = self.operands(what, span, args, &[pos("id")]) else {
                             return Ty::Unknown;
                         };
@@ -904,7 +914,9 @@ impl Checker<'_> {
                         if !self.allowed(cx, Family::Worker, &format!("s.{what}"), span) {
                             return Ty::Unknown;
                         }
-                        self.note_name(word.span, Binding::State);
+                        if let Some(state) = cx.member_name(&word.name) {
+                            self.note_name(word.span, state);
+                        }
                         return self.state_method(cx, word, &member.ty, name, args, span);
                     }
                 }
@@ -1000,7 +1012,9 @@ impl Checker<'_> {
                 };
                 let name = match as_name(r) {
                     Some(n) if cx.env.record(cx.program.as_deref(), &n.name).is_some() => {
-                        self.note_name(n.span, Binding::Word);
+                        if let Some(place) = cx.env.ix.record_ref(cx.program.as_deref(), &n.name) {
+                            self.note_name(n.span, Name::Record(place));
+                        }
                         n.name.clone()
                     }
                     Some(n) => {
@@ -1138,7 +1152,7 @@ impl Checker<'_> {
         if !self.allowed(cx, Family::Worker, &format!("group.{what}"), span) {
             return Ty::Unknown;
         }
-        self.note_name(word.span, Binding::Word);
+        self.note_word(word);
         match what {
             "id" => {
                 let Some(o) = self.operands("group.id", span, args, &[pos("rank")]) else {

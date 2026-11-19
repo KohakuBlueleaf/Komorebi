@@ -9,12 +9,13 @@ use crate::syntax::ast::{
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
+use crate::types::Failure;
 
 use super::attrs::{named_args, on_grid};
 use super::codes;
 use super::env::{is_named, parse_int, Env, Names, Place};
 use super::views::peers_of;
-use super::{Binding, Checker};
+use super::{Checker, LocalKind, Name, Word};
 
 /// The kind of body being checked: it decides which operations it may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +87,7 @@ pub(super) enum Rank {
 #[derive(Clone, Debug)]
 pub(super) struct Local {
     pub(super) ty: Ty,
-    pub(super) binding: Binding,
+    pub(super) binding: Name,
     pub(super) mutable: bool,
     pub(super) view: Option<ViewKey>,
     pub(super) rank: Option<Rank>,
@@ -205,14 +206,35 @@ impl Cx<'_> {
         }
     }
 
+    /// What the state member `name` of the program refers to.
+    pub(super) fn member_name(&self, name: &str) -> Option<Name> {
+        self.env.ix.member(self.program.as_deref()?, name)
+    }
+
     pub(super) fn state(&self, name: &str) -> Option<&super::env::MemberInfo> {
         let program = self.env.programs.get(self.program.as_deref()?)?;
         program.state.get(name)
     }
 }
 
+impl Checker<'_> {
+    /// Notes a word of the language (`worker`, `row`, `sum` ...) at its name.
+    pub(super) fn note_word(&mut self, n: &Ident) {
+        if let Some(word) = Word::from_name(&n.name) {
+            self.note_name(n.span, Name::Word(word));
+        }
+    }
+
+    /// Notes the function `n` names.
+    pub(super) fn note_func(&mut self, cx: &Cx, n: &Ident) {
+        if let Some(&place) = cx.env.ix.funcs.get(&n.name) {
+            self.note_name(n.span, Name::Func(place));
+        }
+    }
+}
+
 /// A local of a type, not a view and not a rank.
-pub(super) fn local(ty: Ty, binding: Binding, mutable: bool) -> Local {
+pub(super) fn local(ty: Ty, binding: Name, mutable: bool) -> Local {
     Local {
         ty,
         binding,
@@ -303,7 +325,7 @@ impl Checker<'_> {
     pub(super) fn bind_params(&mut self, cx: &mut Cx, params: &List<ParamDecl>, types: &[Ty]) {
         for (i, p) in params.values().enumerate() {
             let ty = types.get(i).cloned().unwrap_or(Ty::Unknown);
-            cx.bind(&p.name.name, local(ty, Binding::Param, false));
+            cx.bind(&p.name.name, local(ty, Name::Param(i as u32), false));
         }
     }
 
@@ -408,6 +430,9 @@ impl Checker<'_> {
             self.bind_params(&mut cx, &r.params, params);
             if let Some(on) = on {
                 let fields = env.message(Some(program), &on.message.name);
+                if let Some(place) = env.ix.message_ref(Some(program), &on.message.name) {
+                    self.note_name(on.message.span, Name::Message(place));
+                }
                 let ty = if fields.is_some() {
                     Ty::Message(on.message.name.clone())
                 } else {
@@ -418,7 +443,7 @@ impl Checker<'_> {
                     );
                     Ty::Unknown
                 };
-                cx.bind(&on.binding.name, local(ty, Binding::Message, false));
+                cx.bind(&on.binding.name, local(ty, Name::Arrived, false));
                 self.message_once(on);
             }
             let before = std::mem::take(&mut self.state_use);
@@ -465,6 +490,9 @@ impl Checker<'_> {
             );
             return;
         };
+        if let Some(place) = cx.env.ix.invocable_of(program, &call.handler.name) {
+            self.note_name(call.handler.span, place);
+        }
         self.positional_call(
             cx,
             &call.handler.name,
@@ -587,7 +615,10 @@ impl Checker<'_> {
                     &name.name,
                     Local {
                         ty,
-                        binding: Binding::Local,
+                        binding: Name::Local {
+                            decl: name.span,
+                            kind: LocalKind::Let,
+                        },
                         mutable: false,
                         view,
                         rank,
@@ -599,7 +630,11 @@ impl Checker<'_> {
                 let got = self.expr(cx, value);
                 let want = self.ty(cx.env, ty, Place::Local);
                 self.expect_fit(&got, &want, value.span, &format!("`{}`", name.name));
-                cx.bind(&name.name, local(want, Binding::Local, true));
+                let binding = Name::Local {
+                    decl: name.span,
+                    kind: LocalKind::Var,
+                };
+                cx.bind(&name.name, local(want, binding, true));
             }
             Stmt::Assign { target, op, value } => self.assign(cx, target, *op, value),
             Stmt::For {
@@ -637,8 +672,8 @@ impl Checker<'_> {
                     return;
                 }
                 match cx.lookup(&name.name) {
-                    Some(l) if l.binding == Binding::Message => {
-                        self.note_name(name.span, Binding::Message);
+                    Some(l) if l.binding == Name::Arrived => {
+                        self.note_name(name.span, Name::Arrived);
                     }
                     _ => self.error(
                         codes::UNKNOWN_NAME,
@@ -723,7 +758,9 @@ impl Checker<'_> {
             return;
         }
         if let Some(member) = cx.state(&root.name).cloned() {
-            self.note_name(root.span, Binding::State);
+            if let Some(state) = cx.member_name(&root.name) {
+                self.note_name(root.span, state);
+            }
             let Some(index) = element else {
                 self.error(
                     codes::ASSIGN_LET,
@@ -841,7 +878,11 @@ impl Checker<'_> {
         for (i, var) in vars.iter().enumerate() {
             names.declare(self, var);
             let ty = elems.get(i).cloned().unwrap_or(Ty::Unknown);
-            cx.bind(&var.name, local(ty, Binding::Local, false));
+            let binding = Name::Local {
+                decl: var.span,
+                kind: LocalKind::Loop,
+            };
+            cx.bind(&var.name, local(ty, binding, false));
         }
         self.block(cx, body);
         cx.scopes.pop();
@@ -1089,19 +1130,23 @@ impl Checker<'_> {
             return l.ty;
         }
         if let Some(member) = cx.state(&n.name).cloned() {
-            self.note_name(n.span, Binding::State);
+            if let Some(state) = cx.member_name(&n.name) {
+                self.note_name(n.span, state);
+            }
             self.state_use.0.push((n.name.clone(), n.span));
             return member.ty;
         }
         if let Some(ty) = cx.env.params.get(&n.name) {
-            self.note_name(n.span, Binding::ModuleParam);
+            if let Some(&param) = cx.env.ix.params.get(&n.name) {
+                self.note_name(n.span, Name::ModuleParam(param));
+            }
             return ty.clone();
         }
         if n.name == "zeros" {
             if !self.allowed(cx, Family::Compute, "zeros", n.span) {
                 return Ty::Unknown;
             }
-            self.note_name(n.span, Binding::Word);
+            self.note_name(n.span, Name::Word(Word::Zeros));
             return Ty::Unknown;
         }
         self.unknown(n);
@@ -1283,7 +1328,9 @@ impl Checker<'_> {
     pub(super) fn failure_name(&mut self, rhs: &Expr) -> Ty {
         match as_name(rhs) {
             Some(n) if FAILURES.contains(&n.name.as_str()) => {
-                self.note_name(n.span, Binding::Word);
+                if let Some(failure) = Failure::from_name(&n.name) {
+                    self.note_name(n.span, Name::Failure(failure));
+                }
                 self.note_type(rhs, &Ty::Reason);
                 Ty::Bool
             }
@@ -1319,7 +1366,7 @@ impl Checker<'_> {
                         if !self.allowed(cx, Family::Worker, "group.size", span) {
                             return Ty::Unknown;
                         }
-                        self.note_name(word.span, Binding::Word);
+                        self.note_word(word);
                         if name.name == "size" {
                             return Ty::Int;
                         }
@@ -1329,7 +1376,7 @@ impl Checker<'_> {
                         if !self.allowed(cx, Family::IslandQuery, "island.count", span) {
                             return Ty::Unknown;
                         }
-                        self.note_name(word.span, Binding::Word);
+                        self.note_word(word);
                         if name.name == "count" {
                             return Ty::Int;
                         }
@@ -1355,15 +1402,21 @@ impl Checker<'_> {
             }
             (Ty::Message(m), field) => {
                 let fields = cx.env.message(cx.program.as_deref(), m);
-                match fields.and_then(|f| f.iter().find(|(n, _)| n == field)) {
-                    Some((_, ty)) => ty.clone(),
+                match fields.and_then(|f| f.iter().enumerate().find(|(_, (n, _))| n == field)) {
+                    Some((at, (_, ty))) => {
+                        self.note_name(name.span, Name::Field(at as u32));
+                        ty.clone()
+                    }
                     None => self.no_member(&format!("the message {m}"), name),
                 }
             }
             (Ty::Record(r), field) => {
                 let fields = cx.env.record(cx.program.as_deref(), r);
-                match fields.and_then(|f| f.iter().find(|(n, _)| n == field)) {
-                    Some((_, ty)) => ty.clone(),
+                match fields.and_then(|f| f.iter().enumerate().find(|(_, (n, _))| n == field)) {
+                    Some((at, (_, ty))) => {
+                        self.note_name(name.span, Name::Field(at as u32));
+                        ty.clone()
+                    }
                     None => self.no_member(&format!("the record {r}"), name),
                 }
             }
@@ -1388,7 +1441,7 @@ impl Checker<'_> {
         if !self.allowed(cx, Family::Worker, &format!("worker.{}", name.name), span) {
             return Ty::Unknown;
         }
-        self.note_name(word.span, Binding::Word);
+        self.note_word(word);
         match name.name.as_str() {
             "rank" | "id" => Ty::Int,
             "is_leader" => Ty::Bool,
