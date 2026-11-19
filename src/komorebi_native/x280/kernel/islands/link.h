@@ -352,7 +352,7 @@ static inline void link_gave(kmd_t* dispatcher, uint32_t source) {
 
 /* A crossing's part came back (or the local part ended): its status and ticks; the
  * last part sends the crossing's event unless its TIMEOUT went out. */
-static void link_part(
+KMD_COLD void link_part(
     kmd_t* dispatcher,
     uint32_t index,
     uint32_t island,
@@ -447,7 +447,7 @@ static void link_lost(
 
 /* A busy slot of the link freed (its ack, or a give-up): a crossing's local part, or a
  * LINK command whose stage is free again. Returns 1 if the slot was the link's. */
-static int link_freed(
+KMD_COLD int link_freed(
     kmd_t* dispatcher, uint32_t slot, uint32_t status, uint32_t ticks, uint64_t now
 ) {
     kmd_link_t* link = link_state(dispatcher);
@@ -637,7 +637,7 @@ static void link_feed(kmd_t* dispatcher, uint64_t now) {
 
 /* Hands queued packets to link core 0: each staged in a free stage of its area (three
  * window lines), then a PAGES LINE command (KM_GROUP_LINK_BASE). */
-static void link_send(kmd_t* dispatcher, uint64_t now) {
+KMD_COLD void link_send(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     while (link->out_head != link->out_tail) {
         uint32_t stage = 0;
@@ -714,7 +714,7 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
 
 /* Reads island `from`'s inbox part: commands into the link ring (whose, time left),
  * DONEs to their crossings; a packet not yet whole, or no room, waits. */
-static void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
+KMD_COLD void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     uint32_t count_at = 0, slots_at = 0;
     link_inbox(link, link->island, from, &count_at, &slots_at);
@@ -846,7 +846,7 @@ static void link_answer(kmd_t* dispatcher) {
 
 /* One pass of the link: the inbox, the answers, the sends; before the link ring's turn
  * the deadline of its next line is the time it has left. */
-static inline void link_turn(kmd_t* dispatcher, uint64_t now) {
+KMD_COLD void link_turn(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     link_receive(dispatcher, now);
     kmd_ring_t* ring = &dispatcher->ring[KMD_SRC_LINK];
@@ -860,7 +860,7 @@ static inline void link_turn(kmd_t* dispatcher, uint64_t now) {
 
 /* Every poll: a crossing past its deadline gets its TIMEOUT naming the lowest island
  * whose part is not back (else this one); the run goes on, late parts send nothing. */
-static void link_late(kmd_t* dispatcher, uint64_t now) {
+KMD_COLD void link_late(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     for (uint32_t index = 0; index < KMD_CROSSINGS; index++) {
         kmd_crossing_t* crossing = &link->crossing[index];
@@ -900,13 +900,13 @@ static void link_late(kmd_t* dispatcher, uint64_t now) {
 }
 
 /* Whether the link has work: a crossing in flight, or packets not yet sent. */
-static inline int link_active(kmd_t* dispatcher) {
+KMD_COLD int link_active(kmd_t* dispatcher) {
     const kmd_link_t* link = link_state(dispatcher);
     return link->busy != 0 || link->out_head != link->out_tail || link->stages != 0;
 }
 
 /* The link's counters into the core block. */
-static inline void link_count(kmd_t* dispatcher) {
+KMD_COLD void link_count(kmd_t* dispatcher) {
     const kmd_link_t* link = link_state(dispatcher);
     dispatcher->x280_cores[KMD_H_LINK_SENT] = link->sent;
     dispatcher->x280_cores[KMD_H_LINK_TAKEN] = link->taken;

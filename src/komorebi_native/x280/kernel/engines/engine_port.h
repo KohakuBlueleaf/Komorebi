@@ -49,7 +49,7 @@ static inline int engine_active(const kmd_t* dispatcher) {
 
 /* KM_HANDLER_RUN, host command `command_number`: rejected, ended with
  * KM_EVENT_STREAM_ERROR (request from the header, else 0) or forwarded. 1: wait. */
-static int engine_run(
+KMD_COLD int engine_run(
     kmd_t* dispatcher, uint32_t command_number, uint32_t offset, uint32_t bytes
 ) {
     const uint32_t region = dispatcher->upload_bytes;
@@ -117,7 +117,9 @@ static int engine_run(
 
 /* KM_HANDLER_CANCEL, host command `command_number`: forwarded to the engine when a
  * stream it runs has `request`, else rejected. 0; 1: the engine's ring is full. */
-static int engine_cancel(kmd_t* dispatcher, uint32_t command_number, uint32_t request) {
+KMD_COLD int engine_cancel(
+    kmd_t* dispatcher, uint32_t command_number, uint32_t request
+) {
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
         if (dispatcher->runs[i].active && dispatcher->runs[i].request == request) {
             kmd_ring_t* engine_ring = &dispatcher->ring[KMD_SRC_ENGINE];
@@ -137,7 +139,7 @@ static int engine_cancel(kmd_t* dispatcher, uint32_t command_number, uint32_t re
 
 /* KMD_HANDLER_POST `line`, host event {a0, a1, a2}: a stream's end uses its held room;
  * others need room, or are dropped and counted when `finishing`. Returns 1 to wait. */
-static int engine_post(kmd_t* dispatcher, const uint64_t* line, int finishing) {
+KMD_COLD int engine_post(kmd_t* dispatcher, const uint64_t* line, int finishing) {
     const uint32_t request = (uint32_t)(line[1] >> 32);
     const uint32_t status = (uint32_t)(line[2] >> 32);
     const uint32_t ticks = (uint32_t)line[3], kind = status & 0xFFu;

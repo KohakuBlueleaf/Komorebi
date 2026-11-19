@@ -52,7 +52,7 @@ static inline kmd_gtable_t* gtable(const kmd_t* dispatcher) {
 }
 
 /* Whether a graph runs: the engine's ring must be looked at. */
-static inline int graph_running(const kmd_t* dispatcher) {
+KMD_COLD int graph_running(const kmd_t* dispatcher) {
     return gtable(dispatcher)->running != 0;
 }
 
@@ -103,7 +103,9 @@ static inline void graph_reject(
 
 /* KM_HANDLER_RUN with a2 != 0, host command `command_number` in line `line`: rejected,
  * ended with KM_EVENT_GRAPH_ERROR reason 1, or handed to core 1. 1: wait for room. */
-static int graph_run(kmd_t* dispatcher, uint32_t command_number, const uint64_t* line) {
+KMD_COLD int graph_run(
+    kmd_t* dispatcher, uint32_t command_number, const uint64_t* line
+) {
     const uint32_t request_or_offset = (uint32_t)(line[1] >> 32);
     const uint32_t bytes = (uint32_t)(line[2] >> 32);
     const uint32_t form = (uint32_t)line[3], binding_offset = (uint32_t)(line[3] >> 32);
@@ -221,7 +223,9 @@ static int graph_run(kmd_t* dispatcher, uint32_t command_number, const uint64_t*
 
 /* KM_HANDLER_CANCEL of `request`: core 1 cancels a running graph, a kept one is dropped
  * (KM_EVENT_GRAPH_ERROR 10). 0, 1: wait for room, -1: no graph has `request`. */
-static int graph_cancel(kmd_t* dispatcher, uint32_t command_number, uint32_t request) {
+KMD_COLD int graph_cancel(
+    kmd_t* dispatcher, uint32_t command_number, uint32_t request
+) {
     kmd_gtable_t* table = gtable(dispatcher);
     for (uint32_t i = 0; i < KMD_GRAPH_ENTRIES; i++) {
         kmd_gentry_t* entry = &table->entry[i];

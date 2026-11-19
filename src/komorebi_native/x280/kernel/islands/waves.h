@@ -8,7 +8,7 @@
 #include "x280_counts.h"
 
 /* The islands of the run's group, in rank order; its leader holds the first rank. */
-static void messages_islands(kmd_t* dispatcher) {
+KMD_COLD void messages_islands(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
     const kmd_link_t* link = link_state(dispatcher);
     const uint32_t first = run->group & 0xFFFFu, count = run->group >> 16;
@@ -98,7 +98,7 @@ static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* pa
 
 /* At the run's deadline, the island whose wave did not come: the leader's, the lowest
  * not answering its round; another island's, the leader (no START, ROUND or END). */
-static uint32_t messages_waited(kmd_t* dispatcher) {
+KMD_COLD uint32_t messages_waited(kmd_t* dispatcher) {
     const kmd_messages_t* run = &dispatcher->messages;
     const uint32_t here = link_state(dispatcher)->island;
     if (!run->active || !messages_spans(dispatcher) || run->ended) {

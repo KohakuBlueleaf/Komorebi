@@ -60,7 +60,7 @@ static inline const volatile kmd_gentry_t* graph_entry(
 }
 
 /* Posts the host event {request, status, ticks} with a3 = `a3` if the ring has room. */
-static int graph_post_event(
+KMD_COLD int graph_post_event(
     kmd_engine_t* engine, uint32_t request, uint32_t status, uint32_t ticks, uint32_t a3
 ) {
     if (!eng_room(engine, 1)) {
@@ -157,7 +157,8 @@ typedef struct {
 
 /* kmg_submit_function: the command into the ring (after a KM_HANDLER_DEADLINE if the
  * deadline changed), or KMG_BUSY when the ring or the sent table has no room. */
-static uint32_t graph_submit(void* context, uint32_t node, const km_command_t* record) {
+KMD_COLD uint32_t
+graph_submit(void* context, uint32_t node, const km_command_t* record) {
     kmd_gctx_t* submit_context = (kmd_gctx_t*)context;
     kmd_engine_t* engine = submit_context->engine;
     kmd_graph_run_t* run = submit_context->run;
@@ -282,7 +283,7 @@ static int graph_event(
 }
 
 /* Posts what the graphs owe: round events, ends and errors. */
-static void graph_owed(kmd_engine_t* engine) {
+KMD_COLD void graph_owed(kmd_engine_t* engine) {
     kmd_graphs_t* graph_runs = graphs(engine);
     for (uint32_t run_index = 0; run_index < KM_GRAPH_MAX_ACTIVE; run_index++) {
         kmd_graph_run_t* run = &graph_runs->run[run_index];

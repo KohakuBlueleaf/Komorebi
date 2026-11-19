@@ -35,7 +35,7 @@ static inline uint64_t watch_beat(const kmd_t* dispatcher) {
 }
 
 /* An event on core 0's host ring while core 0 is stalled; none without room. */
-static void watch_push(
+KMD_COLD void watch_push(
     kmd_t* dispatcher, uint32_t request, uint32_t stage, uint32_t ticks
 ) {
     __asm__ volatile("" ::: "memory");

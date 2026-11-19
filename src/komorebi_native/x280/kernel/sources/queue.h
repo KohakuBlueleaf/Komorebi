@@ -15,7 +15,7 @@ static inline void queue_tell(kmd_t* dispatcher) {
 
 /* Puts command `line` (command `request` of `source`, `count` cores, stream `tag`) at
  * the queue's end with its source's current deadline. The caller checked the room. */
-static inline void queue_put(
+KMD_COLD void queue_put(
     kmd_t* dispatcher,
     const uint64_t* line,
     uint32_t source,
@@ -62,7 +62,7 @@ static inline void queue_remove(kmd_t* dispatcher, uint32_t position) {
 
 /* The queue's turn (README.md): a count that found no room is not tried again in the
  * turn, as submitting only adds busy groups. Out of the loop's code: it is rare. */
-static __attribute__((noinline)) void queue_turn(kmd_t* dispatcher, uint64_t now) {
+KMD_COLD __attribute__((noinline)) void queue_turn(kmd_t* dispatcher, uint64_t now) {
     kmd_queue_t* queue = dispatcher->queue;
     const uint32_t look = queue->length < KM_QUEUE_LOOK ? queue->length : KM_QUEUE_LOOK;
     uint32_t position = 0, no_room = KMD_NO_FIRST, blocked = 0, submitted = 0;

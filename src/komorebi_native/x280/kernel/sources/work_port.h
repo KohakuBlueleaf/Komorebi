@@ -206,7 +206,7 @@ work_command(kmd_t* dispatcher, uint32_t source, uint64_t now) {
 
 /* Cluster `ring_index + 1`'s answer to line `number`: the command's DONE event (ticks:
  * the word with KM_FLAG_RESULT, else the time) unless its timeout went out. */
-static __attribute__((noinline)) void work_answer(
+KMD_COLD __attribute__((noinline)) void work_answer(
     kmd_t* dispatcher, uint32_t ring_index, uint32_t number, uint32_t word, uint64_t now
 ) {
     kmd_thread_t* thread = &dispatcher->thread[ring_index];
@@ -255,7 +255,7 @@ static __attribute__((noinline)) void work_answer(
 
 /* Every unanswered line whose deadline passed at `now` gets its KM_EVENT_TIMEOUT
  * (auxiliary: the cluster); the kernel goes on, the line stays taken until answered. */
-static __attribute__((noinline)) void work_late(kmd_t* dispatcher, uint64_t now) {
+KMD_COLD __attribute__((noinline)) void work_late(kmd_t* dispatcher, uint64_t now) {
     for (uint32_t ring_index = 0; ring_index < KMD_WORK_CLUSTERS; ring_index++) {
         kmd_thread_t* thread = &dispatcher->thread[ring_index];
         for (uint32_t slot = 0; slot < KMD_WORK_IN_DEPTH; slot++) {
@@ -286,7 +286,7 @@ static __attribute__((noinline)) void work_late(kmd_t* dispatcher, uint64_t now)
 }
 
 /* Lines handed to threads that neither got an answer nor a timeout: no event. */
-static inline uint32_t work_abandoned(const kmd_t* dispatcher) {
+KMD_COLD uint32_t work_abandoned(const kmd_t* dispatcher) {
     uint32_t abandoned = 0;
     for (uint32_t ring_index = 0; ring_index < KMD_WORK_CLUSTERS; ring_index++) {
         const kmd_thread_t* thread = &dispatcher->thread[ring_index];

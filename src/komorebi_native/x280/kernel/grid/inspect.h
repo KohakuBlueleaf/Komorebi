@@ -73,7 +73,7 @@ static inline int inspect_in_l1(uint32_t address, uint32_t bytes) {
 
 /* The inspect window aimed at core `core`'s L1, at the host's core table coordinates;
  * 0 for a core without them, a control block outside L1, or a window not programmed. */
-static volatile const uint8_t* inspect_aim(kmd_t* dispatcher, uint32_t core) {
+KMD_COLD volatile const uint8_t* inspect_aim(kmd_t* dispatcher, uint32_t core) {
     const uint32_t coordinates = (
         ((volatile const uint32_t*)(dispatcher->lim + KMD_LIM_COORDS))[core]
     );
@@ -163,7 +163,7 @@ static void inspect_core(kmd_t* dispatcher, uint32_t index, uint32_t core) {
 
 /* Whether core `core` runs no part of command `sequence` any more: none of its kernels'
  * live sequence words (16 to 40 bytes into its live words) holds it; 0 unreachable. */
-static int inspect_left(kmd_t* dispatcher, uint32_t core, uint32_t sequence) {
+KMD_COLD int inspect_left(kmd_t* dispatcher, uint32_t core, uint32_t sequence) {
     volatile const uint8_t* window = inspect_aim(dispatcher, core);
     if (window == 0) {
         return 0;
@@ -205,7 +205,7 @@ static int inspect_ended(kmd_t* dispatcher, uint32_t core) {
 
 /* At an EXIT's deadline: whether each core of its group reported it or ended by its own
  * give-up (`ended` counts those); 0 while an inspect holds the window. */
-static int inspect_exit_ended(kmd_t* dispatcher, uint32_t slot, uint32_t* ended) {
+KMD_COLD int inspect_exit_ended(kmd_t* dispatcher, uint32_t slot, uint32_t* ended) {
     const uint32_t group = dispatcher->slot_group[slot];
     const uint32_t first = group & 0xFFFFu, count = group >> 16;
     *ended = 0;
@@ -236,7 +236,7 @@ static int inspect_exit_ended(kmd_t* dispatcher, uint32_t slot, uint32_t* ended)
 
 /* The EXIT in `slot` left done (inspect_exit_ended): the slot freed, KM_EVENT_DONE to
  * its source, the run's error KMD_ERROR_ENDED. */
-static void inspect_exit_done(kmd_t* dispatcher, uint32_t slot, uint32_t ended) {
+KMD_COLD void inspect_exit_done(kmd_t* dispatcher, uint32_t slot, uint32_t ended) {
     const uint64_t now = x280_mtime();
     const uint32_t sequence = dispatcher->slot_sequence[slot];
     result_error(
@@ -319,7 +319,7 @@ static int inspect_asking(
     return 0;
 }
 
-static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot);
+KMD_COLD int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot);
 
 /* Link core k (core `core`) did not leave: each other command it held traffic of (its
  * group has the core; link core 0: a core waits for an ask) is lost, late now. */
@@ -364,7 +364,7 @@ static void inspect_abort(kmd_t* dispatcher, uint32_t slot) {
 
 /* A timeout's end once every core of the group left the command: the slot freed, the
  * give-up counted, KM_EVENT_TIMEOUT to its source. */
-static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
+KMD_COLD void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     const uint32_t sequence = dispatcher->slot_sequence[slot];
     const uint32_t took = (uint32_t)(now - dispatcher->slot_submitted[slot]);
     dispatcher->busy &= ~(1ull << slot);
@@ -541,7 +541,7 @@ static void inspect_leave(kmd_t* dispatcher) {
 
 /* One core of the inspect; after the last, the mark, then the host's PONG or the
  * timeout's abort. A timeout's command that completed meanwhile ends the inspect. */
-static void inspect_turn(kmd_t* dispatcher) {
+KMD_COLD void inspect_turn(kmd_t* dispatcher) {
     kmd_inspect_t* inspect = &dispatcher->inspect;
     if (
         inspect->kind == KMD_INSPECT_TIMEOUT &&
@@ -586,7 +586,7 @@ static void inspect_turn(kmd_t* dispatcher) {
 
 /* Whether busy slot `slot` may be given up at its deadline, the run going on: a handler
  * or link PAGES from any source (timeout to its ring), not dynamic, not kept. */
-static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
+KMD_COLD int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
     const uint32_t handler = dispatcher->slot_handler[slot];
     const int pages = (
         handler == KM_HANDLER_PAGES &&
@@ -601,7 +601,7 @@ static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
 
 /* At a command's deadline: an inspect of its group, then its give-up (the slot's
  * deadline is put out of reach meanwhile). */
-static inline void inspect_timeout(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
+KMD_COLD void inspect_timeout(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     const uint32_t group = dispatcher->slot_group[slot];
     dispatcher->slot_deadline[slot] = ~0ull;
     inspect_begin(

@@ -7,7 +7,7 @@
 
 /* Window `slot` aimed at `address` of core `core` (the host's core table), non-posted
  * and read back; 0 when it is refused or reads otherwise. */
-static volatile uint8_t* reset_aim(
+KMD_COLD volatile uint8_t* reset_aim(
     kmd_t* dispatcher, uint32_t slot, uint32_t core, uint32_t address
 ) {
     const uint32_t coordinates = (
@@ -41,9 +41,8 @@ static inline void reset_register(volatile uint8_t* reg, uint32_t value) {
 
 /* Runs the list of `bytes` at `offset` of the upload region on core `core`. Returns
  * KMD_RESET_*; every wait is bounded, both windows are cleared on every path. */
-static uint32_t reset_run(
-    kmd_t* dispatcher, uint32_t core, uint32_t offset, uint32_t bytes
-) {
+KMD_COLD uint32_t
+reset_run(kmd_t* dispatcher, uint32_t core, uint32_t offset, uint32_t bytes) {
     if (
         core >= KM_CORES_MAX || offset % 16u != 0 || bytes % 16u != 0 ||
         offset > dispatcher->upload_bytes || bytes > dispatcher->upload_bytes - offset

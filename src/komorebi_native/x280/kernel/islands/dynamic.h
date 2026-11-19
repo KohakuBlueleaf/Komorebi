@@ -7,7 +7,7 @@
 #include "../kernel.h"
 
 /* waves.h, after link.h: a run across islands */
-static void messages_islands(kmd_t* dispatcher);
+KMD_COLD void messages_islands(kmd_t* dispatcher);
 static void messages_entry(kmd_t* dispatcher, uint32_t id);
 static int messages_waves(kmd_t* dispatcher);
 
@@ -25,7 +25,7 @@ static uint32_t messages_x280_counts(kmd_t* dispatcher);
 
 /* The X280 ranks' cluster learns the run's start or end (KM_X280_RUN_*): stored now
  * if its thread serves, else once it does (its start-up writes the area over). */
-static inline void messages_run_line(kmd_t* dispatcher, uint32_t state) {
+KMD_COLD void messages_run_line(kmd_t* dispatcher, uint32_t state) {
     kmd_messages_t* run = &dispatcher->messages;
     if (run->x280_count == 0) {
         return;
@@ -120,7 +120,7 @@ static inline uint32_t messages_line(const kmd_t* dispatcher, uint32_t index) {
 
 /* The two passes: 1 every line idle and unchanged, its sums in `sent_out` and
  * `consumed_out`; 0 not yet. Counter tiles and X280 ranks are read as other cores. */
-static inline int messages_sample(
+KMD_COLD int messages_sample(
     kmd_t* dispatcher, uint64_t* sent_out, uint64_t* consumed_out
 ) {
     kmd_messages_t* run = &dispatcher->messages;
@@ -220,7 +220,7 @@ static inline int messages_lines_gave(kmd_t* dispatcher) {
 
 /* A pass during a dynamic run: once quiet and a slot is free, its end command {a0: the
  * run's sequence} goes to the group under the RUN's command and source. */
-static inline void messages_turn(kmd_t* dispatcher) {
+KMD_COLD void messages_turn(kmd_t* dispatcher) {
     kmd_messages_t* run = &dispatcher->messages;
     if (
         !(dispatcher->busy & (1ull << run->slot)) ||

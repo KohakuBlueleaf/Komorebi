@@ -75,7 +75,7 @@ static int dynamic_valid(const volatile kmd_args_t* arguments) {
 
 /* Checks the argument block against this run: ring depths are powers of two, so the
  * slot numbering survives the wrap of the 32-bit counters. */
-static int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
+KMD_COLD int args_valid(const volatile kmd_args_t* arguments, uint64_t run) {
     if (
         x280_hart_args_bytes() < sizeof(kmd_args_t) || arguments->run_value != run ||
         arguments->version != KMD_ARGS_VERSION
@@ -270,12 +270,12 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     /* A command to the dispatcher itself: the host's, with KMD_FLAG_DISPATCHER (its
      * number alone may be a served one's); the only test of the flag. */
     const uint32_t own = host && (flags & KMD_FLAG_DISPATCHER) != 0;
-    if (handler == KM_HANDLER_DEADLINE && argument != 0) {
+    if (KMD_EXPECT(handler == KM_HANDLER_DEADLINE && argument != 0, 0)) {
         ring_consumed(ring);
         ring->t_command = (uint64_t)argument * 50u;
         return KMD_TAKEN;
     }
-    if (handler == KM_HANDLER_STOP && host) {
+    if (KMD_EXPECT(handler == KM_HANDLER_STOP && host, 0)) {
         ring_consumed(ring);
         if (dispatcher->busy) {
             result_error(
@@ -289,7 +289,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         }
         return KMD_FINISH;
     }
-    if (handler == KMD_HANDLER_POST && source == KMD_SRC_ENGINE) {
+    if (KMD_EXPECT(handler == KMD_HANDLER_POST && source == KMD_SRC_ENGINE, 0)) {
         if (engine_post(dispatcher, line, 0)) {
             return KMD_NO_ROOM;
         }
@@ -297,7 +297,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->last_event_mtime = now;
         return KMD_TAKEN;
     }
-    if (handler == KMD_HANDLER_DROP && source == KMD_SRC_ENGINE) {
+    if (KMD_EXPECT(handler == KMD_HANDLER_DROP && source == KMD_SRC_ENGINE, 0)) {
         ring_consumed(ring);
         queue_drop(dispatcher, argument);
         return KMD_TAKEN;
@@ -315,7 +315,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     if (!ring_room(ring)) {
         return KMD_NO_ROOM;
     }
-    if (handler == KM_HANDLER_PING) {
+    if (KMD_EXPECT(handler == KM_HANDLER_PING, 0)) {
         ring_consumed(ring);
         ring_push(ring, request, KM_EVENT_PONG, 0);
         dispatcher->last_event_mtime = now;
@@ -359,7 +359,9 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         );
         return KMD_TAKEN;
     }
-    if (host && (handler == KM_HANDLER_RUN || handler == KM_HANDLER_CANCEL)) {
+    if (KMD_EXPECT(
+        host && (handler == KM_HANDLER_RUN || handler == KM_HANDLER_CANCEL), 0
+    )) {
         /* a2 != 0: a graph's RUN; a CANCEL goes to the graph or stream with its
          * request. */
         int wait = (
@@ -512,7 +514,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     } else if (handler == KM_HANDLER_LOAD && !dispatcher->programs) {
         reject = KMD_REJECT_PROGRAM; /* a run without the table */
     }
-    if (reject != 0) {
+    if (KMD_EXPECT(reject != 0, 0)) {
         ring_consumed(ring);
         ring_push(ring, request, KM_EVENT_REJECTED | (reject << 8), 0);
         dispatcher->last_event_mtime = now;
@@ -523,7 +525,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         }
         return KMD_TAKEN;
     }
-    if (queued) {
+    if (KMD_EXPECT(queued, 0)) {
         /* Into the queue; when full, the host's is rejected, others' rejected busy. */
         if (dispatcher->queue->length == KM_QUEUE_JOBS) {
             if (!host) {
@@ -586,7 +588,7 @@ KMD_HOT kmd_take_t take(kmd_t* dispatcher, uint32_t source, uint64_t now) {
 
 /* A command of the engine or a work cluster that cannot go now (no free slot, an
  * overlapping exclusive group, a full queue): rejected at once, KMD_EVENT_WAKE owed. */
-static int source_busy(kmd_t* dispatcher, uint32_t source, uint64_t now) {
+KMD_COLD int source_busy(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     kmd_ring_t* ring = &dispatcher->ring[source];
     if (!(dispatcher->waits & (1u << source))) {
         ring->owed++;
@@ -671,39 +673,40 @@ static void loop(kmd_t* dispatcher) {
         if (dispatcher->busy) {
             slots_sweep(dispatcher);
         }
-        if (dispatcher->inspect.active) {
+        if (KMD_EXPECT(dispatcher->inspect.active != 0, 0)) {
             inspect_turn(dispatcher);
         }
-        if (dispatcher->messages.active) {
+        if (KMD_EXPECT(dispatcher->messages.active != 0, 0)) {
             messages_turn(dispatcher);
         }
         if (source_turn(dispatcher, KMD_SRC_HOST, &activity)) {
             return;
         }
-        if (dispatcher->engine_on) {
+        if (KMD_EXPECT(dispatcher->engine_on != 0, 0)) {
             source_turn(dispatcher, KMD_SRC_ENGINE, &activity);
             ring_flush(engine);
             dispatcher->engine_on = engine_active(dispatcher);
         }
-        if (dispatcher->queued != 0) {
+        if (KMD_EXPECT(dispatcher->queued != 0, 0)) {
             queue_turn(dispatcher, x280_mtime());
         }
         /* Work ring w is looked at on passes w mod 4, at most one ring a pass: one
          * look costs the idle pass 31 ns. */
         const uint32_t work_ring = (uint32_t)(dispatcher->passes & 3u);
-        if (
+        if (KMD_EXPECT(
             work_ring < KMD_WORK_CLUSTERS &&
-            dispatcher->ring[KMD_SRC_WORK + work_ring].commands != 0
-        ) {
+                dispatcher->ring[KMD_SRC_WORK + work_ring].commands != 0,
+            0
+        )) {
             source_turn(dispatcher, KMD_SRC_WORK + work_ring, &activity);
             ring_flush(&dispatcher->ring[KMD_SRC_WORK + work_ring]);
         }
-        if (dispatcher->link_on) {
+        if (KMD_EXPECT(dispatcher->link_on != 0, 0)) {
             link_turn(dispatcher, x280_mtime());
             source_turn(dispatcher, KMD_SRC_LINK, &activity);
         }
         ring_flush(host);
-        if (++spins != KMD_POLL_EVERY) {
+        if (KMD_EXPECT(++spins != KMD_POLL_EVERY, 1)) {
             continue;
         }
         spins = 0;
@@ -793,7 +796,7 @@ static void loop(kmd_t* dispatcher) {
 
 /* The stop flag goes out only while a slot is busy or before EXIT was submitted: after
  * a completed EXIT the cores have left and their L1 is no longer the program's. */
-static void finish(kmd_t* dispatcher) {
+KMD_COLD void finish(kmd_t* dispatcher) {
     watch_off(dispatcher->x280_cores);
     result_where(dispatcher, KMD_WHERE_FINISH);
     uint32_t abandoned = dispatcher

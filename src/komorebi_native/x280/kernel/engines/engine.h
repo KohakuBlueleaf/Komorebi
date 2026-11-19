@@ -320,7 +320,7 @@ static inline void stream_fail(kmd_stream_t* stream, uint32_t reason, uint32_t p
 
 /* Sends what is owed: ending streams' drops and end or error events, orphans'
  * timeouts. */
-static void eng_owed(kmd_engine_t* engine) {
+KMD_COLD void eng_owed(kmd_engine_t* engine) {
     for (uint32_t i = 0; i < KM_STREAM_MAX_ACTIVE; i++) {
         kmd_stream_t* stream = &engine->streams[i];
         if (stream->state != KMD_S_ENDING) {
@@ -489,7 +489,7 @@ static void eng_event(
 
 /* Reads every event the kernel has pushed (index, fields, index again, as the host
  * does), then stores the read count. */
-static void eng_events(kmd_engine_t* engine) {
+KMD_COLD void eng_events(kmd_engine_t* engine) {
     for (uint32_t events_read = 0; events_read < KMD_ENGINE_EVENTS; events_read++) {
         const uint32_t number = engine->seen + 1u;
         volatile const uint32_t*

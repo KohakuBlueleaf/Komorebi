@@ -149,7 +149,7 @@ static inline int program_held(
 }
 
 /* A load: cores [first, first + count) hold program field `program` and no other. */
-static inline void program_move(
+KMD_COLD void program_move(
     kmd_t* dispatcher, uint32_t program, uint32_t first, uint32_t count
 ) {
     uint64_t bits[2];
@@ -164,9 +164,8 @@ static inline void program_move(
 
 /* The end (last core + 1) of a busy slot's group that shares a core with cores [first,
  * first + count), the furthest if several; 0 if none. Groups lie inside the grid. */
-static inline uint32_t slots_overlap(
-    const kmd_t* dispatcher, uint32_t first, uint32_t count
-) {
+KMD_COLD uint32_t
+slots_overlap(const kmd_t* dispatcher, uint32_t first, uint32_t count) {
     uint32_t end = 0;
     for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
         const uint32_t busy_group = dispatcher->slot_group[slot];
@@ -223,13 +222,13 @@ static inline void link_event(
 }
 
 /* link.h: a freed slot of the link's (a crossing's local part, a LINK command). */
-static int link_freed(
+KMD_COLD int link_freed(
     kmd_t* dispatcher, uint32_t slot, uint32_t status, uint32_t ticks, uint64_t now
 );
 static inline void link_gave(kmd_t* dispatcher, uint32_t source);
 
 /* inspect.h: a given-up slot freed, its TIMEOUT (and link) events sent. */
-static void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
+KMD_COLD void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
 
 /* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
  * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
