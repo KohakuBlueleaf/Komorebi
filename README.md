@@ -743,7 +743,7 @@ refused by name (`km.NotServed`) at the load or the call.
 | A command given up at its deadline, the run going on; `run.inspect` | yes | yes |
 | The reset and reload of one core (`run.reset_core`, a give-up's) | yes | yes |
 | The watch on the dispatcher's loop (`run.stalls`) | yes | yes: it reports a stall; the X280's also sends its loop back in |
-| The trace (`load(trace=...)`, `run.trace()`) | yes | yes |
+| The trace (`load(trace=...)`, `run.trace()`) | yes | yes (not the X280's slot trace of `KMD_TRACE` test builds) |
 
 **On one Wormhole chip**, with the dispatcher on a Tensix core (run on single chips of a
 Galaxy Wormhole box, tt-metal at the pinned version):

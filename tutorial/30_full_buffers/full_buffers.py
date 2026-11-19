@@ -11,8 +11,8 @@ KERNELS = HERE / "kernels"
 RUNTIME = HERE.parents[1] / "src" / "komorebi_native" / "kernels"
 GROUP = 8  # 6 cores take messages; the last 2 cores of a dynamic group keep counters
 RANKS = GROUP - 2
-QUOTA = 10  # sends each core may have alive
-MAX_LIVE = 118 * QUOTA  # in the whole card: 120 cores less the 2 counter tiles
+QUOTA = 20  # sends each core may have alive
+MAX_LIVE = RANKS * QUOTA  # the run's ranks share it; at least the load's ranks
 
 with km.Session() as session:
     columns, rows = session.grid
