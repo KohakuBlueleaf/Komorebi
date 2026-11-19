@@ -506,9 +506,9 @@ void kernel_main() {
         first_submit = first_submit == 0 ? started : first_submit;
         submitted++;
     };
-    // The link's pass (the X280's link_turn): the inbox, the link ring's events, the
-    // parts queued and sent, the crossings ended or late posted. Whether it did any.
-    auto link_turn = [&](uint64_t now) {
+    // The link's pass (the X280's link_turn): its inbox, ring events, parts sent and
+    // crossings ended or late. Inlined (as waves_turn): a closure costs out's stack.
+    auto link_turn = [&](uint64_t now) __attribute__((always_inline)) {
         bool did = false;
         for (uint32_t from = 0; from < link->islands; from++) {
             const uint32_t before_read = link->read[from];
@@ -603,7 +603,10 @@ void kernel_main() {
             noc_async_write_barrier();
             // the far island's inbox is at this island's place: the same block address
             const uint32_t far = link_base + kTlInbox + link->part_of(to, link->island);
-            uint32_t send[16] = {0};
+            uint32_t* send = link->scratch;
+            for (uint32_t w = 0; w < 16; w++) {
+                send[w] = 0;
+            }
             send[1] = KM_HANDLER_PAGES;
             send[2] = KM_GROUP_LINK_BASE | 1u << 16;
             send[3] = stage;
@@ -713,11 +716,14 @@ void kernel_main() {
     const uint64_t wave_ticks = (10 * ticks_us) >> 16;  // between two rounds, 10 us
     // The waves, a step a pass, true once ended: the leader gives the run its id, then
     // asks rounds; two in a row all quiet, equal sums and sent == consumed end it.
-    auto waves_turn = [&](uint64_t now) {
+    auto waves_turn = [&](uint64_t now) __attribute__((always_inline)) {
         td::Waves& w = link->waves;
         volatile tt_l1_ptr uint32_t* words = km::l1(link_base + kTlTold);
         const uint32_t others = w.high - w.low;
-        uint32_t command[16] = {0};
+        uint32_t* command = link->scratch;
+        for (uint32_t w = 0; w < 16; w++) {
+            command[w] = 0;
+        }
         words[kTlWaited] = link->waited() + 1u;  // in names it at the RUN's deadline
         if (w.ended) {
             return true;
@@ -1404,14 +1410,11 @@ void kernel_main() {
                 }
 #endif
                 if (slot < depth) {
+                    // as masks: no lookup table in .data, below out's stack
                     const uint32_t mark = (
-                        from_thread
-                            ? td::kRecordThread
-                            : from_engine
-                                ? td::kRecordEngine
-                                : from_link
-                                    ? td::kRecordLink
-                                    : 0
+                        (from_thread ? td::kRecordThread : 0u) |
+                        (from_engine ? td::kRecordEngine : 0u) |
+                        (from_link ? td::kRecordLink : 0u)
                     );
                     submit(pending, slot, request, group, ticks, mark, line_group);
                     if (dynamic) {  // in looks at its lines from here

@@ -79,6 +79,8 @@ namespace td {
         uint32_t crossed, received, answered, gave_up;
         uint32_t deliver;  // a dynamic run's messages cross as deliveries
         Waves waves;
+        // a packet read, a line built: here, not on out's stack (4 KiB on Wormhole)
+        uint32_t scratch[32];
 
         // From the arguments; false: no link (one island, or no link line).
         bool open(uint32_t block) {
@@ -344,7 +346,7 @@ namespace td {
                     )
                 );
                 const uint32_t* cross = nullptr;
-                uint32_t packet[32];
+                uint32_t* packet = scratch;
                 for (uint32_t w = 0; w < 32; w++) {
                     packet[w] = words[w];
                 }
