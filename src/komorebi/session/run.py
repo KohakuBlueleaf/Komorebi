@@ -122,7 +122,7 @@ def with_area(writes, address, area, h):
 
 
 def served(run, queued, cluster, part, call="submit"):
-    """NotServed when a command (`call`) asks what the run's dispatcher does not serve."""
+    """NotServed when a command (`call`) asks what the dispatcher does not serve."""
     if queued:
         _serves(run, "queue", f"{call}(queued=True)")
     if cluster:
@@ -1189,6 +1189,10 @@ class Run(EventsMixin, StopMixin):
     def alive(self):
         """Whether the run takes commands: not stopped, nothing failed."""
         return self._failure is None and not self._stopped
+
+    def _served(self, *asked):
+        """served() for this run: the stand-in's checks (device.mock) call it."""
+        served(self, *asked)
 
     def submit_many(
         self, handler, firsts, counts, args=None, exclusive=False, part=False

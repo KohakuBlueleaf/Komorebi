@@ -30,13 +30,6 @@ LOADS = [0]  # the loads this process built
 SESSIONS = [0]  # the sessions this process made: a read may give zeros from the first
 
 
-def _served(run, *asked):
-    """session.run.served for a host run: what its dispatcher refuses a command."""
-    from komorebi.session.run import served  # a run imports this module
-
-    served(run, *asked)
-
-
 class Nothing(float):
     """What a mock run's call of no known shape gives: any field, call or item is
     itself, 0.0 as a number (JSON too), it iterates over nothing and is true."""
@@ -292,7 +285,7 @@ class Run:
         if self.host is None or self.parts or self.diverged:
             return
         self.host.check_programs = self.__dict__.get("check_programs", True)
-        _served(self.host, False, False, part, "submit_many")
+        self.host._served(False, False, part, "submit_many")
         ports = dict(self.host._ports)
         try:
             self.host._many_words(handler, firsts, counts, args, exclusive)
@@ -308,8 +301,7 @@ class Run:
             return
         if self.host is None or self.parts or self.diverged:
             return
-        _served(  # what the dispatcher refuses, before the words are checked
-            self.host,
+        self.host._served(  # what the dispatcher refuses, before the words are checked
             given.get("queued", False),
             given.get("cluster") is not None,
             given.get("part", False),
@@ -417,7 +409,7 @@ class Run:
         host = self.parts[0].host
         if host is not None:  # an island run's submit_many(part=True), first of all
             try:
-                _served(host, False, False, True, "submit_many")
+                host._served(False, False, True, "submit_many")
             except KomorebiError as error:
                 raise _named(error, 0) from None
         if host is not None:  # a class's handler: built for its rows' constants
