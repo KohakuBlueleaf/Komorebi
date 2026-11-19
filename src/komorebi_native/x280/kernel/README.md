@@ -86,6 +86,9 @@ over the whole depth. The kernel keeps B over the busy slots:
   line, a take goes before an earlier own command.
 - The core block counts the writes (`KMD_H_BOUND_WRITES`) and keeps the highest B written
   (`KMD_H_BOUND_HIGH`).
+- The kernel's own loops over the slots (the sweep of the acks, the deadline check and
+  the overlap test of `exclusive`) stop at B too, since no busy slot lies at or above it,
+  so neither the cores' pass nor the kernel's grows with the depth in use.
 
 ## Protocol with the host
 

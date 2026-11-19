@@ -170,10 +170,13 @@ The reader's start-up runs once and in this order:
 4. Sends the hello, if a mailbox is given.
 
 Then for each command it waits for the two token pages and scans the ring. A pass reads
-the slots up to the bound word (`KM_CONTROL_BOUND`, at most the depth). It reads a slot's
-deciding words (the landing words, `hdr` and `group`) in place and remembers the core's
-own waiting commands, so only the command it takes is copied: into `KM_CONTROL_JOB`. A
-pass that found a command reads the bound again and takes nothing if the bound changed.
+the slots up to the bound word (`KM_CONTROL_BOUND`, at most the depth). It reads a new
+slot's deciding words (the landing words, `hdr` and `group`) in place, and keeps for each
+slot the sequence it decided there: the core's own waiting commands go into a list ordered
+by sequence (`km::Waiting`), so a later pass reads only word 0 of their slots, as of an
+empty one, and its cost does not grow with how many wait. Only the command it takes is
+copied: into `KM_CONTROL_JOB`. A pass that found a command reads the bound again and takes
+nothing if the bound changed.
 It then hands a token to compute and to the writer. A pass takes the smallest sequence
 among the commands it saw, which does not order a core's commands: one that lands in a
 slot the pass has already read waits for the next pass

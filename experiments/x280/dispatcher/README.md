@@ -168,7 +168,26 @@ Every MAP run checked its tail with no job wrong. At 1,350 MHz NOP commands at d
 cost 1.98 microseconds before the bound (the table above) and 1.21 with it; at depth 64,
 2.60 in a run of the same day before it (host load 13) and 1.26 with it.
 
-What the bound leaves: the dispatcher's own sweep of the DONE table still goes over every
-slot up to the depth, so NOP commands at depth 48 and 64 still cost more than at depth 16
-(the cores' scan no longer does). Bounding the sweep as well lowers that but lets more
-MAP commands into flight; the two are to be weighed together.
+The bound left two costs: the dispatcher's sweep of the DONE table still went over every
+slot up to the depth, and a core's pass paid about 24 ticks for each of its own commands
+waiting (core 0 alone, `live.py bench --form multicast --trace 2000`: the gap between two
+takes rose by 0.0176 microseconds a command in flight from 4 to 64 at depth 64). Both are
+gone on 2026-11-19: the kernel's loops stop at the bound and the reader lists its own
+waiting commands (the gap is 1.405 microseconds at 4 to 64 in flight). The table again,
+main (413f03e0) against them, alternating in one card job, host load 3.7 to 25 (the rows
+at 1,350 MHz above 10), microseconds a command by the dispatcher, two runs:
+
+| depth | what | 1000 MHz, main | with them | 1,350 MHz, main | with them |
+|---|---|---|---|---|---|
+| 4 | NOP, 12 cores | 1.349 / 1.349 [3] | 1.343 / 1.344 [3] | 1.075 / 1.069 [3] | 1.063 / 1.071 [3] |
+| 4 | random MAP | 1.762 / 1.757 [4] | 1.748 / 1.748 [4] | 1.710 / 1.817 [4] | 1.699 / 1.716 [4] |
+| 16 | NOP, 12 cores | 1.431 / 1.430 [3] | 1.446 / 1.446 [3] | 1.105 / 1.110 [4] | 1.123 / 1.126 [3] |
+| 16 | random MAP | 1.746 / 1.730 [12, 11] | 1.748 / 1.721 [11, 12] | 1.653 / 1.659 [16] | 1.535 / 1.540 [16] |
+| 48 | NOP, 12 cores | 1.557 / 1.558 [3] | 1.445 / 1.443 [3] | 1.213 / 1.206 [8, 9] | 1.119 / 1.120 [5] |
+| 48 | random MAP | 1.826 / 1.824 [11, 10] | 1.741 / 1.736 [11, 12] | 1.676 / 1.682 [20] | 1.570 / 1.566 [17, 16] |
+| 64 | NOP, 12 cores | 1.622 / 1.619 [4] | 1.446 / 1.444 [3] | 1.264 / 1.261 [13] | 1.126 / 1.118 [7] |
+| 64 | random MAP | 1.988 / 1.921 [10] | 1.928 / 1.740 [11] | 1.680 / 1.684 [18] | 1.603 / 1.578 [17] |
+
+A larger depth no longer makes these rows slower; NOP at depth 16 costs 0.015 more than
+on main (not split here).
+
