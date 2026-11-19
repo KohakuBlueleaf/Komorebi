@@ -66,6 +66,8 @@ namespace td {
         // the dynamic run in flight (out's kTwRun* words) while its end is not yet owed
         uint32_t run = 0, run_slot = 0, run_group = 0, checks = 0, quiet_at = 0;
         bool run_on = false;
+        // the deadline being given up (out's inspect, abort and leave): its sequence
+        uint32_t giving = 0, giving_slot = 0, given_ups = 0;
         volatile tt_l1_ptr uint32_t* words = nullptr;
         volatile tt_l1_ptr uint32_t* events = nullptr;
         volatile tt_l1_ptr uint32_t* result = nullptr;
@@ -159,6 +161,56 @@ namespace td {
             }
         }
 
+        // Slot `slot` past its deadline: given up by out when it may be (one at a time,
+        // the others wait), else late (true: the run ends).
+        bool late_at(uint32_t slot, uint32_t flags) {
+            const uint32_t sequence = hand.record(slot)->sequence;
+            if ((flags & kRecordGiveUp) == 0) {
+                late_slot(slot);
+                return true;
+            }
+            if (giving == 0) {
+                giving = sequence;
+                giving_slot = slot;
+                hand.word(kTwGiveSlot) = slot;
+                asm volatile("" ::: "memory");
+                hand.word(kTwGiveSequence) = sequence;
+            }
+            return false;
+        }
+
+        // Out's answer to the give-up: every core left (TIMEOUT, the slot freed, the
+        // run goes on) or one did not (late). An ack that came first ends it as done.
+        void give_turn(uint64_t now) {
+            const uint32_t slot = giving_slot;
+            if (slots.seen[slot] == giving) {
+                giving = 0;
+                return;
+            }
+            if (hand.word(kTwGiveKept) == giving) {
+                giving = 0;
+                late_slot(slot);
+                return;
+            }
+            if (hand.word(kTwGivenUp) != giving) {
+                return;
+            }
+            volatile tt_l1_ptr Record* record = hand.record(slot);
+            const uint64_t at = wide(record->submitted_lo, record->submitted_hi);
+            hand.word(
+                kTwGiveUps
+            ) = ++given_ups;  // before the event the host reads it by
+            push(
+                record->request,
+                KM_EVENT_TIMEOUT | slot << 8 | (giving & KM_EVENT_SEQUENCE_MASK) << 16,
+                static_cast<uint32_t>(now > at ? now - at : 0)
+            );
+            slots.seen[slot] = giving;
+            hand.done()[slot] = giving;
+            last_event = now;
+            giving = 0;
+        }
+
         // One pass: the sweep, the events out posted, the host words when they changed.
         // Whether it did anything.
         bool pass(uint64_t now) {
@@ -193,10 +245,13 @@ namespace td {
                         last_event = now;
                         active = true;
                     },
-                    [&](uint32_t slot) {
-                        late_slot(slot);
+                    [&](uint32_t slot, uint32_t flags) {
+                        return late_at(slot, flags);
                     }
                 );
+            }
+            if (giving != 0) {
+                give_turn(now);
             }
             if (run_on || hand.word(kTwRunSequence) != run) {
                 run_turn(now);

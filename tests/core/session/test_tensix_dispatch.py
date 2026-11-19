@@ -132,7 +132,6 @@ def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
         (lambda run: run.reset_core(0), "recovery beyond the stop"),
-        (lambda run: run.inspect(), "the inspect"),
         (lambda run: run.upload(b"", "stream"), "stream/graph engines"),
         (lambda run: run.run_hostfed(None), "stream/graph engines"),
         (lambda run: run.thread_words(0), "X280 threads"),
@@ -251,7 +250,7 @@ def test_the_default_group_is_every_core_the_program_runs_on():
     assert x280._group(None) == (0, 120)
 
 
-def test_a_deadline_finds_no_command_given_up():
+def test_the_inspect_block_off_a_card_is_empty():
     read = blackhole_port().inspect(4)
     assert read["given_up"] == 0
     assert (
@@ -294,8 +293,7 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
 
 
 def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
-    with pytest.raises(NotServed, match="does not serve the inspect"):
-        tensix_run().inspect()
+    assert "inspect" not in tensix.REFUSED
     assert tensix.refusal("recovery").ability == "recovery beyond the stop"
     monkeypatch.delitem(tensix.REFUSED, "recovery")
     assert tensix.refusal("recovery") is None

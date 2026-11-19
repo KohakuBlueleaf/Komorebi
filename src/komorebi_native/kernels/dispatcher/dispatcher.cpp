@@ -11,6 +11,7 @@
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/tensors/km_transfer.hpp"
 #include "td_in.hpp"
+#include "td_inspect.hpp"
 #include "td_queue.hpp"
 #include "td_slots.hpp"
 #include "td_sources.hpp"
@@ -230,6 +231,63 @@ void kernel_main() {
         }
         return kNoFirst;
     };
+    // The inspect (a deadline's give-up, in's ask): a core read a pass, the abort word,
+    // each core's leave; the answer to in: kTwGivenUp or kTwGiveKept.
+    td::Inspect inspect;
+    inspect.block = block;
+    inspect.control = control;
+    uint32_t give_seen = 0;
+    const uint64_t leave_limit = (20000 * ticks_us) >> 16;  // the X280's 20 ms
+    auto inspect_turn = [&](uint64_t now) {
+        if (
+            inspect.kind == KMD_INSPECT_TIMEOUT &&
+            (!slots.busy(inspect.slot) || slots.last(inspect.slot) != inspect.sequence)
+        ) {
+            inspect.active = false;  // the command completed meanwhile
+            return;
+        }
+        if (inspect.leaving) {
+            const uint32_t worker = inspect.first + inspect.next;
+            if (
+                inspect.next < inspect.count &&
+                inspect.left(worker, core, block + kTbScratch)
+            ) {
+                inspect.next++;
+            }
+            if (inspect.next == inspect.count) {
+                inspect.active = false;
+                hand.word(kTwGivenUp) = inspect.sequence;
+            } else if (now > inspect.until) {
+                inspect.active = false;
+                hand.word(kTwGiveKept) = inspect.sequence;
+            }
+            return;
+        }
+        const uint32_t worker = inspect.first + inspect.next;
+        inspect.read_core(inspect.next, worker, core, cores[worker]);
+        inspect.header()[KMD_I_DONE] = ++inspect.next;
+        if (inspect.next < inspect.count) {
+            return;
+        }
+        inspect.mark(now);
+        if (inspect.kind == KMD_INSPECT_HOST) {
+            inspect.active = false;
+            post(
+                inspect.request,
+                KM_EVENT_PONG,
+                static_cast<uint32_t>(now - inspect.start)
+            );
+            return;
+        }
+        // the abort: the slot's word on every core (its aligned 16 bytes)
+        const uint32_t at = control + KM_CONTROL_ABORT + 4 * inspect.slot;
+        km::l1(at)[0] = inspect.sequence;
+        to_workers(at & ~15u, 16);
+        noc_async_write_barrier();
+        inspect.leaving = true;
+        inspect.next = 0;
+        inspect.until = now + leave_limit;
+    };
     // Command `line` to free `slot` for `request`, on cores `group` (the next sequence,
     // the landing words); its event comes from in once the group's leader acks.
     auto submit = [&](
@@ -248,6 +306,12 @@ void kernel_main() {
         const uint32_t at = control + KM_CONTROL_RING + slot * 64;
         volatile tt_l1_ptr uint32_t* to = km::l1(at);
         const uint32_t header = (line[1] & 0xFF00FFFFu) | slot << 16;
+        // a program's command may be given up at its deadline (inspect_may_give_up)
+        const uint32_t handler = line[1] & 0xFFu;
+        const bool give_up = (
+            silent == 0 && handler <= KM_HANDLER_USER_MAX &&
+            !KM_IS_DYNAMIC(messages, handler)
+        );
         to[0] = sequence;
         to[1] = header;
         to[2] = group;
@@ -271,7 +335,8 @@ void kernel_main() {
             request,
             sequence,
             group,
-            ((header >> 8) & KM_FLAG_RESULT ? td::kRecordResult : 0) | silent,
+            ((header >> 8) & KM_FLAG_RESULT ? td::kRecordResult : 0) | silent |
+                (give_up ? td::kRecordGiveUp : 0),
             started,
             ticks
         );  // fmt: skip
@@ -475,8 +540,15 @@ void kernel_main() {
                 pending_request = 0;
                 continue;
             }
+            // the host's inspect (run.inspect) of a group inside the cores
+            const bool own_inspect = (
+                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_INSPECT &&
+                count != 0 && first_core < ranks && count <= ranks - first_core
+            );
             // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
-            if (handler == KM_HANDLER_DEADLINE) {
+            if (own_inspect) {
+                // served below
+            } else if (handler == KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_DEADLINE;
             } else if (handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_HANDLER;
@@ -514,6 +586,12 @@ void kernel_main() {
                 caused++;
                 pending_request = 0;
                 rejected++;
+            } else if (own_inspect) {
+                if (!inspect.active) {  // one at a time: its PONG once the last is read
+                    inspect.begin(KMD_INSPECT_HOST, request, group, 0, sequence, now);
+                    caused++;
+                    pending_request = 0;
+                }
             } else if (handler == KM_HANDLER_PING) {
                 post(request, KM_EVENT_PONG, 0);
                 caused++;
@@ -593,6 +671,26 @@ void kernel_main() {
                 run_on = false;
                 active = true;
             }
+        }
+        // A deadline in asks to give up, once no inspect is being read.
+        const uint32_t give = hand.word(kTwGiveSequence);
+        if (give != give_seen && !inspect.active) {
+            give_seen = give;
+            const uint32_t slot = hand.word(kTwGiveSlot);
+            if (slots.busy(slot) && slots.last(slot) == give) {
+                inspect.begin(
+                    KMD_INSPECT_TIMEOUT,
+                    hand.record(slot)->request,
+                    slots.group[slot],
+                    slot,
+                    give,
+                    now
+                );
+            }
+        }
+        if (inspect.active) {
+            inspect_turn(now);
+            active = true;
         }
         TD_PART(5);
         // The queue's turn, as the X280's: of the first KM_QUEUE_LOOK jobs each with a

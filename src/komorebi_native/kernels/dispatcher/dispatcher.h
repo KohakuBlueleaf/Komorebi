@@ -48,7 +48,9 @@ constexpr uint32_t kTbHand = 6592;     // the hand-over between the two loops (k
 constexpr uint32_t kTbQueue = 9792;    // the job queue's jobs (td_queue.hpp)
 constexpr uint32_t kTbLines = 15936;   // a dynamic run's status lines, 16 bytes a core
 constexpr uint32_t kTbSample = 17984;  // in's first look at them: {sent, consumed} a core
-constexpr uint32_t kTbBytes = 19008;
+constexpr uint32_t kTbScratch = 19008;  // out's NoC reads of a core's live words
+constexpr uint32_t kTbInspect = 19072;  // the inspect block (KMD_LIM_INSPECT's form)
+constexpr uint32_t kTbBytes = 125632;
 
 // The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
 // and "in" (sweeps, writes the events and the host words).
@@ -83,6 +85,12 @@ constexpr uint32_t kTwRunQuiet = 22;  // in: the run's sequence once quiet, its 
 constexpr uint32_t kTwRunGave = 23;   // in: 1 + the core whose line said gave up
 constexpr uint32_t kTwRunChecks = 24;  // in: two-look checks
 constexpr uint32_t kTwRunQuietAt = 25;  // in: the wall clock's low word at the last quiet
+// A deadline's give-up: in asks it (the slot, then its sequence), out answers it.
+constexpr uint32_t kTwGiveSlot = 26;
+constexpr uint32_t kTwGiveSequence = 27;
+constexpr uint32_t kTwGivenUp = 28;   // out: the sequence once every core left it
+constexpr uint32_t kTwGiveKept = 29;  // out: the sequence a core did not leave (fatal)
+constexpr uint32_t kTwGiveUps = 30;   // in: the commands given up (KMD_H_GIVEN_UP)
 
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;
@@ -115,10 +123,9 @@ static_assert(kTdHeld + KM_CORES_MAX / 4 == kTdTag, "a byte a core");
 static_assert(kTbHand + kTxBytes == kTbQueue && kTbHand % 64 == 0, "the hand-over");
 static_assert(kTbQueue + KM_QUEUE_JOBS * kTqJobBytes == kTbLines, "the job queue");
 static_assert(kTbLines + 16 * KM_CORES_MAX == kTbSample, "the status lines");
-static_assert(
-    kTbSample + 8 * KM_CORES_MAX == kTbBytes && kTbBytes % 64 == 0, "the block"
-);
-static_assert(kTxWords + 4 * (kTwRunQuietAt + 1) <= kTxBytes, "the hand-over's words");
+static_assert(kTbSample + 8 * KM_CORES_MAX == kTbScratch, "the first looks");
+static_assert(kTbScratch + 64 == kTbInspect && kTbInspect % 64 == 0, "the inspect");
+static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

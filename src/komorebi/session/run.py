@@ -1149,7 +1149,9 @@ class Run(EventsMixin, StopMixin):
                 "keep no live words, so there is nothing to read; build it with "
                 "guard=True (the default)"
             )
-        first, count = (0, self.cores)
+        # every core of the program: the grid's, less a Tensix dispatcher's
+        tensix = dispatch_module.kind(self.port) == dispatch_module.TENSIX
+        first, count = (0, self.ranks if tensix else self.cores)
         if group is not None:  # flat ranks, of this island: the dispatcher reads cores
             low, high = self._part(*self._group(group))
             first, count = int(low), int(high - low)

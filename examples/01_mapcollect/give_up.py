@@ -154,7 +154,10 @@ def cost(run, args):
     out["waiting_for_a_command"] = sum(
         wheres(cores, rank)["reader"] == "next" for rank in range(len(cores))
     )
-    out |= {"microseconds": run.inspect_ticks / 50, "host_microseconds": round(host)}
+    out |= {
+        "microseconds": run.inspect_ticks / run.tick_mhz,
+        "host_microseconds": round(host),
+    }
     groups = [(args.first + args.count + 2 * index, 2) for index in range(4)]
     for kind in ("alone", "with_inspect"):
         took = []

@@ -55,7 +55,6 @@ REFUSED = {
     "islands": "islands and links",
     "trace": "the trace",
     "recovery": "recovery beyond the stop",
-    "inspect": "the inspect of a run",
     "engines": "stream/graph engines",
 }
 
@@ -440,8 +439,15 @@ class TensixDispatch:
         return {"running": self.is_open, "failed": "", "words": None}
 
     def inspect(self, count):
-        """A deadline's look (run.inspect itself is refused): no inspect block, no
-        command given up; the run stops with the timeout."""
-        h = abi.headers()
+        """While the kernel runs: its inspect block with its first `count` records and
+        its count of commands given up, read from its core's L1 (the X280's: LIM)."""
+        c, h = constants(), abi.headers()
         words = (h["KMD_INSPECT_HEAD"] + count * h["KMD_INSPECT_RECORD"]) // 4
-        return {"block": np.zeros(words, np.uint32), "given_up": 0}
+        if mock.active() or self.native is None:
+            return {"block": np.zeros(words, np.uint32), "given_up": 0}
+        read = self.card.module.read_l1
+        device = self.card.device
+        block = read(device, self.x, self.y, self.block + c["kTbInspect"], words)
+        at = self.block + c["kTbHand"] + c["kTxWords"] + 4 * c["kTwGiveUps"]
+        given_up = read(device, self.x, self.y, at, 1)[0]
+        return {"block": np.asarray(block, np.uint32), "given_up": int(given_up)}

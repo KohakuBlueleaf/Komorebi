@@ -740,7 +740,8 @@ refused by name (`km.NotServed`) at the load or the call.
 | Dynamic handlers (routed messages) | yes | yes (on one island, no X280 ranks) |
 | X280 threads and X280 ports | yes | no |
 | Islands and links | yes | no |
-| The trace, `run.inspect`, the reset and reload of one core | yes | no |
+| A command given up at its deadline, the run going on; `run.inspect` | yes | yes (no reset of a core) |
+| The trace, the reset and reload of one core | yes | no |
 
 **On one Wormhole chip**, with the dispatcher on a Tensix core (run on single chips of a
 Galaxy Wormhole box, tt-metal at the pinned version):

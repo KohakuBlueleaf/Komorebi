@@ -423,14 +423,19 @@ whose session and tensors take the calls below with the same names and keywords
   and event ring; the Tensix dispatcher's event times are in its chip's wall clock
   (`Event.tick_mhz` ticks a microsecond) and it needs the host channel, its area just
   past the session's region. It serves plain commands: `submit`, `submit_many`, `wait`,
-  `drain`, events, result words, exclusive commands, deadlines up to the stop, EXIT and
+  `drain`, events, result words, exclusive commands, deadlines, EXIT and
   the run's end, `session.read` and `write` while a run is loaded, chains (`run.chain`),
   overlays and add-ons (`Program.overlay`, `run.addon`), and several programs (a dict or
   list to `load`, `run.load`: a load waits until no command in flight shares a core with
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
   (`km.NotServed`), at the load or the call: X280 threads, islands and links, stream
-  and graph engines, the trace, the inspect and recovery beyond the stop. It serves the
+  and graph engines, the trace, and the reset of a core (`recover`, `run.reset_core`).
+  It gives a program's command up at its deadline as the X280 dispatcher does when it
+  keeps no reset list: it reads the group (the deadline's inspect), writes the slot's
+  abort word, and once every core left the command the event is a `CommandTimeout`
+  with `given_up` and the run goes on; a core that has not left within 20 ms ends the
+  run. It serves `run.inspect`, read from its core's L1. It serves the
   job queue (`queued=True`) as the X280 dispatcher does, and dynamic runs on one island
   (no X280 ranks): the cores' status lines land in its core's L1, it ends a quiet run
   with the end command and turns a line that gave up into the run's deadline
@@ -819,7 +824,8 @@ commands given up. `trace` holds the entries the trace has (empty without a trac
 `read` is True for a core that was read, and `reset` is a bool, True for a core the
 dispatcher reset when a give-up ended. A core the dispatcher could not reach is
 `{"core": i, "read": False, "reset": reset}`. `run.inspect_ticks` is how long the read
-took, in the X280's 50 MHz timer. `komorebi.errors.describe_core(core)` gives one such
+took, in its dispatcher's ticks (`run.tick_mhz` a microsecond: the X280's 50 MHz
+timer). `komorebi.errors.describe_core(core)` gives one such
 dict as one line of text (its index, its give-ups, its kernels' runtime waits), as a
 `CommandTimeout` names its cores.
 
