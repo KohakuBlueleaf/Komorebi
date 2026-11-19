@@ -31,6 +31,24 @@ namespace flash_class {
 
     static_assert(BLOCK_KEYS % SUB_CHUNK == 0, "key block must be whole sub-chunks");
 
+    // A Dst section cleared before reuse: at the acquire on Blackhole (its math_clear
+    // pair), at the release by the pack thread on Wormhole (the plain pair).
+    ALWI void acquire_cleared() {
+#ifdef ARCH_BLACKHOLE
+        tile_regs_acquire_math_clear();
+#else
+        tile_regs_acquire();
+#endif
+    }
+
+    ALWI void release_cleared() {
+#ifdef ARCH_BLACKHOLE
+        tile_regs_release_math_clear();
+#else
+        tile_regs_release();
+#endif
+    }
+
     // Q's buffer and the output's: the stream's halves, set by the bodies.
     inline uint32_t cb_queries = 0, cb_output = 0;
 
@@ -155,7 +173,7 @@ namespace flash_class {
         uint32_t cb_probabilities,
         uint32_t cb_accumulator>
     inline void constant_tiles() {
-        tile_regs_acquire_math_clear();
+        acquire_cleared();
         math_vector_begin();
         MATH((math::clear_dst_reg_addr()));
         MATH((flash::const_lanes()));
@@ -177,7 +195,7 @@ namespace flash_class {
         pack_tile(1, cb_causal);
         cb_push_back(cb_causal, 1);
 #endif
-        tile_regs_release_math_clear();
+        release_cleared();
         cb_wait_front(cb_ones, 1);
 #ifdef FLASH_CAUSAL
         cb_wait_front(cb_causal, 1);
@@ -204,7 +222,7 @@ namespace flash_class {
         // the pack thread.
         static void score(const Step& step) {
             const bool first = step.chunk == 0;
-            tile_regs_acquire_math_clear();
+            acquire_cleared();
             // First chunk: any slot (defines every state row).
             reconfig_data_format_srca(cb_keys_values, cb_state);
             copy_init(cb_state);
@@ -254,7 +272,7 @@ namespace flash_class {
             }
             pack_format(true);
             pack_tile<true>(3, cb_state, slot(step.row, step.chunk));
-            tile_regs_release_math_clear();
+            release_cleared();
             cb_push_back(cb_probabilities, SUB_CHUNK);
             cb_push_back(cb_state_token, 1);
         }
@@ -336,7 +354,7 @@ namespace flash_class {
                                      : columns)
                             : 0
                     );
-                    tile_regs_acquire_math_clear();
+                    acquire_cleared();
                     pv_columns(
                         step,
                         first_column,
@@ -355,11 +373,11 @@ namespace flash_class {
                             step.row * ACCUMULATOR_COLUMNS + first_column + tile
                         );
                     }
-                    tile_regs_release_math_clear();
+                    release_cleared();
                 }
             } else {
                 for (uint32_t column = 0; column < ACCUMULATOR_COLUMNS; ++column) {
-                    tile_regs_acquire_math_clear();
+                    acquire_cleared();
                     pv_columns(
                         step,
                         column,
@@ -385,7 +403,7 @@ namespace flash_class {
                     pack_tile<true>(
                         0, cb_accumulator, step.row * ACCUMULATOR_COLUMNS + column
                     );
-                    tile_regs_release_math_clear();
+                    release_cleared();
                 }
             }
             cb_pop_front(cb_probabilities, SUB_CHUNK);
@@ -407,7 +425,7 @@ namespace flash_class {
                 const uint32_t columns = (
                     VALUE_TILES - first_column < 3 ? VALUE_TILES - first_column : 3
                 );
-                tile_regs_acquire_math_clear();
+                acquire_cleared();
                 reconfig_data_format_srca(cb_keys_values, cb_accumulator);
                 copy_init(cb_accumulator);
                 for (uint32_t tile = 0; tile < columns; ++tile) {
@@ -429,7 +447,7 @@ namespace flash_class {
                 for (uint32_t tile = 0; tile < columns; ++tile) {
                     pack_tile(tile, cb_output);
                 }
-                tile_regs_release_math_clear();
+                release_cleared();
             }
         }
 

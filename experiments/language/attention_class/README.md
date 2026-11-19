@@ -118,8 +118,17 @@ its compute still held the last record's padding (its blocks no multiple of the 
 and its wait for an empty buffer sent the sender a DONE marker counted from that
 padding. A receiver now sends no marker before its broadcast has begun.
 
+On Wormhole chip 0 (2026-11-19, 79 cores beside the Tensix dispatcher, 1,000 MHz):
+the same bounds hold (relative RMS 5.16e-3, largest 7.15e-3); a call takes 182 us,
+177 us wall a call in the chain (173 on the chip). The plan is made at the class's
+broadcast length (10): on that grid the plan's own would be 5, and a plan the class is
+not built for is refused by name. 28 of the 16,777,216 O words differ from card 0's
+by one bf16 unit: Wormhole's reciprocal starts from its own estimate, not
+Blackhole's `SFPARECIP` table.
+
 ```
 python attention_chain.py
+python attention_chain.py --save o.npy   # every call's O, for a comparison
 ```
 
 ```bash

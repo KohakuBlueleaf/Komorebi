@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from attention import Attention
+from attention import DT, DV, KB, LENGTH, WINDOW, Attention, R
 
 import komorebi as km
 
@@ -27,7 +27,9 @@ RMS_BOUND, MAX_BOUND = 1.5e-2, 6e-2  # projects/attention/run.py's
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--calls", type=int, default=32)
-    calls = parser.parse_args().calls
+    parser.add_argument("--save", default=None, help="every call's O to this .npy")
+    args = parser.parse_args()
+    calls = args.calls
     batches, heads, kv_heads, length, head_dim, causal = pl.SHAPES["causal64"]
     sizes = (batches, heads, kv_heads, length, length, head_dim)
     call = pl.dims(*sizes, head_dim, causal)
@@ -36,7 +38,12 @@ def main():
     report = {"shape": "causal64", "calls": calls}
     index = power.visible_card()
     with km.Session() as session:
-        plan, grid = card.card_plan(session, call)  # over the run's ranks
+        # Over the run's ranks, at the class's broadcast length (its own grid's may
+        # differ: 5 on a Wormhole chip's 7 x 10 beside its dispatcher).
+        plan, grid = card.card_plan(session, call, length=LENGTH)
+        made = (plan.r, plan.kb, plan.window, plan.length, call.dt, call.dvt)
+        if made != (R, KB, WINDOW, LENGTH, DT, DV):
+            raise SystemExit(f"plan {made}: the class is of {(R, KB, WINDOW, LENGTH)}")
         tables = card.table_tensor(session, pl.tables(plan))
         zeros = np.zeros((*data[0][0].shape[:-1], head_dim), np.float32)
         ts = [[card.bf16_tensor(session, x) for x in qkv] for qkv in data]
@@ -89,6 +96,8 @@ def main():
         run.stop()
         report["kernel"] = run.result()["error_name"]
         got = [o.read() for o in os_]
+    if args.save:  # for a comparison between chips, word for word
+        np.save(args.save, np.stack([np.asarray(o, np.float32) for o in got]))
     worst = {"rms_rel": 0.0, "max_rel": 0.0}
     group_size = heads // kv_heads
     rows = np.arange(length)
