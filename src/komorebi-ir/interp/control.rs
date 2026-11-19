@@ -1,6 +1,7 @@
-//! A loaded module and what runs on it: the invocations a host makes, in the order it
-//! makes them, each run whole before the next; the control programs, whose
-//! invocations run in the order the program makes them; and the run's report.
+//! A loaded module and what runs on it: the invocations a host makes (a handler, a
+//! chain, or a dynamic run in rounds of messages), in the order it makes them, each
+//! run whole before the next; the control programs, whose invocations run in the
+//! order the program makes them; and the run's report.
 //!
 //! An invocation of a handler runs its body once on every worker of its group. The
 //! workers' frames are stepped one after another in rank order; each runs until it
@@ -15,8 +16,8 @@ use std::fmt::{self, Write as _};
 use super::delivery;
 use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Accesses, Collective, Context, Frame, Lines, Outcome, Place, Request, Shape,
-    Shapes, Stop, Thread, Value, Worker,
+    bodies, constant, Accesses, Collective, Context, Frame, Lines, Mail, Outcome, Place, Request,
+    Shape, Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, CallArg, Module};
@@ -32,6 +33,9 @@ pub struct Options {
     pub step_budget: u64,
     /// The bytes of a worker's memory, which a `fit` parameter fills.
     pub worker_memory: u64,
+    /// The bound on a dynamic run's new work: a `send` while this many messages are
+    /// live is refused. None: no bound.
+    pub live_bound: Option<u64>,
 }
 
 impl Default for Options {
@@ -39,6 +43,7 @@ impl Default for Options {
         Options {
             step_budget: 1 << 32,
             worker_memory: 1 << 20,
+            live_bound: None,
         }
     }
 }
@@ -455,6 +460,208 @@ impl<'m> Machine<'m> {
         End::Completed(None)
     }
 
+    /// A dynamic run: `seed` on every worker in rank order (round 0), then rounds
+    /// until no message is left. In each round every worker, in rank order, takes the
+    /// messages it holds at the round's start: its offer slots by sender rank, then
+    /// its queue in (sender rank, sender's send count) order, each by the body of its
+    /// type. What is sent in a round is delivered at the round's end. Each body must
+    /// consume or forward its message exactly once. The first fault, by (round, rank,
+    /// order in the round), ends the run; the rest is dropped.
+    fn invoke_run(
+        &mut self,
+        p: ProgramId,
+        r: RunId,
+        args: &[Arg],
+        (first, count): (usize, usize),
+        invoke_params: &[(&str, Scalar)],
+        accesses: &mut Accesses,
+    ) -> End {
+        let invalid = |what: String| End::Invalid { what, at: None };
+        let module = self.module;
+        let Some(run) = module
+            .programs
+            .get(p.0 as usize)
+            .and_then(|x| x.runs.get(r.0 as usize))
+        else {
+            return invalid("no such run".into());
+        };
+        if count == 0
+            || first
+                .checked_add(count)
+                .is_none_or(|end| end > self.workers.len())
+        {
+            return End::Failed {
+                reason: Failure::Capacity,
+                at: None,
+            };
+        }
+        let params = match self.invoke_params(invoke_params) {
+            Ok(x) => x,
+            Err(end) => return end,
+        };
+        let values = match self.arg_values(args, &run.params) {
+            Ok(v) => v,
+            Err(what) => return invalid(what),
+        };
+        let Some(group) = self.workers.get_mut(first..first + count) else {
+            return invalid("a worker past the loaded ones".into());
+        };
+        let mut lines = Lines::new();
+        let mut mail = Mail::new(count, run.peers.clone(), self.options.live_bound);
+        let mut cx = Context {
+            module,
+            shapes: &self.shapes,
+            params: &params,
+            heap: &mut self.heap,
+            lines: &mut lines,
+            accesses,
+            mail: &mut mail,
+        };
+        let budget = self.options.step_budget;
+        let mut spent = vec![0u64; count];
+        let place = |rank| Place {
+            rank,
+            size: count,
+            first,
+            grid: None,
+        };
+        let failed = |rank: usize, fault: Fault, at: (BodyRef, InstId)| match fault {
+            Fault::Failure(reason) => End::Failed {
+                reason,
+                at: Some((rank, at.0, at.1)),
+            },
+            Fault::Undefined(what) => End::Invalid {
+                what,
+                at: Some((rank, at.0, at.1)),
+            },
+        };
+        let seed = BodyRef::Seed(p, r);
+        for (rank, worker) in group.iter_mut().enumerate() {
+            let left = budget.saturating_sub(spent.get(rank).copied().unwrap_or(0));
+            match run_body(
+                &mut cx,
+                worker,
+                place(rank),
+                seed,
+                values.clone(),
+                None,
+                left,
+            ) {
+                Ok(steps) => add(&mut spent, rank, steps),
+                Err((fault, at)) => return failed(rank, fault, at),
+            }
+        }
+        let mut queues: Vec<Vec<Value>> = vec![Vec::new(); count];
+        loop {
+            // what was sent last round arrives, by sender rank and send count
+            let mut letters = std::mem::take(&mut cx.mail.outbox);
+            letters.sort_by_key(|l| (l.from, l.seq));
+            for l in letters {
+                if let Some(q) = queues.get_mut(l.to) {
+                    q.push(l.message);
+                }
+            }
+            if queues.iter().all(Vec::is_empty) && cx.mail.slots.is_empty() {
+                return if cx.mail.live == 0 {
+                    End::Completed(None)
+                } else {
+                    invalid("a message neither consumed nor forwarded".into())
+                };
+            }
+            // each worker takes what it holds at the round's start
+            let mut held: Vec<Vec<Value>> = Vec::with_capacity(count);
+            for (rank, queue) in queues.iter_mut().enumerate() {
+                let mut mine: Vec<Value> = Vec::new();
+                let slots: Vec<(usize, usize)> = cx
+                    .mail
+                    .slots
+                    .keys()
+                    .filter(|(_, to)| *to == rank)
+                    .copied()
+                    .collect();
+                for key in slots {
+                    if let Some(m) = cx.mail.slots.remove(&key) {
+                        mine.push(m);
+                    }
+                }
+                mine.append(queue);
+                held.push(mine);
+            }
+            for (rank, (worker, messages)) in group.iter_mut().zip(held).enumerate() {
+                for m in messages {
+                    let Value::Message(ty, _) = &m else {
+                        return invalid("a letter that is not a message".into());
+                    };
+                    let Some(k) = run.on_message.iter().position(|(t, _)| t == ty) else {
+                        return invalid("a message no body of the run receives".into());
+                    };
+                    let at = BodyRef::On(p, r, k as u32);
+                    cx.mail.handled = 0;
+                    let left = budget.saturating_sub(spent.get(rank).copied().unwrap_or(0));
+                    match run_body(
+                        &mut cx,
+                        worker,
+                        place(rank),
+                        at,
+                        values.clone(),
+                        Some(m),
+                        left,
+                    ) {
+                        Ok(steps) => add(&mut spent, rank, steps),
+                        Err((fault, at)) => return failed(rank, fault, at),
+                    }
+                    if cx.mail.handled != 1 {
+                        let what = if cx.mail.handled == 0 {
+                            "a message body that neither consumes nor forwards its message"
+                        } else {
+                            "a message body that consumes or forwards its message twice"
+                        };
+                        // at the body's end
+                        let end = run
+                            .on_message
+                            .get(k)
+                            .map_or(0, |(_, b)| b.insts.len() as u32);
+                        return failed(rank, Fault::undefined(what), (at, InstId(end)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The parameters of one invocation: the module's, with the `@bind(invoke)` ones
+    /// the host gives (a parameter not given keeps its declared value).
+    fn invoke_params(&self, invoke_params: &[(&str, Scalar)]) -> Result<Vec<Option<Scalar>>, End> {
+        let invalid = |what: String| End::Invalid { what, at: None };
+        let mut params = self.params.clone();
+        for (i, p) in self.module.params.iter().enumerate() {
+            let Binding::Invoke(declared) = p.binding else {
+                continue;
+            };
+            let Some((_, v)) = invoke_params.iter().find(|(n, _)| *n == p.name) else {
+                continue;
+            };
+            let (Some(given), Ok(Scalar::Int(_, top))) = (v.as_i128(), constant(declared)) else {
+                return Err(invalid(format!(
+                    "a value of {} that is not an integer",
+                    p.name
+                )));
+            };
+            if v.format() != Some(p.ty.format()) {
+                return Err(invalid(format!("a value of {} of another type", p.name)));
+            }
+            if given < 0 || given as u128 > u128::from(top) {
+                return Err(End::Failed {
+                    reason: Failure::OverBound,
+                    at: None,
+                });
+            }
+            if let Some(slot) = params.get_mut(i) {
+                *slot = Some(*v);
+            }
+        }
+        Ok(params)
+    }
+
     /// The arguments as a body reads them, each checked against its parameter.
     fn arg_values(&self, args: &[Arg], params: &[Type]) -> Result<Vec<Value>, String> {
         if args.len() != params.len() {
@@ -522,6 +729,7 @@ impl<'m> Machine<'m> {
                     heap: &mut self.heap,
                     lines: &mut lines,
                     accesses: &mut Accesses::default(),
+                    mail: &mut Mail::default(),
                 };
                 // a control program has no worker: it reads no state and no identity
                 let mut nobody = Worker {
@@ -738,8 +946,8 @@ impl<'m> Machine<'m> {
             Entry::Chain(p, c) => {
                 return self.invoke_chain(p, c, args, (first, count), invoke_params)
             }
-            Entry::Run(..) => {
-                return invalid(format!("{name}: a run is not run by this interpreter yet"))
+            Entry::Run(p, r) => {
+                return self.invoke_run(p, r, args, (first, count), invoke_params, accesses)
             }
         };
         let module = self.module;
@@ -770,30 +978,10 @@ impl<'m> Machine<'m> {
             }
         };
         // the parameters this invocation binds
-        let mut params = self.params.clone();
-        for (i, p) in module.params.iter().enumerate() {
-            let Binding::Invoke(declared) = p.binding else {
-                continue;
-            };
-            let Some((_, v)) = invoke_params.iter().find(|(n, _)| *n == p.name) else {
-                continue;
-            };
-            let (Some(given), Ok(Scalar::Int(_, top))) = (v.as_i128(), constant(declared)) else {
-                return invalid(format!("a value of {} that is not an integer", p.name));
-            };
-            if v.format() != Some(p.ty.format()) {
-                return invalid(format!("a value of {} of another type", p.name));
-            }
-            if given < 0 || given as u128 > u128::from(top) {
-                return End::Failed {
-                    reason: Failure::OverBound,
-                    at: None,
-                };
-            }
-            if let Some(slot) = params.get_mut(i) {
-                *slot = Some(*v);
-            }
-        }
+        let params = match self.invoke_params(invoke_params) {
+            Ok(x) => x,
+            Err(end) => return end,
+        };
         let values = match self.arg_values(args, &handler.params) {
             Ok(v) => v,
             Err(what) => return invalid(what),
@@ -817,6 +1005,7 @@ impl<'m> Machine<'m> {
             heap: &mut self.heap,
             lines: &mut lines,
             accesses,
+            mail: &mut Mail::default(),
         };
         let place = |rank| Place {
             rank,
@@ -844,6 +1033,41 @@ impl<'m> Machine<'m> {
                 (Some(_), _) => invalid("a result of another type".into()),
             },
         }
+    }
+}
+
+/// Adds a body's steps to its rank's count.
+fn add(spent: &mut [u64], rank: usize, steps: u64) {
+    if let Some(s) = spent.get_mut(rank) {
+        *s = s.saturating_add(steps);
+    }
+}
+
+/// Runs one body of a dynamic run on a worker, to its end: the steps it took, or its
+/// fault and where. A run's body waits for nothing: a collective, an `arrive` or a
+/// control program's request in it is not a program.
+fn run_body(
+    cx: &mut Context<'_>,
+    worker: &mut Worker,
+    place: Place,
+    at: BodyRef,
+    args: Vec<Value>,
+    arrived: Option<Value>,
+    budget: u64,
+) -> Result<u64, (Fault, (BodyRef, InstId))> {
+    let frame = Frame::new(cx.module, at, args).map_err(|f| (f, (at, InstId(0))))?;
+    let frame = match arrived {
+        Some(m) => frame.with_arrived(m),
+        None => frame,
+    };
+    let mut thread = Thread::new(frame);
+    match thread.run(worker, place, cx, budget) {
+        Stop::Returned(_) => Ok(thread.steps()),
+        Stop::Faulted { fault, at } => Err((fault, at)),
+        Stop::Meeting { at, .. } | Stop::Waiting { at } | Stop::Control { at, .. } => Err((
+            Fault::undefined("a collective, an `arrive` or a request in a run's body"),
+            at,
+        )),
     }
 }
 

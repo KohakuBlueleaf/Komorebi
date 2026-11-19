@@ -852,3 +852,182 @@ fn a_past_is_proven_worker_by_worker() {
         }
     );
 }
+
+fn scalars(run: &Machine<'_>, worker: usize, member: usize) -> Vec<Scalar> {
+    match &run.workers[worker].state[0][member].data {
+        komorebi_ir::interp::memory::MemberData::Scalars(v) => v.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn t9_visits_walk_the_ranks_and_end_at_worker_0() {
+    let m = module(&lesson("t09_walk"));
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("Walk.walk", &[Arg::Scalar(u32s(2))], (0, 4), &[]),
+        End::Completed(None)
+    );
+    // eight Visits, two from each rank, each ends as one Done at worker 0
+    assert_eq!(scalars(&run, 0, 0)[0], u32s(8));
+    // the last Done in (sender rank, send count) order is rank 3's second: Visit 0
+    // from rank 3, which passed ranks 3, 0, 1, 2 and so totals 6
+    assert_eq!(scalars(&run, 0, 0)[1], u32s(6));
+    for w in 1..4 {
+        assert_eq!(scalars(&run, w, 0), [u32s(0), u32s(0)], "worker {w}");
+    }
+    // with room for seven live messages, the eighth `send` of the seed (rank 3's
+    // second) is refused, and nothing uses its result
+    let options = Options {
+        live_bound: Some(7),
+        ..Options::default()
+    };
+    let mut run = Machine::load(&m, 4, &[], options).expect("loads");
+    let End::Failed {
+        reason: Failure::SendRefused,
+        at: Some((3, komorebi_ir::program::BodyRef::Seed(..), _)),
+    } = run.invoke("Walk.walk", &[Arg::Scalar(u32s(2))], (0, 4), &[])
+    else {
+        panic!("the eighth send is refused");
+    };
+}
+
+#[test]
+fn t15_a_job_passes_along_the_ranks() {
+    let m = module(&lesson("t15_handoff"));
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (8, 1), |_, _| 1.0);
+    let args = [Arg::Tensor(x), Arg::Scalar(u32s(8))];
+    assert_eq!(
+        run.invoke("Relay.pass", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    // four hops, each adds 1 to every tile
+    for i in 0..8 {
+        assert!(all(&tile_f64(&run, x, i), 5.0), "tile {i}");
+    }
+    // the job reached rank r with hops 3 - r, and wrote its worker's id there
+    for w in 0..4 {
+        let done = scalars(&run, w, 0);
+        assert_eq!(done[3 - w], u32s(w as u64), "worker {w}");
+    }
+    // the halo: each rank doubles its two tiles, then sums its neighbour's two
+    assert_eq!(
+        run.invoke("Relay.halo", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    for w in 0..4 {
+        let komorebi_ir::interp::memory::MemberData::Tiles(edge) = &run.workers[w].state[0][1].data
+        else {
+            panic!("tiles");
+        };
+        assert!(all(&edge[0].to_f64().expect("floats"), 20.0), "worker {w}");
+    }
+}
+
+const RING: &str = "module ring
+
+tile [32, 32]
+format f32
+
+requires {
+    dynamic
+}
+
+program R {
+    message Tick { step: u32, gap: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        seen: u32[1]
+    }
+
+    run ring(gap: u32) @dynamic @peers(offsets = [1]) {
+        seed {
+            seen.zero()
+            if worker.is_leader {
+                let went = offer(Tick { step: 0, gap: gap }, to = (worker.rank + gap) % group.size)
+            }
+        }
+
+        on Tick(m) {
+            seen.bump(0)
+            if m.step < 5 {
+                let went = offer(
+                    Tick { step: m.step + 1, gap: m.gap },
+                    to = (worker.rank + m.gap) % group.size,
+                )
+            }
+            consume m
+        }
+    }
+
+    run keep(n: u32) @dynamic {
+        seed {
+            seen.zero()
+            send(Tick { step: 0, gap: n }, to = worker.rank)
+        }
+
+        on Tick(m) {
+            seen.bump(0)
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn an_offer_goes_to_a_declared_peer_only() {
+    let m = module(RING);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    // a tick goes round the ring six times: ranks 1, 2, 3, 0, 1, 2
+    assert_eq!(
+        run.invoke("R.ring", &[Arg::Scalar(u32s(1))], (0, 4), &[]),
+        End::Completed(None)
+    );
+    let seen: Vec<Scalar> = (0..4).map(|w| scalars(&run, w, 0)[0]).collect();
+    assert_eq!(seen, [u32s(1), u32s(2), u32s(2), u32s(1)]);
+    // rank 2 is no peer of rank 0
+    let End::Failed {
+        reason: Failure::NotAPeer,
+        at: Some((0, _, _)),
+    } = run.invoke("R.ring", &[Arg::Scalar(u32s(2))], (0, 4), &[])
+    else {
+        panic!("an offer to a rank that is not a peer");
+    };
+    assert_eq!(
+        run.invoke("R.keep", &[Arg::Scalar(u32s(0))], (0, 4), &[]),
+        End::Completed(None)
+    );
+}
+
+#[test]
+fn a_message_body_must_handle_its_message_once() {
+    use komorebi_ir::program::body::Op;
+    use komorebi_ir::types::MemberId;
+    // the checker refuses both on every path (K501): the body is edited after Lower
+    let m = module(RING);
+    let insts = |m: &Module| m.programs[0].runs[1].on_message[0].1.insts.clone();
+    let consume = insts(&m)
+        .iter()
+        .position(|i| matches!(i.op, Op::Consume(_)))
+        .expect("a consume");
+    let bump = insts(&m)
+        .iter()
+        .position(|i| matches!(i.op, Op::Bump(..)))
+        .expect("a bump");
+    let mut none = m.clone();
+    none.programs[0].runs[1].on_message[0].1.insts[consume].op = Op::ZeroState(MemberId(0));
+    let mut twice = m.clone();
+    twice.programs[0].runs[1].on_message[0].1.insts[bump].op = insts(&m)[consume].op.clone();
+    for (m, said) in [(none, "neither consumes nor forwards"), (twice, "twice")] {
+        let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+        let End::Invalid {
+            what,
+            at: Some((0, komorebi_ir::program::BodyRef::On(..), _)),
+        } = run.invoke("R.keep", &[Arg::Scalar(u32s(0))], (0, 4), &[])
+        else {
+            panic!("{said}");
+        };
+        assert!(what.contains(said), "{what}");
+    }
+}

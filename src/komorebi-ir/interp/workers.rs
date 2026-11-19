@@ -19,8 +19,8 @@ use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
 use crate::types::{
-    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, MemberId, ProgramId, ReduceOp, SplitBy,
-    Type, UnaryOp,
+    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, MemberId, MessageId, Peers, ProgramId,
+    ReduceOp, SplitBy, Type, UnaryOp,
 };
 
 /// A value a body computes with, as the interpreter holds it.
@@ -59,6 +59,8 @@ pub enum Value {
     /// What a collective gives a rank it does not deliver to (reading R34, Q1): any
     /// use of it is an invalid program.
     Absent,
+    /// A message of a dynamic run: its type and its fields, in the type's order.
+    Message(MessageId, Vec<Scalar>),
     /// `group(first, count)` in a control program: the first worker and the count.
     Group(usize, usize),
     /// What `invoke` yields in a control program: the invocation's number in the order
@@ -411,6 +413,67 @@ pub struct Context<'a> {
     pub lines: &'a mut Lines,
     /// The tiles the invocation read, and those it opened for writing.
     pub accesses: &'a mut Accesses,
+    /// A dynamic run's messages in flight.
+    pub mail: &'a mut Mail,
+}
+
+/// A message on its way: from which rank, its number among that rank's sends, and to
+/// which rank.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Letter {
+    /// The sender's rank.
+    pub from: usize,
+    /// How many messages the sender had sent before it.
+    pub seq: u64,
+    /// The receiver's rank.
+    pub to: usize,
+    /// The message.
+    pub message: Value,
+}
+
+/// A dynamic run's delivery state: what was sent this round, the offer slots, the
+/// live count, and how the body that runs handles its message.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mail {
+    /// Sent or forwarded this round, in the order they were.
+    pub outbox: Vec<Letter>,
+    /// The offer slots, by (sender, receiver).
+    pub slots: BTreeMap<(usize, usize), Value>,
+    /// Messages sent or offered and not yet consumed.
+    pub live: u64,
+    /// The bound on new work: a `send` with `live` at it is refused. None: no bound.
+    pub bound: Option<u64>,
+    /// Each rank's count of messages sent, forwarded or offered.
+    pub sent: Vec<u64>,
+    /// How many times the running body consumed or forwarded its message.
+    pub handled: u32,
+    /// The run's `@peers`.
+    pub peers: Peers,
+}
+
+impl Mail {
+    /// The delivery state of a run on `size` ranks.
+    pub fn new(size: usize, peers: Peers, bound: Option<u64>) -> Mail {
+        Mail {
+            sent: vec![0; size],
+            peers,
+            bound,
+            ..Mail::default()
+        }
+    }
+
+    fn post(&mut self, from: usize, to: usize, message: Value) {
+        let seq = self.sent.get(from).copied().unwrap_or(0);
+        if let Some(n) = self.sent.get_mut(from) {
+            *n += 1;
+        }
+        self.outbox.push(Letter {
+            from,
+            seq,
+            to,
+            message,
+        });
+    }
 }
 
 /// The tiles an invocation touched, each as (rank, tensor, tile): those a rank read,
@@ -488,9 +551,17 @@ pub struct Frame {
     /// The lines this frame sends on, each with the instruction that closes the block
     /// that made it (none: the body's end).
     sending: Vec<(Option<usize>, LineKey)>,
+    /// The message that arrived, in an `on M(m)` body.
+    arrived: Option<Value>,
 }
 
 impl Frame {
+    /// The frame, given the message that arrived for its `on M(m)` body.
+    pub fn with_arrived(mut self, message: Value) -> Frame {
+        self.arrived = Some(message);
+        self
+    }
+
     /// A frame at the start of the body `at`, given its arguments.
     pub fn new(module: &Module, at: BodyRef, args: Vec<Value>) -> Result<Frame, Fault> {
         let body =
@@ -505,6 +576,7 @@ impl Frame {
             result_to: None,
             made: 0,
             sending: Vec::new(),
+            arrived: None,
         })
     }
 }
@@ -761,6 +833,25 @@ fn operand_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
         .ok_or_else(|| Fault::undefined(format!("v{} read before it is defined", v.0)))
 }
 
+fn message_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
+    match get(frame, v)? {
+        m @ Value::Message(..) => Ok(m.clone()),
+        other => Err(Fault::undefined(format!(
+            "{} where a message is read",
+            kind(other)
+        ))),
+    }
+}
+
+/// A receiver's rank: one of the group, else `out_of_range`.
+fn rank_to(frame: &Frame, v: ValueId, place: Place) -> Result<usize, Fault> {
+    let to = index(frame, v)?;
+    if to >= place.size {
+        return Err(Failure::OutOfRange.into());
+    }
+    Ok(to)
+}
+
 fn handle(frame: &Frame, v: ValueId) -> Result<usize, Fault> {
     match get(frame, v)? {
         Value::Handle(h) => Ok(*h),
@@ -889,6 +980,7 @@ fn kind(v: &Value) -> &'static str {
         Value::Absent => "a value this rank was not given",
         Value::Broadcast { .. } => "a broadcast",
         Value::Group(..) => "a group",
+        Value::Message(..) => "a message",
         Value::Handle(_) => "an invocation's handle",
         Value::Outcome(_) => "an outcome",
     }
@@ -1575,6 +1667,97 @@ fn step(
             }))
         }
         Op::Sync(_) => return Ok(Next::Meet(Collective::Sync)),
+        // ---- dynamic runs: messages ----
+        Op::Arrived => frame
+            .arrived
+            .clone()
+            .ok_or_else(|| Fault::undefined("no message arrived for this body"))?,
+        Op::MakeMessage(ty, fields) => {
+            let mut values = Vec::with_capacity(fields.len());
+            for f in fields {
+                values.push(scalar(frame, *f)?);
+            }
+            Value::Message(*ty, values)
+        }
+        Op::Field(m, k) => match get(frame, *m)? {
+            Value::Message(_, fields) => Value::Scalar(
+                *fields
+                    .get(*k as usize)
+                    .ok_or_else(|| Fault::undefined("no such field"))?,
+            ),
+            other => return Err(Fault::undefined(format!("a field of {}", kind(other)))),
+        },
+        Op::Send {
+            message, to, used, ..
+        } => {
+            let m = message_of(frame, *message)?;
+            let to = rank_to(frame, *to, place)?;
+            let mail = &mut *cx.mail;
+            let refused = mail.bound.is_some_and(|b| mail.live >= b);
+            if refused && !*used {
+                return Err(Failure::SendRefused.into());
+            }
+            if !refused {
+                mail.live += 1;
+                mail.post(place.rank, to, m);
+            }
+            if defs.is_empty() {
+                return Ok(Next::Go);
+            }
+            Value::Scalar(Scalar::Bool(!refused))
+        }
+        Op::Forward {
+            message, with, to, ..
+        } => {
+            let Value::Message(ty, mut fields) = message_of(frame, *message)? else {
+                return Err(Fault::undefined("`forward` of what is not a message"));
+            };
+            for (k, v) in with {
+                let x = scalar(frame, *v)?;
+                let slot = fields
+                    .get_mut(*k as usize)
+                    .ok_or_else(|| Fault::undefined("no such field"))?;
+                *slot = x;
+            }
+            let to = rank_to(frame, *to, place)?;
+            cx.mail.handled += 1;
+            cx.mail.post(place.rank, to, Value::Message(ty, fields));
+            return Ok(Next::Go);
+        }
+        Op::Consume(m) => {
+            message_of(frame, *m)?;
+            cx.mail.handled += 1;
+            cx.mail.live = cx.mail.live.saturating_sub(1);
+            return Ok(Next::Go);
+        }
+        Op::Offer(message, to) => {
+            let m = message_of(frame, *message)?;
+            let to = rank_to(frame, *to, place)?;
+            let (from, size) = (place.rank, place.size.max(1) as u64);
+            let peer = match &cx.mail.peers {
+                Peers::None => false,
+                Peers::Offsets(ds) => ds
+                    .iter()
+                    .any(|d| (from as u64 + d % size) % size == to as u64),
+                Peers::Pairs(ps) => ps.iter().any(|&(s, r)| (s, r) == (from as u64, to as u64)),
+            };
+            if !peer {
+                return Err(Failure::NotAPeer.into());
+            }
+            let mail = &mut *cx.mail;
+            let taken = mail.slots.contains_key(&(from, to));
+            if !taken {
+                mail.slots.insert((from, to), m);
+                mail.live += 1;
+                if let Some(n) = mail.sent.get_mut(from) {
+                    *n += 1;
+                }
+            }
+            if defs.is_empty() {
+                return Ok(Next::Go);
+            }
+            Value::Scalar(Scalar::Bool(!taken))
+        }
         // ---- control programs: requests the run answers ----
         Op::MakeGroup(first, count) => {
             // a group given as a count only: the run chooses the first worker, 0
