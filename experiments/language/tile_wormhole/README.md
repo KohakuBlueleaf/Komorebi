@@ -24,9 +24,18 @@ tiles of a and b on one core, run as a plain command, the result compared with n
 
 A function the chip refuses is a JSON line with its refusal; the others a line with
 the largest error over the largest value, the lanes beyond 1e-6 of it, the lanes
-exactly equal and the relative RMS error.
+exactly equal, the relative RMS error and a hash of the output's words (equal hashes:
+the chips wrote the same words).
+
+`--products LoFi HiFi2 HiFi3 HiFi4` adds a product (`a @ w`, one tile by one tile,
+four tiles) at each fidelity for each operand format a class product takes
+(`--sources`: bfloat16, bfp8_b, bfp4_b, bfp2_b, float16, bfp8, bfp4, bfp2), against
+numpy on the values the tensors hold; `--dump` keeps every output in an `.npz`. On
+Wormhole a product runs as tt-llk's own Wormhole image, in the address modes its init
+sets (docs/reference/tile.md, On Wormhole).
 
     python wormhole_check.py              # the session's chip (Wormhole: the Tensix dispatcher)
+    python wormhole_check.py --products LoFi HiFi2 HiFi3 HiFi4 --dump out.npz
     kmr prebuild --cards 0 wormhole_check.py
     kmr prebuild --arch wormhole_b0 --cards 0 wormhole_check.py
 
@@ -52,3 +61,31 @@ equal, of 4,096, against numpy in float64:
 Every figure of the seven functions Wormhole runs is Blackhole's, digit for digit, the
 relative RMS errors too: the errors are float32 rounding against float64, the same on
 both chips.
+
+### Products
+
+2026-11-19, the same chip and card, `--products LoFi HiFi2 HiFi3 HiFi4`: all 32
+products (8 formats, 4 fidelities) ran on both, and Wormhole's output is Blackhole's
+word for word in every one: 0 of 131,072 words differ (the dumps compared), as are the
+seven functions above. The figures, the same on both chips: the largest error over the
+largest value and the relative RMS error.
+
+| Operands | LoFi | HiFi2 | HiFi3 | HiFi4 |
+|---|---|---|---|---|
+| bfloat16 | 3.2e-2, 2.7e-2 | 5.0e-3, 4.0e-3 | 4.6e-4, 3.3e-4 | 4.4e-4, 3.2e-4 |
+| bfp8_b | 2.2e-2, 1.9e-2 | 4.3e-4, 2.6e-4 | the same | the same |
+| bfp4_b, bfp2_b, bfp4, bfp2 | 0 (exact) | 0 | 0 | 0 |
+| float16 | 3.4e-2, 3.1e-2 | 7.4e-3, 6.6e-3 | 1.8e-3, 8.6e-4 | 1.8e-3, 8.6e-4 |
+| bfp8 | 2.1e-2, 1.9e-2 | 9.5e-4, 6.7e-4 | the same | the same |
+
+The differences an audit of the two chips' documents leads to expect (Wormhole
+truncating a source datum where Blackhole rounds it; an fp32 accumulator of exactly
+-1 ulp normalized otherwise) did not show here: these operands fit the source
+registers as they are (a float32 operand, read as tf32, is refused in this form), and
+no sum met the -1 ulp case. With bfp4 or narrower operands every product is exact on
+both chips.
+
+One real line, `projects/dense/run.py --m 160 --k 64 --n 96 --split 2,2,2,1 --reduce
+tree --inputs int --calls 4` (the card list's smallest shape: hand kernels, the
+library's product, a plain command through the Tensix dispatcher, 12 cores), on
+Wormhole chip 0: its check exact (160 rows, bit for bit), 10.0 us a command (median).

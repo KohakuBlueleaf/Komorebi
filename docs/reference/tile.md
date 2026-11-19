@@ -601,7 +601,9 @@ it (a loop's first word also follows its last; a `REPLAY` is no word); an `SFPNO
 among recorded words is recorded too, and each `REPLAY` of them counts it on Wormhole.
 
 The unit writes Wormhole's forms of some of these words: a Blackhole build of the
-same header runs the same words.
+same header runs the same words. A product in Wormhole's image writes Blackhole's
+output word for word, at each fidelity and operand format a class product takes
+([tile functions on Wormhole](../../experiments/language/tile_wormhole/README.md#products)).
 
 ## Checks
 
