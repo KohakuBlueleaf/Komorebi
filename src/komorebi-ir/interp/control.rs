@@ -8,11 +8,13 @@
 //! that could see it before the invocation's completion, with no edge to it, would be
 //! a race.
 
+use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
+use super::delivery;
 use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Context, Frame, Place, Shape, Shapes, Stop, Thread, Value, Worker,
+    bodies, constant, Collective, Context, Frame, Place, Shape, Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, Module};
@@ -446,57 +448,207 @@ impl<'m> Machine<'m> {
             });
         }
         let at = BodyRef::Handler(p, h);
+        let mut threads = Vec::with_capacity(count);
+        for _ in 0..count {
+            match Frame::new(module, at, values.clone()) {
+                Ok(f) => threads.push(Thread::new(f)),
+                Err(f) => return invalid(f.to_string()),
+            }
+        }
+        let Some(group) = self.workers.get_mut(first..first + count) else {
+            return invalid("a worker past the loaded ones".into());
+        };
         let mut cx = Context {
             module,
             shapes: &self.shapes,
             params: &params,
             heap: &mut self.heap,
         };
-        let mut result = None;
-        let mut first_fault: Option<(usize, Fault, BodyRef, InstId)> = None;
-        for rank in 0..count {
-            let place = Place {
-                rank,
-                size: count,
-                first,
-                grid,
-            };
-            let frame = match Frame::new(module, at, values.clone()) {
-                Ok(f) => f,
-                Err(f) => return invalid(f.to_string()),
-            };
-            let Some(worker) = self.workers.get_mut(first + rank) else {
-                return invalid("a worker past the loaded ones".into());
-            };
-            let mut thread = Thread::new(frame);
-            match thread.run(worker, place, &mut cx, self.options.step_budget) {
-                Stop::Returned(v) => {
-                    if rank == 0 {
-                        result = v;
-                    }
-                }
-                Stop::Faulted { fault, at } => {
-                    if first_fault.is_none() {
-                        first_fault = Some((rank, fault, at.0, at.1));
-                    }
-                }
-            }
-        }
-        match first_fault {
-            Some((rank, Fault::Failure(reason), body, inst)) => End::Failed {
+        let place = |rank| Place {
+            rank,
+            size: count,
+            first,
+            grid,
+        };
+        match run_group(&mut cx, group, threads, place, self.options.step_budget) {
+            GroupEnd::Faulted(rank, Fault::Failure(reason), body, inst) => End::Failed {
                 reason,
                 at: Some((rank, body, inst)),
             },
-            Some((rank, Fault::Undefined(what), body, inst)) => End::Invalid {
+            GroupEnd::Faulted(rank, Fault::Undefined(what), body, inst) => End::Invalid {
                 what,
                 at: Some((rank, body, inst)),
             },
-            None => match (result, handler.ret) {
+            GroupEnd::Stuck(rank, body, inst) => End::Invalid {
+                what: "a collective that not every member reached".into(),
+                at: Some((rank, body, inst)),
+            },
+            GroupEnd::Completed(result) => match (result, handler.ret) {
                 (Some(Value::Scalar(s)), Some(_)) => End::Completed(Some(s)),
                 (None, None) => End::Completed(None),
                 (None, Some(_)) => invalid("the leader returned no result".into()),
                 (Some(_), _) => invalid("a result of another type".into()),
             },
+        }
+    }
+}
+
+/// How the frames of one group ended.
+enum GroupEnd {
+    /// Every frame returned; the leader's value.
+    Completed(Option<Value>),
+    /// The lowest rank that faulted, its fault and where.
+    Faulted(usize, Fault, BodyRef, InstId),
+    /// No frame faulted, and some wait at a collective that cannot complete: the lowest
+    /// such rank, and where.
+    Stuck(usize, BodyRef, InstId),
+}
+
+/// Where one rank's frame stands.
+enum Standing {
+    Ready,
+    Waiting(BodyRef, InstId),
+    Done(Option<Value>),
+    Faulted(Fault, BodyRef, InstId),
+}
+
+/// One collective being met: who meets, and who has arrived, with what.
+struct Meeting {
+    members: Vec<usize>,
+    arrived: Vec<(usize, Collective, (BodyRef, InstId))>,
+}
+
+/// Runs the frames of one group, rank by rank, each until it returns, faults, or waits
+/// at a collective; a collective completes when its last member arrives. Repeats
+/// until no frame can go on. Thread timing never enters: frames run in rank order and
+/// a meeting is keyed by how many collectives each frame has reached.
+fn run_group(
+    cx: &mut Context<'_>,
+    workers: &mut [Worker],
+    mut threads: Vec<Thread>,
+    place: impl Fn(usize) -> Place,
+    budget: u64,
+) -> GroupEnd {
+    let n = threads.len();
+    let mut standing: Vec<Standing> = (0..n).map(|_| Standing::Ready).collect();
+    let mut reached = vec![0usize; n];
+    let mut meetings: BTreeMap<(usize, usize), Meeting> = BTreeMap::new();
+    let module = cx.module;
+    loop {
+        let mut moved = false;
+        for rank in 0..n {
+            while matches!(standing.get(rank), Some(Standing::Ready)) {
+                moved = true;
+                let (Some(thread), Some(worker)) = (threads.get_mut(rank), workers.get_mut(rank))
+                else {
+                    break;
+                };
+                let stop = thread.run(worker, place(rank), cx, budget);
+                let now = match stop {
+                    Stop::Returned(v) => Standing::Done(v),
+                    Stop::Faulted { fault, at } => Standing::Faulted(fault, at.0, at.1),
+                    Stop::Meeting { collective, at } => {
+                        let seq = reached.get(rank).copied().unwrap_or(0);
+                        if let Some(r) = reached.get_mut(rank) {
+                            *r += 1;
+                        }
+                        match delivery::members(&collective, rank, n) {
+                            Err(fault) => Standing::Faulted(fault, at.0, at.1),
+                            // not a member: it passes, with no value
+                            Ok(None) => match thread.deliver(module, Some(Value::Absent)) {
+                                Ok(()) => Standing::Ready,
+                                Err(fault) => Standing::Faulted(fault, at.0, at.1),
+                            },
+                            Ok(Some(members)) => {
+                                let key = (seq, members.first().copied().unwrap_or(0));
+                                let m = meetings.entry(key).or_insert_with(|| Meeting {
+                                    members,
+                                    arrived: Vec::new(),
+                                });
+                                m.arrived.push((rank, collective, at));
+                                if m.arrived.len() == m.members.len() {
+                                    if let Some(m) = meetings.remove(&key) {
+                                        complete(cx, m, &mut threads, &mut standing, budget);
+                                    }
+                                    // this rank's standing was set by the meeting
+                                    continue;
+                                }
+                                Standing::Waiting(at.0, at.1)
+                            }
+                        }
+                    }
+                };
+                if let Some(s) = standing.get_mut(rank) {
+                    *s = now;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let mut fault = None;
+    let mut stuck = None;
+    let mut leader = None;
+    for (rank, s) in standing.into_iter().enumerate() {
+        match s {
+            Standing::Faulted(f, body, inst) if fault.is_none() => {
+                fault = Some(GroupEnd::Faulted(rank, f, body, inst));
+            }
+            Standing::Waiting(body, inst) if stuck.is_none() => {
+                stuck = Some(GroupEnd::Stuck(rank, body, inst));
+            }
+            Standing::Done(v) if rank == 0 => leader = v,
+            _ => {}
+        }
+    }
+    fault.or(stuck).unwrap_or(GroupEnd::Completed(leader))
+}
+
+/// Completes a meeting whose every member has arrived: the members must stand at one
+/// instruction; the value is made once and each member's frame goes on with its part.
+fn complete(
+    cx: &mut Context<'_>,
+    meeting: Meeting,
+    threads: &mut [Thread],
+    standing: &mut [Standing],
+    budget: u64,
+) {
+    let Meeting { mut arrived, .. } = meeting;
+    arrived.sort_by_key(|(rank, _, _)| *rank);
+    let Some(&(lowest, _, at)) = arrived.first() else {
+        return;
+    };
+    let mut set = |rank: usize, s: Standing| {
+        if let Some(slot) = standing.get_mut(rank) {
+            *slot = s;
+        }
+    };
+    if arrived.iter().any(|(_, _, a)| *a != at) {
+        let what = "the members of a meeting reached different collectives";
+        set(
+            lowest,
+            Standing::Faulted(Fault::undefined(what), at.0, at.1),
+        );
+        return;
+    }
+    let ranks: Vec<usize> = arrived.iter().map(|(r, _, _)| *r).collect();
+    let collectives = arrived.into_iter().map(|(_, c, _)| c).collect();
+    let values = match delivery::meet(collectives, cx, budget) {
+        Ok(v) => v,
+        Err(fault) => {
+            set(lowest, Standing::Faulted(fault, at.0, at.1));
+            return;
+        }
+    };
+    for (rank, value) in ranks.into_iter().zip(values) {
+        let delivered = match threads.get_mut(rank) {
+            Some(thread) => thread.deliver(cx.module, value),
+            None => Err(Fault::undefined("a member with no frame")),
+        };
+        match delivered {
+            Ok(()) => set(rank, Standing::Ready),
+            Err(fault) => set(rank, Standing::Faulted(fault, at.0, at.1)),
         }
     }
 }

@@ -353,3 +353,102 @@ program P {
         panic!("gives up");
     };
 }
+
+fn t5_args(x: TensorId, y: TensorId) -> [Arg; 4] {
+    [
+        Arg::Tensor(x),
+        Arg::Tensor(y),
+        Arg::Scalar(u32s(0)),
+        Arg::Scalar(u32s(10)),
+    ]
+}
+
+#[test]
+fn t5_four_ways_to_combine_over_the_group() {
+    let m = module(&lesson("t05_total"));
+    let mut run = Machine::load(&m, 8, &[], Options::default()).expect("loads");
+    // tile i holds i + 1: ranks 0 and 1 take two tiles, the others one
+    let x = tensor(&mut run, Format::F32, (10, 1), |i, _| (i + 1) as f64);
+    for handler in ["Total.any_order", "Total.by_fours", "Total.rank_order"] {
+        let y = tensor(&mut run, Format::F32, (1, 1), |_, _| 0.0);
+        assert_eq!(
+            run.invoke(handler, &t5_args(x, y), (0, 8), &[]),
+            End::Completed(None)
+        );
+        assert!(all(&tile_f64(&run, y, 0), 55.0), "{handler}");
+    }
+    // the largest tile holds 10: every tile scaled by 1/10
+    let y = tensor(&mut run, Format::F32, (10, 1), |_, _| 0.0);
+    assert_eq!(
+        run.invoke("Total.by_peak", &t5_args(x, y), (0, 8), &[]),
+        End::Completed(None)
+    );
+    for i in 0..10 {
+        assert!(
+            all(&tile_f64(&run, y, i), (i + 1) as f64 / 10.0),
+            "tile {i}"
+        );
+    }
+}
+
+const ORDERED: &str = "module ordered
+
+tile [32, 32]
+format f32
+
+combine twice_then(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * 2.0 + b
+}
+
+program P {
+    handler fold(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        let whole = reduce(x.tiles(worker.rank, 1)[0], with = twice_then)
+        if worker.is_leader {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    handler leader_only(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        if worker.is_leader {
+            let whole = reduce(x.tiles(0, 1)[0], with = sum)
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    handler everyone_reads(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        let whole = reduce(x.tiles(worker.rank, 1)[0], with = sum)
+        store y.tiles(worker.rank, 1) <- whole
+    }
+}
+";
+
+#[test]
+fn a_combine_that_is_not_commutative_folds_from_the_lowest_rank() {
+    let m = module(ORDERED);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (4, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y)];
+    assert_eq!(
+        run.invoke("P.fold", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    // ((1 * 2 + 2) * 2 + 3) * 2 + 4
+    assert!(all(&tile_f64(&run, y, 0), 26.0));
+    // a collective only the leader reaches never completes
+    let End::Invalid {
+        at: Some((0, _, _)),
+        ..
+    } = run.invoke("P.leader_only", &args, (0, 4), &[])
+    else {
+        panic!("a collective not every member reached");
+    };
+    // a rank that is not the leader holds no value of a `reduce`: using it is invalid
+    let End::Invalid {
+        at: Some((1, _, _)),
+        ..
+    } = run.invoke("P.everyone_reads", &args, (0, 4), &[])
+    else {
+        panic!("a use of a value the rank was not given");
+    };
+}

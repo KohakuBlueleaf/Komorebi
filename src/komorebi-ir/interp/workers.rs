@@ -18,7 +18,10 @@ use super::memory::{
 use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
-use crate::types::{BinOp, CmpOp, ConstValue, Count, MemberId, ProgramId, ReduceOp, Type, UnaryOp};
+use crate::types::{
+    BinOp, CmpOp, Combiner, ConstValue, Count, MemberId, ProgramId, ReduceOp, SplitBy, Type,
+    UnaryOp,
+};
 
 /// A value a body computes with, as the interpreter holds it.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,6 +52,84 @@ pub enum Value {
     Record(Vec<Scalar>),
     /// The name of a failure.
     Reason(Failure),
+    /// `group.split(...)`: the group in contiguous sub-groups.
+    SubGroups(Split),
+    /// `group.leaders(...)`: the leaders of those sub-groups.
+    Leaders(Split),
+    /// What a collective gives a rank it does not deliver to (reading R34, Q1): any
+    /// use of it is an invalid program.
+    Absent,
+}
+
+/// How a group is split: into `n` parts, or into parts of `n` workers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Split {
+    /// `parts = n` (else `size = n`).
+    pub parts: bool,
+    /// The n.
+    pub n: usize,
+}
+
+impl Split {
+    /// The sub-groups of a group of `size` ranks, each a range of ranks, in order.
+    /// `parts = n` follows `partition`'s law: the first `size mod n` parts have one
+    /// rank more. `size = k` gives parts of k ranks, the last one shorter.
+    pub fn ranges(self, size: usize) -> Result<Vec<std::ops::Range<usize>>, Fault> {
+        if self.n == 0 {
+            return Err(Failure::OutOfRange.into());
+        }
+        let mut out = Vec::new();
+        if self.parts {
+            let (each, extra) = (size / self.n, size % self.n);
+            let mut start = 0;
+            for k in 0..self.n {
+                let len = each + usize::from(k < extra);
+                if len > 0 {
+                    out.push(start..start + len);
+                }
+                start += len;
+            }
+        } else {
+            let mut start = 0;
+            while start < size {
+                let end = start.saturating_add(self.n).min(size);
+                out.push(start..end);
+                start = end;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A collective a frame has reached, with this rank's operand.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Collective {
+    /// `reduce(x, with = f, within = g, among = g)`: the combination at the leader of
+    /// the members.
+    Reduce {
+        /// This rank's operand.
+        x: Value,
+        /// What combines.
+        with: Combiner,
+        /// `within`: the sub-groups.
+        within: Option<Split>,
+        /// `among`: the sub-groups whose leaders are the members.
+        among: Option<Split>,
+    },
+    /// `all_reduce(x, with = f)`: the combination at every member.
+    AllReduce {
+        /// This rank's operand.
+        x: Value,
+        /// What combines.
+        with: Combiner,
+    },
+    /// `gather(x)`: every member's value at the leader, by rank.
+    Gather {
+        /// This rank's operand.
+        x: Value,
+    },
+    /// `sync(publish = [...])`: a point every member reaches.
+    Sync,
 }
 
 /// One worker: its position among the loaded program's workers, and its state.
@@ -306,6 +387,13 @@ pub enum Stop {
         /// The body and the instruction.
         at: (BodyRef, InstId),
     },
+    /// The frame reached a collective and waits for its value (`deliver`).
+    Meeting {
+        /// The collective, with this rank's operand.
+        collective: Collective,
+        /// The body and the instruction.
+        at: (BodyRef, InstId),
+    },
 }
 
 impl Thread {
@@ -342,6 +430,12 @@ impl Thread {
             self.steps += 1;
             match step(frame, worker, place, cx) {
                 Ok(Next::Go) => {}
+                Ok(Next::Meet(collective)) => {
+                    return Stop::Meeting {
+                        collective,
+                        at: (at, InstId(pc as u32)),
+                    }
+                }
                 Ok(Next::Call(callee)) => self.frames.push(*callee),
                 Ok(Next::Return(value)) => {
                     let done = self.frames.pop();
@@ -374,11 +468,39 @@ impl Thread {
     }
 }
 
+impl Thread {
+    /// Gives the frame that stopped at a collective the value it arrives with (none
+    /// for a `sync`), so it can go on.
+    pub fn deliver(&mut self, module: &Module, value: Option<Value>) -> Result<(), Fault> {
+        let frame = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| Fault::undefined("a delivery to a thread that ended"))?;
+        let body = body_at(module, frame.at).ok_or_else(|| Fault::undefined("no body"))?;
+        let inst = frame
+            .pc
+            .checked_sub(1)
+            .and_then(|i| body.insts.get(i))
+            .ok_or_else(|| Fault::undefined("a delivery with no collective"))?;
+        match (inst.defs.first(), value) {
+            (Some(d), Some(v)) => {
+                if let Some(slot) = frame.values.get_mut(d.0 as usize) {
+                    *slot = Some(v);
+                }
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            _ => Err(Fault::undefined("a collective's value where none is taken")),
+        }
+    }
+}
+
 /// What a step leads to.
 enum Next {
     Go,
     Call(Box<Frame>),
     Return(Option<Value>),
+    Meet(Collective),
 }
 
 fn bin(op: BinOp) -> Bin {
@@ -440,11 +562,42 @@ pub fn constant(c: ConstValue) -> Result<Scalar, Fault> {
 }
 
 fn get(frame: &Frame, v: ValueId) -> Result<&Value, Fault> {
+    match frame.values.get(v.0 as usize).and_then(Option::as_ref) {
+        Some(Value::Absent) => Err(Fault::undefined(format!(
+            "v{}, a collective's value this rank was not given, is used",
+            v.0
+        ))),
+        Some(x) => Ok(x),
+        None => Err(Fault::undefined(format!(
+            "v{} read before it is defined",
+            v.0
+        ))),
+    }
+}
+
+/// A collective's operand: the value as it stands, an absent one included. A rank
+/// that is not a member passes the collective and its operand is never read; a
+/// member's absent operand is refused where the meeting completes.
+fn operand_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
     frame
         .values
         .get(v.0 as usize)
-        .and_then(Option::as_ref)
+        .cloned()
+        .flatten()
         .ok_or_else(|| Fault::undefined(format!("v{} read before it is defined", v.0)))
+}
+
+fn split_of(frame: &Frame, v: Option<ValueId>, leaders: bool) -> Result<Option<Split>, Fault> {
+    let Some(v) = v else {
+        return Ok(None);
+    };
+    match (get(frame, v)?, leaders) {
+        (Value::SubGroups(s), false) | (Value::Leaders(s), true) => Ok(Some(*s)),
+        (other, _) => Err(Fault::undefined(format!(
+            "{} where sub-groups are read",
+            kind(other)
+        ))),
+    }
 }
 
 fn scalar(frame: &Frame, v: ValueId) -> Result<Scalar, Fault> {
@@ -519,6 +672,9 @@ fn kind(v: &Value) -> &'static str {
         Value::Records(_) => "records",
         Value::Record(_) => "a record",
         Value::Reason(_) => "a failure's name",
+        Value::SubGroups(_) => "sub-groups",
+        Value::Leaders(_) => "the leaders of sub-groups",
+        Value::Absent => "a value this rank was not given",
     }
 }
 
@@ -558,7 +714,7 @@ fn as_block(v: &Value) -> Result<Block, Fault> {
 }
 
 /// `a op b` on any two operands the language allows.
-fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, Fault> {
+pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, Fault> {
     match (a, b) {
         (Value::Scalar(x), Value::Scalar(y)) => {
             ops::scalar_binary(bin(op), *x, *y).map(Value::Scalar)
@@ -1123,6 +1279,46 @@ fn step(
             Value::Scalar(int_of(Format::U32, (place.first + r) as u64))
         }
         Op::FailureName(f) => Value::Reason(*f),
+        Op::Split(by, n) => Value::SubGroups(Split {
+            parts: *by == SplitBy::Parts,
+            n: index(frame, *n)?,
+        }),
+        Op::Leaders(by, n) => Value::Leaders(Split {
+            parts: *by == SplitBy::Parts,
+            n: index(frame, *n)?,
+        }),
+        // ---- collectives: the frame waits at a meeting ----
+        Op::ReduceGroup {
+            x,
+            with,
+            within,
+            among,
+            ..
+        } => {
+            let within = split_of(frame, *within, false)?;
+            let among = split_of(frame, *among, true)?;
+            if within.is_some() && among.is_some() {
+                return Err(Fault::undefined("a `reduce` both within and among"));
+            }
+            return Ok(Next::Meet(Collective::Reduce {
+                x: operand_of(frame, *x)?,
+                with: *with,
+                within,
+                among,
+            }));
+        }
+        Op::AllReduce { x, with, .. } => {
+            return Ok(Next::Meet(Collective::AllReduce {
+                x: operand_of(frame, *x)?,
+                with: *with,
+            }))
+        }
+        Op::Gather(x) => {
+            return Ok(Next::Meet(Collective::Gather {
+                x: operand_of(frame, *x)?,
+            }))
+        }
+        Op::Sync(_) => return Ok(Next::Meet(Collective::Sync)),
         // ---- the parts that run in later stages ----
         other => {
             return Err(Fault::undefined(format!(
