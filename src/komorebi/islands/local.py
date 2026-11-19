@@ -3,6 +3,8 @@ groups cross an island's edge, or whose direct input another island holds, is re
 on the host (IslandRun's submit, and a prebuild's mock run). It imports no
 DSL module: the mock run imports it, and the DSL front reaches the mock's tensors."""
 
+import numpy as np
+
 
 def check_local(runs, graph, handler, group):
     """Refuses a command of a class's handler whose reduce is local=True when its
@@ -74,3 +76,29 @@ def check_direct(graph, handler, group, values):
                 "submit a group inside that island, place the tensor as a copy, or "
                 "leave km.direct out on two cards"
             )
+
+
+def one_command(handler, firsts, counts, args):
+    """(handler, group, words) when submit_many's arguments are one command (one
+    handler, one first and count, at most one row of integer words), else None: those
+    submit takes as they are (any other form, a wrong one too, goes submit_many's way).
+    """
+    if not isinstance(handler, str | int):  # a Handler is an int
+        number = np.asarray(handler)
+        if number.ndim or number.dtype.kind not in "iu":
+            return None
+        handler = int(number)
+    first, count = np.asarray(firsts), np.asarray(counts)
+    if first.size != 1 or count.size != 1 or first.ndim > 1 or count.ndim > 1:
+        return None
+    if first.dtype.kind not in "iu" or count.dtype.kind not in "iu":
+        return None
+    words = ()
+    if args is not None:
+        args = np.asarray(args)
+        if args.ndim != 2 or args.shape[0] != 1 or args.dtype.kind not in "iu":
+            return None
+        words = args[0].tolist()
+    elif first.ndim + count.ndim == 0:
+        return None  # no row at all (submit_many refuses it)
+    return handler, (int(first.reshape(-1)[0]), int(count.reshape(-1)[0])), words

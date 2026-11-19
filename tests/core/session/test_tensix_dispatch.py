@@ -7,10 +7,11 @@ import pytest
 from fake_port import FakeBackend, FakePort
 
 import komorebi as km
-from komorebi import abi, layout
+from komorebi import _env, abi, layout
 from komorebi.device import chips, mock
 from komorebi.device.events import Event
 from komorebi.errors import NotServed
+from komorebi.islands import local as island_local
 from komorebi.session import dispatch, kernels
 from komorebi.session.backend import backend as card_backend
 from komorebi.session.dispatch import tensix
@@ -116,6 +117,7 @@ def tensix_run():
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
+        (lambda run: run.run_hostfed(None), "stream/graph engines"),
     ],
 )
 def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
@@ -289,3 +291,19 @@ def test_each_split_launches_its_loops():
     assert tensix.LOOPS["A"] == (0, None) and tensix.SPLIT == "B"
     assert tensix.LOOPS["B"] == (0, 1) and tensix.LOOPS["B'"] == (1, 0)
     assert tensix.constants()["kTbBytes"] % 64 == 0
+
+
+def test_a_stand_in_island_run_names_one_command_as_a_submit():
+    one = island_local.one_command(0, [0], [1], None)
+    assert one == (0, (0, 1), ())  # the call IslandRun.submit_many makes of it
+    assert island_local.one_command(0, [0, 1], [1, 1], None) is None
+
+
+def test_no_x280_part_refuses_a_thread_image_by_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(_env, "has_x280_runtime", lambda tree: False)
+    with pytest.raises(
+        NotServed, match=r"does not serve X280 threads \(make of C, line 3\)"
+    ):
+        tensix.refuse_x280_image(tmp_path, "make of C, line 3")
+    monkeypatch.setattr(_env, "has_x280_runtime", lambda tree: True)
+    tensix.refuse_x280_image(tmp_path, "make of C, line 3")  # a tree with one: none

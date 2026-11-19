@@ -244,6 +244,7 @@ class Run:
         command checked as this run's submit and done at once (HostfedResult)."""
         if self.host is None or self.parts:
             return NOTHING
+        self.host._refused("engines", "run.run_hostfed")  # as the card's, first
         return type(self.host).run_hostfed(self, graph, bindings, timeout, engine)
 
     def field_handler(self, number, program_field):
@@ -409,7 +410,8 @@ class Run:
         host = self.parts[0].host
         if host is not None:  # an island run's submit_many(part=True), first of all
             try:
-                host._served(False, False, True, "submit_many")
+                one = island_local.one_command(handler, firsts, counts, args)
+                host._served(False, False, True, "submit" if one else "submit_many")
             except KomorebiError as error:
                 raise _named(error, 0) from None
         if host is not None:  # a class's handler: built for its rows' constants

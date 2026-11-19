@@ -37,32 +37,6 @@ def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
 
 
-def _one_command(handler, firsts, counts, args):
-    """(handler, group, words) when submit_many's arguments are one command (one
-    handler, one first and count, at most one row of integer words), else None: those
-    submit takes as they are (any other form, a wrong one too, goes submit_many's way).
-    """
-    if not isinstance(handler, str | int):  # a Handler is an int
-        number = np.asarray(handler)
-        if number.ndim or number.dtype.kind not in "iu":
-            return None
-        handler = int(number)
-    first, count = np.asarray(firsts), np.asarray(counts)
-    if first.size != 1 or count.size != 1 or first.ndim > 1 or count.ndim > 1:
-        return None
-    if first.dtype.kind not in "iu" or count.dtype.kind not in "iu":
-        return None
-    words = ()
-    if args is not None:
-        args = np.asarray(args)
-        if args.ndim != 2 or args.shape[0] != 1 or args.dtype.kind not in "iu":
-            return None
-        words = args[0].tolist()
-    elif first.ndim + count.ndim == 0:
-        return None  # no row at all (submit_many refuses it)
-    return handler, (int(first.reshape(-1)[0]), int(count.reshape(-1)[0])), words
-
-
 def _handler_label(handler):
     """A handler as a line names it: program.method, the method, or its number."""
     method = getattr(handler, "method", handler)
@@ -593,7 +567,7 @@ class IslandRun(TreeCalls, RunCalls):
         for row in range(lows.size):  # a local=True reduce's groups on one island
             self._check_local(named[row % len(named)], (lows[row], manys[row]))
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
-        one = _one_command(handler, firsts, counts, args)
+        one = island_local.one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's
             handler, group, words = one
             ticket = self.submit(handler, group, words, exclusive=exclusive)

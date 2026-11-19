@@ -1191,6 +1191,10 @@ class Run(EventsMixin, StopMixin):
         """served() for this run: the stand-in's checks (device.mock) call it."""
         served(self, *asked)
 
+    def _refused(self, name, where):
+        """_serves() for this run: the stand-in's engine calls (device.mock) call it."""
+        _serves(self, name, where)
+
     def submit_many(
         self, handler, firsts, counts, args=None, exclusive=False, part=False
     ):
