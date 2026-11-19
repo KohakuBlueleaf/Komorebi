@@ -10,11 +10,14 @@
 //! line is its place, the values it defines with their types, then the operation with
 //! its operands in the order the operation declares them.
 
-use super::body::{BinOp, Body, CmpOp, Combiner, Inst, Op, Range, SplitBy, ValueId};
-use super::derive::{Ability, Cause, Effects};
+use super::body::{Body, Inst, Op, Range, ValueId};
+use super::derive::{Cause, Effects};
 use super::notes::{Anchor, HintArg, Named, Owner};
-use super::{BodyRef, CallArg, Count, Entry, FuncKind, MemberKind, Module};
-use crate::types::{Axis, Binding, ConstValue, On, Peers, Type};
+use super::{BodyRef, CallArg, FuncKind, MemberKind, Module};
+use crate::types::{
+    Ability, Axis, BinOp, Binding, CmpOp, Combiner, ConstValue, Count, Entry, On, Peers, SplitBy,
+    Type,
+};
 
 /// The module as text, in the module's order, the notes last.
 pub fn print(module: &Module) -> String {
@@ -80,7 +83,8 @@ pub fn type_text(t: &Type) -> String {
         Type::Block(f, c) => format!("tile<{f}>[{}]", count(c)),
         Type::Tensor(f, false) => format!("tensor<{f}>"),
         Type::Tensor(f, true) => format!("tensor<{f}> replicated"),
-        Type::View(f) => format!("view<{f}>"),
+        Type::View(Some(f)) => format!("view<{f}>"),
+        Type::View(None) => "view".into(),
         Type::Items(c) => format!("items<{}>", count(c)),
         Type::Stream(f, c) => format!("stream<{f}, {}>", count(c)),
         Type::Zip(a, b) => format!("zip<{}, {}>", type_text(a), type_text(b)),

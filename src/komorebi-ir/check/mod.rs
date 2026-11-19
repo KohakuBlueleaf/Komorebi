@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
-use crate::types::{Failure, Format, MessageRef, ParamRef, RecordRef};
+use crate::types::{Failure, Format, MessageId, ParamId, RecordId};
 use op::{OpKind, Resolved};
 use ty::Ty;
 
@@ -42,7 +42,7 @@ pub enum Name {
     /// The message an `on M(m)` body handles: its `m`.
     Arrived,
     /// A parameter of the module.
-    ModuleParam(ParamRef),
+    ModuleParam(ParamId),
     /// A state member: the program's place among the programs, and the member's among
     /// the program's members (every state block's, in order).
     State {
@@ -77,9 +77,9 @@ pub enum Name {
         index: u32,
     },
     /// A record type.
-    Record(RecordRef),
+    Record(RecordId),
     /// A message type.
-    Message(MessageRef),
+    Message(MessageId),
     /// A field of a message or a record, by its position.
     Field(u32),
     /// A failure's name.
@@ -382,8 +382,8 @@ mod tests {
     #[test]
     fn each_let_names_its_operation_and_operands() {
         use super::op::OpKind;
-        use crate::program::body::{BinOp, CmpOp};
         use crate::types::ScalarType::U8;
+        use crate::types::{BinOp, CmpOp, UnaryOp};
         let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
             control c(a: u32, b: u32) {\n    let x = a + b\n    let y = min(a, b)\n    \
             let z = u8(a)\n    let w = a < 3\n    let v = -a\n    let u = group(2, a)\n}\n";
@@ -415,7 +415,7 @@ mod tests {
                 (OpKind::Binary(BinOp::Min), vec!["a", "b"]),
                 (OpKind::Convert(U8), vec!["a"]),
                 (OpKind::Compare(CmpOp::Lt), vec!["a", "3"]),
-                (OpKind::Unary(crate::program::body::UnaryOp::Neg), vec!["a"]),
+                (OpKind::Unary(UnaryOp::Neg), vec!["a"]),
                 (OpKind::MakeGroup, vec!["2", "a"]),
             ]
         );

@@ -4,11 +4,13 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{refuse, source_span, Cx, Res};
-use crate::program::body::{BinOp, Body, CmpOp, Inst, InstId, LocalId, Op, UnaryOp, ValueId};
+use crate::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, Hint, Named};
-use crate::program::{BodyRef, MemberKind, MessageRef, ProgramId};
+use crate::program::{BodyRef, MemberKind};
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{ConstValue, Count, Failure, ScalarType, Type};
+use crate::types::{
+    BinOp, CmpOp, ConstValue, Count, Failure, MessageId, ProgramId, ScalarType, Type, UnaryOp,
+};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
@@ -105,7 +107,7 @@ impl<'c> Cx<'c> {
         params: &ast::List<ast::ParamDecl>,
         types: &[Type],
         ret: Option<Type>,
-        arrived: Option<(MessageRef, &ast::Ident)>,
+        arrived: Option<(MessageId, &ast::Ident)>,
         block: &ast::Block,
     ) -> Res<Body> {
         let mut b = B {
@@ -349,7 +351,7 @@ impl B<'_, '_> {
             Stmt::Store { target, value } => {
                 let t = self.expr(target, None)?;
                 self.zeros = match self.ty(t) {
-                    Type::View(f) => Some(Type::Tile(f)),
+                    Type::View(Some(f)) => Some(Type::Tile(f)),
                     _ => None,
                 };
                 let v = self.expr(value, None);

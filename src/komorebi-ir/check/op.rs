@@ -1,16 +1,16 @@
 //! The operation of an expression: which operation of the language a call, a member,
 //! an index, an operator, a message or an `await` is, with its operands by part.
 //!
-//! The kinds carry the names of the program structure's operations
-//! (`crate::program::body::Op`), and its own small enums, so that Lower maps one to
-//! the other by name. A kind holds what the text fixes (an operator, an axis, a
+//! The kinds carry the names of the program structure's operations, and the words both
+//! name (`types::op`), so that Lower maps one to the other by name. A kind holds what the text fixes (an operator, an axis, a
 //! declaration's place); the operands are expressions of the text, by the parts of the
 //! operation's form, in the order the operations page gives them.
 
-use crate::program::body::{BinOp, CmpOp, Combiner, ReduceOp, SplitBy, UnaryOp};
-use crate::program::{Entry, FuncId, MemberId};
 use crate::syntax::ast::{Expr, ExprKind, IndexItem, Span};
-use crate::types::{Axis, MessageRef, RecordRef, ScalarType};
+use crate::types::{
+    Axis, BinOp, CmpOp, Combiner, Entry, FuncId, MemberId, MessageId, RecordId, ReduceOp,
+    ScalarType, SplitBy, UnaryOp,
+};
 
 /// Which operation an expression is. Each kind names the operation of the program
 /// structure it lowers to; the parts each takes are given beside it.
@@ -62,7 +62,7 @@ pub enum OpKind {
     /// `words[i]`. Parts: `words`, `i`.
     Word,
     /// `v.records(R, count = c)`. Parts: `v`, `c`.
-    Records(RecordRef),
+    Records(RecordId),
     /// `records[i]`. Parts: `records`, `i`.
     RecordAt,
     /// `record.field`, by the field's position. Parts: `record`.
@@ -124,7 +124,7 @@ pub enum OpKind {
     /// `sync(publish = [v])`. Parts: `publish`.
     Sync,
     /// `M { field: value, ... }`. Parts: the values, in the type's order of fields.
-    MakeMessage(MessageRef),
+    MakeMessage(MessageId),
     /// `send(m, to = rank, publish = [v])`. Parts: `m`, `to`, `publish`.
     Send,
     /// `forward(m, with = { ... }, to = rank, publish = [v])`; the fields of `with` are

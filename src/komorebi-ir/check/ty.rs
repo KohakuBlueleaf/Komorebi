@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::types::{Axis, Format, ParamRef, ScalarType};
+use crate::types::{Axis, Format, ParamId, ScalarType};
 
 /// How many tiles or elements: a number the text states (a module parameter bound at
 /// build included), a module parameter's value, the group's size, or another value the
@@ -14,7 +14,7 @@ pub enum Count {
     /// A number known now.
     Known(u64),
     /// A module parameter bound at load or at the invocation.
-    Param(ParamRef),
+    Param(ParamId),
     /// The size of the group: what `gather` yields.
     GroupSize,
     /// Another value: an argument, or an expression.

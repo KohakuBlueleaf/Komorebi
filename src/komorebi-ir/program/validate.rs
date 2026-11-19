@@ -11,10 +11,11 @@
 use super::body::{Body, InstId, Op, ValueId};
 use super::derive::{Cause, Effects};
 use super::notes::{Anchor, Named, Owner};
-use super::{
-    BodyRef, CallArg, Count, Entry, FuncId, FuncKind, MemberKind, MessageRef, Module, ProgramId,
+use super::{BodyRef, CallArg, FuncKind, MemberKind, Module};
+use crate::types::{
+    BinOp, Binding, Combiner, ConstValue, Count, Entry, Format, FuncId, MessageId, ProgramId,
+    ScalarType, Type,
 };
-use crate::types::{Binding, ConstValue, Format, ScalarType, Type};
 
 /// One violation: where, and what.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,7 +52,7 @@ struct Ctx<'m> {
     /// The program the body belongs to.
     program: Option<ProgramId>,
     /// The message an `on M` body receives.
-    arrived: Option<MessageRef>,
+    arrived: Option<MessageId>,
 }
 
 /// An open construct.
@@ -423,9 +424,9 @@ impl<'m> Validator<'m> {
                 MemberKind::Scalars(s) => Type::Scalar(s),
             })
         };
-        let message_fields = |id: MessageRef| m.messages.get(id.0 as usize).map(|mm| &mm.fields);
-        let combiner = |c: &super::body::Combiner| match c {
-            super::body::Combiner::Func(f) => {
+        let message_fields = |id: MessageId| m.messages.get(id.0 as usize).map(|mm| &mm.fields);
+        let combiner = |c: &Combiner| match c {
+            Combiner::Func(f) => {
                 matches!(m.funcs.get(f.0 as usize), Some(f) if matches!(f.kind, FuncKind::Combine { .. }))
             }
             _ => true,
@@ -454,7 +455,6 @@ impl<'m> Validator<'m> {
                 "a `Set` of another type",
             ),
             Op::Binary(op, _, _) => {
-                use super::body::BinOp;
                 let (x, y) = (a[0], a[1]);
                 let r = d.first().copied();
                 let ok = match (x, y) {
@@ -614,7 +614,7 @@ impl<'m> Validator<'m> {
                 None => Err(format!("function {} out of range", f.0)),
             },
             Op::Tiles { .. } | Op::Rect { .. } => match a[0] {
-                Type::Tensor(f, _) if ints(1) => exact(&[Type::View(*f)]),
+                Type::Tensor(f, _) if ints(1) => exact(&[Type::View(Some(*f))]),
                 _ => Err("a view of a value that is not a tensor".into()),
             },
             Op::Turn(_) => need(
@@ -626,11 +626,11 @@ impl<'m> Validator<'m> {
                 "items of a value that is not a tensor",
             ),
             Op::ReadTile(..) => match a[0] {
-                Type::View(f) if int(1) => exact(&[Type::Tile(*f)]),
+                Type::View(Some(f)) if int(1) => exact(&[Type::Tile(*f)]),
                 _ => Err("`v[i]` of a value that is not a view".into()),
             },
             Op::Words(_) => match a[0] {
-                Type::View(f) => match f.as_scalar() {
+                Type::View(f) => match f.and_then(Format::as_scalar) {
                     Some(s) => exact(&[Type::Words(s)]),
                     None => Err("`.words()` of a view whose format is no scalar type".into()),
                 },
@@ -676,12 +676,12 @@ impl<'m> Validator<'m> {
             ),
             Op::Stream(..) | Op::Sink(..) => match (a[0], d) {
                 (Type::View(f), [Type::Stream(g, _)])
-                    if matches!(op, Op::Stream(..)) && f == g && int(1) =>
+                    if matches!(op, Op::Stream(..)) && *f == Some(*g) && int(1) =>
                 {
                     Ok(())
                 }
                 (Type::View(f), [Type::Sink(g, _)])
-                    if matches!(op, Op::Sink(..)) && f == g && int(1) =>
+                    if matches!(op, Op::Sink(..)) && *f == Some(*g) && int(1) =>
                 {
                     Ok(())
                 }

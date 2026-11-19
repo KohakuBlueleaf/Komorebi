@@ -29,53 +29,13 @@ pub mod validate;
 pub use print::print;
 pub use validate::{validate, Violation};
 
-use crate::types::{Binding, ConstValue, Format, On, Peers, ScalarType, TileShape, Type};
+use crate::types::{
+    Binding, ConstValue, ControlId, Count, Format, FuncId, HandlerId, MemberId, MessageId, On,
+    Peers, ProgramId, RunId, ScalarType, TileShape, Type,
+};
 use body::Body;
 use derive::{ChainDeps, Effects, Requirement};
 use notes::Notes;
-
-pub use crate::types::Count;
-
-pub use crate::types::{MessageRef, ParamRef, RecordRef};
-
-/// A function's place in `Module::funcs`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FuncId(pub u32);
-
-/// A program's place in `Module::programs`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ProgramId(pub u32);
-
-/// A control program's place in `Module::controls`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ControlId(pub u32);
-
-/// A state member's place in its program's `state`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MemberId(pub u32);
-
-/// A handler's place in its program's `handlers`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct HandlerId(pub u32);
-
-/// A run's place in its program's `runs`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RunId(pub u32);
-
-/// A chain's place in its program's `chains`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ChainId(pub u32);
-
-/// What an invocation names: a handler, a run or a chain of one program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Entry {
-    /// A handler.
-    Handler(ProgramId, HandlerId),
-    /// A dynamic run.
-    Run(ProgramId, RunId),
-    /// A chain.
-    Chain(ProgramId, ChainId),
-}
 
 /// A body of the module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -105,14 +65,14 @@ pub struct Module {
     pub tile: TileShape,
     /// The formats the module declares, in the order written.
     pub formats: Vec<Format>,
-    /// The module's parameters in text order (`ParamRef` is a place in this list),
+    /// The module's parameters in text order (`ParamId` is a place in this list),
     /// build parameters included (their value is bound, and
     /// every use of one in a body is that value as a constant).
     pub params: Vec<Param>,
     /// The record types, every declaration of the module in text order, those inside
-    /// programs included (`RecordRef` is a place in this list).
+    /// programs included (`RecordId` is a place in this list).
     pub records: Vec<Record>,
-    /// The message types, every declaration of the module in text order (`MessageRef`
+    /// The message types, every declaration of the module in text order (`MessageId`
     /// is a place in this list).
     pub messages: Vec<Message>,
     /// The functions: `func`, `combine` and `extern func`.
@@ -292,7 +252,7 @@ pub struct Run {
     pub seed: Body,
     /// `on M(m) { ... }`, in the order written; the arrived message is the body's
     /// `Op::Arrived` value.
-    pub on_message: Vec<(MessageRef, Body)>,
+    pub on_message: Vec<(MessageId, Body)>,
     /// What the bodies read and write, together (Derive).
     pub effects: Effects,
 }

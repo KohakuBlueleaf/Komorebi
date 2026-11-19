@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use super::{Format, ScalarType};
+use super::{Format, MessageId, ParamId, RecordId, ScalarType};
 
 /// The module's tile shape, in elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,21 +30,6 @@ pub enum Axis {
     Col,
 }
 
-/// A module parameter (`param`), by its place among the module's parameters in text
-/// order, from 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ParamRef(pub u32);
-
-/// A record type, by its place among the module's record declarations in text order
-/// (those inside programs included), from 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RecordRef(pub u32);
-
-/// A message type, by its place among the module's message declarations in text
-/// order (those inside programs included), from 0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MessageRef(pub u32);
-
 /// How many tiles (or bytes): a constant, a module parameter's value, or the size of
 /// the group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -52,7 +37,7 @@ pub enum Count {
     /// A number the text writes.
     Const(u64),
     /// The value of a module parameter (`@bind(load)` or `@bind(invoke)`).
-    Param(ParamRef),
+    Param(ParamId),
     /// The size of the invocation's group: what `gather` yields.
     GroupSize,
 }
@@ -73,8 +58,9 @@ pub enum Type {
     Block(Format, Count),
     /// `tensor<F>`, and whether it is `@replicated`.
     Tensor(Format, bool),
-    /// A view of tiles of a tensor of this format.
-    View(Format),
+    /// A view of tiles of a tensor of this format; with none, a view of any format: what
+    /// a parameter declared `view` takes.
+    View(Option<Format>),
     /// A view of items of this many bytes: `t.items(...)`.
     Items(Count),
     /// A read stream of blocks of this many tiles of this format.
@@ -86,11 +72,11 @@ pub enum Type {
     /// The scalars of one tile: `v.words()`.
     Words(ScalarType),
     /// The records of one tile: `v.records(R, count = c)`.
-    Records(RecordRef),
+    Records(RecordId),
     /// One record.
-    RecordValue(RecordRef),
+    RecordValue(RecordId),
     /// A message.
-    Message(MessageRef),
+    Message(MessageId),
     /// Sub-groups of the group: `group.split(...)`.
     SubGroups,
     /// Their leaders: `group.leaders(...)`.
@@ -128,7 +114,8 @@ impl fmt::Display for Type {
             Type::Block(fm, n) => write!(f, "tile<{fm}>[{n}]"),
             Type::Tensor(fm, false) => write!(f, "tensor<{fm}>"),
             Type::Tensor(fm, true) => write!(f, "tensor<{fm}> @replicated"),
-            Type::View(fm) => write!(f, "a view of tensor<{fm}>"),
+            Type::View(Some(fm)) => write!(f, "a view of tensor<{fm}>"),
+            Type::View(None) => f.write_str("a view"),
             Type::Items(n) => write!(f, "items of {n} bytes"),
             Type::Stream(fm, n) => write!(f, "a stream of tile<{fm}>, {n} at a time"),
             Type::Zip(a, b) => write!(f, "a zip of {a} and {b}"),

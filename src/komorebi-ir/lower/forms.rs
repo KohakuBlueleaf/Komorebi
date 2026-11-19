@@ -6,10 +6,10 @@
 
 use super::body::{Slot, B};
 use super::{refuse, Res};
-use crate::program::body::{BinOp, Op, ReduceOp, UnaryOp, ValueId};
-use crate::program::{Entry, MemberId, MemberKind};
+use crate::program::body::{Op, ValueId};
+use crate::program::MemberKind;
 use crate::syntax::ast::{self, ExprKind, IndexItem};
-use crate::types::{Axis, Count, ScalarType, Type};
+use crate::types::{Axis, BinOp, Count, Entry, MemberId, ReduceOp, ScalarType, Type, UnaryOp};
 
 /// An operation's arguments: by position, and by name.
 struct Args<'e> {
@@ -168,7 +168,7 @@ impl B<'_, '_> {
                 let x = self.expr(base, None)?;
                 let i = self.expr(i, Some(ScalarType::U32))?;
                 let (op, t) = match self.ty(x) {
-                    Type::View(f) => (Op::ReadTile(x, i), Type::Tile(f)),
+                    Type::View(Some(f)) => (Op::ReadTile(x, i), Type::Tile(f)),
                     Type::Block(f, _) => (Op::BlockAt(x, i), Type::Tile(f)),
                     Type::Words(s) => (Op::Word(x, i), Type::Scalar(s)),
                     Type::Records(r) => (Op::RecordAt(x, i), Type::RecordValue(r)),
@@ -352,7 +352,7 @@ impl B<'_, '_> {
                 let block = self.need(a.named("block"), e, "block")?;
                 let count = self.cx.count(block)?;
                 let n = self.expr(block, Some(ScalarType::U32))?;
-                let Type::View(f) = self.ty(x) else {
+                let Type::View(Some(f)) = self.ty(x) else {
                     return refuse(span, "a stream or a sink of what is not a view of tiles");
                 };
                 if name == "stream" {
@@ -555,7 +555,7 @@ impl B<'_, '_> {
                         first,
                         n,
                     },
-                    Type::View(f),
+                    Type::View(Some(f)),
                     span,
                 )))
             }

@@ -5,11 +5,10 @@ use komorebi_ir::derive::derive;
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::derive::{
-    Ability, Access, Cause, ChainEdge, Requirement, StateAccess, StateUse, TensorAccess,
+    Access, Cause, ChainEdge, Requirement, StateAccess, StateUse, TensorAccess,
 };
-use komorebi_ir::program::{
-    validate, BodyRef, Entry, FuncId, HandlerId, MemberId, Module, ProgramId, RunId,
-};
+use komorebi_ir::program::{validate, BodyRef, Module};
+use komorebi_ir::types::{Ability, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
 
 fn derived(text: &str) -> Module {
     let checked = komorebi_ir::check(text).unwrap_or_else(|d| panic!("{d:?}"));

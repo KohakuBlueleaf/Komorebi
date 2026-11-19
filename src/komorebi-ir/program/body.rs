@@ -19,8 +19,10 @@
 //! A value defined inside a construct is not used after its `End`. A loop's values
 //! (`i`, `b`, the pair) are the results of its opening instruction.
 
-use super::{Entry, FuncId, MemberId, MessageRef, ParamRef, RecordRef};
-use crate::types::{Axis, ConstValue, Failure, ScalarType, Type};
+use crate::types::{
+    Axis, BinOp, CmpOp, Combiner, ConstValue, Entry, Failure, FuncId, MemberId, MessageId, ParamId,
+    RecordId, ReduceOp, ScalarType, SplitBy, Type, UnaryOp,
+};
 
 /// A value's number in its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,124 +58,6 @@ pub struct Inst {
     pub defs: Vec<ValueId>,
 }
 
-/// A binary operator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BinOp {
-    /// `+`.
-    Add,
-    /// `-`.
-    Sub,
-    /// `*`.
-    Mul,
-    /// `/`.
-    Div,
-    /// `%`.
-    Rem,
-    /// `&`.
-    And,
-    /// `|`.
-    Or,
-    /// `^`.
-    Xor,
-    /// `<<`.
-    Shl,
-    /// `>>`.
-    Shr,
-    /// `min(a, b)`; `minimum(a, b)` on tiles.
-    Min,
-    /// `max(a, b)`; `maximum(a, b)` on tiles.
-    Max,
-}
-
-/// A comparison.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CmpOp {
-    /// `>`.
-    Gt,
-    /// `<`.
-    Lt,
-    /// `>=`.
-    Ge,
-    /// `<=`.
-    Le,
-    /// `==`.
-    Eq,
-    /// `!=`.
-    Ne,
-}
-
-/// A function of one tile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnaryOp {
-    /// `neg`, and the unary `-` (also on integers).
-    Neg,
-    /// `abs`.
-    Abs,
-    /// `relu`.
-    Relu,
-    /// `square`.
-    Square,
-    /// `floor`.
-    Floor,
-    /// `exp`.
-    Exp,
-    /// `exp2`.
-    Exp2,
-    /// `tanh`.
-    Tanh,
-    /// `erf`.
-    Erf,
-    /// `log`.
-    Log,
-    /// `sigmoid`.
-    Sigmoid,
-    /// `silu`.
-    Silu,
-    /// `sqrt`.
-    Sqrt,
-    /// `rsqrt`.
-    Rsqrt,
-    /// `reciprocal`.
-    Reciprocal,
-}
-
-/// A reduction along an axis.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReduceOp {
-    /// `reduce_sum`.
-    Sum,
-    /// `reduce_max`.
-    Max,
-    /// `reduce_min`.
-    Min,
-}
-
-/// How a group is split: `parts = n` or `size = k`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SplitBy {
-    /// `parts = n`.
-    Parts,
-    /// `size = k`.
-    Size,
-}
-
-/// What a collective combines with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Combiner {
-    /// A `combine` function of the module.
-    Func(FuncId),
-    /// `sum`.
-    Sum,
-    /// `max`.
-    Max,
-    /// `min`.
-    Min,
-    /// `and`.
-    And,
-    /// `or`.
-    Or,
-}
-
 /// A range of a rectangle view: `lo:hi` or `lo:hi:step`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
@@ -195,7 +79,7 @@ pub enum Op {
     /// Parameter i of the body's function, handler, run, chain or control.
     Arg(u32),
     /// A load or invoke parameter of the module (a build parameter is a `Const`).
-    Param(ParamRef),
+    Param(ParamId),
     /// Reads a `var`.
     Get(LocalId),
     /// Writes a `var` (`x = e`; `x += e` is a `Get`, a `Binary` and a `Set`).
@@ -319,7 +203,7 @@ pub enum Op {
     /// `words[i]`.
     Word(ValueId, ValueId),
     /// `v.records(R, count = c)`.
-    Records(ValueId, RecordRef, ValueId),
+    Records(ValueId, RecordId, ValueId),
     /// `records[i]`.
     RecordAt(ValueId, ValueId),
     /// `record.field`, by the field's position.
@@ -413,7 +297,7 @@ pub enum Op {
     /// The message that arrived, in an `on M(m)` body.
     Arrived,
     /// `M { field: value, ... }`, the fields in the type's order.
-    MakeMessage(MessageRef, Vec<ValueId>),
+    MakeMessage(MessageId, Vec<ValueId>),
     /// `send(M { ... }, to = rank, publish = [v])`.
     Send {
         /// The message.

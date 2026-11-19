@@ -10,13 +10,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::program::body::{Body, InstId, Op, ValueId};
 use crate::program::derive::{
-    Ability, Access, Cause, ChainDeps, ChainEdge, Effects, Requirement, StateAccess, StateUse,
-    TensorAccess,
+    Access, Cause, ChainDeps, ChainEdge, Effects, Requirement, StateAccess, StateUse, TensorAccess,
 };
-use crate::program::{
-    BodyRef, CallArg, Entry, FuncId, FuncKind, HandlerId, Module, ProgramId, RunId,
-};
-use crate::types::{On, Type};
+use crate::program::{BodyRef, CallArg, FuncKind, Module};
+use crate::types::{Ability, Entry, FuncId, HandlerId, On, ProgramId, RunId, Type};
 
 /// Fills the effects of every handler and run, the dependencies of every chain, and
 /// the requirement set.

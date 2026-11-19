@@ -15,14 +15,14 @@ mod forms;
 use std::collections::HashMap;
 
 use crate::check::Checked;
-use crate::program::derive::{Ability, Cause, ChainDeps, Effects, Requirement};
+use crate::program::derive::{Cause, ChainDeps, Effects, Requirement};
 use crate::program::notes::{Anchor, Hint, HintArg, Notes, Owner, SourceSpan};
-use crate::program::{
-    self as pg, BodyRef, CallArg, ChainId, ControlId, Count, FuncId, FuncKind, HandlerId, Lifetime,
-    MemberId, MemberKind, MessageRef, ParamRef, ProgramId, RecordRef, RunId, Scope,
-};
+use crate::program::{self as pg, BodyRef, CallArg, FuncKind, Lifetime, MemberKind, Scope};
 use crate::syntax::ast::{self, Attr, ExprKind, Item, ProgramItem, Span};
-use crate::types::{Binding, ConstValue, Format, On, Peers, ScalarType, TileShape, Type};
+use crate::types::{
+    Ability, Binding, ChainId, ConstValue, ControlId, Count, Format, FuncId, HandlerId, MemberId,
+    MessageId, On, ParamId, Peers, ProgramId, RecordId, RunId, ScalarType, TileShape, Type,
+};
 
 /// Why a construct was not lowered.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +84,7 @@ struct ProgramNames {
 /// The declarations of the module, by name, and the notes gathered.
 struct Cx<'c> {
     checked: &'c Checked,
-    params: HashMap<String, (ParamRef, ScalarType, Option<ConstValue>)>,
+    params: HashMap<String, (ParamId, ScalarType, Option<ConstValue>)>,
     records: Vec<Declared>,
     messages: Vec<Declared>,
     funcs: HashMap<String, (FuncId, Signature)>,
@@ -213,21 +213,21 @@ impl<'c> Cx<'c> {
         prog.and_then(|p| at(Some(p))).or_else(|| at(None))
     }
 
-    fn record(&self, prog: Option<ProgramId>, name: &str) -> Option<RecordRef> {
-        Cx::find(&self.records, prog, name).map(RecordRef)
+    fn record(&self, prog: Option<ProgramId>, name: &str) -> Option<RecordId> {
+        Cx::find(&self.records, prog, name).map(RecordId)
     }
 
-    fn message(&self, prog: Option<ProgramId>, name: &str) -> Option<MessageRef> {
-        Cx::find(&self.messages, prog, name).map(MessageRef)
+    fn message(&self, prog: Option<ProgramId>, name: &str) -> Option<MessageId> {
+        Cx::find(&self.messages, prog, name).map(MessageId)
     }
 
-    fn message_fields(&self, m: MessageRef) -> &[(String, ScalarType)] {
+    fn message_fields(&self, m: MessageId) -> &[(String, ScalarType)] {
         self.messages
             .get(m.0 as usize)
             .map_or(&[], |x| x.2.as_slice())
     }
 
-    fn record_fields(&self, r: RecordRef) -> &[(String, ScalarType)] {
+    fn record_fields(&self, r: RecordId) -> &[(String, ScalarType)] {
         self.records
             .get(r.0 as usize)
             .map_or(&[], |x| x.2.as_slice())
@@ -372,7 +372,7 @@ impl<'c> Cx<'c> {
                         _ => None,
                     };
                     self.params
-                        .insert(p.name.name.clone(), (ParamRef(param_index), ty, value));
+                        .insert(p.name.name.clone(), (ParamId(param_index), ty, value));
                     param_index += 1;
                 }
                 Item::Func(f) | Item::Combine(f) => {
@@ -680,17 +680,17 @@ impl<'c> Cx<'c> {
                     Ok(())
                 }
                 Item::Param(p) => self.param(p).map(|x| {
-                    let at = ParamRef(out.params.len() as u32);
+                    let at = ParamId(out.params.len() as u32);
                     self.note_item(Anchor::Param(at), p.span, &p.attrs);
                     out.params.push(x);
                 }),
                 Item::Message(x) => {
-                    self.note_item(Anchor::Message(MessageRef(message_at)), x.span, &x.attrs);
+                    self.note_item(Anchor::Message(MessageId(message_at)), x.span, &x.attrs);
                     message_at += 1;
                     Ok(())
                 }
                 Item::Record(x) => {
-                    self.note_item(Anchor::Record(RecordRef(record_at)), x.span, &[]);
+                    self.note_item(Anchor::Record(RecordId(record_at)), x.span, &[]);
                     record_at += 1;
                     Ok(())
                 }
@@ -852,12 +852,12 @@ impl<'c> Cx<'c> {
         for part in p.body.nodes() {
             let result: Res<()> = match part {
                 ProgramItem::Message(x) => {
-                    self.note_item(Anchor::Message(MessageRef(*message_at)), x.span, &x.attrs);
+                    self.note_item(Anchor::Message(MessageId(*message_at)), x.span, &x.attrs);
                     *message_at += 1;
                     Ok(())
                 }
                 ProgramItem::Record(x) => {
-                    self.note_item(Anchor::Record(RecordRef(*record_at)), x.span, &[]);
+                    self.note_item(Anchor::Record(RecordId(*record_at)), x.span, &[]);
                     *record_at += 1;
                     Ok(())
                 }

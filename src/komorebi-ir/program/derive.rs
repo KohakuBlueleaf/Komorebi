@@ -2,7 +2,8 @@
 //! requirement set, each with the construct that caused it.
 
 use super::body::InstId;
-use super::{BodyRef, Entry, FuncId, HandlerId, MemberId, ProgramId};
+use super::BodyRef;
+use crate::types::{Ability, Entry, FuncId, HandlerId, MemberId, ProgramId};
 
 /// How a body touches a tensor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,26 +105,6 @@ pub struct ChainEdge {
 pub struct ChainDeps {
     /// The edges, by reader, then by writer.
     pub edges: Vec<ChainEdge>,
-}
-
-/// An ability of the machine a module may need (section 2).
-#[derive(Clone, Debug, PartialEq)]
-pub enum Ability {
-    /// `local_state >= tiles(n)` or `bytes(n)`: the amount and whether in tiles.
-    LocalState {
-        /// The amount.
-        amount: u64,
-        /// In tiles (else bytes).
-        tiles: bool,
-    },
-    /// `group = grid`.
-    Grid,
-    /// `dynamic`.
-    Dynamic,
-    /// `islands >= n`.
-    Islands(u64),
-    /// `impl("name")`.
-    Impl(String),
 }
 
 /// What caused a requirement.

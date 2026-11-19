@@ -8,13 +8,13 @@ use super::body::as_int;
 use super::ty::Count;
 use super::Name;
 use crate::syntax::ast::{Item, Module, ParamValue, ProgramItem};
-use crate::types::{MessageRef, ParamRef, RecordRef};
+use crate::types::{MessageId, ParamId, RecordId};
 
 /// The places of the module's declarations.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Index {
     /// The module's parameters.
-    pub params: HashMap<String, ParamRef>,
+    pub params: HashMap<String, ParamId>,
     /// The module's parameters bound at build (`@bind(build)`): constants.
     pub build_params: HashSet<String>,
     /// The whole-number values of the parameters bound at build.
@@ -24,9 +24,9 @@ pub(crate) struct Index {
     /// The programs.
     pub programs: HashMap<String, u32>,
     /// The record types: the module's under `None`, a program's under its name.
-    records: HashMap<(Option<String>, String), RecordRef>,
+    records: HashMap<(Option<String>, String), RecordId>,
     /// The message types, as the record types.
-    messages: HashMap<(Option<String>, String), MessageRef>,
+    messages: HashMap<(Option<String>, String), MessageId>,
     /// A program's state members, every state block's in order.
     members: HashMap<(String, String), u32>,
     /// A program's handlers, runs and chains, each by its place among its kind.
@@ -41,7 +41,7 @@ impl Index {
         for item in module.items.nodes() {
             match item {
                 Item::Param(p) => {
-                    let place = ParamRef(counts.params);
+                    let place = ParamId(counts.params);
                     counts.params += 1;
                     ix.params.entry(p.name.name.clone()).or_insert(place);
                     if named_args(&p.attrs, "bind").contains("build") {
@@ -110,7 +110,7 @@ impl Index {
     }
 
     fn message(&mut self, counts: &mut Counts, scope: Option<String>, name: &str) {
-        let place = MessageRef(counts.messages);
+        let place = MessageId(counts.messages);
         counts.messages += 1;
         self.messages
             .entry((scope, name.to_string()))
@@ -118,7 +118,7 @@ impl Index {
     }
 
     fn record(&mut self, counts: &mut Counts, scope: Option<String>, name: &str) {
-        let place = RecordRef(counts.records);
+        let place = RecordId(counts.records);
         counts.records += 1;
         self.records
             .entry((scope, name.to_string()))
@@ -138,7 +138,7 @@ impl Index {
     }
 
     /// The message type `name` as `program` sees it: its own, else the module's.
-    pub(crate) fn message_ref(&self, program: Option<&str>, name: &str) -> Option<MessageRef> {
+    pub(crate) fn message_ref(&self, program: Option<&str>, name: &str) -> Option<MessageId> {
         program
             .and_then(|p| self.messages.get(&(Some(p.to_string()), name.to_string())))
             .or_else(|| self.messages.get(&(None, name.to_string())))
@@ -146,7 +146,7 @@ impl Index {
     }
 
     /// The record type `name` as `program` sees it: its own, else the module's.
-    pub(crate) fn record_ref(&self, program: Option<&str>, name: &str) -> Option<RecordRef> {
+    pub(crate) fn record_ref(&self, program: Option<&str>, name: &str) -> Option<RecordId> {
         program
             .and_then(|p| self.records.get(&(Some(p.to_string()), name.to_string())))
             .or_else(|| self.records.get(&(None, name.to_string())))

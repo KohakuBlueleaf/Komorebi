@@ -14,8 +14,10 @@ use super::codes;
 use super::env::FuncKind;
 use super::op::OpKind;
 use super::{Checker, Name};
-use crate::program::body::{BinOp, Combiner, ReduceOp, SplitBy, UnaryOp};
-use crate::program::{ChainId, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
+use crate::types::{
+    BinOp, ChainId, Combiner, Entry, FuncId, HandlerId, MemberId, ProgramId, ReduceOp, RunId,
+    SplitBy, UnaryOp,
+};
 
 impl Checker<'_> {
     // ---- Operands -----------------------------------------------------------------

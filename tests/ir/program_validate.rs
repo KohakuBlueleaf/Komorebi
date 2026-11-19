@@ -1,14 +1,17 @@
 //! The program structure's validator: a valid module gives nothing, and each kind of
 //! violation, made by hand in a small module, is found.
 
-use komorebi_ir::program::body::{BinOp, Body, CmpOp, Inst, InstId, LocalId, Op, ValueId};
-use komorebi_ir::program::derive::{Ability, Cause, Requirement};
+use komorebi_ir::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
+use komorebi_ir::program::derive::{Cause, Requirement};
 use komorebi_ir::program::notes::{Anchor, Hint, Named, SourceSpan};
 use komorebi_ir::program::{
-    validate, BodyRef, Count, Func, FuncId, FuncKind, Lifetime, Member, MemberKind, Message,
-    MessageRef, Module, ParamRef, Program, ProgramId, RecordRef, Run, Scope,
+    validate, BodyRef, Func, FuncKind, Lifetime, Member, MemberKind, Message, Module, Program, Run,
+    Scope,
 };
-use komorebi_ir::types::{ConstValue, Format, Peers, ScalarType, TileShape, Type};
+use komorebi_ir::types::{
+    Ability, BinOp, CmpOp, ConstValue, Count, Format, FuncId, MessageId, ParamId, Peers, ProgramId,
+    RecordId, ScalarType, TileShape, Type,
+};
 
 const U32: Type = Type::Scalar(ScalarType::U32);
 const F32: Type = Type::Scalar(ScalarType::F32);
@@ -267,7 +270,7 @@ fn ids_are_in_range() {
         state: vec![Member {
             name: "s".into(),
             kind: MemberKind::Scalars(ScalarType::U32),
-            count: Count::Param(ParamRef(2)),
+            count: Count::Param(ParamId(2)),
             scope: Scope::Worker,
             lifetime: Lifetime::Program,
             export: false,
@@ -301,7 +304,7 @@ fn ids_are_in_range() {
         insts: Vec::new(),
     };
     let on = Body {
-        values: vec![Type::Message(MessageRef(0))],
+        values: vec![Type::Message(MessageId(0))],
         locals: Vec::new(),
         insts: vec![inst(Op::Arrived, &[0])],
     };
@@ -314,7 +317,7 @@ fn ids_are_in_range() {
             params: Vec::new(),
             peers: Peers::None,
             seed: empty(),
-            on_message: vec![(MessageRef(0), on)],
+            on_message: vec![(MessageId(0), on)],
             effects: Default::default(),
         }],
         chains: Vec::new(),
@@ -325,7 +328,7 @@ fn ids_are_in_range() {
     m.messages[0].program = Some(ProgramId(3));
     has(&m, "M: declared in a program out of range");
     m.messages[0].program = Some(ProgramId(0));
-    m.programs[0].runs[0].on_message[0].0 = MessageRef(1);
+    m.programs[0].runs[0].on_message[0].0 = MessageId(1);
     has(&m, "run r: message 1 not of its program");
 }
 
@@ -357,7 +360,7 @@ fn every_anchor_names_something() {
     let mut m = valid();
     m.notes.hints.push(hint(Anchor::Chain(
         ProgramId(0),
-        komorebi_ir::program::ChainId(0),
+        komorebi_ir::types::ChainId(0),
     )));
     has(&m, "an anchor that names nothing");
 
@@ -373,9 +376,9 @@ fn every_anchor_names_something() {
     has(&m, "a parameter's name not on a parameter");
 
     for anchor in [
-        Anchor::Param(ParamRef(0)),
-        Anchor::Record(RecordRef(0)),
-        Anchor::Message(MessageRef(0)),
+        Anchor::Param(ParamId(0)),
+        Anchor::Record(RecordId(0)),
+        Anchor::Message(MessageId(0)),
     ] {
         let mut m = valid();
         m.notes.hints.push(hint(anchor));

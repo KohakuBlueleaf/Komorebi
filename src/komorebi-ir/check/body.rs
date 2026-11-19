@@ -17,8 +17,7 @@ use super::env::{is_named, parse_int, Env, Names, Place};
 use super::op::OpKind;
 use super::views::peers_of;
 use super::{Checker, LocalKind, Name, Word};
-use crate::program::body::UnaryOp;
-use crate::program::MemberId;
+use crate::types::{MemberId, UnaryOp};
 
 /// The kind of body being checked: it decides which operations it may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,7 +269,7 @@ pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
 
 /// The operation of a binary operator.
 fn binary_kind(op: BinOp) -> OpKind {
-    use crate::program::body::{BinOp as B, CmpOp as C};
+    use crate::types::{BinOp as B, CmpOp as C};
     match op {
         BinOp::Or => OpKind::LogicOr,
         BinOp::And => OpKind::LogicAnd,

@@ -2,9 +2,9 @@
 //! gives its values and slots. Each is attached by an `Anchor` to what it describes.
 
 use super::body::{InstId, LocalId, ValueId};
-use super::{
-    BodyRef, ChainId, ControlId, FuncId, HandlerId, MemberId, MessageRef, ParamRef, ProgramId,
-    RecordRef, RunId,
+use super::BodyRef;
+use crate::types::{
+    ChainId, ControlId, FuncId, HandlerId, MemberId, MessageId, ParamId, ProgramId, RecordId, RunId,
 };
 
 /// Where a note is attached.
@@ -27,11 +27,11 @@ pub enum Anchor {
     /// A chain.
     Chain(ProgramId, ChainId),
     /// A module parameter.
-    Param(ParamRef),
+    Param(ParamId),
     /// A message type.
-    Message(MessageRef),
+    Message(MessageId),
     /// A record type.
-    Record(RecordRef),
+    Record(RecordId),
     /// A parameter of a function, handler, run, chain or control (its owner, then
     /// its position).
     ParamOf(Owner, u32),
