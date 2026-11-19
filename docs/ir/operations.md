@@ -6,12 +6,12 @@
 
 Each operation has one form, the one the lessons write; another spelling is refused (`K111` in
 [the IR's checks](checks.md)). An operand is either **by position**, in the order given, or **by
-name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left out; every other operand must be given
-(`K103`).
+name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left
+out; every other operand must be given (`K103`).
 
 The "Written in" column names a lesson (T1 to T16) or the topic of the specification that writes the
-form. Below the tables, the forms the specification writes in two ways, and the points it does not
-write, are listed: until they are settled the checker accepts only the form in the tables.
+form. What the language names and the build does not have yet is listed at the end; it is refused by
+name (`K010`).
 
 ## Values and control flow
 
@@ -30,6 +30,7 @@ write, are listed: until they are settled the checker accepts only the form in t
 | Integer operators `+ - * // % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n | Handler bodies |
 | `min(a, b)`, `max(a, b)` | two by position | integers | an integer | T2 |
 | Comparisons `== != < > <= >=` | two values | scalars, or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
+| `c && d`, `c \|\| d` | two conditions | `bool` | `bool`; there is no negation operator: write `c == false` | T11 |
 
 ## Compute on tiles
 
@@ -40,7 +41,7 @@ write, are listed: until they are settled the checker accepts only the form in t
 | `maximum(a, b)`, `minimum(a, b)` | two by position | tiles, or a tile and a scalar | a tile | T4 |
 | `where(a OP b, x, y)` | a comparison, then two values, by position | `OP` one of `> < >= <= == !=`; tiles or scalars | a tile | T4 |
 | `exp`, `exp2`, `tanh`, `erf`, `log`, `sigmoid`, `silu`, `sqrt`, `rsqrt`, `reciprocal` | one by position | a tile | a tile | T4 |
-| `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile | one value for each row | T4 |
+| `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile; `row` or `col` | one value for each row or column, typed as a tile | T4 |
 | `v.col()` | none | a value for each row | it spread along the row | T4 |
 | `w.row()` | none | a tile | a row spread along the columns | T4 |
 | `matmul(a, b)` | two by position | tiles | a tile | T4, T13 |
@@ -56,19 +57,20 @@ The function body of a `func` uses only these (`K202`). Operands of different fo
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
 | `t.tiles(first, n)` | two by position | a tensor; integers | a view of n consecutive tiles | T1 |
-| `t.tiles[r0:r1, c0:c1]` | two ranges | a tensor; integers | a rectangle of tiles, walked row by row | T7 |
+| `t.tiles[r0:r1, c0:c1]`, `t.tiles[r0:r1:s, c0:c1:s]` | two ranges, each with a step *optional* | a tensor; integers | a rectangle of tiles, walked row by row | T7, Types and data |
 | `v.T` | none | a rectangle view | the rectangle turned | T7 |
-| `t.items(size = B)` | `size` by name | a tensor; an integer | a view of items of B bytes | T7 |
+| `t.items(size = B)` | `size` by name | a tensor; an integer | a view of all the tensor's items of B bytes | T7 |
+| `t.items(first, n, size = B)` | `first` and `n` by position, `size` by name | a tensor; integers | a view of n items of B bytes from item `first` | Types and data |
 | `v[i]` | one by position | a view; an integer | one tile, read | Handler bodies |
-| `v.words()` | none | a view of one tile (`K207`) | the scalars of the tile, read by index | T2 |
-| `v.records(R, count = c)` | `R` by position, `count` by name | a view of one tile; a record type | the records, read by index and field | T7 |
+| `v.words()` | none | a view of one tile (`K207`) of a tensor whose format is a scalar type | the scalars of the tile, read by index | T2 |
+| `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile; a record type | the records, read by index and field | T7 |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)` | `view` by position, `block` by name | a view; an integer | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
+| `stream(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
 | `zip(s1, s2)` | two by position | streams | the two together | T4 |
-| `sink(view, block = n)` | `view` by position, `block` by name | a view; an integer | a write stream | T1 |
+| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
-| `store view <- value` | a view, a value | a view; a tile | writes it, visible at completion | T4 |
+| `store view <- value` | a view, a value | a view; a tile (a store of scalars: `K010`) | writes it, visible at completion | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
 
 A tensor is reached only through a view (`K107`).
@@ -102,12 +104,11 @@ A tensor is reached only through a view (`K107`).
 |---|---|---|---|---|
 | `reduce(x, with = f, within = g, among = g, publish = [v])` | `x` by position; `with` by name; `within`, `among`, `publish` by name, *optional* | a value; a `combine` or one of `sum max min and or` (`K401`); sub-groups; views | the combination, at the leader | T5 |
 | `all_reduce(x, with = f, publish = [v])` | `x` by position; `with` by name; `publish` *optional* | in a handler, a value a worker holds, and the group's workers take part; in a control program, a replicated tensor, and the islands take part; `with` as for `reduce` | the same combination at every participant | T5, T12, Handler bodies, Islands |
-| `all_gather` | not written | in a handler, a value a worker holds, among the group's workers; in a control program, a replicated tensor, among the islands | not written | Islands |
 | `gather(x)` | one by position | a value | `tile<F>[group.size]` at the leader, indexed by rank | T5 |
 | `broadcast(along = row, sender = c)` | both by name; `sender` *optional*, 0 when left out | `row` or `col`; an integer | a broadcast; in a handler on a grid only (`K402`) | T6 |
 | `br.is_sender` | none | | `bool` | T6 |
-| `br.cast(block, word = w)` | `block` by position, `word` by name | a tile; a scalar | sends the block with the word | T6 |
-| `br.arrive()` | none | | the blocks and their words, in order | T6 |
+| `br.cast(block, word = w)` | `block` by position, `word` by name, *optional* | a tile; a scalar | sends the block, with the word when given | T6 |
+| `br.arrive()` | none | | the blocks and their words, in order; always both | T6 |
 | `sync(publish = [v])` | by name | views | a point the whole group reaches | T15 |
 
 ## Dynamic runs
@@ -118,7 +119,7 @@ In a dynamic run only (`K503`).
 |---|---|---|---|---|
 | `M { field: value, ... }` | every field of `M` (`K113`) | scalars | a message | T9 |
 | `send(M { ... }, to = rank, publish = [v])` | the message by position; `to` by name; `publish` *optional* | a message; an integer; views | `bool`: false when refused | T9, T15 |
-| `forward(m, with = { ... }, to = rank, as = M, publish = [v])` | `m` by position; `with`, `to` by name; `as`, `publish` *optional* | the arrived message; its fields; an integer; a message type; views | sends the same unit of work on | T9, T15 |
+| `forward(m, with = { ... }, to = rank, publish = [v])` | `m` by position; `to` by name, always given; `with`, `publish` by name, *optional* | the arrived message; some of its fields; an integer; views | sends the same unit of work on | T9, T15 |
 | `consume m` | the arrived message | | ends the unit of work | T9 |
 | `offer(M { ... }, to = rank)` | the message by position; `to` by name | a message; an integer, to a declared peer (`K502`) | `bool`: false while the peer holds the last one | Dynamic runs |
 | `m.field` | none | an arrived message | the field | T9 |
@@ -130,7 +131,7 @@ In a control program only (`K703`).
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
 | `invoke(P.h(args), on = group(first, count), after = [a], after_end = [a])` | the call by position; `on` by name; `after`, `after_end` by name, *optional* | a handler of a program and its arguments; a group; handles | a handle | T11, T16 |
-| `group(first, count)` | two by position | integers | a group of workers | T11 |
+| `group(first, count)`, `group(count)` | by position; `first` *optional*: left out, the runtime chooses it | integers | a group of workers | T11, Control programs |
 | `await h` | a handle | | the invocation's result; fails the control program if it failed | T11 |
 | `outcome(h)` | one by position | a handle | an outcome: `.failed` (`bool`), `.reason`, `.value` | T16 |
 | `o.reason == name` | a failure's name | one of `view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound` (`K704`) | `bool` | Order, state and failure |
@@ -146,24 +147,13 @@ In a control program only (`K703`).
 | `reduce_to(t, to = i, with = f)` | `t` by position; `to`, `with` by name | a replicated tensor; an island; a combine | in a control program only (`K801`) | T12 |
 | `broadcast_from(t, from = i)` | `t` by position; `from` by name | a replicated tensor; an island | in a control program only (`K801`) | T12 |
 
-## Not yet settled
+## Named, not built yet
 
-Forms the specification writes in two ways:
+The language names these and the build does not have them yet. Each is refused by name (`K010`):
 
-| Operation | One way | The other | Meanwhile, the lessons' form |
-|---|---|---|---|
-| Items of a tensor | `t.items(size = B)` (T7, Handler bodies) | `t.items(first, n, size = B)` (Types and data) | `size` only |
-| The block of a stream | `stream(view, block = n)` in every lesson | `zip(stream(a), stream(b))`, the block left out (Handler bodies) | `block` is given |
-| The fields of a `forward` | `forward(m, with = { ... }, to = rank)` (T9) | `forward(m, as = Hit, to = worker.rank)`, with no `with`, in the direction for message bodies (Dynamic runs) | `with` is given |
-
-Forms the specification names and does not write:
-
-- The operands of `all_gather`, and what it yields: it is named among the collectives, never written.
-- A group given as a count only ("lets the runtime choose the first rank", Control programs).
-- The step of a rectangle `t.tiles[r0:r1, c0:c1]` ("with an optional step", Types and data).
-- `axis = col` on `reduce_sum`, `reduce_max` and `reduce_min`, and the type of their result.
-- The element type of `v.words()`.
-- `store` of scalars ("Write a tile or scalars", Handler bodies).
-- Whether `word` may be left out of `br.cast` and `count` out of `.records`.
-- `&&`, written in T11's control program and not in the list of operators; `||` and a negation.
-- A message's body, `@body(n)` and `m.body`.
+- `all_gather`, a collective with the participants of `all_reduce`: in a handler the group's workers,
+  in a control program the islands. Its operands are not written yet.
+- A `store` of scalars.
+- A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
+- Several tile shapes in one module.
+- A function on a block of several tiles, `tile<F>[n]`.

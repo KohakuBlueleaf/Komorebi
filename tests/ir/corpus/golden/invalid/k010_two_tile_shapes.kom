@@ -1,4 +1,4 @@
-// refused for now: one tile shape a module, until several have a form (Module)
+// refused: named in the language, not built yet; several tile shapes in a module (Module)
 module shapes
 
 tile [32, 32]

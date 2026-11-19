@@ -36,6 +36,8 @@ uses".
 | `K8xx` | Islands |
 | `K9xx` | Failures of an invocation found only in the run |
 
+The code `K004` is not used: the rule it stood for became part of `K010`.
+
 A program compile diagnostic is written `file:line:col: code: text`. Every case named below is a
 module of `tests/ir/corpus/golden/`, in `invalid/` (refused by program compile) or in `run_fails/`
 (checks clean, and its run fails), with a `.expect` file beside it.
@@ -50,12 +52,12 @@ The operations and their operands, which several rows below refer to, are listed
 | `K001` | The text follows the grammar | Grammar | Program compile (parse) | `k001_parse` |
 | `K002` | A `state` declaration is a block | Programs, state, handlers: "Always a block: `state { ... }` with the shared attributes on it. One form, with no second spelling for a single member" | Program compile (parse) | `k002_state_not_block` |
 | `K003` | An undotted attribute is one of the language's own | Grammar: "A closed set: the language's own. A name outside it is an error at program compile, never a warning: an undotted attribute changes what a program means" | Program compile | `k003_unknown_attribute` |
-| `K004` | One tile shape in a module, for now | Module: "Several tile shapes in one module [...] have no syntax: the grammar has one `tile [R, C]`"; not built yet: "one shape a module, until a program needs several" | Program compile | `k004_two_tile_shapes` |
 | `K005` | No `while` in a handler body | Grammar: "`while` is allowed in a control body and not in a handler body" | Program compile | `k005_while_in_handler` |
 | `K006` | A known attribute only where it has a meaning | Grammar, a reading the build uses: "A known attribute where it has no meaning (`@export` on a handler) [...] Both are errors. Nothing is supplied silently" | Program compile | `k006_export_on_handler`, `k006_replicated_on_scalar` |
 | `K007` | A declaration carries the attribute every example gives it: `@on` on a handler, `@dynamic` on a run, `@bind` on a parameter, `@scope` and `@lifetime` on a `state` | Grammar, a reading the build uses: "a declaration without the attribute every example gives it (a handler with no `@on`, a run with no `@dynamic`, a parameter with no `@bind`, a `state` with no `@scope` and `@lifetime`) [...] Both are errors. Nothing is supplied silently" | Program compile | `k007_handler_without_on`, `k007_run_without_dynamic`, `k007_param_without_bind`, `k007_state_without_scope` |
 | `K008` | `= fit` only on a parameter bound at load | Module, for `@bind(load)`: "The module is loaded on a machine. `= fit` means the largest value such that declared state fits the worker memory"; a reading the build uses: "`= fit` on a parameter not bound at load" is an error | Program compile | `k008_fit_not_load` |
 | `K009` | A module states in `requires` what its content uses: `dynamic` for a dynamic run, `group = grid` for a handler on a grid, `impl("name")` for an external function with no fallback | Module: a module must state an ability its content uses: "A missing line is an error that names the construct and the line to add. The block is then always complete: a reader and a load see what a module needs without analysis"; `group = line` is every target's and is never required; `islands >= n` and `local_state >= ...` are stated only | Program compile | `k009_requires_dynamic`, `k009_requires_grid`, `k009_requires_impl` |
+| `K010` | What the language names and the build does not have yet is refused by name: `all_gather`; a `store` of scalars; a message body, `@body` and `as =` on a `forward`; several tile shapes in a module; a function on a block of several tiles | Module, a reading the build uses: "One diagnostic says so by name: `all_gather`; a `store` of scalars; a message body and `as =` on a `forward` [...]; several tile shapes in a module; a function on a block of several tiles" | Program compile | `k010_all_gather`, `k010_store_scalars`, `k010_message_body`, `k010_forward_as`, `k010_two_tile_shapes`, `k010_func_on_block` |
 
 ## Names and types
 
@@ -83,7 +85,7 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
 | `K201` | A `func` takes no view | Compute functions: "A `func` is pure and takes no view" | Program compile | `k201_func_takes_view` |
-| `K202` | A function body uses the compute family only | Compute functions: "A function body uses the compute family only" | Program compile | `k202_func_not_compute` |
+| `K202` | A function body uses the compute family only | The hierarchy: "A function body uses the compute family only" | Program compile | `k202_func_not_compute` |
 | `K203` | A block of several tiles is not given to a function on one tile | Handler bodies: "A block of n tiles is `tile<F>[n]`. Giving it to a function declared on one tile is a type error" | Program compile | `k203_block_to_tile_func` |
 | `K204` | An `extern func` that takes a view states what it touches | Compute functions: "An `extern func` may take one and states what it touches with `@reads` and `@writes`" | Program compile | `k204_extern_view_unstated` |
 | `K205` | A `fallback` body touches only what `@reads` and `@writes` state | Compute functions: "its `fallback` body may touch what those state and nothing else" | Program compile | `k205_fallback_touches` |
@@ -107,7 +109,7 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K501` | Every arrived message is forwarded or consumed exactly once | Dynamic runs: "every arrived message is forwarded or consumed exactly once"; the pipeline: program compile checks "every message forwarded or consumed once" | Program compile | `k501_message_kept`, `k501_message_twice` |
+| `K501` | Every arrived message is forwarded or consumed exactly once | Dynamic runs: "every arrived message is forwarded or consumed exactly once"; The pipeline: program compile checks "every message forwarded or consumed once" | Program compile | `k501_message_kept`, `k501_message_twice` |
 | `K502` | An `offer` goes to a declared peer | Dynamic runs: "An `offer` to a rank that is not a declared peer is refused at program compile where the rank is known, and is a failure of the run where it is not"; a reading the build uses: "Known means a constant rank, or `(worker.rank + d) % group.size` with a constant d" | Program compile where the rank is known; otherwise the run | `k502_offer_no_peer`, `k502_offer_offset_two` |
 | `K503` | `send`, `forward`, `consume` and `offer` only in a dynamic run | Dynamic runs, a reading the build uses: "`send`, `forward`, `consume` or `offer` outside a dynamic run" is an error | Program compile | `k503_send_in_handler` |
 
@@ -126,7 +128,7 @@ written order. `past(y)` asks the build for the proof of `K601`; leaving it out 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
 | `K701` | No race: two actions on one place, one a write, with no edge between them | Order, state and failure: "A race is two actions on the same place, at least one of them a write, with no edge [...] between them. The IR gives a race no meaning: it is an invalid program"; "The CPU interpreter reports every race that happens in the run it executes, and program compile what it can show before a run" | Program compile, arguments known (needs the derived effects); the interpreter, for a race in the run it executes | `k701_race_order`, `k701_race_halves` |
-| `K702` | A control body uses values, control flow, `invoke`, `await` and results | Control programs: "A control body uses values, control flow, `invoke`, `await` and results"; Islands: the collectives over the copies are "called from a control program" | Program compile | `k702_control_not_values` |
+| `K702` | A control body uses values, control flow, `invoke`, `await` and results | The hierarchy: "A control body uses values, control flow, `invoke`, `await` and results"; Islands: the collectives over the copies are "called from a control program" | Program compile | `k702_control_not_values` |
 | `K703` | `invoke` and `await` only in a control program | Control programs, a reading the build uses: "`invoke` or `await` outside a control program" is an error | Program compile | `k703_invoke_in_handler` |
 | `K704` | A failure's name is one of the eight | Order, state and failure: the names are "`view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound`. Another name is an error" | Program compile | `k704_unknown_reason` |
 

@@ -1,0 +1,24 @@
+// refused: named in the language, not built yet; a message body (Dynamic runs)
+module rays
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Rays {
+    message Ray { id: u32 } @body(64)
+
+    run trace(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Ray { id: i }, to = worker.rank)
+            }
+        }
+        on Ray(m) {
+            consume m
+        }
+    }
+}

@@ -1,0 +1,9 @@
+// refused: named in the language, not built yet; a function on a block of several tiles (Compute functions)
+module blocks
+
+tile [32, 32]
+format f32
+
+func first(a: tile<f32>[4]) -> tile<f32> {
+    return zeros
+}

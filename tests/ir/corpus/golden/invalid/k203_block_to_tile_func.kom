@@ -2,19 +2,21 @@
 module blocks
 
 tile [32, 32]
-format bf16
+format f32
 
-func times(a: tile<bf16>, k: f32) -> tile<bf16> {
+func times(a: tile<f32>, k: f32) -> tile<f32> {
     return a * k
 }
 
 program Scale {
-    handler run(x: tensor<bf16>, y: tensor<bf16>, k: f32) @on(group) {
-        let src = partition(x.tiles(0, 64), worker.rank, group.size)
-        let dst = partition(y.tiles(0, 64), worker.rank, group.size)
-        let out = sink(dst, block = 4)
-        for xb in stream(src, block = 4) {
-            out.push(times(xb, k))
+    handler run(x: tensor<f32>, y: tensor<f32>, k: f32, tiles: u32) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, tiles), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let every = gather(acc)
+        if worker.is_leader {
+            store y.tiles(0, 1) <- times(every, k)
         }
     }
 }
