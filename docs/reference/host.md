@@ -1130,7 +1130,9 @@ island's kernels and the link cores' kernels. A mock run then stands in for the
 launch, so the script goes on to its later loads. The build cache is the card's, so
 a card run of the script that follows compiles nothing. Every load, on a card or not,
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
-`compiled:` line with the defines of each kernel it had to compile.
+`compiled:` line with the defines of each kernel it had to compile. The count is by
+file time: of several processes that build at once, one can be counted for a kernel
+another built.
 
 - From the script's first session on, a file written outside komorebi (by the
   script, a module of its own or a library it calls, `np.save` too) goes beside it, to

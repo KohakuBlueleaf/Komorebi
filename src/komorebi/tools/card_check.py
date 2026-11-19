@@ -91,41 +91,58 @@ def stamp_path(root):
     return Path(root) / LOGS / STAMP
 
 
-def prebuild_one(check, root, log_dir):
-    """One check's `kmr prebuild` (once more when its own passes did not run twice):
-    (check, the second pass's compiled count, the kernel buffer it opens, its exit,
-    seconds, the first pass's compiled count, why it failed ("" if it did not))."""
+def prebuild_run(check, root):
+    """One `kmr prebuild` of the check's script: (its output, its exit, seconds)."""
     started = time.perf_counter()
     cards = ",".join(str(card) for card in SHAPES[check.cards])
     script = (Path(root) / check.script).resolve()
     command = [sys.executable, "-m", "komorebi.cli", "prebuild", "--cards", cards]
     command += [str(script), *check.args]
-    outputs = []
-    while True:
-        done = subprocess.run(
-            command,
-            cwd=script.parent,
-            env=shape_environment(check.cards),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        outputs.append(done.stdout + done.stderr)
-        last = outputs[-1].split(AGAIN)[-1]  # its own second pass, or this run
-        if AGAIN in outputs[-1] or len(outputs) > 1:
-            break
+    done = subprocess.run(
+        command,
+        cwd=script.parent,
+        env=shape_environment(check.cards),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.stdout + done.stderr, done.returncode, time.perf_counter() - started
+
+
+def prebuild_result(check, outputs, code, seconds, first, log_dir, checked=True):
+    """(check, the last pass's compiled count, the kernel buffer it opens, its exit,
+    seconds, the first pass's compiled count, why it failed ("" if it did not)) of a
+    check's runs `outputs`, the log written. A run not yet `checked` may compile."""
     (log_dir / f"prebuild-{check.name}.log").write_text("\n".join(outputs))
+    last = outputs[-1].split(AGAIN)[-1]  # its own second pass, or this run
     kernels = [
         max(int(opened), kernel_buffer.need(int(total)) + headroom)
         for total, opened in KERNELS.findall(last)
         for headroom in [remembered.headroom(kernel_buffer.need(int(total)))]
     ]
-    seconds = time.perf_counter() - started
-    first = compiled_in(outputs[0].split(AGAIN)[0])
-    code = done.returncode
     compiled = compiled_in(last)
-    why = prebuild_failure(code, compiled, last)
+    why = prebuild_failure(code, compiled if checked else 0, last)
     return check, compiled, max(kernels, default=0), code, seconds, first, why
+
+
+def build_one(check, root, log_dir):
+    """Phase 1 of a check: its building run (its own passes settle the kernel buffer);
+    (outputs, exit, seconds, the first pass's compiled count, the result if it failed
+    else None). What it compiles is not counted."""
+    output, code, seconds = prebuild_run(check, root)
+    first = compiled_in(output.split(AGAIN)[0])
+    result = prebuild_result(check, [output], code, seconds, first, log_dir, False)
+    return [output], code, seconds, first, (result if result[-1] else None)
+
+
+def check_one(check, built, root, log_dir):
+    """Phase 2 of a check that built: its checking run, when every check has built,
+    so nothing compiles in it (the cache is warm) unless it should not: its result."""
+    outputs, _, seconds, first, _ = built
+    output, code, more = prebuild_run(check, root)
+    return prebuild_result(
+        check, [*outputs, output], code, seconds + more, first, log_dir
+    )
 
 
 def built_loads(text):
@@ -165,6 +182,27 @@ def prebuild_failure(code, compiled, text):
     return ""
 
 
+def prebuilt(checks, root, log_dir, jobs):
+    """The results of `checks`' prebuilds, `jobs` at a time, in two phases: all the
+    building runs first, and only when all have ended all the checking runs, so that no
+    check is blamed for a kernel another compiled (a file's time says compiled). A
+    check that failed to build has no checking run."""
+    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+        futures = [pool.submit(build_one, c, root, log_dir) for c in checks]
+        concurrent.futures.wait(futures)
+        built = [
+            (c, future.result()) for c, future in zip(checks, futures, strict=True)
+        ]
+        yield from (one[-1] for _, one in built if one[-1])
+        futures = [
+            pool.submit(check_one, check, one, root, log_dir)
+            for check, one in built
+            if not one[-1]
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            yield future.result()
+
+
 def prebuild(checks, root, log_dir, jobs, list_path):
     """Every check's prebuild, `jobs` at a time; the second pass must compile nothing.
     Writes the stamp the card run reads; returns the number of checks that failed."""
@@ -172,20 +210,23 @@ def prebuild(checks, root, log_dir, jobs, list_path):
     stamp = {"code": remembered.code_digest(), "checks": kept.get("checks", {})}
     for check in checks:
         stamp["checks"].pop(check.line, None)
-    with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
-        futures = [pool.submit(prebuild_one, c, root, log_dir) for c in checks]
-        for future in concurrent.futures.as_completed(futures):
-            check, compiled, kernels, code, seconds, first, why = future.result()
-            cold += first
-            failed += bool(why)
-            if not why:
-                stamp["checks"][check.line] = kernels
-            print(
-                f"{'FAIL' if why else 'PASS'} {seconds:6.1f} s  prebuild {check.line}: "
-                f"{compiled} compiled at the second pass, exit {code}"
-                + (f"; {why} (log prebuild-{check.name}.log)" if why else ""),
-                flush=True,
-            )
+
+    def report(result):
+        nonlocal failed, cold
+        check, compiled, kernels, code, seconds, first, why = result
+        cold += first
+        failed += bool(why)
+        if not why:
+            stamp["checks"][check.line] = kernels
+        print(
+            f"{'FAIL' if why else 'PASS'} {seconds:6.1f} s  prebuild {check.line}: "
+            f"{compiled} compiled at the second pass, exit {code}"
+            + (f"; {why} (log prebuild-{check.name}.log)" if why else ""),
+            flush=True,
+        )
+
+    for result in prebuilt(checks, root, log_dir, jobs):
+        report(result)
     stamp_path(root).write_text(json.dumps(stamp, indent=1))
     stamp["shared"] = kept.get("shared", {})  # a shape's lines whose shared open built
     shapes = sorted({check.cards for check in checks})

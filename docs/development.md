@@ -142,7 +142,8 @@ python -m komorebi.tools.card_check                 # card 0, then cards 0 and 1
 `card_check --prebuild` counts a line only when its kernels were built: a build that
 failed, or a script that stopped before its first load, fails the line and prints the
 log's first error line; a script that stops on the stand-in's zeros after its loads
-were built counts.
+were built counts. It builds in two phases: every line's building run first, and
+each line's checking run (which must compile nothing) only when all have ended.
 
 [Run off the card](guides/run-off-the-card.md) counts which documented commands
 build to their end without a card.
