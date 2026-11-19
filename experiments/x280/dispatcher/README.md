@@ -122,3 +122,22 @@ Every MAP run checked its tail (jobs 962 to 999) with no job wrong. At depth 48 
 X280 at 1,350 MHz, NOP commands reached 27 in flight and cost more than at 1000 MHz
 (1.98 against 1.64), so there the dispatcher was not the bound; what was is not
 measured here.
+
+## With the ring bound
+
+The cores' pass now stops at the ring bound the dispatcher keeps in their control block
+(see [the kernel's README](../../../src/komorebi_native/x280/kernel/README.md#the-ring-bound)):
+it is raised in steps of 8 before a command lands at or above it and lowered a step when
+no busy slot is within two steps under it and it has held 20 microseconds. The table
+above is to be taken again with it, by the same command lines on a host load under 4 (or
+under 8, said beside the row): the runs so far were all on a busier host, so it gives no
+rows yet.
+
+| depth | what | X280 1000 MHz, dispatcher | host | X280 1,350 MHz, dispatcher | host |
+|---|---|---|---|---|---|
+| | rows to come | | | | |
+
+What the bound leaves: the dispatcher's own sweep of the DONE table still goes over every
+slot up to the depth, so NOP commands at depth 48 and 64 still cost more than at depth 16
+(the cores' scan no longer does). Bounding the sweep as well lowers that but lets more
+MAP commands into flight; the two are to be weighed together.
