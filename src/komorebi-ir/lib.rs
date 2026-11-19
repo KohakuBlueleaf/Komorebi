@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 pub mod api;
+pub mod backend;
 pub mod bytecode;
 pub mod check;
 pub mod deep;

@@ -39,7 +39,7 @@ uses".
 | `K6xx` | Chains |
 | `K7xx` | Control programs and the order between invocations |
 | `K8xx` | Islands |
-| `K9xx` | Failures of an invocation found only in the run; from `K950`, a byte-code file refused |
+| `K9xx` | Failures of an invocation found only in the run; from `K950`, a byte-code file refused; from `K960`, a backend's refusal |
 
 The code `K004` is not used: the rule it stood for became part of `K010`.
 
@@ -199,3 +199,21 @@ of Verify run on it, each refused with its own code.
 | `K953` | Bytes this version's writer would not write: a part cut short or longer than its walk, a number out of its range, bytes after the last part | The reader |
 | `K954` | A module that reads whole and does not validate | The reader |
 | `K955` | A module whose derived parts (a body's effects, a chain's dependencies, the requirement set) are not the ones Derive gives it again | Loading it |
+
+## A backend refuses
+
+A backend states what it provides, implements, allows and computes; a program that asks for more is
+refused by name before anything is emitted, at the construct that asks (What a backend states:
+"A backend that cannot provide a requirement, or exceeds one of its own limits, refuses the module
+and names what. It never substitutes other behaviour silently"). What depends on the machine
+(islands, worker memory) is compared when the program is loaded on it.
+
+| Code | Refused | Found by |
+|---|---|---|
+| `K960` | A requirement the backend does not provide: `group = grid`, `dynamic`, `islands >= n`, `local_state >= ...` (the amounts on the machine, at load) | The backend's check, at compile and at load |
+| `K961` | An external function with no fallback whose implementation the backend does not have | The backend's check |
+| `K962` | A program over one of the backend's limits: handlers in a program, parameters of a handler, run or chain, fields of a message | The backend's check |
+| `K963` | A format the module declares that the backend does not compute | The backend's check |
+| `K964` | A construct the backend does not emit yet | The backend's check |
+
+A limit only the run can show stays the run's failure `capacity` (`K903`).

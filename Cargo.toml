@@ -50,6 +50,10 @@ path = "tests/ir/interp_run.rs"
 name = "bytecode"
 path = "tests/ir/bytecode.rs"
 
+[[test]]
+name = "backend"
+path = "tests/ir/backend.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"
