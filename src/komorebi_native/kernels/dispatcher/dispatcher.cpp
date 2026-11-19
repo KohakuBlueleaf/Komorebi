@@ -723,10 +723,8 @@ void kernel_main() {
                 handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE && !pages
             ) {
                 reason = KMD_REJECT_HANDLER;
-            } else if (
-                flags &
-                (1u | (island_count != 0 ? 0u : KM_FLAG_PART) | KMD_FLAG_DISPATCHER)
-            ) {
+            } else if (flags & (1u | KMD_FLAG_DISPATCHER)) {
+                // not a part (KM_FLAG_PART): one island takes it too, as the X280 does
                 reason = KMD_REJECT_FLAGS;
             } else if (exit_request != 0) {
                 reason = KMD_REJECT_EXITED;
