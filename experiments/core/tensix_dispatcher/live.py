@@ -763,8 +763,10 @@ def case_map(session, args, out):
     inputs = [tile_tensor(x_exact), tile_tensor(x_rand)]
     pages = args.out_pages
     zeros = np.zeros((pages * tile, tile), dtype=np.float32)
-    outs = [tile_tensor(zeros) for _ in range(args.out_tensors)]
     base = mc.place_outputs(groups, pages, args.out_tensors)
+    # As the harness's map runs: the jobs that are read write a tensor of their own.
+    base, tail = mc.tail_outputs(groups, base, pages, args.out_tensors)
+    outs = [tile_tensor(zeros) for _ in range(args.out_tensors + (tail is not None))]
     lines = []
     for j, (first, count) in enumerate(groups):
         words = [
@@ -809,7 +811,7 @@ def case_map(session, args, out):
     out["compute_wrong"] = sum(sum(state["compute_wrong"]) for state in states)
     out["max_busy"] = summary["max_busy"]
     if summary["status"] == "done":
-        out.update(mc.check(margs, groups, base, outs, [x_exact, x_rand]))
+        out.update(mc.check(margs, groups, base, tail, outs, [x_exact, x_rand]))
     events = out["events"]
     out["ok"] = bool(
         summary["status"] == "done"
