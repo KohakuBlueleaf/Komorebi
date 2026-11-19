@@ -176,17 +176,18 @@ class LoadMixin:
             + process.reset(card)
         )
 
-    def _refuse_rewritten_code(self, program, placed):
-        """ProgramError for a load whose cores would run code written into their L1
-        after the launch, on a chip where it runs stale (chips.rewritten_code_stale);
-        a dict's switch is refused at its call (run.load)."""
+    def _refuse_late_code(self, program, placed):
+        """ProgramError for a load whose cores would run program parts loaded into
+        their L1 after the launch, on a chip where that fails (chips.late_code_fails):
+        the program form (`placed`), overlays, add-ons; the kernel form stays served."""
         held = placed.programs if placed is not None else [program]
         asks = [
+            (placed is not None, "the program form (its handlers as parts)"),
             (any(each.overlays for each in held), "overlays"),
             (any("KM_ADDED_HANDLERS" in each.defines for each in held), "add-ons"),
         ]
         for asked, what in asks:
-            refusal = asked and chips.rewritten_code_refusal(
+            refusal = asked and chips.late_code_refusal(
                 self.arch, f"{what} (load of {program.name})"
             )
             if refusal:
@@ -370,7 +371,7 @@ class LoadMixin:
         owner = placed.threads_owner() if placed is not None else program
         if self._dispatcher == dispatch_module.TENSIX:
             tensix_module.refuse_load(program, placed, owner, arguments)
-        self._refuse_rewritten_code(program, placed)
+        self._refuse_late_code(program, placed)
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [owner.threads[cluster] for cluster in sorted(owner.threads)]

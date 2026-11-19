@@ -105,18 +105,18 @@ def test_only_blackhole_has_the_x280_a_load_needs():
     assert chips.chip("blackhole").x280 and not chips.chip("wormhole_b0").x280
 
 
-# Code written into a core's L1 after the launch (overlays, add-ons, a switch): refused
-# by name on a chip where it runs stale (chips.rewritten_code_stale).
-STALE = "refused on a wormhole_b0 chip: code written into a core's L1 after it ran"
+# A program part loaded into a core's L1 after the launch (the program form, overlays,
+# add-ons, a switch): refused by name where it fails (chips.late_code_fails).
+LATE = "refused on a wormhole_b0 chip: a program part loaded into a core's L1"
 
 
-def test_only_a_wormhole_chip_runs_rewritten_code_stale():
-    assert chips.chip("wormhole_b0").rewritten_code_stale
-    assert not chips.chip("blackhole").rewritten_code_stale
-    assert chips.rewritten_code_refusal("blackhole", "overlays") is None
-    assert chips.rewritten_code_refusal(None, "overlays") is None
-    text = chips.rewritten_code_refusal("wormhole_b0", "overlays")
-    assert text.startswith(f"overlays: {STALE}") and "hazards.md" in text
+def test_only_a_wormhole_chip_fails_code_loaded_after_the_launch():
+    assert chips.chip("wormhole_b0").late_code_fails
+    assert not chips.chip("blackhole").late_code_fails
+    assert chips.late_code_refusal("blackhole", "overlays") is None
+    assert chips.late_code_refusal(None, "overlays") is None
+    text = chips.late_code_refusal("wormhole_b0", "overlays")
+    assert text.startswith(f"overlays: {LATE}") and "hazards.md" in text
 
 
 def program(name="p", **fields):
@@ -124,33 +124,34 @@ def program(name="p", **fields):
 
 
 @pytest.mark.parametrize(
-    "given, switch, what",
+    "given, placed, what",
     [
-        ({"overlays": {"o": 1}}, None, "overlays"),
-        ({"defines": {"KM_ADDED_HANDLERS": 1}}, None, "add-ons"),
+        ({}, True, "the program form"),
+        ({"overlays": {"o": 1}}, False, "overlays"),
+        ({"defines": {"KM_ADDED_HANDLERS": 1}}, False, "add-ons"),
     ],
 )
-def test_a_wormhole_load_refuses_rewritten_code_by_name(given, switch, what):
-    one, two = program(**given), program("q")
-    placed = SimpleNamespace(programs=[one, two], switch=switch)
+def test_a_wormhole_load_refuses_late_code_by_name(given, placed, what):
+    one = program(**given)
+    plan = (
+        SimpleNamespace(programs=[one, program("q")], switch=None) if placed else None
+    )
     owner = SimpleNamespace(arch="wormhole_b0")
-    with pytest.raises(ProgramError, match=f"{what} \\(load of p\\): {STALE}"):
-        load.LoadMixin._refuse_rewritten_code(owner, one, placed)
+    with pytest.raises(ProgramError, match=f"{what}.*\\(load of p\\): {LATE}"):
+        load.LoadMixin._refuse_late_code(owner, one, plan)
     owner.arch = "blackhole"
-    load.LoadMixin._refuse_rewritten_code(owner, one, placed)
+    load.LoadMixin._refuse_late_code(owner, one, plan)
 
 
-@pytest.mark.parametrize("switch", [None, {"records": {0: 0x1000}}])
-def test_several_programs_stay_served_on_wormhole_until_a_switch(switch):
-    placed = SimpleNamespace(programs=[program(), program("q")], switch=switch)
+def test_the_kernel_form_stays_served_on_wormhole():
     owner = SimpleNamespace(arch="wormhole_b0")
-    load.LoadMixin._refuse_rewritten_code(owner, placed.programs[0], placed)
+    load.LoadMixin._refuse_late_code(owner, program(), None)
 
 
 def test_a_wormhole_run_refuses_an_add_on_and_a_switch_by_name():
     run = Run(FakeBackend(FakePort()), (8, 10))
     run.arch = "wormhole_b0"
-    with pytest.raises(ProgramError, match=f"add-ons \\(run.addon of x\\): {STALE}"):
+    with pytest.raises(ProgramError, match=f"add-ons \\(run.addon of x\\): {LATE}"):
         run.addon("x", {})
-    with pytest.raises(ProgramError, match=f"a program switch \\(run.load\\): {STALE}"):
+    with pytest.raises(ProgramError, match=f"a program switch \\(run.load\\): {LATE}"):
         run.load(None, (0, 1))

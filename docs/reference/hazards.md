@@ -1858,12 +1858,13 @@ the caches at every kernel launch, so code written once before its first call is
 instruction-cache invalidate register with the bit of the processor that will run it
 (0 wrong in 300,000 rounds with NCRISC's bit). NCRISC cannot do this itself (below).
 
-**The guard.** On a chip whose table says so (`chips.rewritten_code_stale`, Wormhole
-only), a load with overlays or add-ons, `run.addon`, and a program switch (`run.load`)
-are refused by name with either dispatcher (`ProgramError`, naming this entry).
-Several programs without a switch stay served: while a core's slots hold every part it
-runs, each is written once where no processor ran before. More parts than slots would
-rewrite a slot, and that is not guarded yet. The on-demand form is still to be built.
+**The guard.** On a chip whose table says so (`chips.late_code_fails`, Wormhole only),
+every program part loaded into a core's L1 after the launch is refused by name with
+either dispatcher (`ProgramError`, naming this entry): a load in the program form
+(several programs, a dict, a class in the runtime's form), overlays and add-ons at the
+load, `run.addon`, and a program switch (`run.load`). Only the service overlay's reader
+part stays served, as measured. A part loaded once into a slot never run before also
+hung there (two programs, no switch), cause not yet known. Load in the kernel form.
 
 ### A Wormhole core's configuration space reached from NCRISC
 

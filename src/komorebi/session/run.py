@@ -836,7 +836,7 @@ class Run(EventsMixin, StopMixin):
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
-        refusal = chips.rewritten_code_refusal(self.arch, "a program switch (run.load)")
+        refusal = chips.late_code_refusal(self.arch, "a program switch (run.load)")
         if refusal:
             raise ProgramError(refusal)
         program_field, first, count, record = self._load_words(program, group)
@@ -946,9 +946,7 @@ class Run(EventsMixin, StopMixin):
         kernels, `compile_args` in place of theirs) to the live run; returns its number.
         A class `name` in the runtime's form becomes one more program of a run loaded
         as a dict (komorebi.program.addon.program); returns its program field."""
-        refusal = chips.rewritten_code_refusal(
-            self.arch, f"add-ons (run.addon of {name})"
-        )
+        refusal = chips.late_code_refusal(self.arch, f"add-ons (run.addon of {name})")
         if refusal:
             raise ProgramError(refusal)
         if isinstance(name, Program):
