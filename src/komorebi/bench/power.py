@@ -1,7 +1,7 @@
 """Power sampling for benchmarks: whole-card power read from hwmon, a GPU from
 nvidia-smi, the CPU package from an energy counter when the host lets a user read it.
 `with PowerSampler(card) as s: ...` then `s.result` (and `s.result.phases` per mark).
-Only reads sensors; opens no card and takes no lock.
+A card with no sensor gives no reading (None, never 0). Opens no card, takes no lock.
 """
 
 import contextlib
@@ -75,9 +75,26 @@ class Source:
     name = "sensor"
     limit_w = None
     update_s = 0.1
+    absent = False
 
     def read(self):
         raise NotImplementedError
+
+
+NO_SENSOR = "no power sensor on this card: no reading"
+
+
+class Absent(Source):
+    """A card that has no power sensor: it reads nothing, and its summaries say so."""
+
+    absent = True
+
+    def __init__(self, index):
+        self.index = index
+        self.name = f"card {index} (no power sensor)"
+
+    def read(self):
+        return None
 
 
 def read_number(path):
@@ -107,11 +124,14 @@ class Card(Source):
         return watts, temp
 
 
+CHIP_HWMONS = ("blackhole", "wormhole")  # the driver's hwmon names
+
+
 def card_hwmon(device):
-    """The hwmon directory named `blackhole` below the PCI device, else None."""
+    """The hwmon directory of a chip (CHIP_HWMONS) below the PCI device, else None."""
     for path in sorted((device / "hwmon").glob("hwmon*")):
         with contextlib.suppress(OSError):
-            if (path / "name").read_text().strip() == "blackhole":
+            if (path / "name").read_text().strip() in CHIP_HWMONS:
                 return path
     return None
 
@@ -359,12 +379,13 @@ class PowerSampler:
 
     @staticmethod
     def resolve(card):
-        """The source for a card index, or the source itself."""
+        """The source for a card as TT_VISIBLE_DEVICES numbers it (the driver's number
+        of it is looked up), Absent when it has no sensor; a source itself as given."""
         if isinstance(card, int):
-            for found in cards():
-                if found.index == card:
-                    return found
-            raise LookupError(f"no Tenstorrent card {card} with a power sensor")
+            driver = driver_number(card)
+            return next(
+                (found for found in cards() if found.index == driver), Absent(card)
+            )
         return card
 
     def take(self):
@@ -445,6 +466,9 @@ class PowerSampler:
             )
             for (mark_time, name), stop in zip(self.marks, bounds)
         }
+        if source.absent:
+            whole = replace(whole, note=NO_SENSOR)
+            phases = {k: replace(v, note=NO_SENSOR) for k, v in phases.items()}
         return replace(whole, idle_mean_w=idle, phases=phases)
 
 

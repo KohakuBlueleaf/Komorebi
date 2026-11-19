@@ -113,22 +113,24 @@ def test_a_phase_name_can_be_marked_once_and_only_inside(tmp_path):
         sampler.mark("late")
 
 
-def make_pci_card(root, index, pci, hwmon_name, watts_uw, limit_uw=150_000_000):
+def make_pci_card(
+    root, index, pci, hwmon, watts_uw, limit_uw=150_000_000, name="blackhole"
+):
     """The sysfs entries of one card: class link, device link, hwmon directory."""
     parent = root / "devices" / "pci0000:c0" / "0000:c0:01.1"
     device = parent / pci
     entry = device / "tenstorrent" / f"tenstorrent!{index}"
-    hwmon = device / "hwmon" / hwmon_name
+    hwmon_dir = device / "hwmon" / hwmon
     entry.mkdir(parents=True)
-    hwmon.mkdir(parents=True)
+    hwmon_dir.mkdir(parents=True)
     (entry / "device").symlink_to(Path("../.."))
-    (hwmon / "name").write_text("blackhole\n")
-    (hwmon / "power1_input").write_text(str(watts_uw))
-    (hwmon / "power1_max").write_text(str(limit_uw))
+    (hwmon_dir / "name").write_text(name + "\n")
+    (hwmon_dir / "power1_input").write_text(str(watts_uw))
+    (hwmon_dir / "power1_max").write_text(str(limit_uw))
     classdir = root / "class" / "tenstorrent"
     classdir.mkdir(parents=True, exist_ok=True)
     (classdir / f"tenstorrent!{index}").symlink_to(entry)
-    return hwmon
+    return hwmon_dir
 
 
 def test_cards_are_found_through_the_device_link_not_the_hwmon_number(tmp_path):
@@ -150,8 +152,27 @@ def test_a_card_index_resolves_through_the_sysfs_root(monkeypatch, tmp_path):
     make_pci_card(tmp_path, 1, "0000:c2:00.0", "hwmon3", 19_000_000)
     monkeypatch.setattr(power, "SYS", tmp_path)
     assert power.PowerSampler(1).source.index == 1
-    with pytest.raises(LookupError, match="card 3"):
-        power.PowerSampler(3)
+    assert power.PowerSampler(3).source.absent  # no sensor: not an error
+
+
+def test_a_card_with_no_sensor_reads_nothing_and_says_so():
+    with power.PowerSampler(power.Absent(7), period_s=0.002, idle_s=0) as sampler:
+        sampler.mark("loop")
+        time.sleep(0.05)
+    whole, loop = sampler.result, sampler.result.phases["loop"]
+    assert whole.samples == 0 and whole.too_short and whole.mean_w is None
+    assert loop.mean_w is None and loop.peak_w is None and loop.joules is None
+    assert loop.note == power.NO_SENSOR and "no power sensor" in loop.format()
+
+
+def test_a_wormhole_chip_s_hwmon_is_a_card_and_its_number_is_the_drivers(
+    monkeypatch, tmp_path
+):
+    make_pci_card(tmp_path, 20, "0000:01:00.0", "hwmon9", 13_000_000, name="wormhole")
+    make_pci_card(tmp_path, 21, "0000:02:00.0", "hwmon8", 14_000_000, name="wormhole")
+    monkeypatch.setattr(power, "SYS", tmp_path)
+    assert [card.index for card in power.cards(tmp_path)] == [20, 21]
+    assert power.PowerSampler(1).source.index == 21  # the second in PCI order
 
 
 FAKE_SMI = """#!/bin/sh
