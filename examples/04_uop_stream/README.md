@@ -64,30 +64,26 @@ one JSON line with `ok`, true only when every check above holds, and exits non-z
 without it. Reading the 59,456 output tiles (116 MB) back takes 65 to 80 s per way, in
 chunks of 2 MB with a line per chunk (one every 1 to 2 s).
 
-On a p150a (card 0, 120 cores, default arguments, X280 at the session's 1000 MHz;
-the 1750 MHz opt-in's figures in the last column): 1,000 jobs, 59,456 tiles, 0 wrong
-and every core's count right in every way; the SUBMIT and ENQUEUE streams give the same
-jobs, and the grid saw the simulator's groups in order.
+On a p150a (card 1, default arguments, `--ways submit,enqueue`, 2026-11-19 at
+6c48a945, 1,000 jobs, 59,456 tiles, 0 wrong and every core's count right in every way;
+1-minute load 12 to 13; both dispatchers in one job, X280 at the session's 1350 MHz,
+AICLK 1350 MHz; the dispatcher's image with both engines is 56,112 bytes). Under the
+Tensix dispatcher (`KMR_DISPATCHER=tensix`) the engine runs on TRISC 0 of the
+dispatcher's core:
 
-| Way | Microseconds per job | Most commands in flight | Upload | 1750 MHz |
-|---|---|---|---|---|
-| `hostfed` | 163 | 1 | - | 161 |
-| `submit` | 13.4 | 1 | 576 bytes | 11.5 |
-| `enqueue` | 9.3 | 2 | 512 bytes | 8.4 (3 in flight) |
+| Way | Upload | X280 dispatcher, 120 cores | Tensix dispatcher, 119 ranks |
+|---|---|---|---|
+| `submit` | 576 bytes | 21.9 us a job, 1 in flight | 21.9 us, 1 in flight |
+| `enqueue` | 512 bytes | 18.1 us, 4 in flight | 19.2 us, 3 in flight |
 
-Host-fed, every job is a round trip to the host; on the X280 it is a round trip to the
-dispatcher on the same cluster. The three error streams ended with `opcode`,
-`steps` and `never_fits`. The dispatcher's image with both engines is 27,664
-bytes.
+The SUBMIT and ENQUEUE streams give the same jobs, and the grid saw the simulator's
+groups in order. Host-fed, every job is a round trip to the host; on the X280 it is a
+round trip to the dispatcher on the same cluster. The three error streams end with
+`opcode`, `steps` and `never_fits`. On a Wormhole chip under the Tensix dispatcher (79
+ranks, 2026-11-19) the two ways give 21.3 and 17.0 us a job. The engine's code on
+TRISC 0 is 16,960 bytes on Wormhole and 16,608 on Blackhole.
 
-Under the Tensix dispatcher (`KMR_DISPATCHER=tensix`) the engine runs on TRISC 0 of the
-dispatcher's core. Card 1 (p150a), `--ways submit,enqueue`, 1,000 jobs, 2026-11-19,
-1-minute load 23 to 26, each dispatcher in the same job, every tile and core count right:
-
-| Way | X280, 120 cores | Tensix dispatcher, 119 ranks |
-|---|---|---|
-| `submit` | 21.76 us a job, 1 in flight | 22.02 us, 1 in flight |
-| `enqueue` | 18.68 us, 4 in flight | 19.46 us, 3 in flight |
-
-On a Wormhole chip (79 ranks, 2026-11-19) the same ways give 21.3 and 17.0 us a job. The
-engine's code on TRISC 0 is 16,960 bytes on Wormhole and 16,608 on Blackhole.
+On 2026-11-13 (e1030fcd: card 0, X280 at 1000 MHz, an image of 27,664 bytes) the X280
+gave 163 us a job host-fed, 13.4 for `submit` and 9.3 for `enqueue` (11.5 and 8.4 at the
+1750 MHz opt-in); e1030fcd on card 1 on 2026-11-19 still gives 12.8 and 10.1 under a
+load of 38 to 40. The ways are slower since then: not yet found where.
