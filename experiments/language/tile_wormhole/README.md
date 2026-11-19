@@ -19,8 +19,15 @@ tiles of a and b on one core, run as a plain command, the result compared with n
 | `absolute` | `abs(a)` | `SFPABS` |
 | `relu` | `km.relu(a)` | a comparison and a conditional write |
 | `larger` | `km.maximum(a, b)` | `SFPSWAP` |
-| `difference` | `a - b` | `SFPADD`'s `NEGATE_VC`: refused on Wormhole by name |
-| `silu` | `km.silu(a)` | `SFPGT`, `SFPARECIP`: refused on Wormhole by name |
+| `chain` | 20 lines of `t = t * 0.5 + a` | a row of more than 32 replayed entries: recorded in pieces |
+| `difference` | `a - b` | `SFPADD`'s `NEGATE_VC` in a load macro's template: refused on Wormhole by name |
+| `exp`, `exp2` | `km.exp(a)`, `km.exp2(a)` | a shift of another register (Wormhole's form) |
+| `sigmoid`, `silu`, `reciprocal` | `km.sigmoid(a)`, `km.silu(a)`, `km.reciprocal(a)` | `SFPARECIP` (Wormhole's estimate), `SFPGT` against 0, a negated operand |
+| `swiglu` | `km.silu(a) * b` | the same, and a product after it |
+| `tanh` | `km.tanh(a)` | `SFPGT` of two registers with none free: refused on Wormhole by name |
+| `log` | `km.log(abs(a) + 0.25)` | `SFPGT` of two registers (one free), Blackhole's integer cast |
+| `sqrt`, `rsqrt` | `km.sqrt(abs(a))`, `km.rsqrt(abs(a) + 0.25)` | a negated operand |
+| `where` | `km.where(a > b, a, b * 0.5)` | `SFPGT` of two registers (two free) |
 
 A function the chip refuses is a JSON line with its refusal; the others a line with
 the largest error over the largest value, the lanes beyond 1e-6 of it, the lanes
@@ -42,25 +49,40 @@ sets (docs/reference/tile.md, On Wormhole).
 ## Measured
 
 2026-11-19: Wormhole chip 0 of the Galaxy box (Tensix dispatcher, the kernels compiled
-at the loads) and Blackhole card 0 (prebuilt, 56 of 56 kernels from the cache). The
-largest error over the largest value, the lanes beyond 1e-6 of it and the lanes exactly
-equal, of 4,096, against numpy in float64:
+at the loads) and Blackhole card 0 (prebuilt from the cache). The largest error over
+the largest value, the lanes beyond 1e-6 of it, and the largest relative error of a
+lane, of 4,096, against numpy in float64; "the same": Blackhole's words, every one:
 
 | Function | Wormhole | Blackhole |
 |---|---|---|
-| `add` | 3.5e-8, 0, 2,426 | the same |
-| `thrice` | 4.3e-8, 0, 1,431 | the same |
-| `affine` | 3.1e-8, 0, 2,854 | the same |
-| `multiply` | 2.6e-8, 0, 0 | the same |
-| `absolute` | 0, 0, 4,096 | the same |
-| `relu` | 0, 0, 4,096 | the same |
-| `larger` | 0, 0, 4,096 | the same |
-| `difference` | refused: `SFPADD instr_mod1 2: NEGATE_VA, NEGATE_VC are Blackhole's` | 4.9e-8, 0, 2,457 |
-| `silu` | refused: `REPLAY of 36 words` (its 32 recorded words and Wormhole's 4 `SFPNOP`s) | 1.1e-7, 0, 0 |
+| `add` | 3.5e-8, 0, 5.9e-8 | the same |
+| `thrice` | 4.3e-8, 0, 6.0e-8 | the same |
+| `affine` | 3.1e-8, 0, 6.0e-8 | the same |
+| `multiply` | 2.6e-8, 0, 5.8e-8 | the same |
+| `absolute`, `relu`, `larger`, `where` | 0, 0, 0 (exact) | the same |
+| `chain` | 6.4e-8, 0, 1.2e-7 | the same |
+| `exp` | 3.1e-8, 0, 6.6e-8 | the same |
+| `exp2` | 3.5e-7, 0, 4.7e-7 | the same |
+| `log` | 6.3e-8, 0, 8.3e-6 (at log near 0) | the same |
+| `sqrt` | 7.4e-8, 0, 1.1e-7 | the same |
+| `rsqrt` | 6.5e-8, 0, 8.9e-8 | the same |
+| `reciprocal` | 4.7e-8, 0, 1.12e-7 | 3.0e-8, 0, 1.09e-7 |
+| `sigmoid` | 1.3e-7, 0, 1.48e-7 | 1.4e-7, 0, 1.50e-7 |
+| `silu` | 1.1e-7, 0, 1.82e-7 | 1.1e-7, 0, 1.69e-7 |
+| `swiglu` | 7.7e-8, 0, 2.03e-7 | 7.7e-8, 0, 2.01e-7 |
+| `difference` | refused: `SFPADD instr_mod1 2` in template 0 | 5.0e-8, 0, 6.0e-8 |
+| `tanh` | refused: `SFPGT` (no register free at the comparison) | 1.5e-7, 0, 1.8e-7 |
 
-Every figure of the seven functions Wormhole runs is Blackhole's, digit for digit, the
-relative RMS errors too: the errors are float32 rounding against float64, the same on
-both chips.
+Fourteen functions write Blackhole's words on Wormhole, every one (0 of 4,096 words
+differ, the dumps compared): the comparisons, the casts, the negations and the shifts
+in Wormhole's forms are exact. The four with a reciprocal differ in the last bits
+(1,537 to 1,978 words): Wormhole's estimate is a cubic, not Blackhole's table, and
+the two Newton steps after it leave errors of the same size on both chips.
+
+`experiments/language/step_lines/row_softmax.py card` (`softmax_step`: a lagging max,
+two `exp2`, the sums; 12 cores) on chip 0: P 1.79e-3 relative RMS, 5.8e-3 largest; m
+4.8e-3; l 6.7e-3; the softmax 5.7e-3; a row's lanes 1.4e-6 apart: card 0's figures
+(its README). A command takes 33.7 to 34.8 us (card 0: 20.5 to 21.4 us).
 
 ### Products
 

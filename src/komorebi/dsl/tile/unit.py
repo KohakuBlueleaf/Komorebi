@@ -109,7 +109,18 @@ OPS = {
         ("lreg_dest",),
         "mad",
     ),
+    "SFPADDI": Op(
+        0x75,
+        (("imm16_math", 16), ("lreg_dest", 4), ("instr_mod1", 4)),
+        ("lreg_dest",),
+        ("lreg_dest",),
+        "mad",
+    ),
     "SFPMOV": Op(0x7C, _R, ("lreg_c",), ("lreg_dest",)),
+    "SFPNOT": Op(0x80, _R, ("lreg_c",), ("lreg_dest",)),
+    "SFPAND": Op(0x7E, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
+    "SFPXOR": Op(0x8D, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
+    "SFPSETMAN": Op(0x83, _R, ("lreg_c", "lreg_dest"), ("lreg_dest",)),
     "SFPABS": Op(0x7D, _R, ("lreg_c",), ("lreg_dest",)),
     "SFPEXEXP": Op(0x77, _R, ("lreg_c",), ("lreg_dest",)),
     "SFPARECIP": Op(0x99, _R, ("lreg_c",), ("lreg_dest",)),
@@ -128,6 +139,9 @@ OPS = {
     # LReg 0-3 (and 4-7): per column, the 4 lane rows across the 4 registers
     "SFPTRANSP": Op(0x8C, _R),
     "SFPENCC": Op(0x8A, _R, (), (), "flags"),
+    # the lanes' flags pushed onto their stack, and back (Wormhole's compare form)
+    "SFPPUSHC": Op(0x87, _R, (), (), "flags"),
+    "SFPPOPC": Op(0x88, _R, (), (), "flags"),
     "SFPCAST": Op(
         0x90,
         (("lreg_src_c", 4), ("lreg_dest", 4), ("instr_mod1", 4)),
@@ -266,7 +280,10 @@ class Insn:
             names.remove("lreg_dest")
         if self.op == "SFPLOADI" and self.args["instr_mod0"] in (8, 10):
             names.append("lreg_ind")
-        if self.op in ("SFPSETSGN", "SFPSETEXP") and self.args["instr_mod1"] & 1:
+        if (
+            self.op in ("SFPSETSGN", "SFPSETEXP", "SFPSETMAN")
+            and self.args["instr_mod1"] & 1
+        ):
             names.remove("lreg_dest")
         if self.op == "SFPSHFT" and self.args["instr_mod1"] & 5 != 5:
             names = ["lreg_dest"] + ([] if self.args["instr_mod1"] & 1 else names)

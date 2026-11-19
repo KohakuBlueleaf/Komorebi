@@ -184,6 +184,12 @@ class Gated(km.Program):
             results.push(self.gate(x, y))
 
 
+class Difference(Gated):
+    @km.tile_function
+    def gate(x, y):
+        return x - y  # -y in a load macro's template: no Wormhole form
+
+
 class Pages:
     def __init__(self, page_size):
         self.page_size, self.num_pages, self.address = page_size, 64, 0x1000
@@ -192,14 +198,25 @@ class Pages:
         return [2, self.page_size]
 
 
-def test_a_class_s_words_load_on_blackhole_and_are_refused_by_name_on_wormhole():
+def _class_words(cls):
     page = formats.tile_bytes("bfloat16")
     given = {n: Tensor(Pages(page), (2048, 32), "bfloat16", "tile") for n in "ab"}
     given["out"] = Tensor(Pages(page), (2048, 32), "bfloat16", "tile")
-    words = dsl_program.tile_words(compile_class(Gated, {}, given))
+    words = dsl_program.tile_words(compile_class(cls, {}, given))
     ((function, runs),) = words
     assert function.startswith("gate (in run, line ") and sum(map(len, runs)) > 20
-    program = SimpleNamespace(name="gated", tile_words=words)
+    return SimpleNamespace(name="gated", tile_words=words)
+
+
+def test_a_class_s_words_load_on_blackhole_and_wormhole():
+    """silu's reciprocal and comparison in Wormhole's forms (hazards.wormhole)."""
+    program = _class_words(Gated)
+    kernels.tile_words_checked([program], "blackhole")
+    kernels.tile_words_checked([program], "wormhole_b0")
+
+
+def test_a_word_without_a_wormhole_form_is_refused_by_name():
+    program = _class_words(Difference)
     kernels.tile_words_checked([program], "blackhole")
     with pytest.raises(ProgramError, match=r"gated: tile function gate \(in run, line"):
         kernels.tile_words_checked([program], "wormhole_b0")

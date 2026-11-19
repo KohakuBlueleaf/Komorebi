@@ -107,13 +107,13 @@ def chain(x):
     return t
 
 
-class Difference(Add):  # SFPADD's NEGATE_VC: Blackhole's alone
+class Difference(Add):  # SFPADD's NEGATE_VC in a load macro's template: no form
     @km.tile_function
     def f(a, b):
         return a - b
 
 
-class Silu(Add):  # SFPGT, SFPARECIP: Blackhole's alone
+class Silu(Add):  # SFPGT, SFPARECIP: Wormhole's forms
     @km.tile_function
     def f(a, b):
         return km.silu(a)
