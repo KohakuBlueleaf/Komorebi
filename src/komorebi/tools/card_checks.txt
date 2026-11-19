@@ -201,3 +201,4 @@ tensix examples/21_thread_load/thread_load.py --cores 12
 tensix tests/hardware/host/session_cases.py load-busy
 tensix examples/30_add_overlay/add_overlay.py
 tensix projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
+tensix examples/24_thread_rank/thread_rank.py --x280 1 --seeds 4 --hops 2

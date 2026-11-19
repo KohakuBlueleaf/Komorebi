@@ -11,6 +11,7 @@ from komorebi.errors import StartError
 from komorebi.program import several as programs
 from komorebi.program import thread as thread_module
 from komorebi.program.description import messages_header
+from komorebi.session import dispatch as dispatch_module
 
 X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
@@ -88,7 +89,11 @@ def _x280_words(session, program, dispatch, rings, regions, plan):
     )
     x, y = session.device.dram_core(bank)
     info = dispatch.work_info(cluster)
-    at = thread_module.ranks_at(rings[cluster][0], plan)
+    at = (  # a Tensix dispatcher's X280 thread: its ring in that core's L1
+        thread_module.ranks_at(rings[cluster][0], plan)
+        if cluster in rings
+        else dispatch.ranks_at(plan)
+    )
     return {
         "x280_queue": queue,
         "x280_bank": int(x) | int(y) << 16,
@@ -118,7 +123,7 @@ def _x280_line(program, dispatch, backend, words, wait, mhz, link_area=0):
         "idle": max(1, round(messages.idle_cycles / (mhz * 1e6) * ticks)),
         "inbox": backend.inbox.address,
         "inbox_messages": constants["kMessagesInbox"],
-        "lines": dispatch.lim_base + abi_headers["KMD_LIM_MESSAGES"],
+        "lines": dispatch_module.messages_lines(dispatch, abi_headers, backend.card),
         "lines_tile": dispatch.l2_x | dispatch.l2_y << 16,
         "wait": round(wait * ticks),
     }

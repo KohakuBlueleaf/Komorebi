@@ -71,6 +71,7 @@ namespace td {
         bool late = false;
         // the dynamic run in flight (out's kTwRun* words) while its end is not yet owed
         uint32_t run = 0, run_slot = 0, run_group = 0, checks = 0, quiet_at = 0;
+        uint32_t x280 = 0;  // its X280 ranks' lines after its cores' (td_ranks.hpp)
         bool run_on = false;
         // the deadline being given up (out's inspect, abort and leave): its sequence
         uint32_t giving = 0, giving_slot = 0, given_ups = 0;
@@ -100,6 +101,7 @@ namespace td {
             engines.base = block + kTbBytes + kTaBytes + kTeWork;
             engines.event_depth = kTeEventDepth;
             link = arg(kTdLinkIsland) != 0 ? arg(kTdLinkBase) : 0;
+            x280 = (arg(kTdX280Ranks) >> 4) & 0xFu;
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 
@@ -227,7 +229,9 @@ namespace td {
             }
             uint32_t gave = 0;
             uint64_t sent = 0, consumed = 0;
-            const int found = sample_lines(block, run, run_group, gave, sent, consumed);
+            const int found = (
+                sample_lines(block, run, run_group, x280, gave, sent, consumed)
+            );
             checks++;
             // a run across islands: its samples to out, whose waves end it
             // (td_link.hpp)

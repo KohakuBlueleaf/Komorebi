@@ -17,6 +17,7 @@
 #include "td_link.hpp"
 #include "td_reset.hpp"
 #include "td_queue.hpp"
+#include "td_ranks.hpp"
 #include "td_slots.hpp"
 #include "td_sources.hpp"
 
@@ -204,6 +205,10 @@ void kernel_main() {
     auto thread_read = [&](uint32_t c) {
         return km::l1(td::thread_area(block, c + 1) + kTaRead)[0];
     };
+    // a dynamic run's X280 ranks (td_ranks.hpp): its run line in L1, their thread's
+    td::Ranks& x280 = *reinterpret_cast<td::Ranks*>(block + kTbRanks);
+    x280.init(arg(kTdX280Ranks));
+    const td::ThreadArea& x280_work = works[x280.index];
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t turn = 0, pending_source = td::kSourceHost;
     uint32_t thread_waits = 0;  // bit c: a LOAD of cluster c's rejected busy, WAKE owed
@@ -970,6 +975,9 @@ void kernel_main() {
             run_on = (
                 run_on && slots.busy(run_slot) && slots.last(run_slot) == run_sequence
             );
+            if (!run_on) {  // its X280 ranks stop taking messages
+                x280.end(x280_work, lines[x280.index].serving, run_sequence);
+            }
             if (!run_on && link_on && link->waves.on) {  // its RUN ended otherwise
                 if (link->waves.id != 0) {
                     run_entry(0);
@@ -1120,6 +1128,9 @@ void kernel_main() {
             if (from_thread && handler == KMD_HANDLER_ANSWER) {  // its line, no event
                 pending_request = 0;
                 const uint32_t slot = lines[own].answered(works[own], argument);
+                if (own == x280.index && x280.unstored && lines[own].serving) {
+                    x280.store(x280_work);  // the run line, kept till the thread serves
+                }
                 if (slot < KMD_WORK_IN_DEPTH) {
                     post_line(
                         own,
@@ -1523,6 +1534,25 @@ void kernel_main() {
                             w.next_round = 0;
                             w.used = km::l1(link_base + kTlTold)[kTlSamples];
                         }
+                        // its X280 ranks learn it: over islands with the counts
+                        const uint32_t counts = (
+                            spans
+                                ? x280.counts(
+                                    link->entries,
+                                    link->waves.low,
+                                    link->waves.high,
+                                    link->island,
+                                    line_group
+                                )
+                                : 0u
+                        );
+                        x280.start(
+                            x280_work,
+                            lines[x280.index].serving,
+                            run_sequence,
+                            line_group,
+                            handler | counts
+                        );
                         asm volatile("" ::: "memory");
                         hand.word(kTwRunSequence) = run_sequence;
                     }
@@ -1569,6 +1599,7 @@ void kernel_main() {
                 );
                 end_slot = slot + 1;
                 run_on = false;
+                x280.end(x280_work, lines[x280.index].serving, run_sequence);
                 active = true;
             }
         }

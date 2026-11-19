@@ -57,7 +57,10 @@ constexpr uint32_t kTdLinkIslandsMax = 8;
 // Threads on X280 clusters 2 and 3: tile and work area as kTdThread*, two words each
 constexpr uint32_t kTdFarThread = 96;
 constexpr uint32_t kTdThreads = 100;  // bit c: a thread on cluster c (sources 1 to 3)
-constexpr uint32_t kTdArgs = 101;
+// A dynamic run's X280 ranks (KMD_X280_RANKS >> 32): cluster | count << 4, a part's
+// counter tiles << 8 (0: none)
+constexpr uint32_t kTdX280Ranks = 101;
+constexpr uint32_t kTdArgs = 102;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -82,6 +85,9 @@ constexpr uint32_t kTbInspect = 23232;  // the inspect block (KMD_LIM_INSPECT's 
 constexpr uint32_t kTbBytes = 129792;
 // The areas of threads on clusters 2 and 3, after the engines' (td::thread_area).
 constexpr uint32_t kTbFar = 211904;
+// The X280 ranks' line (td_ranks.hpp), after those areas, then the link block; kept
+// without either, so the link block's address is the same on every island
+constexpr uint32_t kTbRanks = 220480;
 
 // The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
 // and "in" (sweeps, writes the events and the host words).
@@ -180,8 +186,9 @@ constexpr uint32_t kTnPasses = 1;
 constexpr uint32_t kTnCommands = 2;
 constexpr uint32_t kTnPosts = 3;
 constexpr uint32_t kTnRuns = 4;
-// The link block, after the engines' area (kept without engines): the ring of commands
-// from other islands (source 5), its events, then out's words, then the inbox parts.
+constexpr uint32_t kRanksBytes = 64;  // the X280 ranks' line (kTbRanks)
+// The link block, after the X280 ranks' line: the ring of commands from other islands
+// (source 5), its events, then out's words, then the inbox parts.
 constexpr uint32_t kTlRing = 0;
 constexpr uint32_t kTlDepth = 16;  // the X280's KMD_LINK_DEPTH
 constexpr uint32_t kTlEvents = 1024;
@@ -246,8 +253,10 @@ static_assert(kTeUpload + kTeUploadBytes == kTeBytes, "the upload region ends it
 static_assert(kTlRing + 64 * kTlDepth == kTlEvents, "the link ring");
 static_assert(kTlEvents + 16 * kTlEventDepth == kTlTold && kTlTold + 64 == kTlCount);
 static_assert(kTdLinkEntries + 3 * kTdLinkIslandsMax == kTdFarThread, "the link's");
-static_assert(kTdFarThread + 4 == kTdThreads && kTdThreads + 1 == kTdArgs);
+static_assert(kTdFarThread + 4 == kTdThreads && kTdThreads + 1 == kTdX280Ranks);
+static_assert(kTdX280Ranks + 1 == kTdArgs, "the X280 ranks' word");
 static_assert(kTbBytes + kTaBytes + kTeBytes == kTbFar, "clusters 2 and 3's areas");
+static_assert(kTbFar + 2 * kTaBytes == kTbRanks, "the X280 ranks' line");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

@@ -24,6 +24,7 @@ from komorebi.islands.parts.link_plan import (
 )
 from komorebi.program import several as programs_module
 from komorebi.program.description import Program
+from komorebi.session import dispatch as dispatch_module
 from komorebi.session import sizes
 from komorebi.session.parts import load as card_load
 
@@ -603,6 +604,9 @@ class LoadMixin:
             for thread, own in zip(threads, thread_defines):
                 thread.defines = {**own, **self._table_bound()}
             beside = bool(threads) and options.get("thread", "card") == "card"
+            x280 = chips.chip(self.arch).x280 and not mock.active()
+            if beside and x280 and self._dispatcher_kind == dispatch_module.TENSIX:
+                self.mesh.open_x280()  # Tensix dispatchers' X280 threads share it
             for session in self.sessions:  # one upload region and link area on each
                 session._rings_beside = beside and len(programs) > 1
             plans = self._links(programs)

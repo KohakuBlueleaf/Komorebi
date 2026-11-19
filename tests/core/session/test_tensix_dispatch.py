@@ -175,6 +175,12 @@ def program(**fields):
     [
         ({"threads": {2: object()}}, None, {}, r"threads on clusters \[2\]"),
         ({"x280_ports": {"noc": 0}}, None, {}, "X280 ports"),
+        (
+            {"messages": SimpleNamespace(x280_ranks=1)},
+            None,
+            {},
+            "X280 ranks on a chip with no X280",
+        ),
     ],
 )
 def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, ability):
@@ -215,6 +221,7 @@ def test_prepare_takes_an_islands_word_into_the_kernels_arguments():
     assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdLinkIsland"]
     assert c["kTdIsland"] > c["kTdThreadScale"]
     assert c["kTdLinkEntries"] + 3 * c["kTdLinkIslandsMax"] == c["kTdFarThread"]
+    assert c["kTdX280Ranks"] + 1 == c["kTdArgs"]
 
 
 def link_line(islands, island=1):
@@ -272,9 +279,19 @@ def test_a_dynamic_run_on_one_island_is_served_and_its_lines_lie_in_the_block():
     port = blackhole_port()
     port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=0x0705)
     assert port.options["messages"] == 0x0705
-    for word in (1 << 36 | 0x05, 3 << 48 | 1 << 36 | 0x05):  # X280 ranks, counters
-        with pytest.raises(NotServed, match="X280 ranks"):
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=4 << 36 | 1 << 32 | 5)
+    assert port.options["x280_ranks"] == 0x41  # four on cluster 1 (td_ranks.hpp)
+    for word, why in (
+        (1 << 36 | 2 << 32 | 0x05, "X280 ranks on cluster 2"),
+        (1 << 56 | 0x05, "messages_handler 0x100000000000005"),
+    ):
+        with pytest.raises(NotServed, match=why):
             port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=word)
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=1 << 48 | 5)
+    assert port.options["x280_ranks"] == 0  # counter tiles alone: no X280 ranks
+    word = 2 << 48 | 1 << 40 | 0x11 << 32 | 5  # one on cluster 1, deliveries, counters
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=word)
+    assert port.options["x280_ranks"] == 0x0211  # the counter tiles in bits 8 to 15
     port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=1 << 40 | 0x05)
     assert (port.options["messages"], port.options["deliver"]) == (0x05, 1)  # waves
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 1000, 1100))

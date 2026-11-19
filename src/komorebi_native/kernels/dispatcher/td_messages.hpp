@@ -10,21 +10,29 @@
 
 namespace td {
 
-    // `group`'s lines looked at twice: 1 all of run `run`, idle and unchanged (their
-    // sums in `sent`, `consumed`); 0 not yet; -1 a line that gave up (`gave` its core).
+    // Line `index` of a run of `count` cores from `from`: its cores, then its X280
+    // ranks' (KM_X280_RANK_CORE), read as other cores (the X280's messages_line).
+    inline uint32_t run_line(uint32_t from, uint32_t count, uint32_t index) {
+        return index < count ? from + index : KM_X280_RANK_CORE(index - count);
+    }
+
+    // `group`'s lines, then `x280` X280 ranks', twice: 1 all of run `run`, idle and
+    // unchanged (sums in `sent`, `consumed`); 0 not yet; -1 `gave` gave up.
     inline int sample_lines(
         uint32_t block,
         uint32_t run,
         uint32_t group,
+        uint32_t x280,
         uint32_t& gave,
         uint64_t& sent,
         uint64_t& consumed
     ) {  // fmt: skip
         volatile tt_l1_ptr uint32_t* lines = km::l1(block + kTbLines);
         volatile tt_l1_ptr uint32_t* first = km::l1(block + kTbSample);
-        const uint32_t from = group & 0xFFFFu, end = from + (group >> 16);
+        const uint32_t from = group & 0xFFFFu, count = group >> 16;
         invalidate_l1_cache();
-        for (uint32_t core = from; core < end; core++) {
+        for (uint32_t index = 0; index < count + x280; index++) {
+            const uint32_t core = run_line(from, count, index);
             volatile tt_l1_ptr uint32_t* line = lines + 4 * core;
             if (line[KM_MESSAGES_LINE_RUN] != run) {
                 return 0;
@@ -42,7 +50,8 @@ namespace td {
         }
         invalidate_l1_cache();
         sent = consumed = 0;
-        for (uint32_t core = from; core < end; core++) {
+        for (uint32_t index = 0; index < count + x280; index++) {
+            const uint32_t core = run_line(from, count, index);
             volatile tt_l1_ptr uint32_t* line = lines + 4 * core;
             if (
                 line[KM_MESSAGES_LINE_RUN] != run ||

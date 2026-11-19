@@ -1283,19 +1283,20 @@ island session of cards runs each island's Tensix dispatcher on that card's last
 - An engine's stream or graph whose node names another island's ranks is refused at
   the upload (`NotServed`): the engine reaches its own island's ranks alone. A host-fed
   run (`run_hostfed`) sends them across.
-- Not served: a dynamic run's X280 ranks, and a card split into islands (refused by
-  name).
+- A dynamic run's X280 ranks on island 0 (cluster 1's thread) end as on the X280: the
+  run line carries the counts of the group's message ranks over the islands
+  (`kmd_x280_counts`), and the X280 ranks' lines are read with the cores' in the
+  waves' samples.
+- Not served: a card split into islands (refused by name).
 
 The card list's two-card lines (`card_check --cards 2`) under it, on Blackhole cards 0
 and 1, 2026-11-19:
 
 | Lines | Result |
 |---|---|
-| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense` | exact (18) |
+| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense`, 09 `islands.py`, 24 `islands.py` (and with `--first 106 --ranks 26`, both islands' cores) | exact (20) |
 | 06 `islands.py` | its host-fed case runs; its graph on island 0's engine is refused at the upload: an engine's command to another island's ranks |
-| 09 `islands.py` | refused: `work_cmds` (the X280 kernel's) |
 | 18 `thread_split.py --far` | refused: X280 ports |
-| 24 `islands.py` | refused: a dynamic run's X280 ranks (`messages_handler`) |
 
 `cross_cases.py` gives up a command whose far part cannot finish (a TIMEOUT naming
 island 1 at the deadline, then a command across and a local one are done in the same

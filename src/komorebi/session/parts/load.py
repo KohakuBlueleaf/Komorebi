@@ -516,7 +516,11 @@ class LoadMixin:
                 deadline,
                 kernel_idle,
                 state_tensor.address,
-                **thread_module.kernel_work_args(ends, self._rings_beside),
+                # another island's X280 thread: the X280's LIM layout (a Tensix
+                # dispatcher has none)
+                **thread_module.kernel_work_args(
+                    ends, self._rings_beside and not tensix
+                ),
                 messages_handler=(
                     program.messages.dispatcher_word("KM_DELIVER" in program.defines)
                     if program.messages is not None

@@ -232,6 +232,8 @@ def refuse_load(program, placed, owner, options, trisc=True):
     thread = thread_refusal(owner, trisc)
     if thread is not None:
         raise refused(f"{thread} (load of {program.name})")
+    if trisc and getattr(getattr(program, "messages", None), "x280_ranks", 0):
+        raise refused(f"X280 ranks on a chip with no X280 (load of {program.name})")
 
 
 def block_buffer(card):
@@ -406,8 +408,15 @@ class TensixDispatch:
         }  # fmt: skip
         handlers = int(options.get("messages_handler") or 0)
         deliver = handlers >> 40 & 1  # messages to other islands as deliveries
-        if handlers >> 32 & ~(1 << 8):  # X280 ranks, their counter tiles
-            raise refused("a dynamic run's X280 ranks (messages_handler)")
+        # X280 ranks: cluster | count << 4, a part's counter tiles << 8 (td_ranks.hpp)
+        x280 = handlers >> 32 & 0xFF
+        x280 |= (handlers >> 48 & 0xFF) << 8 if x280 else 0
+        # above: 40 deliveries, 48 to 55 the counter tiles a part (the X280 ranks'
+        # counts over islands)
+        if handlers >> 32 & ~0xFF01FF:
+            raise refused(f"messages_handler {handlers:#x} (the X280 kernel's)")
+        if x280 and x280 & 0xF != 1:
+            raise refused(f"X280 ranks on cluster {x280 & 0xF} (cluster 1 alone)")
         for name, value in options.items():
             if name not in served and value not in (0, None, [], b"", ()):
                 raise refused(f"{name} (the X280 kernel's {name!r})")
@@ -421,6 +430,7 @@ class TensixDispatch:
             "programs": list(options.get("programs") or []),  # each core's, at start
             "messages": handlers & abi.M32,  # the dynamic handlers, one a byte
             "deliver": deliver,
+            "x280_ranks": x280,
             # an island's flat ranks and first core (0: one island)
             "island": int(options.get("island") or 0),
             # its link line (link_area.line): commands across islands, td_link.hpp
@@ -465,15 +475,15 @@ class TensixDispatch:
             raise refused("a session without its mapped host channel (channel=0)")
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
-        size += c["kTaBytes"] + c["kTeBytes"]  # the thread's area, then the engines'
-        if self.x280 is not None:  # the areas of threads on clusters 2 and 3
-            size += 2 * c["kTaBytes"]
+        # the thread's area, the engines', clusters 2 and 3's areas, the X280 ranks'
+        # line (td_ranks.hpp): kept without them, the link block after them all
+        size += c["kTbRanks"] + c["kRanksBytes"] - c["kTbBytes"]
         if self.thread is not None or self.x280 is not None:
             self.thread_area = block + c["kTbBytes"]
         link = self.options["link"]
         self.link_base = 0
-        if link is not None:  # the link block after the engines' area
-            self.link_base = block + c["kTbBytes"] + c["kTaBytes"] + c["kTeBytes"]
+        if link is not None:  # the link block after the X280 ranks' line
+            self.link_base = block + c["kTbRanks"] + c["kRanksBytes"]
             size += link["bytes"]
         launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
         self.block = block
@@ -506,6 +516,7 @@ class TensixDispatch:
             "kTdMessages": options["messages"],
             "kTdIsland": options["island"] & abi.M32,
             "kTdIslandBase": options["island"] >> 32,
+            "kTdX280Ranks": options["x280_ranks"],
         }
         if link is not None:
             values |= {
@@ -629,6 +640,17 @@ class TensixDispatch:
             c["kTaEventDepth"],
             remote=int(self.nocs.words[self.core]),
         )
+
+    def ranks_at(self, ports):
+        """LIM offset of the X280 ranks' area in its thread's block
+        (thread_module.ranks_at), before the load places this core's area: the
+        offsets follow thread_ring's depths alone."""
+        c = constants()
+        shape = thread_module.RingPlacement(
+            0, 0, 0, 0, c["kTaRingDepth"], c["kTaEventDepth"],
+            remote=int(self.nocs.words[self.core]),
+        )  # fmt: skip
+        return thread_module.ranks_at(shape, ports)
 
     def work_info(self, cluster):
         return self.x280.work_info(cluster)
