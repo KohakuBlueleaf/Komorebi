@@ -20,6 +20,9 @@ uint32_t km_overlay(km::Writer&, const km::ColdCall& call) {
 #endif
 #if KM_WRITER_COLD >= 4
         case km::kColdChainMark: {  // a: the ChainDirect, b: 1 DRAM's too, 2 sent
+            if (&km::chain_now == nullptr) {  // a kernel without a chain: none to mark
+                return 0;
+            }
             const auto& writer = *static_cast<const km::Writer*>(call.object);
             const auto& direct = *reinterpret_cast<const km::ChainDirect*>(call.a);
             const km::ChainShape shape{};

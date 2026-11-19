@@ -317,6 +317,10 @@ namespace km {
 #if KM_WRITER_COLD >= 4 && defined(COMPILE_FOR_NCRISC) && defined(KM_OVERLAY_PART)
     // The writer's part: the kernel's (linked to its symbols; none: no chain to mark).
     [[gnu::weak]] extern ChainNow chain_now;
+#elif KM_WRITER_COLD >= 4 && defined(COMPILE_FOR_NCRISC)
+    // Exported: the writer part's chain_mark reads this one (an overlay links to global
+    // symbols only).
+    inline ChainNow chain_now __attribute__((externally_visible)) = {};
 #else
     inline ChainNow chain_now = {};
 #endif
