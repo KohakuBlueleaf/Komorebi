@@ -8,6 +8,8 @@ import pytest
 from class_thread_header_fixture import COMPILER, Pages, Plain, quiet
 
 import komorebi as km
+from komorebi import _env
+from komorebi.device import native
 from komorebi.device.tensor import Tensor
 
 pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
@@ -31,3 +33,17 @@ def test_a_thread_names_another_tensor_and_one_of_another_kind_is_refused():
                     thread_tensors={"z": z, "wide": wide})  # fmt: skip
     thread = program.threads[min(program.threads)]
     assert thread.words[-2:] == [0x11000, 0x21000]  # thread_tensors= as load words
+
+
+@COMPILER
+def test_a_tree_with_no_x280_runtime_refuses_a_thread_before_any_image_build(
+    monkeypatch,
+):
+    def never(*args, **kwargs):
+        raise AssertionError("an X280 image build was asked")
+
+    monkeypatch.setattr(_env, "has_x280_runtime", lambda tree: False)
+    monkeypatch.setattr(native, "thread_image", never)
+    with pytest.raises(km.NotServed, match=r"X280 threads \(make of Other, line"):
+        Other(l1=1 << 20, log=quiet, a=grid(8, 0x1000), out=grid(8, 0x9000),
+              thread_tensors={"z": grid(8, 0x11000)})  # fmt: skip

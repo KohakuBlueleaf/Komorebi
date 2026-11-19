@@ -30,6 +30,7 @@ from komorebi.dsl.front.names import spelling
 from komorebi.errors import ProgramError
 from komorebi.program import description as km_program
 from komorebi.program.thread import BANK_OF_CLUSTER, layout
+from komorebi.session.dispatch import tensix
 
 # C words a parameter's name may be: its argument takes a "_" after it.
 C_WORDS = frozenset(
@@ -491,6 +492,7 @@ def compiled_with(program, thread, parts, where, programs=()):
             f"  thread on cluster {thread.cluster}: not built (no X280 compiler)"
         )
         return
+    tensix.refuse_x280_image(tree, f"make of {where}")  # before any X280 build
     includes = [native.kmx_directory(), *native.includes(), *map(Path, thread.includes)]
     defines = [f"{k}={v}" for k, v in sorted(thread.all_defines(programs).items())]
     sources = thread.source_paths()

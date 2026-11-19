@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from komorebi import abi
+from komorebi import _env, abi
 from komorebi.device import chips, mock, native
 from komorebi.errors import NotServed
 from komorebi.session.dispatch import TENSIX
@@ -72,6 +72,13 @@ def refuse(name, where=None):
     error = refusal(name, where)
     if error is not None:
         raise error
+
+
+def refuse_x280_image(tree, where):
+    """Raises the refusal of X280 threads when `tree` has no X280 runtime: an image
+    for the X280 cannot be built there, and a Tensix dispatcher serves no thread."""
+    if not _env.has_x280_runtime(tree):
+        refuse("threads", where)
 
 
 def rectangles(nocs, loopback=False):

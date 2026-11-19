@@ -177,9 +177,10 @@ def most_in_flight(commands):
 def main():
     args = parse()
     report = {"jobs": args.jobs, "tiles": args.tiles, "seed": args.seed}
-    report["image_bytes"] = native.image_path().stat().st_size
     with km.Session(card=args.card, log=log) as session:
         log("device open")
+        if session.dispatcher == "x280":  # a Tensix dispatcher has no X280 image
+            report["image_bytes"] = native.image_path().stat().st_size
         report.update(run_ways(session, args))
     report["ok"] = verdict(report, args)
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
