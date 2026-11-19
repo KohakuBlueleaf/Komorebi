@@ -101,6 +101,14 @@ def test_what_the_count_cannot_follow_is_refused_by_name(line, why):
         stack.deepest(stack.scan(listing, FUNCS), 0x1000)
 
 
+def test_an_indirect_call_reaches_each_function_whose_address_is_taken():
+    taken = "    1110:\taddi\ta5,a5,768 # 1300 <copy>"
+    listing = LISTING.replace("    1110:\tjal\t1200 <reset>", taken)
+    listing = listing.replace("    1114:\tjal\t1400 <memset>", "    1114:\tjalr\ta5")
+    need = stack.deepest(stack.scan(listing, FUNCS), 0x1000)
+    assert need.chain == ["_start", "kernel_main", "copy"]
+
+
 def test_short_names_drop_templates_parameters_and_return_types():
     assert stack._short("kernel_main()") == "kernel_main"
     assert (

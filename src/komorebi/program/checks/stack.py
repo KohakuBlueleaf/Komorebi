@@ -24,6 +24,7 @@ HANDOVERS = ("wh_iram_trampoline",)
 LEAVES = ("memset", "memcpy")
 _INSN = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$")
 _TARGET = re.compile(r"^([0-9a-f]+)\b")
+_NAMED = re.compile(r"#\s*([0-9a-f]+) <[^>+]+>$")  # objdump's note of an address
 THREADS = {
     "brisc": "BRISC",
     "ncrisc": "NCRISC",
@@ -38,7 +39,8 @@ _STORES = ("sw", "sh", "sb")  # sp restored from a register or memory: no frame
 @dataclass
 class Function:
     """One function of an ELF: its frame, its callees, what the count cannot follow.
-    `sets_sp` is the absolute sp it sets (a firmware's _start), else None."""
+    `sets_sp` is the absolute sp it sets (a firmware's _start), else None; `taken`
+    when an instruction other than a call takes its address."""
 
     name: str
     frame: int = 0
@@ -47,6 +49,7 @@ class Function:
     indirect: int = 0
     unknown: list = field(default_factory=list)
     sets_sp: int | None = None
+    taken: bool = False
 
 
 @dataclass
@@ -175,6 +178,9 @@ def scan(listing, funcs):
                 function.tails.add(at)
         elif op == "jalr" and words[0] not in ("zero", "x0"):
             function.indirect += 1
+        named = _NAMED.search(found.group(3))
+        if named and op[0] not in "bj" and int(named.group(1), 16) in out:
+            out[int(named.group(1), 16)].taken = True  # its address in a register
         kept = op in ("li", "lui", *_STORES) or op[0] in "bj"
         if not kept and words and words[:2] != [words[0], words[0]]:
             constants.pop(words[0], None)  # a register written otherwise
@@ -182,21 +188,24 @@ def scan(listing, funcs):
 
 
 def deepest(found, entry, stop=None):
-    """The Need of the deepest chain from `entry` over `found` (scan()); with `stop`
-    (a predicate of a Function), the deepest chain that ends at a function it holds,
-    or None when none does. Raises ProgramError for what the count cannot follow:
-    recursion, a call outside the ELF, an indirect call, sp moved by a register."""
+    """The Need of the deepest chain from `entry` over `found` (scan()), an indirect
+    call reaching each function whose address is taken; with `stop` (a predicate), the
+    deepest chain ending at a function it holds, or None. ProgramError for recursion,
+    a call outside the ELF, an indirect call with no such function, sp by a register."""
 
     def walk(at, path):
         function = found[at]
         if function.unknown:
             raise ProgramError(f"{function.name}: {function.unknown[0]}")
+        calls = set(function.calls)
         if function.indirect and stop is None and function.name not in LEAVES:
-            raise ProgramError(f"{function.name}: an indirect call")
+            if not taken:
+                raise ProgramError(f"{function.name}: an indirect call")
+            calls |= taken
         best = Need([function.name], [function.frame]) if stop is None else None
         if stop is not None and stop(function):
             best = Need([function.name], [function.frame])
-        for target, tail in [(t, False) for t in function.calls] + [
+        for target, tail in [(t, False) for t in calls] + [
             (t, True) for t in function.tails
         ]:
             if target not in found:
@@ -216,6 +225,7 @@ def deepest(found, entry, stop=None):
                 best = chain
         return best
 
+    taken = {at for at, function in found.items() if function.taken}
     return walk(entry, (entry,))
 
 

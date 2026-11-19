@@ -1133,8 +1133,11 @@ TRISC 0 and 2, 64 B on TRISC 1; the firmware enables no interrupt, so nothing el
 lands there). When the room between the kernel's data and the top is less than that
 need plus 16 B (one aligned frame), it raises `km.DispatcherStackError`, naming the image, both sizes, the chip and
 the chain ("the Tensix dispatcher's out needs 2,608 B of stack and has 2,144 on
-Wormhole"). A call the count cannot follow (an indirect call, recursion, sp moved by a
-register, a call outside the ELF) is refused as a `ProgramError` naming the function.
+Wormhole"). An indirect call (a thread's `kmx_main` and `kmx_program`) is
+counted as a call of each function whose address the image takes. A call the count
+cannot follow (an indirect call where the image takes no function's address,
+recursion, sp moved by a register, a call outside the ELF) is refused as a
+`ProgramError` naming the function.
 The load's log has a line of every image's margin; a counted build is kept with its
 numbers, so it is not disassembled again.
 
