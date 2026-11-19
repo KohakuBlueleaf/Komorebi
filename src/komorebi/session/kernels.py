@@ -144,9 +144,12 @@ def _is_link_kernel(source):
 
 def _runs_no_program(source):
     """Whether a kernel `source` of a build runs no program: a link kernel, or the
-    Tensix dispatcher's kernels on its own core (no overlay is built against them)."""
+    Tensix dispatcher's kernels on its own core, its TRISC thread's among them (built
+    from td-thread/thread-*.cpp): no overlay is built against them."""
     dispatcher = _env.include_directory().parent / "kernels" / "dispatcher"
-    return _is_link_kernel(source) or Path(source).parent == dispatcher
+    path = Path(source)
+    thread = path.parent.name == "td-thread" and path.name.startswith("thread-")
+    return _is_link_kernel(source) or path.parent == dispatcher or thread
 
 
 def kernel_build(program, kernel, defines, arch):

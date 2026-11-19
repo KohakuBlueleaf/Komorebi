@@ -557,6 +557,13 @@ def test_no_overlay_is_built_against_the_dispatchers_kernel():
     assert not kernels._runs_no_program(reader)
 
 
+def test_a_trisc_thread_is_not_taken_for_a_programs_kernel(tmp_path):
+    thread = tmp_path / "td-thread" / "thread-5c3705c7e91caf41.cpp"  # thread_kernel's
+    assert kernels._runs_no_program(thread)
+    row = ["trisc0", str(tmp_path / "trisc0.elf"), "riscv-g++", "O3", "", "", "", "O3"]
+    assert kernels._group_recipes([(str(thread), [row])], 2) == [{}, {}]  # two programs
+
+
 def test_a_timeout_names_the_command_by_the_handle_submit_returned():
     handle = tensix_run().submit(0, (0, 1))
     error = km.CommandTimeout(handle, 0, 1, (0, 1), [])
