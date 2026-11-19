@@ -163,11 +163,12 @@ KMD_COLD void program_move(
 }
 
 /* The end (last core + 1) of a busy slot's group that shares a core with cores [first,
- * first + count), the furthest if several; 0 if none. Groups lie inside the grid. */
+ * first + count), the furthest if several; 0 if none. Groups lie inside the grid; busy
+ * slots, below the ring bound. */
 KMD_COLD uint32_t
 slots_overlap(const kmd_t* dispatcher, uint32_t first, uint32_t count) {
     uint32_t end = 0;
-    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+    for (uint32_t slot = 0; slot < dispatcher->bound; slot++) {
         const uint32_t busy_group = dispatcher->slot_group[slot];
         const uint32_t busy_first = busy_group & 0xFFFFu;
         const uint32_t busy_end = busy_first + (busy_group >> 16);
@@ -253,12 +254,13 @@ KMD_COLD void bound_raise(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
 /* inspect.h: a given-up slot freed, its TIMEOUT (and link) events sent. */
 KMD_COLD void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
 
-/* Sweeps busy slots' ack lines (8-byte loads); a slot showing its sequence is freed:
- * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
+/* Sweeps busy slots' ack lines (8-byte loads), below the ring bound (no busy slot is at
+ * or above it); a slot showing its sequence is freed: KM_EVENT_DONE {auxiliary first
+ * core | sequence low 16 << 8, ticks time/result}. */
 KMD_HOT void slots_sweep(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t now = 0;
-    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+    for (uint32_t slot = 0; slot < dispatcher->bound; slot++) {
         if (!(dispatcher->busy & (1ull << slot))) {
             continue;
         }
@@ -314,11 +316,11 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
     }
 }
 
-/* The busy slot whose deadline passed first, if any passed at `now`; else
- * KM_RING_SLOTS. A timeout names the command whose deadline expired first. */
+/* The busy slot (below the ring bound) whose deadline passed first, if any passed at
+ * `now`; else KM_RING_SLOTS. A timeout names the command whose deadline ran out first. */
 static inline uint32_t slots_late(const kmd_t* dispatcher, uint64_t now) {
     uint32_t late = KM_RING_SLOTS;
-    for (uint32_t slot = 0; slot < dispatcher->depth; slot++) {
+    for (uint32_t slot = 0; slot < dispatcher->bound; slot++) {
         if (
             (dispatcher->busy & (1ull << slot)) &&
             now > dispatcher->slot_deadline[slot] &&
