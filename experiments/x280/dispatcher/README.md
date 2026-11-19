@@ -59,6 +59,25 @@ clock it set.
 | a stream that only computes | `stream-bench --n 0 --compute 1000000` | 7.6 million micro-ops a second (the same with `--compute 100000`) | 18 million (rounds not recorded) |
 | `stream-bench` before the engine moved to core 1 (one loop) | an earlier kernel | not re-measured | `bench` as above: 0.669 and 0.675 microseconds per command while the stream interpreter shared core 0's loop; 34 ns with no stream; 316 ns with one submitting stream, 525 ns with four; 3.1 microseconds with one looping stream, 11.7 with four |
 
+The `bench` rows again on 2026-11-19, on commit 3e4c3a95: one p150a (card 1), firmware
+bundle 19.13.1, table 64, two runs each, the first started at a host load of 3.1 to 3.7,
+the second at 4.1 to 5.5. Since the rows above, the kernel's rare code has its own
+section and its loop's rare branches are marked unlikely, and the cores' pass stops at the
+ring bound the dispatcher keeps. Microseconds per command by the kernel's clock (host-fed:
+the host's span agrees within 0.0001).
+
+| what | command | 1000 MHz | 1,350 MHz |
+|---|---|---|---|
+| host-fed, depth 16, group 1 | `bench --n 100000 --depth 16 --group 1 --batch 64 --host-depth 64` | 1.231 / 1.229 | 0.928 / 0.916 |
+| kernel only, 63 preloaded | `bench --preload --n 63 --depth 16 --group 1 --host-depth 64` | 1.274 / 1.272 | 0.961 / 0.966 |
+| host-fed, depth 4, groups of 2 / 12 / all | `bench --n 100000 --depth 4 --group G --batch 64 --host-depth 64` | 1.183 / 1.180; 1.180 / 1.183; 1.214 / 1.219 | 1.375 / 0.879; 0.878 / 0.881; 1.303 / 1.300 |
+| host-fed, depth 16, groups of 2 / 12 / all | `bench --n 100000 --depth 16 --group G --batch 64 --host-depth 64` | 1.225 / 1.226; 1.228 / 1.229; 1.269 / 1.265 | 0.924 / 0.930; 0.935 / 0.937; 1.513 / 1.510 |
+
+At 1,350 MHz a command to all cores costs more than at 1000 MHz (1.30 and 1.51 against
+1.21 and 1.27), most likely because the faster dispatcher leaves more commands waiting
+on every core and a core's pass pays for each of its own (not measured here). The 1.375 at depth 4, groups of 2,
+is one run against 0.879 beside it.
+
 ## Ring slots and depth
 
 How much a command costs with the ring and DONE tables compiled for 16, 32 and 64
