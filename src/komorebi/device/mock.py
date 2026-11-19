@@ -602,6 +602,7 @@ class Run:
         cores = getattr(self.host, "cores", None)
         if cores is None:  # no host run: no cores known
             return []
+        cores = getattr(self.host, "_workers", cores)  # a Tensix dispatcher's left out
         h = abi.headers()
         blocks = np.zeros((cores, h["KM_CONTROL_BYTES"] // 4), np.uint32)
         words = state.state_words(blocks, 0, h)

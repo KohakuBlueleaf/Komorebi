@@ -185,3 +185,19 @@ def test_event_times_by_the_dispatchers_clock():
 def test_islands_are_refused_with_the_tensix_dispatcher():
     with pytest.raises(NotServed, match="islands and links"):
         km.Session(cards=[0, 1], dispatcher="tensix")
+
+
+def test_the_default_group_is_every_core_the_program_runs_on():
+    run = tensix_run()
+    assert run._group(None) == (0, 119)
+    x280 = Run(FakeBackend(FakePort()), BLACKHOLE)
+    assert x280._group(None) == (0, 120)
+
+
+def test_a_deadline_finds_no_command_given_up():
+    read = blackhole_port().inspect(4)
+    assert read["given_up"] == 0
+    assert (
+        read["block"].size * 4
+        == HEADERS["KMD_INSPECT_HEAD"] + 4 * HEADERS["KMD_INSPECT_RECORD"]
+    )

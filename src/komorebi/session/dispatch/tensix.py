@@ -340,4 +340,8 @@ class TensixDispatch:
         return {"running": self.is_open, "failed": "", "words": None}
 
     def inspect(self, count):
-        raise refused("the inspect of a run (run.inspect)")
+        """A deadline's look (run.inspect itself is refused): no inspect block, no
+        command given up; the run stops with the timeout."""
+        h = abi.headers()
+        words = (h["KMD_INSPECT_HEAD"] + count * h["KMD_INSPECT_RECORD"]) // 4
+        return {"block": np.zeros(words, np.uint32), "given_up": 0}

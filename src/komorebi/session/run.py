@@ -1310,8 +1310,8 @@ class Run(EventsMixin, StopMixin):
         return low, high
 
     def _group(self, group):
-        if group is None:
-            return (0, self.cores)
+        if group is None:  # every core the program runs on
+            return (0, self._workers)
         first, count = int(group[0]), int(group[1])
         if count < 1 or first < 0 or first + count > self.ranks:
             raise ValueError(
