@@ -73,6 +73,40 @@ class Larger(Add):
         return km.maximum(a, b)
 
 
+class Chain(Add):  # 20 MADs each read the next cycle: over 32 replayed entries
+    @km.tile_function
+    def f(a, b):
+        t = a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        t = t * 0.5 + a
+        return t
+
+
+def chain(x):
+    t = x
+    for _ in range(20):
+        t = t * 0.5 + x
+    return t
+
+
 class Difference(Add):  # SFPADD's NEGATE_VC: Blackhole's alone
     @km.tile_function
     def f(a, b):
@@ -129,6 +163,7 @@ CLASSES = {  # each function and what numpy computes (float64)
     "absolute": (Absolute, lambda x, y: np.abs(x)),
     "relu": (Relu, lambda x, y: np.maximum(x, 0.0)),
     "larger": (Larger, np.maximum),
+    "chain": (Chain, lambda x, y: chain(x)),
     "difference": (Difference, lambda x, y: x - y),
     "silu": (Silu, lambda x, y: silu(x)),
 }

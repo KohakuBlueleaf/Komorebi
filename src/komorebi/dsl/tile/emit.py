@@ -77,9 +77,13 @@ def _body(items, depth):
 
 
 def _recount(item, wormhole):
-    """`item` a REPLAY whose count on Wormhole holds its recorded SFPNOPs."""
-    counts = wormhole.counts if wormhole else {}
-    return id(item) in counts and counts[id(item)] != item.args["len"]
+    """`item` a REPLAY whose count on Wormhole holds its recorded SFPNOPs, or that
+    issues recorded words past the replay buffer after it."""
+    if not wormhole:
+        return False
+    counts = wormhole.counts
+    changed = id(item) in counts and counts[id(item)] != item.args["len"]
+    return changed or id(item) in wormhole.tails
 
 
 class _Without:
@@ -87,7 +91,7 @@ class _Without:
 
     def __init__(self, wormhole, item):
         self.nops = wormhole.nops - {id(item)}
-        self.counts = wormhole.counts
+        self.counts, self.tails = wormhole.counts, wormhole.tails
 
 
 def _lines(items, depth, based=False, wormhole=None):
@@ -113,7 +117,9 @@ def _lines(items, depth, based=False, wormhole=None):
         elif isinstance(item, Insn) and _recount(item, wormhole):
             count = wormhole.counts[id(item)]
             form = Insn(item.op, {**item.args, "len": count}, item.note)
-            out += _wormhole(pad, [_word(form)], [_word(item)])
+            tail = _lines(wormhole.tails.get(id(item), []), depth, based, wormhole)
+            out += ["#if defined(ARCH_WORMHOLE)", pad + _word(form), *tail]
+            out += ["#else", pad + _word(item), "#endif"]
         elif isinstance(item, Insn) and item.runtime:
             out.append(f"{pad}{_runtime(item)};")
         elif isinstance(item, Insn) and _based(item):

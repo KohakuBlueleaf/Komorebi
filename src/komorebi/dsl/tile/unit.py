@@ -665,17 +665,19 @@ def chip_word(insn):
 class WormholeRun:
     """Where a Wormhole core runs one function's words otherwise than Blackhole's
     order (chips.wormhole_hold): `nops` the ids of the words an SFPNOP goes before,
-    `counts` each REPLAY's count with the recorded SFPNOPs, by id."""
+    `counts` each REPLAY's count with the recorded SFPNOPs, by id; `tails` each
+    replaying REPLAY's recorded words past the 32 entries, issued after it."""
 
     nops: set = field(default_factory=set)
     counts: dict = field(default_factory=dict)
+    tails: dict = field(default_factory=dict)
 
 
 def wormhole_run(items):
     """One function's WormholeRun (docs/reference/tile.md, On Wormhole): a word's
-    predecessors are every word that can run just before it; a REPLAY is no word, and
-    code between words (a call, a sync) none. Refused (UnitError) when a recorded word
-    is given an SFPNOP elsewhere that its REPLAY's count does not hold."""
+    predecessors are every word that can run just before it (a REPLAY, a call, a sync
+    are none); a region over 32 entries with its SFPNOPs records its longest prefix in
+    them. Refused (UnitError) when a recorded word's SFPNOP is outside its count."""
     run, recorded = WormholeRun(), {}
 
     def held(before, insn):
@@ -702,14 +704,16 @@ def wormhole_run(items):
                     ):
                         raise UnitError(f"REPLAY of {count}: not followed by its words")
                     added = [w for w, b in zip(words[1:], words) if held([b], w)]
-                    recorded[start] = (words, count + len(added), added)
+                    recorded[start] = (words, *_fitted(words, added), added)
                     i += count
-                words, total, added = recorded[start]
+                words, kept, total, added = recorded[start]
                 if keep:
                     run.counts[id(item)] = total
                     run.nops.update(id(w) for w in added)
                     if held(before, words[0]):
                         run.nops.add(id(item))
+                    if kept < len(words) and not item.args["load_mode"]:
+                        run.tails[id(item)] = words[kept:]
                 before = [words[-1]]
             elif isinstance(item, Insn):
                 if keep and held(before, item):
@@ -719,14 +723,26 @@ def wormhole_run(items):
         return before
 
     walk(items, [], True)
-    for words, total, _ in recorded.values():
-        inside = sum(id(w) in run.nops for w in words)
-        if inside != total - len(words):
+    for words, kept, total, _ in recorded.values():
+        inside = sum(id(w) in run.nops for w in words[:kept])
+        if inside != total - kept:
             raise UnitError(
                 f"a word recorded by REPLAY is given an SFPNOP elsewhere on Wormhole "
                 f"({words[0].op}, {len(words)} words): its count would not hold it"
             )
     return run
+
+
+def _fitted(words, added):
+    """(the recorded words kept, their count with their SFPNOPs): the longest prefix
+    of `words` within Wormhole's replay buffer (chips.REPLAY_MOST entries)."""
+    nops, kept = {id(w) for w in added}, 0
+    for i in range(len(words)):
+        size = i + 1 + sum(id(w) in nops for w in words[1 : i + 1])
+        if size > chips.REPLAY_MOST:
+            break
+        kept = i + 1
+    return kept, kept + sum(id(w) in nops for w in words[1:kept])
 
 
 def _union(a, b):
@@ -760,6 +776,9 @@ def _runs(items, wormhole):
                 if id(insn) in wormhole.counts:
                     args["len"] = wormhole.counts[id(insn)]
                 run.append((op, args, *rest))
+                for word in wormhole.tails.get(id(insn), ()):
+                    run += [nop] if id(word) in wormhole.nops else []
+                    run.append(chip_word(word))
     if run:
         yield run
 

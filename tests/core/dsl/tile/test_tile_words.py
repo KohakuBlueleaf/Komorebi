@@ -103,6 +103,34 @@ def test_wormhole_s_holds_are_an_sfpnop_counted_in_the_replay():
             assert all(WORMHOLE(b, w) is None for b, w in zip([None, *run], run))
 
 
+def chain(a):
+    t = a
+    for _ in range(20):
+        t = t * 0.5 + a
+    return t
+
+
+def test_wormhole_records_32_entries_and_issues_the_rest_after_each_replay():
+    """20 MADs, each read the next cycle: Blackhole records the row's 22 words; on
+    Wormhole they and their SFPNOPs take more than the 32 entries, so its REPLAYs
+    record and replay 32 and each replay is followed by the rest; its words pass."""
+    unit, text = header("c", chain)
+    lines = [line.strip() for line in text[text.index("inline void c(") :].split("\n")]
+    replays = [line for line in lines if line.startswith("TTI_REPLAY(")]
+    assert replays == [
+        "TTI_REPLAY(0, 32, 1, 1);",
+        "TTI_REPLAY(0, 22, 1, 1);",
+        "TTI_REPLAY(0, 32, 0, 0);",
+        "TTI_REPLAY(0, 22, 0, 0);",
+    ]
+    play = lines.index("TTI_REPLAY(0, 32, 0, 0);")
+    tail = lines[play + 1 : lines.index("#else", play)]
+    assert any(line.startswith("TTI_SFPMAD(") for line in tail)
+    for function in (unit.init["math"], unit.tile["math"]):
+        for run in unit_module.chip_words(function):
+            assert all(WORMHOLE(b, w) is None for b, w in zip([None, *run], run))
+
+
 def test_the_stall_on_the_matrix_unit_is_written_by_its_names():
     """p_stall::MATH is 0x10 on Blackhole (its word unchanged) and 0x80 on Wormhole."""
     _, text = silu_header()
