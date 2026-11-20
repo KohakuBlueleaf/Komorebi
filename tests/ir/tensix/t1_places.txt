@@ -1,7 +1,12 @@
 # Where each thing of t1_class.kom was written in t1_class.py, as the frontend records it:
-# an anchor (the handler, or an instruction of its body by number), then its first and
-# last line. Lines starting with # are comments.
+# an anchor (the handler, a parameter of it by position, or an instruction of its body by
+# number), then its first and last line. Lines starting with # are comments.
 handler 0 0 18 18
+param 0 0 0 18 18
+param 0 0 1 18 18
+param 0 0 2 18 18
+param 0 0 3 18 18
+param 0 0 4 18 18
 inst 0 0 0 18 18
 inst 0 0 1 18 18
 inst 0 0 2 18 18

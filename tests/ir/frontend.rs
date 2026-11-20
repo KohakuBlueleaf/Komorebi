@@ -17,7 +17,7 @@ use komorebi_ir::backend::tensix::load::{thread_header, LoadTensor};
 use komorebi_ir::bytecode;
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::program::body::InstId;
-use komorebi_ir::program::notes::Anchor;
+use komorebi_ir::program::notes::{Anchor, Owner};
 use komorebi_ir::program::BodyRef;
 use komorebi_ir::types::{HandlerId, ProgramId};
 
@@ -94,7 +94,7 @@ fn made(dir: &Path) -> Made {
     }
 }
 
-/// The handler's and instructions' places of the hand-written place table.
+/// The hand-written place table: the handler, its parameters and its instructions.
 fn table() -> Vec<(Anchor, u32, u32, u32)> {
     let text = std::fs::read_to_string(here().join("tensix/t1_places.txt")).expect("the table");
     let rows = text
@@ -106,6 +106,7 @@ fn table() -> Vec<(Anchor, u32, u32, u32)> {
         let (p, h) = (ProgramId(n[0]), HandlerId(n[1]));
         let anchor = match kind {
             "handler" => Anchor::Handler(p, h),
+            "param" => Anchor::ParamOf(Owner::Handler(p, h), n[2]),
             _ => Anchor::Inst(BodyRef::Handler(p, h), InstId(n[2])),
         };
         (anchor, 0, n[n.len() - 2], n[n.len() - 1])
@@ -151,12 +152,8 @@ fn the_class_through_the_frontend_is_todays_text_byte_for_byte() {
     let places = &module.notes.origin.as_ref().expect("an origin").places;
     let handler: Vec<_> = places
         .iter()
-        .filter(|(a, ..)| {
-            matches!(
-                a,
-                Anchor::Handler(..) | Anchor::Inst(BodyRef::Handler(..), _)
-            )
-        })
+        .filter(|(a, ..)| !matches!(a, Anchor::Func(..) | Anchor::Inst(BodyRef::Func(..), _)))
+        .filter(|(a, ..)| !matches!(a, Anchor::ParamOf(Owner::Func(..), _)))
         .cloned()
         .collect();
     assert_eq!(handler, table(), "the handler's places");

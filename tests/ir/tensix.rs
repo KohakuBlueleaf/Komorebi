@@ -18,7 +18,7 @@ use komorebi_ir::backend::{
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::bytecode::{decode, encode};
 use komorebi_ir::program::body::InstId;
-use komorebi_ir::program::notes::{Anchor, Origin};
+use komorebi_ir::program::notes::{Anchor, Origin, Owner};
 use komorebi_ir::program::{BodyRef, Module};
 use komorebi_ir::types::{HandlerId, ProgramId};
 
@@ -40,6 +40,9 @@ fn places(text: &str) -> Vec<(Anchor, u32, u32, u32)> {
             .collect();
         let anchor = match (fields[0], n.as_slice()) {
             ("handler", [p, h, ..]) => Anchor::Handler(ProgramId(*p), HandlerId(*h)),
+            ("param", [p, h, k, ..]) => {
+                Anchor::ParamOf(Owner::Handler(ProgramId(*p), HandlerId(*h)), *k)
+            }
             ("inst", [p, h, i, ..]) => {
                 Anchor::Inst(BodyRef::Handler(ProgramId(*p), HandlerId(*h)), InstId(*i))
             }

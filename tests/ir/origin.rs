@@ -49,8 +49,8 @@ fn handler() -> (ProgramId, HandlerId) {
 /// first, so each range of `t1_given` two lines further.
 const CLASS_FORM: &str = include_str!("tensix/t1_class.kom");
 
-/// The handler's and instructions' places of the class form's place table
-/// (tests/ir/tensix/t1_places.txt): `handler P H first last`, `inst P H I first last`.
+/// The class form's place table (tests/ir/tensix/t1_places.txt): `handler P H`,
+/// `param P H K` and `inst P H I`, each then its first and last lines.
 fn table() -> Vec<(Anchor, u32, u32, u32)> {
     let text = include_str!("tensix/t1_places.txt");
     let rows = text
@@ -65,6 +65,7 @@ fn table() -> Vec<(Anchor, u32, u32, u32)> {
         let (p, h) = (ProgramId(n[0]), HandlerId(n[1]));
         let anchor = match kind {
             "handler" => Anchor::Handler(p, h),
+            "param" => Anchor::ParamOf(Owner::Handler(p, h), n[2]),
             _ => Anchor::Inst(BodyRef::Handler(p, h), InstId(n[2])),
         };
         (anchor, 0, n[n.len() - 2], n[n.len() - 1])
@@ -83,19 +84,8 @@ fn the_spans_give_the_places_of_the_class_form() {
     let found = module.notes.origin.as_ref().expect("an origin");
     assert_eq!(found.files, ["/work/t1_class.py"]);
     assert_eq!(found.lines.len(), 5);
-    // The handler and its instructions: the class form's table, place for place.
-    let (handler_and_instructions, parameters): (Vec<_>, Vec<_>) = found
-        .places
-        .iter()
-        .cloned()
-        .partition(|(a, ..)| !matches!(a, Anchor::ParamOf(..)));
-    assert_eq!(handler_and_instructions, table());
-    // The handler's parameters are on its `def` line too; the table names none.
-    let (p, h) = handler();
-    let on_def: Vec<_> = (0..5)
-        .map(|k| (Anchor::ParamOf(Owner::Handler(p, h), k), 0, 18, 18))
-        .collect();
-    assert_eq!(parameters, on_def);
+    // The handler, its parameters and its instructions: the class form's table.
+    assert_eq!(found.places, table());
 }
 
 #[test]
