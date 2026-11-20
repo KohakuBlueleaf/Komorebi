@@ -159,3 +159,7 @@ func t_pick_eq(a: tile<f32>, b: tile<f32>) -> tile<f32> {
 func t_zero_tests(a: tile<f32>, b: tile<f32>) -> tile<f32> {
     return where(a == 0.0, b, a) + where(a != 0.0, a, b) + where(a == -0.0, b, a)
 }
+
+func t_four_registers(a: tile<f32>) -> tile<f32> {
+    return rsqrt(a) * reciprocal(a)
+}

@@ -269,12 +269,12 @@ fn each_unit_programs_listing_and_costs_are_todays() {
     let Some(folder) = today() else { return };
     let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
     // `five` reads five tiles: its chain runs as two stages, its unit is refused;
-    // `by5`'s chain is refused (each_functions_chain_is_todays)
+    // `by5`'s and `four_registers`' chains are refused (each_functions_chain_is_todays)
     let refused: Vec<(&str, &str)> = refused.lines().filter_map(|l| l.split_once('\t')).collect();
     let names: Vec<&str> = refused.iter().map(|r| r.0).collect();
-    assert_eq!(names, ["five", "by5"], "{refused:?}");
+    assert_eq!(names, ["four_registers", "five", "by5"], "{refused:?}");
     let five = "komorebi.dsl.tile: five: the unit program reads at most 4 operand tiles";
-    assert!(refused[0].1.starts_with(five), "{}", refused[0].1);
+    assert!(refused[1].1.starts_with(five), "{}", refused[1].1);
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&folder)
         .expect("the folder")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -549,7 +549,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 36);
+    assert_eq!(compared, 37);
 }
 
 #[test]
@@ -629,7 +629,8 @@ fn each_unit_programs_listing_is_todays() {
     // smooth's checks repair its code (an SFPNOP after its constant register's setup);
     // exp, recip and sigmoid with their lane conditions; gate's 2-word constants tie
     // for the registers (first loaded first); two reciprocals share their 2.0;
-    // min, max and the selects: SFPGT's tests, their inverses, the tests against 0
+    // min, max and the selects: SFPGT's tests, their inverses, the tests against 0;
+    // every vector function, rsqrt's integer constant register among them
     let whole = [
         "t_times",
         "t_plus",
@@ -643,6 +644,11 @@ fn each_unit_programs_listing_is_todays() {
         "t_exp",
         "t_sigmoid",
         "t_silu",
+        "t_tanh",
+        "t_erf",
+        "t_log",
+        "t_sqrt",
+        "t_rsqrt",
         "t_recip",
         "t_relu",
         "t_square",
@@ -663,11 +669,6 @@ fn each_unit_programs_listing_is_todays() {
     let refused = [
         "plus_band: the band (a body on the live rows)",
         "project: a function that is one tile product",
-        "tanh: the vector function tanh",
-        "erf: the vector function erf",
-        "log: the vector function log",
-        "sqrt: the vector function sqrt",
-        "rsqrt: the vector function rsqrt",
     ];
     let named: Vec<String> = not_ported
         .iter()

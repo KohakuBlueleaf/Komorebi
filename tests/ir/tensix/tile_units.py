@@ -71,6 +71,8 @@ CASES = [
     ("chained", lambda a, b, c: a * b * c - a, [F, F, F], {}),
     # two reciprocals share the register of their 2.0
     ("two_recips", lambda a, b: km.reciprocal(a) * km.reciprocal(b), [F, F], {}),
+    # rsqrt's three constant registers and recip's 2.0: one more than there are
+    ("four_registers", lambda a: km.rsqrt(a) * km.reciprocal(a), [F], {}),
     # the selects of SFPGT's inverse tests, and the tests against +0.0 (not -0.0)
     ("pick_ge", lambda a, b: km.where(a >= b, a, b), [F, F], {}),
     (

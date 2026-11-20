@@ -5,10 +5,10 @@
 //! compiler (`stream_chain`).
 //!
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
-//! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and the
-//! vector functions `exp`, `recip` and `sigmoid`, with every pass of that path and the
-//! load macro. Refused by name (K964) where it would act: the other vector functions,
-//! `flash_exp2`, several results, per-row operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
+//! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and every
+//! vector function (`FUNCTIONS`), with every pass of that path and the load macro.
+//! Refused by name (K964) where it would act: `flash_exp2`, several results, per-row
+//! operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
 //! pre-pass and `allocate`'s high registers.
 
 use std::collections::HashMap;
@@ -23,7 +23,8 @@ use super::py;
 use super::r#macro::{self, NoFit, Plan};
 use super::unit::{
     insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Sync, UnitError,
-    UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, PROGRAMMABLE, REPLAY_ENTRIES, SAVED, WORK,
+    UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, PROGRAMMABLE, REPLAY_ENTRIES, SAVED,
+    SHIFT_IMM_VC, WORK,
 };
 use super::vector::{FnResult, VId, VValue, Vs};
 
@@ -61,7 +62,7 @@ pub const A_DTYPES: [&str; 4] = ["float16", "bfp8", "bfp4", "bfp2"];
 pub const CC_RESET: (i64, i64) = (3, 10);
 /// +inf's high half: SFPMULI's immediate (a bf16).
 pub const INF_BF16: i64 = 0x7F80;
-/// The vector functions today's unit program builds (`PORTED` of them so far).
+/// The vector functions today's unit program builds.
 pub const FUNCTIONS: [&str; 8] = [
     "exp", "sigmoid", "rsqrt", "recip", "sqrt", "tanh", "erf", "log",
 ];
@@ -165,6 +166,18 @@ impl Body {
     /// after the schedule pass hoists it: its name until the layout pass.
     fn register_const(&mut self, value: f64) -> Result<Arg, ChainError> {
         let bits = i64::from((value as f32).to_bits());
+        self.register(bits, Constant::Float(value))
+    }
+
+    /// A programmable constant register holding the integer `bits`, as
+    /// `register_const`; the setup's note is the bits in hex.
+    fn register_bits(&mut self, bits: i64) -> Result<Arg, ChainError> {
+        self.register(bits, Constant::Text(format!("{bits:#x}")))
+    }
+
+    /// The register holding `bits` (written `constant` in the listing): an earlier one
+    /// of the same bits, else the next programmable register with its setup.
+    fn register(&mut self, bits: i64, constant: Constant) -> Result<Arg, ChainError> {
         if let Some((_, reg)) = self.bits.iter().find(|(b, _)| *b == bits) {
             return Ok(name(reg));
         }
@@ -175,8 +188,10 @@ impl Body {
         }
         let reg = format!("p{}", self.prog.len());
         self.bits.push((bits, reg.clone()));
-        let constant = Constant::Float(value);
-        let note = constant.repr();
+        let note = match &constant {
+            Constant::Text(text) => text.clone(),
+            other => other.repr(),
+        };
         self.prog.push((reg.clone(), constant));
         self.code.extend(config(&reg, bits, &note)?);
         Ok(name(&reg))
@@ -343,8 +358,59 @@ const EXP_POLYNOMIAL: [f64; 4] = [
     f64::from_bits(0x3FDF_FFFF_6003_311E),
 ];
 
-/// The vector functions lowered so far (of `FUNCTIONS`).
-const PORTED: [&str; 3] = ["exp", "recip", "sigmoid"];
+/// rsqrt's initial guess (its bits less x's halved) and its degree-2 correction's
+/// coefficients (`2.2825186`, `2.2533049`), by their bits.
+const RSQRT_MAGIC: i64 = 0x5F11_10A0;
+const RSQRT_C1: f64 = f64::from_bits(0x4002_4299_1C9C_17F9);
+const RSQRT_C2: f64 = f64::from_bits(0x4002_06C4_B82B_5518);
+/// tanh below |x| = `TANH_SMALL` (0.625): x + x t p(t), t = x^2, p's coefficients
+/// lowest first (`-0.33333284` .. `-0.0057170433`).
+const TANH_SMALL: f64 = f64::from_bits(0x3FE4_0000_0000_0000);
+const TANH_P: [f64; 5] = [
+    f64::from_bits(0xBFD5_5553_439E_E635),
+    f64::from_bits(0x3FC1_1076_8542_749A),
+    f64::from_bits(0xBFAB_8444_83F9_B06C),
+    f64::from_bits(0x3F95_256D_5E0D_8D98),
+    f64::from_bits(0xBF77_6AC1_200D_94FE),
+];
+/// erf: x N(x^2) / D(x^2) on x clamped to [-10, 10] (tt-metal's fp32 erf rational),
+/// N's and D's coefficients lowest first (`1.1283791065` .., `1.0` ..).
+const ERF_N: [f64; 8] = [
+    f64::from_bits(0x3FF2_0DD7_3FFE_83E5),
+    f64::from_bits(0x3FCB_7DB9_A000_004D),
+    f64::from_bits(0x3FAF_CFF4_2000_2C1C),
+    f64::from_bits(0x3F77_0830_4000_355D),
+    f64::from_bits(0x3F44_16CE_BFFF_D250),
+    f64::from_bits(0x3EF2_897D_0001_C707),
+    f64::from_bits(0x3E5D_676F_4001_FFEB),
+    f64::from_bits(0xBDF3_AD01_8000_5ADE),
+];
+const ERF_D: [f64; 9] = [
+    f64::from_bits(0x3FF0_0000_0000_0000),
+    f64::from_bits(0x3FE0_C1ED_5FFF_98F7),
+    f64::from_bits(0x3FC0_974A_BFFF_4D6A),
+    f64::from_bits(0x3F94_1D2E_9FFE_7CEE),
+    f64::from_bits(0x3F60_0300_0000_E4B3),
+    f64::from_bits(0x3F21_4628_6001_AF46),
+    f64::from_bits(0x3EB6_129B_6001_2D94),
+    f64::from_bits(0xBE2E_326C_0000_54C9),
+    f64::from_bits(0xBD9D_9F04_8000_0CE5),
+];
+/// log(1 + f) = f + f^2 r(f) for f in [-0.25, 0.5] (Norbert Juffa's logf, as
+/// tt-metal), r's coefficients lowest first (`-0x1p-1` .. `-0x1.92cp-5`), and ln 2 in
+/// fp32 (`0.693147182`).
+const LOG_P: [f64; 9] = [
+    f64::from_bits(0xBFE0_0000_0000_0000),
+    f64::from_bits(0x3FD5_5557_2000_0000),
+    f64::from_bits(0xBFD0_0001_A000_0000),
+    f64::from_bits(0x3FC9_9800_0000_0000),
+    f64::from_bits(0xBFC5_5000_0000_0000),
+    f64::from_bits(0x3FC2_7400_0000_0000),
+    f64::from_bits(0xBFC0_C400_0000_0000),
+    f64::from_bits(0x3FBB_8400_0000_0000),
+    f64::from_bits(0xBFA9_2C00_0000_0000),
+];
+const LN2_FP32: f64 = f64::from_bits(0x3FE6_2E42_FFC0_255B);
 
 /// A field set to a number.
 fn n(field: &'static str, value: i64) -> (&'static str, Arg) {
@@ -493,6 +559,181 @@ fn recip(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
     )?;
     b.end()?;
     Ok(y)
+}
+
+/// 1 / sqrt(x) for a positive finite x (tt-metal's `_calculate_sqrt_body_`, its 23-bit
+/// reciprocal form, without the guards for 0, infinity and x < 0): the initial guess
+/// from x's bits, a degree-2 correction, then one Newton step.
+fn rsqrt(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let magic = b.register_bits(RSQRT_MAGIC)?;
+    let c1 = b.register_const(RSQRT_C1)?;
+    let c2 = b.register_const(RSQRT_C2)?;
+    let i = b.op(
+        "SFPSHFT",
+        "x's bits >> 1",
+        &[
+            n("imm12_math", 0xFFF), // -1
+            ("lreg_c", x.clone()),
+            n("instr_mod1", SHIFT_IMM_VC),
+        ],
+    )?;
+    let y = b.op(
+        "SFPIADD",
+        "y = magic - (x >> 1)",
+        &[
+            ("lreg_c", magic),
+            ("lreg_dest", i),
+            n("instr_mod1", IADD_SUB | IADD_NO_CC),
+        ],
+    )?;
+    let xy = b.mul(x.clone(), y.clone(), "x y")?;
+    let c = b.mad_of(y.clone(), xy, name("zero"), "c = -y x y", true, false, None)?;
+    let sum = b.add(c.clone(), c2, "c2 + c")?;
+    let factor = b.mad_of(c, sum, c1, "c1 + c (c2 + c)", false, false, None)?;
+    let y = b.mul(y, factor, "y")?;
+    let xy = b.mul(x, y.clone(), "x y")?;
+    let e = b.mad_of(y.clone(), xy, name("one"), "1 - y x y", true, false, None)?;
+    let half = b.op(
+        "SFPDIVP2",
+        "y / 2",
+        &[
+            n("imm12_math", 0xFF),
+            ("lreg_c", y.clone()),
+            n("instr_mod1", 1),
+        ],
+    )?;
+    b.mad_of(e, half, y, "y + (1 - y x y) y / 2", false, false, None)
+}
+
+/// The square root of x >= 0: x rsqrt(x) (0 at 0: rsqrt's guess from 0's bits is
+/// finite).
+fn sqrt(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let r = rsqrt(b, x.clone())?;
+    b.mul(x, r, "x rsqrt(x)")
+}
+
+/// c[0] + x (c[1] + x (...)), one multiply-add a coefficient.
+fn horner(b: &mut Body, x: &Arg, coefficients: &[f64], note: &str) -> Result<Arg, ChainError> {
+    let Some((&last, rest)) = coefficients.split_last() else {
+        return Err(ChainError::Unit("a polynomial of no coefficients".into()));
+    };
+    let mut p = b.constant(last)?;
+    for &c in rest.iter().rev() {
+        let c = b.constant(c)?;
+        p = b.mad_of(p, x.clone(), c, note, false, false, None)?;
+    }
+    Ok(p)
+}
+
+/// tanh(x): below |x| = 0.625 the odd polynomial x + x t p(t), above it
+/// (1 - e^-2|x|) / (1 + e^-2|x|) with the accurate exp and x's sign.
+fn tanh(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let t = b.mul(x.clone(), x.clone(), "t = x^2")?;
+    let p = horner(b, &t, &TANH_P, "tanh polynomial")?;
+    let xt = b.mul(x.clone(), t, "x t")?;
+    let small = b.mad_of(xt, p, x.clone(), "x + x t p(t)", false, false, None)?;
+    let a = b.op(
+        "SFPABS",
+        "|x|",
+        &[("lreg_c", x.clone()), n("instr_mod1", 1)],
+    )?;
+    let out = b.op("SFPMOV", "x (its sign)", &[("lreg_c", x)])?;
+    let minus_two = b.constant(-2.0)?;
+    let scaled = b.mul(a.clone(), minus_two, "-2 |x|")?;
+    let e = exp(b, scaled)?;
+    let num = b.mad_of(
+        e.clone(),
+        name("one"),
+        name("one"),
+        "1 - e",
+        true,
+        false,
+        None,
+    )?;
+    let den = b.add(e, name("one"), "1 + e")?;
+    let inverse = recip(b, den)?;
+    let big = b.mul(num, inverse, "(1 - e) / (1 + e)")?;
+    let out = b.op(
+        "SFPSETSGN",
+        "the quotient with x's sign",
+        &[("lreg_c", big), ("lreg_dest", out)],
+    )?;
+    let small_x = b.constant(TANH_SMALL)?;
+    b.when(
+        "SFPGT",
+        "|x| < 0.625",
+        &[("lreg_c", a), ("lreg_dest", small_x), n("instr_mod1", 1)],
+    )?;
+    let args = [("lreg_c", small), ("lreg_dest", out.clone())];
+    b.word("SFPMOV", "tanh: the polynomial", &args)?;
+    b.end()?;
+    Ok(out)
+}
+
+/// erf(x): x N(x^2) / D(x^2) of x clamped to [-10, 10] (tt-metal's fp32 rational), the
+/// quotient by `recip`, the result clamped to [-1, 1].
+fn erf(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let low = b.constant(-10.0)?;
+    let c = maximum(b, x, low)?;
+    let high = b.constant(10.0)?;
+    let c = minimum(b, c, high)?;
+    let s = b.mul(c.clone(), c.clone(), "s = x^2")?;
+    let numerator = horner(b, &s, &ERF_N, "erf numerator")?;
+    let n_of = b.mul(c, numerator, "x N(s)")?;
+    let denominator = horner(b, &s, &ERF_D, "erf denominator")?;
+    let inverse = recip(b, denominator)?;
+    let y = b.mul(n_of, inverse, "N / D")?;
+    let low = b.constant(-1.0)?;
+    let y = maximum(b, y, low)?;
+    minimum(b, y, name("one"))
+}
+
+/// The natural log of a normal x > 0: x = 2^k m, m in [0.75, 1.5) (m above 1.5 halved,
+/// k + 1), log(m) = f + f^2 r(f) with f = m - 1, then k ln 2 + log(m).
+fn log(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let e = b.op("SFPEXEXP", "x's exponent - 127", &[("lreg_c", x.clone())])?;
+    let m = b.op(
+        "SFPSETEXP",
+        "m in [1, 2)",
+        &[n("imm12_math", 127), ("lreg_c", x), n("instr_mod1", 1)],
+    )?;
+    let e = b.op(
+        "SFPCAST",
+        "k as sign-magnitude",
+        &[("lreg_src_c", e), n("instr_mod1", 3)],
+    )?;
+    let k = b.op("SFPCAST", "k as fp32", &[("lreg_src_c", e)])?;
+    let limit = b.constant(1.5)?;
+    b.when(
+        "SFPGT",
+        "m > 1.5",
+        &[
+            ("lreg_c", limit),
+            ("lreg_dest", m.clone()),
+            n("instr_mod1", 1),
+        ],
+    )?;
+    let half = b.constant(0.5)?;
+    let into = Some(m.clone());
+    b.mad_of(m.clone(), half, name("zero"), "m / 2", false, false, into)?;
+    let into = Some(k.clone());
+    b.mad_of(
+        k.clone(),
+        name("one"),
+        name("one"),
+        "k + 1",
+        false,
+        false,
+        into,
+    )?;
+    b.end()?;
+    let minus_one = b.constant(-1.0)?;
+    let f = b.add(m, minus_one, "f = m - 1 (exact)")?;
+    let r = horner(b, &f, &LOG_P, "log polynomial")?;
+    let square = b.mul(f.clone(), f.clone(), "f^2")?;
+    let r = b.mad_of(r, square, f, "f + f^2 r", false, false, None)?;
+    let ln2 = b.constant(LN2_FP32)?;
+    b.mad_of(k, ln2, r, "k ln 2 + log(m)", false, false, None)
 }
 
 /// 1 / (1 + e^-x) on fp32 registers, as tt-metal's `_sfpu_sigmoid_<true>`.
@@ -689,18 +930,20 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
                 }
             }
         }
-        ("call", VValue::Call(f)) if PORTED.contains(f) => {
+        ("call", VValue::Call(f)) if FUNCTIONS.contains(f) => {
             let Some(x) = args(b, done)?.into_iter().next() else {
                 return Err(ChainError::NotPorted(format!("a call of {f} on no value")));
             };
             match *f {
                 "exp" => exp(b, x)?,
+                "sigmoid" => sigmoid(b, x)?,
+                "rsqrt" => rsqrt(b, x)?,
                 "recip" => recip(b, x)?,
-                _ => sigmoid(b, x)?,
+                "sqrt" => sqrt(b, x)?,
+                "tanh" => tanh(b, x)?,
+                "erf" => erf(b, x)?,
+                _ => log(b, x)?,
             }
-        }
-        ("call", VValue::Call(f)) if FUNCTIONS.contains(f) => {
-            return Err(ChainError::NotPorted(format!("the vector function {f}")))
         }
         ("call", VValue::Call(f)) => {
             return Err(plan_error(format!(
@@ -2079,6 +2322,62 @@ mod tests {
                 "0x1.555b5a027abaap-5",
                 "0x1.5554500e60400p-3",
                 "0x1.fffff6003311ep-2",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_vector_functions_constants_are_todays_bits() {
+        // Python: hex(0x5F1110A0), and (2.2825186).hex() and so on of lower.py's
+        // rsqrt literals, TANH_SMALL, TANH_P, ERF_N, ERF_D, LOG_P and LN2_FP32
+        assert_eq!(format!("{RSQRT_MAGIC:#x}"), "0x5f1110a0");
+        let hex: Vec<String> = [RSQRT_C1, RSQRT_C2, TANH_SMALL]
+            .into_iter()
+            .chain(TANH_P)
+            .chain(ERF_N)
+            .chain(ERF_D)
+            .chain(LOG_P)
+            .chain([LN2_FP32])
+            .map(py::float_hex)
+            .collect();
+        assert_eq!(
+            hex,
+            [
+                "0x1.242991c9c17f9p+1",
+                "0x1.206c4b82b5518p+1",
+                "0x1.4000000000000p-1",
+                "-0x1.55553439ee635p-2",
+                "0x1.110768542749ap-3",
+                "-0x1.b844483f9b06cp-5",
+                "0x1.5256d5e0d8d98p-6",
+                "-0x1.76ac1200d94fep-8",
+                "0x1.20dd73ffe83e5p+0",
+                "0x1.b7db9a000004dp-3",
+                "0x1.fcff420002c1cp-5",
+                "0x1.708304000355dp-8",
+                "0x1.416cebfffd250p-11",
+                "0x1.2897d0001c707p-16",
+                "0x1.d676f4001ffebp-26",
+                "-0x1.3ad0180005adep-32",
+                "0x1.0000000000000p+0",
+                "0x1.0c1ed5fff98f7p-1",
+                "0x1.0974abfff4d6ap-3",
+                "0x1.41d2e9ffe7ceep-6",
+                "0x1.003000000e4b3p-9",
+                "0x1.146286001af46p-13",
+                "0x1.6129b60012d94p-20",
+                "-0x1.e326c000054c9p-29",
+                "-0x1.d9f0480000ce5p-38",
+                "-0x1.0000000000000p-1",
+                "0x1.5555720000000p-2",
+                "-0x1.00001a0000000p-2",
+                "0x1.9980000000000p-3",
+                "-0x1.5500000000000p-3",
+                "0x1.2740000000000p-3",
+                "-0x1.0c40000000000p-3",
+                "0x1.b840000000000p-4",
+                "-0x1.92c0000000000p-5",
+                "0x1.62e42ffc0255bp-1",
             ]
         );
     }
