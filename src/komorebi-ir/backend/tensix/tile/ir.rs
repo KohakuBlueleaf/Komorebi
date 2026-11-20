@@ -617,7 +617,8 @@ fn values_set(values: &mut [Option<Traced>], defs: &[ValueId], made: Traced) {
 /// The KernelIR of function `f` traced as today's `tile_unit` traces a tile function
 /// at the 1-tile width, under the name `name` (today's C++ name of the unit): its tile
 /// parameters are tensors, its `f32` ones runtime floats, the grid walks the first
-/// tensor's tiles, and the result is stored into the `float32` tensor `result`.
+/// tensor's tiles, and the result is stored into the `float32` tensor `result`; a function
+/// on blocks is traced on one tile of each block.
 pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Refusal> {
     let refused = |what: String, at: Anchor| Refusal {
         code: NOT_BUILT,
@@ -633,7 +634,8 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
             Anchor::Func(f),
         ));
     }
-    if !matches!(func.ret, Type::Tile(_)) {
+    // a function on blocks: the body on one tile of each block (the same unit)
+    if !matches!(func.inner(None), Some(Type::Tile(_))) {
         return Err(refused(
             "a function whose result is not one tile".into(),
             Anchor::Func(f),
@@ -643,14 +645,15 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
         return Err(refused("a function with no body".into(), Anchor::Func(f)));
     };
     let (mut tensors, mut values, mut args) = (Vec::new(), Vec::new(), Vec::new());
-    for (i, ty) in func.params.iter().enumerate() {
+    for i in 0..func.params.len() {
+        let ty = func.inner(Some(i));
         let at = Anchor::ParamOf(Owner::Func(f), i as u32);
         let Some(p) = param_name(module, Owner::Func(f), i as u32) else {
             return Err(refused("a parameter with no name".into(), at));
         };
         match ty {
-            Type::Tile(format) => {
-                let dtype = dtype(*format).map_err(|what| refused(what, at))?;
+            Some(Type::Tile(format)) => {
+                let dtype = dtype(format).map_err(|what| refused(what, at))?;
                 tensors.push(TensorParam {
                     name: p.to_string(),
                     output: false,
@@ -658,14 +661,15 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
                 });
                 args.push(None);
             }
-            Type::Scalar(ScalarType::F32) => {
+            Some(Type::Scalar(ScalarType::F32)) => {
                 values.push(ValueParam {
                     name: p.to_string(),
                     kind: "float".to_string(),
                 });
                 args.push(Some(Traced::Value(p.to_string())));
             }
-            other => return Err(refused(format!("a parameter of {other:?}"), at)),
+            Some(other) => return Err(refused(format!("a parameter of {other:?}"), at)),
+            None => return Err(refused("a parameter of no type".into(), at)),
         }
     }
     let Some(first) = tensors.first().map(|t| t.name.clone()) else {

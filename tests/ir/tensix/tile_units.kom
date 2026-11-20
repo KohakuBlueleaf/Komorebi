@@ -10,6 +10,11 @@ func t_times(a: tile<bf16>, k: f32) -> tile<bf16> {
     return a * k
 }
 
+// `times` declared on blocks of 8: the same unit, the body on one tile of each block
+func times_on_blocks(a: tile<bf16>[8], k: f32) -> tile<bf16>[8] {
+    return a * k
+}
+
 func t_plus(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> {
     return a + b
 }

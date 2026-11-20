@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use komorebi_ir::backend::tensix::tile::chain::{Chain, Source};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
-use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program_unchecked};
+use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program};
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
     Sync, UnitProgram, CPUS, OPS,
@@ -333,11 +333,15 @@ fn each_function_traces_to_todays_kernel_ir() {
         sorted, cases,
         "a func `t_<case>` for each case and no other"
     );
-    // `smooth_let` binds its 0.5 once: today's tracer makes a node at each use
+    // `smooth_let` binds its 0.5 once: today's tracer makes a node at each use;
+    // `times_on_blocks` is `times` declared on blocks
     let pairs = funcs
         .iter()
         .map(|c| (format!("t_{c}"), c.to_string()))
-        .chain([("smooth_let".to_string(), "smooth".to_string())]);
+        .chain([
+            ("smooth_let".to_string(), "smooth".to_string()),
+            ("times_on_blocks".to_string(), "times".to_string()),
+        ]);
     for (f, case) in pairs {
         let want = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
         let ir = kernel_ir(&module, func(&module, &f), &case)
@@ -475,28 +479,22 @@ fn each_functions_chain_is_todays() {
     assert_eq!(compared, 31);
 }
 
-/// Today's listing without the hazard checks' lines (the port's unit program is the one
-/// before them, but for the `resident` check, which the layout pass makes).
-fn unchecked(text: &str) -> String {
-    text.lines()
-        .filter(|l| !l.starts_with("  check ") || l.starts_with("  check resident "))
-        .map(|l| format!("{l}\n"))
-        .collect()
-}
-
 #[test]
-fn each_unit_program_before_its_checks_is_todays() {
+fn each_unit_programs_listing_is_todays() {
     let Some(folder) = today() else { return };
     let module = corpus();
     let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("cases.txt");
     let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
-    let (mut same, mut passes, mut not_ported) = (Vec::new(), Vec::new(), Vec::new());
-    for line in cases.lines() {
+    let (mut same, mut not_ported) = (Vec::new(), Vec::new());
+    // `times_on_blocks`, `times` declared on blocks, gives `times`'s unit
+    let blocks = "times\tfp32\t0\ttimes_on_blocks";
+    for line in cases.lines().chain([blocks]) {
         let f: Vec<&str> = line.split('\t').collect();
         let (case, dest, band) = (f[0], f[1], f[2] == "1");
-        let ir = kernel_ir(&module, func(&module, &format!("t_{case}")), case)
-            .unwrap_or_else(|r| panic!("{case}: {}", r.what));
-        let made = unit_program_unchecked(&ir, dest, true, band);
+        let name = f.get(3).map_or(format!("t_{case}"), |n| n.to_string());
+        let ir = kernel_ir(&module, func(&module, &name), case)
+            .unwrap_or_else(|r| panic!("{name}: {}", r.what));
+        let made = unit_program(&ir, dest, true, band);
         let today = refused
             .lines()
             .find_map(|l| l.strip_prefix(&format!("{case}\t")));
@@ -523,44 +521,28 @@ fn each_unit_program_before_its_checks_is_todays() {
         let want =
             std::fs::read_to_string(folder.join(format!("{case}.txt"))).expect("the listing");
         let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-        if !want.contains(": repaired: ") {
-            let want = unchecked(&want);
-            assert!(
-                got == want,
-                "{case} differs, {}",
-                first_difference(&want, &got)
-            );
-            same.push(case);
-            continue;
-        }
-        // today's checks repaired the code (an SFPNOP, a STALLWAIT): the passes but the
-        // replay, which records the repaired row, are the same
-        let of = |t: &str| -> String {
-            t.lines()
-                .filter(|l| l.starts_with("  pass ") && !l.starts_with("  pass schedule replay"))
-                .map(|l| format!("{l}\n"))
-                .collect()
-        };
         assert!(
-            of(&got) == of(&want),
-            "{case}'s passes differ, {}",
-            first_difference(&of(&want), &of(&got))
+            got == want,
+            "{name} differs, {}",
+            first_difference(&want, &got)
         );
-        passes.push(case);
+        same.push(name);
     }
-    // the whole-tile arithmetic, `a * k` among it, with and without a load macro
+    // the whole-tile arithmetic, `a * k` among it, with and without a load macro;
+    // smooth's checks repair its code (an SFPNOP after its constant register's setup)
     let whole = [
-        "times",
-        "plus",
-        "plus_bfp8",
-        "scaled_sum",
-        "square",
-        "neg",
-        "twice_k",
-        "chained",
+        "t_times",
+        "t_plus",
+        "t_plus_bfp8",
+        "t_smooth",
+        "t_scaled_sum",
+        "t_square",
+        "t_neg",
+        "t_twice_k",
+        "t_chained",
+        "times_on_blocks",
     ];
     assert_eq!(same, whole);
-    assert_eq!(passes, ["smooth"]);
     let refused = [
         "plus_band: the band (a body on the live rows)",
         "gate: the vector function sigmoid",

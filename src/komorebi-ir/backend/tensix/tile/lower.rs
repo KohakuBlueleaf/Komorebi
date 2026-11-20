@@ -1,20 +1,23 @@
 //! A traced tile expression over a stream of tiles to its unit program (today's
 //! `komorebi.dsl.tile.lower`): the chain's vector function is written as vector-unit
 //! instructions on named values, the rules run as passes (algebra, layout, schedule),
-//! and the stream form's entry to the chain compiler (`stream_chain`).
+//! then the hazard checks (`checks`); and the stream form's entry to the chain
+//! compiler (`stream_chain`).
 //!
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
 //! `abs`, multiply-add, constants and run-time scalars, with every pass of that path
 //! and the load macro. Refused by name (K964) where it would act: the vector functions,
-//! `min` / `max`, selects, several results, per-row operands, tile products, the band,
-//! and the hazard checks (`hazards.checks`), which come with their own module; so the
-//! unit program here is the one before its checks (`unit_program_unchecked`). Not on
-//! this path, so not ported: `drop_copies`, `common_values`, the per-row pre-pass and
-//! `allocate`'s high registers.
+//! `min` / `max`, selects, several results, per-row operands, tile products and the
+//! band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
+//! pre-pass and `allocate`'s high registers.
 
 use std::collections::HashMap;
 
 use super::chain::{shape, Chain, ChainError, Compiler, Source};
+use super::checks::{
+    check_dst_window, hazard_checks, named_register, named_spans, NEG_ONE_BF16, STALL_SFPU, TILE,
+    WAIT_MATH,
+};
 use super::ir::{Attr, KernelIR, NodeId};
 use super::py;
 use super::r#macro::{self, NoFit, Plan};
@@ -42,14 +45,6 @@ pub const OPERANDS: usize = 4;
 pub const SET_D: i64 = 0x4;
 /// SETRWC's counter-reset bit of Dst.
 pub const CR_D: i64 = 0x4;
-/// Dst address units of a tile in either Dst: 4 faces of 16 rows.
-pub const TILE: i64 = 64;
-/// STALLWAIT's resource: the vector unit stalls.
-pub const STALL_SFPU: i64 = 0x100;
-/// STALLWAIT's condition: until the matrix unit is done.
-pub const WAIT_MATH: i64 = 0x10;
-/// -1.0 in bf16: LReg 11's value, restored.
-pub const NEG_ONE_BF16: i64 = 0xBF80;
 /// The constant registers in the order the layout pass fills them: 12 to 14, then 11
 /// (set and restored by the body itself, rule constant_registers' fourth register).
 pub const CONSTANT_REGISTERS: [u32; 4] = [PROGRAMMABLE[0], PROGRAMMABLE[1], PROGRAMMABLE[2], SAVED];
@@ -908,56 +903,6 @@ pub fn restore_saved() -> Result<Vec<Insn>, UnitError> {
     ])
 }
 
-/// The number of a register the code names (`L<n>`), refused where today's `int()`
-/// raises.
-fn named_register(s: &str) -> Result<i64, ChainError> {
-    s.get(1..)
-        .and_then(|n| n.parse().ok())
-        .ok_or_else(|| ChainError::Unit(format!("register name {s} names no register")))
-}
-
-/// {register: [(first, last)]}: where a register the code names (`L<n>`) holds a
-/// value, from each write to its last read before the next write (today's
-/// `hazards.checks._named_spans`).
-fn named_spans(code: &[Insn]) -> Result<HashMap<i64, Vec<(usize, usize)>>, ChainError> {
-    let mut spans: HashMap<i64, Vec<(usize, usize)>> = HashMap::new();
-    let work = i64::from(WORK);
-    for (i, x) in code.iter().enumerate() {
-        for v in x.reads() {
-            if let Arg::Name(s) = &v {
-                if s.starts_with('L') {
-                    let r = named_register(s)?;
-                    match spans.get_mut(&r) {
-                        Some(list) if r < work && !list.is_empty() => {
-                            if let Some(last) = list.last_mut() {
-                                last.1 = i;
-                            }
-                        }
-                        _ if r < work => {
-                            spans.insert(r, vec![(i, i)]);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        for v in x.writes()? {
-            if let Arg::Name(s) = &v {
-                if s.starts_with('L') {
-                    let r = named_register(s)?;
-                    if r < work {
-                        let list = spans.entry(r).or_default();
-                        if list.last().is_none_or(|l| l.1 != i) {
-                            list.push((i, i));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(spans)
-}
-
 /// Each value's last instruction in `code` (`pinned` ones: past the end), the values
 /// not yet placed in `regs`.
 fn last_uses(
@@ -1261,11 +1206,11 @@ fn operand_tensor(ir: &KernelIR, source: Source) -> Result<Option<String>, Chain
     }
 }
 
-/// The unit program of stream kernel `ir` on `dest` Dst (`DEST_MODES`), before its
-/// hazard checks: operand k (a load) in Dst tile k, the result in tile 0.
+/// The unit program of stream kernel `ir` on `dest` Dst (`DEST_MODES`), its hazard
+/// checks run: operand k (a load) in Dst tile k, the result in tile 0.
 /// `load_macro`: try the load-macro rule (a refusal is a pass's record); `band`: live
 /// rows a run-time word.
-pub fn unit_program_unchecked(
+pub fn unit_program(
     ir: &KernelIR,
     dest: &str,
     load_macro: bool,
@@ -1596,7 +1541,7 @@ pub fn unit_program_unchecked(
         sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
         sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ];
-    // here today's hazard checks run (hazards.checks: H5's module)
+    hazard_checks(&mut unit)?;
     let Some(faces) = unit.tile[1].iter_mut().find_map(|x| match x {
         Item::Loop(l) => Some(l),
         _ => None,
@@ -1619,7 +1564,9 @@ pub fn unit_program_unchecked(
         .filter(|r| plan.is_none() || !r.contains("load-macro"))
         .map(|r| (*r).to_string())
         .collect();
-    // here today checks the Dst window (hazards.checks: H5's module)
+    // a call's tiles: its operands' and results'
+    let tiles = (unit.operands.len() as i64).max(unit.results);
+    check_dst_window(&mut unit, tiles)?;
     Ok(unit)
 }
 
