@@ -38,6 +38,10 @@ pub(crate) enum Place {
     FuncResult,
     /// The type of a `let`, a `var` or a module parameter.
     Local,
+    /// The type of a `var` of `zeros`: a count `[n]` may follow a tile type, a block of
+    /// one row of n tiles (R48: today's field one handler's compute fills, reads and
+    /// frees).
+    VarOfZeros,
 }
 
 /// What kind of function a name declares.
@@ -561,9 +565,19 @@ impl Checker<'_> {
                 Ty::Unknown => Ty::Unknown,
                 other => Ty::Scalars(Box::new(other), n),
             },
-            Place::FuncParam | Place::FuncResult => match base {
+            Place::FuncParam | Place::FuncResult | Place::VarOfZeros => match base {
                 Ty::Tile(f) => Ty::Block(f, shape),
                 Ty::Unknown => Ty::Unknown,
+                _ if place == Place::VarOfZeros => {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        "a count `[n]` follows the type of a `var` of `zeros` only after a \
+                         tile type"
+                            .into(),
+                        ty.span,
+                    );
+                    Ty::Unknown
+                }
                 _ => {
                     self.error(
                         codes::WRONG_TYPE,

@@ -2166,3 +2166,58 @@ program Small {
         );
     }
 }
+
+#[test]
+fn program_7s_down_adds_each_ranks_products_into_a_block_var_and_stores_it() {
+    // SwiGLU.down as the frontend writes it (reading R48): the field `out` the
+    // handler's var of a block of one row from zeros; rank r adds the products of the
+    // hidden's row, in blocks of [1, CHUNK], by W2's columns r WIDTH to r WIDTH +
+    // WIDTH - 1, in blocks of [CHUNK, WIDTH], and stores the var to y's row there
+    let m = module(
+        "module swiglu
+
+tile [32, 32]
+format bf16, f32
+
+param H: u32 = 6 @bind(build)
+param WIDTH: u32 = 4 @bind(build)
+param CHUNK: u32 = 2 @bind(build)
+
+func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
+    return matmul(x, w)
+}
+
+program SwiGLU {
+    handler down(hidden: tensor<bf16>, w2: tensor<bf16>, y: tensor<f32>) @on(group) {
+        var out: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for hb, wb in zip(stream(hidden.tiles[0:1, 0:H], block = CHUNK), stream(w2.tiles[0:H, first:first + WIDTH], block = [CHUNK, WIDTH])) {
+            out += project(hb, wb)
+        }
+        store y.tiles[0:1, first:first + WIDTH] <- out
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    // the hidden's tile (0, k) holds k + 1, W2's tile (k, j) holds j + 1; y is 1 x 8
+    let hidden = tensor(&mut run, Format::Bf16, (1, 6), |i, _| (i + 1) as f64);
+    let w2 = tensor(&mut run, Format::Bf16, (6, 8), |i, _| (i % 8 + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (1, 8), |_, _| -1.0);
+    let args = [Arg::Tensor(hidden), Arg::Tensor(w2), Arg::Tensor(y)];
+    assert_eq!(
+        run.invoke("SwiGLU.down", &args, (0, 2), &[]),
+        End::Completed(None)
+    );
+    // By hand: y's tile j at each element is the sum over k of 32 (k + 1)(j + 1),
+    // 32 x 21 (j + 1) = 672 (j + 1); ranks 0 and 1 write tiles 0-3 and 4-7
+    for j in 0..8 {
+        let want = 672.0 * (j + 1) as f64;
+        let got = tile_f64(&run, y, j);
+        assert!(
+            got.iter().all(|v| *v == want),
+            "tile {j}: {} for {want}",
+            got[0]
+        );
+    }
+}

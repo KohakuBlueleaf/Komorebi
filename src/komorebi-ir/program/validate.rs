@@ -637,6 +637,12 @@ impl<'m> Validator<'m> {
                 let (x, y) = (a[0], a[1]);
                 let r = d.first().copied();
                 let ok = match (x, y) {
+                    // a handler's `+=` into its var of a block of one row (R48)
+                    (Type::Block(_, Count::Const(1), c), Type::Block(_, Count::Const(1), e))
+                        if !ctx.on_blocks && *op == BinOp::Add =>
+                    {
+                        c == e && matches!(r, Some(Type::Block(_, Count::Const(1), g)) if g == c)
+                    }
                     (Type::Scalar(s), Type::Scalar(t)) if !s.is_float() || !t.is_float() => {
                         s == t && r == Some(x)
                     }

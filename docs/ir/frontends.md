@@ -166,6 +166,15 @@ komorebi-ir wheel, which `komorebi.dsl.ir` does not.
    columns against its width, and a tensor of another width than the load's is refused, in
    today's words (program 6).
 
+A field (`self.out: km.L1[km.fp32, 1, WIDTH, 32, 32]`) is placed by today's own rule
+(`compiler.field_users`, `kept_field`). A field today does not keep between commands is the
+handler's `var` of a block of one row from `zeros`, named as the field (`self.out` is `out`,
+renamed back in the origin), its tiles the field's columns. A field today keeps (filled by one
+handler and read by another) is a state member, which the IR module does not write yet, and is
+refused by name, as is a field with a value. A stream's block over a rectangle of several rows
+and columns is written `[A, C]` from its declaration `W_BLOCK = A * C`, C the rectangle's
+columns (`c : c + self.C`); any other is refused by name (program 7, `SwiGLU.down`).
+
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
 its tensor's end before anything is sent; today's make checks only the ranges of `items(...)`.

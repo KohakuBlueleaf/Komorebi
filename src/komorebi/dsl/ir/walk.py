@@ -5,6 +5,7 @@ written by the leader); any other is refused by name, with its class's line."""
 
 import ast
 import inspect
+import operator
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +13,7 @@ from pathlib import Path
 from komorebi.chain import calls as kc
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compile.source import MAKE_OPTIONS, Where, file_of, refuse, source_of
-from komorebi.dsl.compiler import class_annotations, handler_methods
+from komorebi.dsl.compiler import class_annotations, field_users, handler_methods
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import kind_of, spelling
 
@@ -76,6 +77,8 @@ class Value:
         ""  # a block's count (or rows) as the text writes it, when not a number
     )
     rows: int = 1  # a block's rows of tiles: a stream of a column's in [n, 1]
+    cols: str = ""  # a block's columns as the text writes them, when not a number
+    field: bool = False  # a field of the class, the handler's var (R48)
 
 
 @dataclass
@@ -116,8 +119,9 @@ def module(cls, **make):
     methods = handler_methods(cls)
     class_refusals(cls, methods)
     constants = constant_values(cls, make)
+    fields = field_vars(cls, methods, constants)
     text = Text()
-    walks = [Handler(cls, method, tensors, constants) for method in methods]
+    walks = [Handler(cls, method, tensors, constants, fields) for method in methods]
     functions = {}
     for walk in walks:
         walk.read()
@@ -130,7 +134,7 @@ def module(cls, **make):
                 )
     formats = []
     for walk in walks:
-        for value in [*walk.params.values(), *walk.scope.values()]:
+        for value in [*walk.params.values(), *walk.scope.values(), *walk.vars()]:
             if value.kind in ("tensor", "tile") and value.format not in formats:
                 formats.append(value.format)
     text.line(0, f"module {cls.__name__.lower()}")
@@ -189,6 +193,18 @@ def constant_values(cls, make):
     of its name; another kind of constant is refused by name."""
     values = {}
     for name, declared in front.constants_of(cls).items():
+        if isinstance(declared, front.Derived):
+            # a constant of others (`W_BLOCK = CHUNK * WIDTH`): its value at this make
+            if name in make:
+                raise Refused(
+                    f"{cls.__name__}: {name}= sets a derived constant; set the "
+                    "constants it is made of"
+                )
+            value = declared.value(values)
+            if type(value) is not int or value < 0:
+                raise Refused(f"{cls.__name__}: {name}={value!r} is not a u32")
+            values[name] = value
+            continue
         if not (isinstance(declared, front.Constant) and declared.kind is int):
             raise Refused(
                 f"{cls.__name__}: its constant {name} is not an int; a constant other "
@@ -204,9 +220,7 @@ def constant_values(cls, make):
 def class_refusals(cls, methods):
     """What the class states beyond its handlers' lines, refused by name."""
     name = cls.__name__
-    annotations = class_annotations(cls).values()
     stated = [
-        ("fields", any(isinstance(v, front.Field) for v in annotations)),
         (spelling("compute_options"), bool(getattr(cls, "compute_given", None))),
         (spelling("defines"), bool(getattr(cls, "defines_given", None))),
         (spelling("startup"), getattr(cls, "startup_given", None) is not None),
@@ -236,12 +250,60 @@ def class_refusals(cls, methods):
                 )
 
 
+def field_vars(cls, methods, constants):
+    """Each field's var type (R48), placed by today's `compiler.field_users`: a field
+    one handler fills and another reads is kept, a state member, not written yet; a
+    field of other than one row of tiles, or of words, is refused by name."""
+    name = cls.__name__
+    fields = {
+        f: v for f, v in class_annotations(cls).items() if isinstance(v, front.Field)
+    }
+    names = {id(c): n for n, c in front.constants_of(cls).items()}
+    out = {}
+    for field_, (fillers, readers) in field_users(methods, fields).items():
+        declared = fields[field_]
+        if fillers and readers:
+            raise Refused(
+                f"{name}: self.{field_} is filled by {fillers[0]} and read by "
+                f"{readers[0]}: a field kept between commands is a state member, not "
+                "written in an IR module yet"
+            )
+        if inspect.getattr_static(cls, field_, None) is not None:
+            raise Refused(
+                f"{name}: self.{field_} has a value (km.own()): not written in an IR "
+                "module yet"
+            )
+        format_ = TILE_FORMATS.get(kind_of(declared.format.dtype, ("fp32", "bf16")))
+        format_ = format_ or FORMATS.get(declared.format.dtype)
+        shape = declared.shape
+        sizes = [
+            s if type(s) is int else constants.get(names.get(id(s))) for s in shape
+        ]
+        if (
+            format_ is None
+            or len(shape) != 4
+            or sizes[0] != 1
+            or sizes[2:] != [32, 32]
+            or sizes[1] is None
+        ):
+            raise Refused(
+                f"{name}: self.{field_} is not one row of 32 x 32 tiles of "
+                f"{', '.join(FORMATS)}: not written in an IR module yet"
+            )
+        width = names.get(id(shape[1]), str(shape[1]))
+        out[field_] = Value("tile", format=format_, tiles=sizes[1], cols=width)
+        out[field_].field = True
+    return out
+
+
 class Handler:
     """One handler's walk: its parameters and lines read, then written."""
 
-    def __init__(self, cls, method, tensors, constants):
+    def __init__(self, cls, method, tensors, constants, fields=None):
         self.cls, self.method, self.tensors = cls, method, tensors
         self.constants = constants
+        self.fields = fields or {}
+        self.declared = []  # the fields this handler uses, in order of first use
         definition, lines, first = source_of(method.function)
         self.definition = definition
         self.file = file_of(method.function)
@@ -258,6 +320,28 @@ class Handler:
 
     def refuse(self, node, why, instead):
         refuse(self.where, node, why, instead)
+
+    def vars(self):
+        """The fields this handler declares as its vars."""
+        return [self.fields[f] for f in self.declared]
+
+    def field_of(self, node, expression):
+        """The field `self.<name>` names, declared as the handler's var at its first
+        use; None for another expression."""
+        name = self_attribute(expression)
+        if name not in self.fields:
+            return None
+        if name not in self.declared:
+            if name in self.used or name in self.params:
+                self.refuse(
+                    node,
+                    f"self.{name} and a name {name} of the handler: the field is the "
+                    "handler's var of its name",
+                    "rename one",
+                )
+            self.declared.append(name)
+            self.renames.append((name, f"self.{name}"))  # the source's name of the var
+        return name
 
     def name(self, python):
         """The text's name of a Python name: itself, or a safe name with its rename."""
@@ -447,6 +531,16 @@ class Handler:
         """`total += tile`: the loop's tile added to a tile of the handler; or
         `acc += self.f(xb, wb)`, a tile function's result (a product of blocks)."""
         target, value = node.target, node.value
+        field_ = self.field_of(node, target)
+        if field_ is not None and isinstance(node.op, ast.Add):
+            if not isinstance(value, ast.Call):
+                self.refuse(
+                    node,
+                    "an add into a field of what is not a tile function's result",
+                    f"add self.f(...) into self.{field_}",
+                )
+            result = type_text(self.fields[field_])
+            return f"{self.name(field_)} += {self.tile_call(node, value, result)}"
         if (
             isinstance(node.op, ast.Add)
             and isinstance(target, ast.Name)
@@ -521,6 +615,15 @@ class Handler:
         written to t's tiles."""
         pages = call.func.value
         whole = call.args[0] if len(call.args) == 1 and not call.keywords else None
+        field_ = self.field_of(node, whole)
+        if field_ is not None:
+            if self.rectangle_of(pages) is None:
+                self.refuse(
+                    node,
+                    f"a write of self.{field_} to what is not a rectangle",
+                    "write it to t.tiles[r0:r1, c0:c1]",
+                )
+            return f"store {self.view(node, pages, [])} <- {self.name(field_)}"
         if not (
             isinstance(whole, ast.Name) and self.kind(whole.id) in ("reduced", "tile")
         ):
@@ -641,24 +744,59 @@ class Handler:
 
     def block_text(self, node, call):
         """A stream's block as the text writes it (`block_of`); of a rectangle of one
-        column, `[n, 1]`: n rows of one tile (a block is a matrix of tiles, R45)."""
+        column, `[n, 1]`: n rows of one tile (a block is a matrix of tiles, R45); of a
+        rectangle of C columns, more than one row, a block `A * C` declared (`W_BLOCK
+        = CHUNK * WIDTH`) is `[A, C]`."""
         text, _ = self.block_of(node, call)
-        rectangle = self.rectangle_of(call.args[0]) is not None
-        return f"[{text}, 1]" if rectangle and self.column(call.args[0]) else text
+        view = call.args[0]
+        if self.rectangle_of(view) is None or self.one_row(view):
+            return text
+        if self.column(view):
+            return f"[{text}, 1]"
+        rows = self.rows_of(node, call)
+        return f"[{rows[0]}, {rows[1]}]"
+
+    def one_row(self, view):
+        """Whether a rectangle is one row of tiles: `r : r + 1`, or two numbers one
+        apart."""
+        return one_apart(*self.rectangle_of(view)[0])
+
+    def rows_of(self, node, call):
+        """A block over a rectangle of C columns (not one row, not one column): its
+        declaration `A * C`, C the columns' constant (`c : c + self.C`), as (A, C)
+        texts; any other is refused by name."""
+        lower, upper = self.rectangle_of(call.args[0])[1]
+        keywords = {k.arg: k.value for k in call.keywords}
+        block = self_attribute(keywords.get(spelling("block")))
+        declared = front.constants_of(self.cls).get(block)
+        columns = (
+            self_attribute(upper.right)
+            if isinstance(upper, ast.BinOp)
+            and isinstance(upper.op, ast.Add)
+            and ast.dump(upper.left) == ast.dump(lower)
+            else None
+        )
+        named = {id(c): n for n, c in front.constants_of(self.cls).items()}
+        if (
+            isinstance(declared, front.Derived)
+            and declared.op is operator.mul
+            and columns is not None
+            and named.get(id(declared.right)) == columns
+            and named.get(id(declared.left)) in self.constants
+        ):
+            return named[id(declared.left)], columns
+        self.refuse(
+            node,
+            "a stream's block over a rectangle of several rows and columns that is not "
+            "a constant declared A * C, C the rectangle's columns (`c : c + self.C`)",
+            "declare the block W_BLOCK = ROWS * C and stream t.tiles[r0:r1, c:c + "
+            "self.C]",
+        )
 
     def column(self, view):
         """Whether a rectangle is one column of tiles: `c : c + 1`, or two numbers one
         apart."""
-        lower, upper = self.rectangle_of(view)[1]
-        if isinstance(lower, ast.Constant) and isinstance(upper, ast.Constant):
-            return upper.value == lower.value + 1
-        return (
-            isinstance(upper, ast.BinOp)
-            and isinstance(upper.op, ast.Add)
-            and ast.dump(upper.left) == ast.dump(lower)
-            and isinstance(upper.right, ast.Constant)
-            and upper.right.value == 1
-        )
+        return one_apart(*self.rectangle_of(view)[1])
 
     def block_of(self, node, call):
         """A stream's block as the text writes it and its tiles: a number (1 when not
@@ -751,14 +889,21 @@ class Handler:
         lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
         for name, call in zip(names, calls):
             text, block = self.block_of(node, call)
-            column = self.block_text(node, call).startswith("[")
-            self.scope[name.id] = Value(
+            shaped = self.block_text(node, call)
+            value = Value(
                 "block",
                 format=self.scope_format(call),
-                tiles=1 if column else block,
+                tiles=block,
                 block="" if text == str(block) else text,
-                rows=block if column else 1,
             )
+            if shaped.endswith(", 1]"):  # a column's: n rows of one tile
+                value.tiles, value.rows = 1, block
+            elif shaped.startswith("["):  # [A, C]: A rows of C tiles
+                rows, cols = shaped[1:-1].split(", ")
+                value.cols, value.block = cols, rows
+                value.tiles = self.constants[cols]
+                value.rows = self.constants[rows]
+            self.scope[name.id] = value
         children = self.body(node.body)
         return (node, lines, children)
 
@@ -878,7 +1023,7 @@ class Handler:
             value = self.scope[name]
             tiles = f"[{value.block or value.tiles}]" if value.tiles > 1 else ""
             if value.rows > 1:
-                tiles = f"[{value.block or value.rows}, {value.tiles}]"
+                tiles = f"[{value.block or value.rows}, {value.cols or value.tiles}]"
             kinds.append(
                 f"tile<{value.format}>{tiles}" if value.kind == "block" else "f32"
             )
@@ -954,6 +1099,9 @@ class Handler:
             kind = "u32" if kind == "pattern" else kind
             text.line(2, f"{self.name(name)}: {kind},")
         text.line(1, ") @on(group) {")
+        for field_ in self.declared:  # a field: the handler's var from zeros (R48)
+            value = self.fields[field_]
+            text.line(2, f"var {self.name(field_)}: {type_text(value)} = zeros")
         self.write_body(text, self.statements, 2)
         text.line(1, "}")
         line = self.definition.lineno
@@ -971,6 +1119,28 @@ class Handler:
             for inner in reversed(range(opened)):
                 text.line(depth + inner, "}")
             text.place(first, self.file, node.lineno, node.end_lineno)
+
+
+def one_apart(lower, upper):
+    """Whether a side `lower : upper` is one tile: `a : a + 1`, or two numbers one
+    apart."""
+    if isinstance(lower, ast.Constant) and isinstance(upper, ast.Constant):
+        return upper.value == lower.value + 1
+    return (
+        isinstance(upper, ast.BinOp)
+        and isinstance(upper.op, ast.Add)
+        and ast.dump(upper.left) == ast.dump(lower)
+        and isinstance(upper.right, ast.Constant)
+        and upper.right.value == 1
+    )
+
+
+def type_text(value):
+    """The type of a tile of the handler: `tile<F>`, or a field's var `tile<F>[n]`
+    (one row of its tiles, even of one)."""
+    if value.field:
+        return f"tile<{value.format}>[{value.cols or value.tiles}]"
+    return f"tile<{value.format}>"
 
 
 def construct_of(node):

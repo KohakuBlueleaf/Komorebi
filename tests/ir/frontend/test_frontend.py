@@ -618,3 +618,67 @@ def test_program_6_built_through_the_ir_is_todays_and_checks_its_rectangles(
         "read: x is 29 tiles wide, and the handler's rectangles of x were built for "
         "28 (the example tensor's): make the program with a tensor of this width"
     )
+
+
+def swiglu_script(folder, monkeypatch, text=None):
+    """Program 7's script (tests/ir/tensix/swiglu_class.py), copied into `folder`, or
+    `text` there in its place; loaded as the module `swiglu_class`."""
+    script = folder / "swiglu_class.py"
+    source = ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py"
+    script.write_text(source.read_text() if text is None else text)
+    spec = importlib.util.spec_from_file_location("swiglu_class", script)
+    p7 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "swiglu_class", p7)
+    spec.loader.exec_module(p7)
+    return p7
+
+
+def test_program_7s_down_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    p7 = swiglu_script(tmp_path, monkeypatch)
+    given = p7.made_with()
+    today = p7.SwiGLU(log=lambda line: None, **given)
+    ours = program(p7.SwiGLU, log=lambda line: None, **given)
+    # self.out is down's var of a block of one row (R48), kept in today's field
+    # buffer kFieldOut; the movement source is the load's (its rectangles in rows)
+    m = module(p7.SwiGLU, l1=1 << 20, **given)
+    assert "var out: tile<f32>[WIDTH] = zeros" in m.text
+    assert ("out", "self.out") in m.renames
+    assert "block = [CHUNK, WIDTH]" in m.text
+    assert ours.header == today.built.folder / "swiglu.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+
+
+@pytest.mark.parametrize(
+    "old, new, why",
+    [
+        # a block over the rectangle other than A * C
+        (
+            "W_BLOCK = CHUNK * WIDTH",
+            "W_BLOCK = WIDTH * CHUNK",
+            "a stream's block over a rectangle of several rows and columns",
+        ),
+        # self.out filled by one handler and read by down: today keeps it between
+        # commands (`kept_field`), a state member
+        (
+            "        y.tiles[0:1, first : first + self.WIDTH].write(self.out)\n",
+            "        y.tiles[0:1, first : first + self.WIDTH].write(self.out)\n\n"
+            "    @km.handler\n"
+            "    def keep(self, x: km.Tensor):\n"
+            "        self.out.fill(km.Stream(x.tiles[0:1, 0 : self.WIDTH]))\n",
+            "self.out is filled by keep and read by down: a field kept between "
+            "commands is a state member",
+        ),
+    ],
+)
+def test_program_7s_field_or_block_it_does_not_place_is_refused_by_name(
+    tmp_path, monkeypatch, old, new, why
+):
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    assert source.count(old) == 1
+    p7 = swiglu_script(tmp_path, monkeypatch, source.replace(old, new))
+    with pytest.raises(Refused, match=why):
+        module(p7.SwiGLU, l1=1 << 20, **p7.made_with())

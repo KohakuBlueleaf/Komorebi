@@ -1715,6 +1715,10 @@ fn step(
         },
         Op::Zeros => match def_ty(0) {
             Some(Type::Tile(f)) => Value::Tile(ops::zeros(*f, module.tile)),
+            // a `var` of a block of one row from zeros (R48)
+            Some(Type::Block(f, Count::Const(1), Count::Const(n))) => Value::Block(Block::row(
+                (0..*n).map(|_| ops::zeros(*f, module.tile)).collect(),
+            )),
             _ => return Err(Fault::undefined("`zeros` of what is not a tile")),
         },
         Op::CallFunc(f, args) => {

@@ -184,6 +184,16 @@ tensor of any width. A tensor a rectangle walks given no shape is refused by nam
 is a rectangle whose rows or columns, where the compile knows their end, do not fit its tensor.
 The ends that read the rank or a word are checked at submit (the entry's bounds).
 
+It also emits the corpus's program 7's `SwiGLU.down`. The `var` is a block of one row of `f32`
+tiles, `[1, c]`, and the function gives that block from `[1, k]` by `[k, c]`. The var is today's
+field of sums (`kField<Name>`, c pages, unpacked as `float32`). Each block's product is packed
+into the field with the packer's L1 accumulation, the first block overwriting; the sub-columns
+are as wide as divides c and fits Dst's half (`stream_field_product`). After the loop the field
+is copied to Dst and packed into rows of c tiles (`kOutRows<c>`), and mover B writes them into
+the rectangle the var is stored to, one row of tiles (`write_sums`). Mover B counts the loop's
+blocks as compute does, and writes nothing when there were none. With buffers of more than one
+format, compute sets the formats again before each unpack and pack (`mixed_formats`).
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of

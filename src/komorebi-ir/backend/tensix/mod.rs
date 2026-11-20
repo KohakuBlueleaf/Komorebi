@@ -34,7 +34,7 @@ use crate::types::{Entry, Format, IslandGraph, TileShape};
 use crate::types::{FuncId, HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
-use self::plan::{Int, Moved, Part, Plan, Product, Range, Rect, Shape, Sum, WordKind};
+use self::plan::{Field, Int, Moved, Part, Plan, Product, Range, Rect, Shape, Sum, WordKind};
 use self::unit::Unit;
 
 /// One indent of the generated text (`program_sources.INDENT`).
@@ -98,8 +98,10 @@ const COMPUTE_INCLUDES: &[(&str, Option<&str>)] = &[
 fn needs(plans: &[Plan]) -> Vec<&'static str> {
     let mut out = Vec::new();
     for plan in plans {
-        let wanted: &[&str] = match plan.shape {
+        let wanted: &[&str] = match &plan.shape {
             Shape::Summed(_) => &["add", "fill", "port", "ask"],
+            // a field's sums start at the first block's product: no fill
+            Shape::Product(p) if p.field.is_some() => &["matmul", "ask"],
             Shape::Product(_) => &["fill", "matmul", "ask"],
             _ => &[],
         };
@@ -308,7 +310,7 @@ pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
 fn walks_rectangles(plans: &[Plan]) -> bool {
     plans
         .iter()
-        .flat_map(|p| &p.reads)
+        .flat_map(|p| p.reads.iter().chain(p.written()))
         .any(|r| matches!(r.range, Range::Rect(_)))
 }
 
@@ -438,10 +440,12 @@ fn pairs(plans: &[Plan], lines: &Lines) -> Vec<Pair> {
 struct Other {
     name: String,
     index: u32,
-    /// An arrival's slots; none for an out buffer.
+    /// An arrival's slots; none for an out buffer or a field.
     slots: Option<u64>,
     pages: u64,
     what: String,
+    /// A field of sums (a product's block var): its pages stated, unpacked as float32.
+    field: bool,
 }
 
 /// The sums' buffers in the order they are made: each reduce's arrival, from index 8,
@@ -454,6 +458,35 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             .unwrap_or(first)
     };
     for plan in plans {
+        if let (Shape::Product(product), Some(field)) = (&plan.shape, &plan_field(plan)) {
+            // the rows the var's sums are packed into, written by mover B; then the
+            // field the sums are added into (`writes.write_sums`, `sums_field`)
+            let body = BodyRef::Handler(plan.program, plan.handler);
+            let c = product.width;
+            let name = format!("kOutRows{c}");
+            let what = lines
+                .comment(Anchor::Inst(body, product.store.inst), None)
+                .unwrap_or_else(|| format!("{name}: a store's"));
+            let index = free(&out, FIRST_WRITE);
+            out.push(Other {
+                name,
+                index,
+                slots: None,
+                pages: c,
+                what,
+                field: false,
+            });
+            let index = free(&out, FIRST_OTHER);
+            out.push(Other {
+                name: format!("kField{}", camel(&field.ident)),
+                index,
+                slots: None,
+                pages: c,
+                what: format!("field {}: float32, 1 x {c} x 32 x 32", field.ident),
+                field: true,
+            });
+            continue;
+        }
         if let Shape::Product(product) = &plan.shape {
             // the tile each rank stores, packed by compute and written by mover B
             let body = BodyRef::Handler(plan.program, plan.handler);
@@ -467,6 +500,7 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
                 slots: None,
                 pages: WRITE_ITEMS,
                 what,
+                field: false,
             });
             continue;
         }
@@ -486,6 +520,7 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             slots: Some(slots),
             pages: slots,
             what: what("kArrival0"),
+            field: false,
         });
         let index = free(&out, FIRST_WRITE);
         out.push(Other {
@@ -494,9 +529,56 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             slots: None,
             pages: WRITE_ITEMS,
             what: what("kOut0"),
+            field: false,
         });
     }
     out
+}
+
+/// A product's block var (R48), when its plan has one.
+fn plan_field(plan: &Plan) -> Option<Field> {
+    match &plan.shape {
+        Shape::Product(product) => product.field.clone(),
+        _ => None,
+    }
+}
+
+/// Whether compute unpacks buffers of more than one format, and packs into buffers of
+/// more than one (`program_sources.mixed_formats`): the reads, the arrivals and the
+/// fields it unpacks, the outs, the writes and the fields of sums it packs into.
+fn mixed_formats(plans: &[Plan], others: &[Other]) -> (bool, bool) {
+    let mut unpacked: Vec<Format> = Vec::new();
+    let mut packed: Vec<Format> = Vec::new();
+    let add = |list: &mut Vec<Format>, f: Format| {
+        if !list.contains(&f) {
+            list.push(f);
+        }
+    };
+    for pair in pairs(plans, &Lines { origin: None }) {
+        let format = pair.format.unwrap_or(Format::Bf16);
+        if pair.name.starts_with("kRead") {
+            add(&mut unpacked, format);
+        } else {
+            add(&mut packed, format);
+        }
+    }
+    for other in others {
+        if other.slots.is_some() || other.field {
+            add(&mut unpacked, Format::F32);
+        }
+        if other.slots.is_none() {
+            add(&mut packed, Format::F32);
+        }
+    }
+    (unpacked.len() > 1, packed.len() > 1)
+}
+
+/// The line of instruction `inst` of `plan` in the source, else its number.
+fn line_of(lines: &Lines, plan: &Plan, inst: InstId) -> u32 {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    lines
+        .place(Anchor::Inst(body, inst))
+        .map_or(inst.0, |p| p.first)
 }
 
 /// The last head line of a compound statement: the line before its body's first.
@@ -593,18 +675,32 @@ fn header_text(
             ),
             None => format!("constexpr uint32_t {} = {};", other.name, other.index),
         });
+        if other.field {
+            out.push(format!(
+                "constexpr uint32_t {}Pages = {};",
+                other.name, other.pages
+            ));
+        }
     }
-    out.extend(
-        [
-            "",
-            "// Compute's formats: set again before each unpack and pack when its buffers",
-            "// have more than one.",
-            "#define KM_UNPACK_FORMAT_A(cb) ((void)0)",
-            "#define KM_UNPACK_FORMATS(a, b) ((void)0)",
-            "#define KM_PACK_FORMAT(cb) ((void)0)",
-        ]
-        .map(str::to_string),
-    );
+    let (unpack, pack) = mixed_formats(plans, others);
+    let or_none = |mixed: bool, call: &str| if mixed { call } else { "((void)0)" }.to_string();
+    out.extend([
+        String::new(),
+        "// Compute's formats: set again before each unpack and pack when its buffers".into(),
+        "// have more than one.".into(),
+        format!(
+            "#define KM_UNPACK_FORMAT_A(cb) {}",
+            or_none(unpack, "reconfig_data_format_srca(cb)")
+        ),
+        format!(
+            "#define KM_UNPACK_FORMATS(a, b) {}",
+            or_none(unpack, "reconfig_data_format((a), (b))")
+        ),
+        format!(
+            "#define KM_PACK_FORMAT(cb) {}",
+            or_none(pack, "pack_reconfig_data_format(cb)")
+        ),
+    ]);
     out.join("\n") + "\n"
 }
 
@@ -893,6 +989,19 @@ fn movement_text(
             (reads.rank, reads.group) = (true, true);
         }
         case_head(&mut out, plan, "movement", &reads);
+        if let Some(field) = plan_field(&plan.clone()) {
+            // mover B counts the sums its write waits for (`sums_field`)
+            out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+            indented(
+                &mut out,
+                4,
+                &format!(
+                    "uint32_t km_sums_{} = 0;  // {}'s",
+                    field.ident, field.source
+                ),
+            );
+            out.push("#endif".to_string());
+        }
         let stream = |kind: &str, var: &str, pair: &str, moved: &Moved| {
             let t = &plan.words[moved.tensor].name;
             let at = Anchor::Inst(body, moved.inst);
@@ -992,7 +1101,29 @@ fn movement_text(
             indented(&mut out, 4, &text);
         }
         match &plan.shape {
-            Shape::Product(product) => movement_product(&mut out, plan, product, lines),
+            Shape::Product(product) => {
+                let width = match &product.store.range {
+                    Range::Rect(rect) => {
+                        let t = &plan.words[product.store.tensor].name;
+                        let shape = shapes.iter().find(|(n, _)| n == t).and_then(|(_, s)| *s);
+                        let at = Anchor::Inst(body, product.store.inst);
+                        let Some(shape) = shape else {
+                            return Err(Refusal {
+                                code: NOT_BUILT,
+                                what: format!(
+                                    "the tensor `{t}` is given with no shape in tiles, and its \
+                                     rectangle is written in rows of its width"
+                                ),
+                                at: Some(at),
+                            });
+                        };
+                        fits(plan, rect, t, shape, at)?;
+                        Some(shape.1)
+                    }
+                    _ => None,
+                };
+                movement_product(&mut out, plan, product, lines, width)
+            }
             Shape::Mapped { .. } => {
                 let moved: Vec<String> = (0..plan.reads.len())
                     .map(|i| format!("km_read{i}"))
@@ -1054,9 +1185,71 @@ fn fits(plan: &Plan, rect: &Rect, t: &str, shape: (u64, u64), at: Anchor) -> Res
 }
 
 /// A product's movement after its streams (`writes.write_moved`): mover B writes the
-/// tile compute packs of the var, each rank its own.
-fn movement_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
+/// tile compute packs of the var, each rank its own; of a block var (`writes.write_sums`),
+/// mover B counts the loop's sums and writes the rectangle a row at a time, in rows of
+/// its tensor's `width`.
+fn movement_product(
+    out: &mut Vec<String>,
+    plan: &Plan,
+    product: &Product,
+    lines: &Lines,
+    width: Option<u64>,
+) {
     let body = BodyRef::Handler(plan.program, plan.handler);
+    if let (Some(field), Some(width), Range::Rect(rect)) =
+        (&product.field, width, &product.store.range)
+    {
+        let sums = format!("km_sums_{}", field.ident);
+        let (_, _, p) = compute_count(plan);
+        indented(
+            out,
+            4,
+            &format!(
+                "if (!movement.move({})) {{\n    return false;\n}}",
+                (0..plan.reads.len())
+                    .map(|i| format!("km_read{i}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+        out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+        indented(
+            out,
+            4,
+            &format!("{sums} += ({p} + kRead0Block - 1) / kRead0Block;"),
+        );
+        out.push("#endif".to_string());
+        let store = &product.store;
+        comment(out, 4, lines.comment(Anchor::Inst(body, store.inst), None));
+        out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+        let t = &plan.words[store.tensor].name;
+        let line = line_of(lines, plan, store.inst);
+        let (rows, cols) = rect.sides();
+        let (rows, c) = (rows.unwrap_or(1), cols.unwrap_or(0));
+        let first = format!(
+            "(({}) * {width} + ({}))",
+            int_text(plan, &rect.rows.0),
+            int_text(plan, &rect.cols.0)
+        );
+        let buffer = format!("kOutRows{}", product.width);
+        // a row's step is the rectangle's columns, as today's (`row_step`): one row only
+        indented(
+            out,
+            4,
+            &format!(
+                "if ({sums} > 0) {{\n    \
+                 for (uint32_t km_row{line} = 0; km_row{line} < {rows}; km_row{line}++) {{\n        \
+                 if (!movement.wait_front({buffer}, {c}) ||\n            \
+                 !km::write_pages(movement, command, {}({t}), {first} + km_row{line} * {c}, {c}, get_read_ptr({buffer}))) {{\n            \
+                 return false;\n        }}\n        \
+                 noc_async_writes_flushed();\n        \
+                 cb_pop_front({buffer}, {c});\n    }}\n}}\n{sums} = 0;",
+                camel(t)
+            ),
+        );
+        out.push("#endif".to_string());
+        return;
+    }
     let moved: Vec<String> = (0..plan.reads.len())
         .map(|i| format!("km_read{i}"))
         .collect();
@@ -1158,6 +1351,10 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
             .filter(|(_, need)| need.is_none_or(|n| needs.contains(&n)))
             .map(|(i, _)| format!("#include \"{i}\"")),
     );
+    let (unpack, pack) = mixed_formats(plans, &others(plans, lines, TREE_ROUNDS));
+    if unpack || pack {
+        out.push("#include \"api/compute/reconfig_data_format.h\"".to_string());
+    }
     out.extend(
         units
             .iter()
@@ -1168,7 +1365,12 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
     out.push("void kernel_main() {".to_string());
     indented(&mut out, 1, "km::Compute compute;");
     // the first read and the first written buffer (a sum's out buffer)
+    let rows;
     let written = match plans.first().map(|p| &p.shape) {
+        Some(Shape::Product(p)) if p.field.is_some() => {
+            rows = format!("kOutRows{}", p.width);
+            rows.as_str()
+        }
         Some(Shape::Summed(_) | Shape::Product(_)) => "kOut0",
         _ => "kWrite0.mover_a",
     };
@@ -1238,6 +1440,9 @@ fn compute_count(plan: &Plan) -> (Uses, Option<&Part>, String) {
 /// block by row k of the second's added into it (`matmul_block`); each block freed;
 /// the var packed into the out buffer.
 fn compute_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
+    if let Some(field) = &product.field {
+        return compute_field_product(out, plan, product, field, lines);
+    }
     let body = BodyRef::Handler(plan.program, plan.handler);
     let (reads, _, p) = compute_count(plan);
     case_head(out, plan, "compute", &reads);
@@ -1325,6 +1530,228 @@ fn compute_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines:
          cb_push_back(kOut0, 1);\n\
          }\n\
          tile_regs_release();",
+    );
+}
+
+/// A product's compute case into a block var (`stream_field_product`,
+/// `writes.write_sums`): each block's product by sub-columns of Dst's half, packed into
+/// the field with the packer's L1 accumulation (the first block overwrites); after the
+/// loop, the field copied to Dst and packed into the rows the movers write.
+fn compute_field_product(
+    out: &mut Vec<String>,
+    plan: &Plan,
+    product: &Product,
+    field: &Field,
+    lines: &Lines,
+) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    let (reads, _, p) = compute_count(plan);
+    let (c, src) = (product.width, &field.source);
+    let inner = plan.reads[0].block; // the product's k, a number (`stream_field_product`)
+    let buffer = format!("kField{}", camel(&field.ident));
+    let rows = format!("kOutRows{c}");
+    let (sums, room) = (
+        format!("km_sums_{}", field.ident),
+        format!("km_room_sums_{}", field.ident),
+    );
+    // the widest sub-column that divides the field and fits Dst's half
+    let step = (1..=DST_HALF).rev().find(|w| c % w == 0).unwrap_or(1);
+    let (add, store) = (
+        line_of(lines, plan, product.call.inst),
+        line_of(lines, plan, product.store.inst),
+    );
+    case_head(out, plan, "compute", &reads);
+    indented(
+        out,
+        4,
+        &format!(
+            "bool km_ok = true;
+\
+             uint32_t {sums} = 0;  // {src}'s
+\
+             bool {room} = true;  // pack holds {src}'s pages"
+        ),
+    );
+    comment(
+        out,
+        4,
+        lines.comment(
+            Anchor::Inst(body, plan.reads[0].inst),
+            head_last(lines, plan),
+        ),
+    );
+    indented(
+        out,
+        4,
+        &format!(
+            "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;
+\
+             KM_UNPACK_FORMATS(kRead1.mover_a, kRead0.mover_a);
+\
+             matmul_block_init(kRead0.mover_a, kRead1.mover_a, 0, {step}, 1, {inner});
+\
+             KM_PACK_FORMAT({buffer});
+\
+             for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{"
+        ),
+    );
+    for i in 0..plan.reads.len() {
+        indented(
+            out,
+            5,
+            &format!(
+                "const uint32_t km_half{i} = km::block_half(kRead{i}, kRead{i}Pattern, km_block0);
+\
+                 km_ok = compute.wait_front(km_half{i}, kRead{i}Block);
+\
+                 if (!km_ok) {{
+    break;
+}}"
+            ),
+        );
+    }
+    indented(
+        out,
+        5,
+        &format!(
+            "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;"
+        ),
+    );
+    comment(
+        out,
+        5,
+        lines.comment(Anchor::Inst(body, product.call.inst), None),
+    );
+    let (column, k) = (format!("km_sub_column{add}"), format!("km_k{add}"));
+    let packs: Vec<String> = (0..step)
+        .map(|j| format!("            pack_tile<true>({j}, {buffer}, {column} + {j});"))
+        .collect();
+    indented(
+        out,
+        5,
+        &format!(
+            "if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held
+    \
+             {room} = {room} && compute.reserve_back({buffer}, {buffer}Pages);
+\
+             }}
+\
+             if (km_ok) {{
+    \
+             if ({room}) {{
+        \
+             pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);
+    \
+             }}
+    \
+             for (uint32_t {column} = 0; {column} < {c}; {column} += {step}) {{
+        \
+             tile_regs_acquire();
+        \
+             for (uint32_t {k} = 0; {k} < km_valid0; {k}++) {{
+            \
+             matmul_block(km_half0, km_half1, {k}, {k} * {c} + {column}, 0, 0, {step}, 1, {inner});
+        \
+             }}
+        \
+             tile_regs_commit();
+        \
+             tile_regs_wait();
+        \
+             if ({room}) {{
+{}
+        }}
+        \
+             tile_regs_release();
+    \
+             }}
+    \
+             if ({room}) {{
+        \
+             pack_reconfig_l1_acc(0);
+    \
+             }}
+    \
+             {sums}++;
+\
+             }}",
+            packs.join("\n")
+        ),
+    );
+    for i in 0..plan.reads.len() {
+        indented(out, 5, &format!("cb_pop_front(km_half{i}, kRead{i}Block);"));
+    }
+    indented(out, 4, "}");
+    comment(
+        out,
+        4,
+        lines.comment(Anchor::Inst(body, product.store.inst), None),
+    );
+    let (tile, out_room) = (format!("km_tile{store}"), format!("km_room{store}"));
+    let copies: Vec<String> = (0..step)
+        .map(|j| format!("        copy_tile({buffer}, {tile} + {j}, {j});"))
+        .collect();
+    let row_packs: Vec<String> = (0..step)
+        .map(|j| format!("            pack_tile({j}, {rows});"))
+        .collect();
+    indented(
+        out,
+        4,
+        &format!(
+            "// {src}'s sums, packed again in float32
+\
+             if (km_ok && {sums} > 0) {{
+    \
+             if ({room}) {{  // pack's: its pages held
+        \
+             cb_push_back({buffer}, {buffer}Pages);
+    \
+             }}
+    \
+             km_ok = compute.wait_front({buffer}, {buffer}Pages);
+\
+             }}
+\
+             if (km_ok && {sums} > 0) {{
+    \
+             KM_UNPACK_FORMAT_A({buffer});
+    \
+             copy_init({buffer});
+    \
+             bool {out_room} = true;  // pack's alone: it guards the packs only
+    \
+             for (uint32_t {tile} = 0; km_ok && {tile} < {c}; {tile} += {step}) {{
+        \
+             tile_regs_acquire();
+{}
+        \
+             tile_regs_commit();
+        \
+             tile_regs_wait();
+        \
+             {out_room} = {out_room} && compute.reserve_back({rows}, {step});
+        \
+             if ({out_room}) {{
+            \
+             KM_PACK_FORMAT({rows});
+{}
+            \
+             cb_push_back({rows}, {step});
+        \
+             }}
+        \
+             tile_regs_release();
+    \
+             }}
+    \
+             cb_pop_front({buffer}, {buffer}Pages);
+\
+             }}
+\
+             {sums} = 0;",
+            copies.join("\n"),
+            row_packs.join("\n")
+        ),
     );
 }
 
@@ -2092,14 +2519,14 @@ fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
     }
     // a sum's arrivals are unpacked to Dst as float32; its out buffer is packed
     for other in others(plans, &lines, slots) {
-        let arrival = other.slots.is_some();
+        let unpacked = other.slots.is_some() || other.field;
         out.push(Buffer {
             index: other.index,
             format: Format::F32,
             page_bytes: chip::tile_bytes(Format::F32, chip::TILE),
             pages: other.pages,
             pair: None,
-            unpack: arrival.then_some(Unpack::ToDestFp32),
+            unpack: unpacked.then_some(Unpack::ToDestFp32),
         });
     }
     out

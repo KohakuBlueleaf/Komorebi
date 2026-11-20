@@ -976,8 +976,19 @@ impl Checker<'_> {
             Stmt::Var { name, ty, value } => {
                 names.declare(self, name);
                 let got = self.expr(cx, value);
-                let want = self.ty(cx.env, ty, Place::Local);
-                self.fit(value, &got, &want, &format!("`{}`", name.name));
+                // `var v: tile<F>[n] = zeros`: a block of one row of zeros (R48)
+                let zeros = matches!(&value.kind, ExprKind::Name(n) if n.name == "zeros");
+                let place = if zeros {
+                    Place::VarOfZeros
+                } else {
+                    Place::Local
+                };
+                let want = self.ty(cx.env, ty, place);
+                if let (true, Ty::Block(Some(_), _)) = (zeros, &want) {
+                    self.note_type(value, &want);
+                } else {
+                    self.fit(value, &got, &want, &format!("`{}`", name.name));
+                }
                 let binding = Name::Local {
                     decl: name.span,
                     kind: LocalKind::Var,
@@ -1116,6 +1127,21 @@ impl Checker<'_> {
             }
             let want = l.ty.clone();
             self.assigned(value, &got, &want, op);
+            // a block `var` (R48): `+=` of a block of its own shape
+            if let (AssignOp::Add, Ty::Block(_, shape)) = (op, &want) {
+                if !matches!(&got, Ty::Block(_, s) if s == shape) && got != Ty::Unknown {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        format!(
+                            "`{}` is {want}; `+=` adds a block of its own shape, and this is \
+                             {got}",
+                            root.name
+                        ),
+                        value.span,
+                    );
+                }
+                return;
+            }
             if op != AssignOp::Set
                 && !(want.is_number() || matches!(want, Ty::Tile(_) | Ty::Unknown))
             {
@@ -1312,6 +1338,19 @@ impl Checker<'_> {
                 }
             }
             Ty::Unknown => {}
+            // a block of one row (R48): its tiles in the view's order, as many as it holds
+            Ty::Block(f, shape) if shape.rows == Count::Known(1) => {
+                if let (
+                    Ty::View {
+                        format: Some(want), ..
+                    },
+                    Some(f),
+                ) = (want, f)
+                {
+                    let tile = Ty::Tile(Some(*f));
+                    self.expect_fit(&tile, &Ty::Tile(Some(want)), value.span, "the block stored");
+                }
+            }
             Ty::Reduced(..) => self.error(
                 codes::REDUCED_VALUE,
                 format!(

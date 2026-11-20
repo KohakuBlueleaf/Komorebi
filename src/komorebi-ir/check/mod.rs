@@ -786,6 +786,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_var_of_zeros_holds_a_block_of_one_row_it_adds_to_and_stores() {
+        // R48: a handler's var of a block of one row, from zeros, `+=` a block of its
+        // shape, stored whole; a block of another shape and a count after a scalar
+        // refused
+        let text = "module m\n\ntile [32, 32]\nformat bf16, f32\n\n\
+            func f(x: tile<bf16>[2], w: tile<bf16>[2, 4]) -> tile<f32>[4] {\n    \
+            return matmul(x, w)\n}\n\n\
+            program P {\n    handler h(a: tensor<bf16>, b: tensor<bf16>, y: tensor<Y>) @on(group) {\n        \
+            VAR\n        \
+            for xb, wb in zip(stream(a.tiles[0:1, 0:6], block = 2), \
+            stream(b.tiles[0:6, 0:4], block = [2, 4])) {\n            \
+            out += f(xb, wb)\n        }\n        \
+            store y.tiles[0:1, 0:4] <- out\n    }\n}\n";
+        let refused = |var: &str, y: &str| codes(&text.replace("VAR", var).replace("Y", y));
+        let var = "var out: tile<f32>[4] = zeros";
+        assert_eq!(refused(var, "f32"), Vec::<&str>::new());
+        assert_eq!(
+            refused("var out: tile<f32>[8] = zeros", "f32"),
+            vec!["K102"]
+        );
+        assert_eq!(
+            refused("var out: u32[4] = zeros", "f32").first(),
+            Some(&"K102")
+        );
+        // the pack converts: a tensor of another format takes the block too
+        assert_eq!(refused(var, "bf16"), Vec::<&str>::new());
+    }
+
     const FUNC: &str = "module m\n\ntile [32, 32]\nformat f32, u32\n\n\
         func f(a: tile<f32>, n: tile<u32>) -> tile<f32> {\n    return BODY\n}\n";
 

@@ -213,6 +213,19 @@ pub struct Product {
     pub fidelity: String,
     /// The columns of tiles of the result (acc's tiles).
     pub width: u64,
+    /// The var when it is a block of one row (R48: today's field, its sums packed
+    /// into its buffer with the packer's L1 accumulation), stored to a rectangle; none
+    /// for a tile (its sum in Dst, stored to one tile).
+    pub field: Option<Field>,
+}
+
+/// A product's var of a block of one row: today's field of sums.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Field {
+    /// Its name as the source writes it (the notes' name: `self.out`).
+    pub source: String,
+    /// The name its C++ names are made of: the source's last part after a dot (`out`).
+    pub ident: String,
 }
 
 /// A sum of a stream's tiles: `var total: tile<f32> = zeros`, `total += tile` in the
@@ -287,6 +300,14 @@ impl Plan {
 pub fn value_name(module: &Module, body: BodyRef, v: ValueId) -> Option<&str> {
     module.notes.names.iter().find_map(|n| match n {
         Named::Value(b, x, name) if *b == body && *x == v => Some(name.as_str()),
+        _ => None,
+    })
+}
+
+/// The name the notes give `var` `l` of `body`, if any.
+pub fn local_name(module: &Module, body: BodyRef, l: LocalId) -> Option<&str> {
+    module.notes.names.iter().find_map(|n| match n {
+        Named::Local(b, x, name) if *b == body && *x == l => Some(name.as_str()),
         _ => None,
     })
 }
@@ -512,6 +533,8 @@ struct Summing {
     closed: bool,
     /// The add is of a call's result (a product), not of the loop's tile.
     product: bool,
+    /// The var's tiles when it is a block of one row (R48), not a tile.
+    block: Option<u64>,
 }
 
 /// The body read instruction by instruction: arguments, ints of words, numbers and
@@ -855,6 +878,9 @@ impl<'m> Walk<'m> {
         if self.sum.product {
             return self.product(at);
         }
+        if self.sum.block.is_some() {
+            return Err(not_built("a sum of the loop's tiles into a block var", at));
+        }
         let sum = std::mem::take(&mut self.sum);
         if self.sink.is_some() {
             return Err(not_built("a sink in a handler of a sum", at));
@@ -946,7 +972,13 @@ impl<'m> Walk<'m> {
                 at,
             ));
         };
-        let k = self.product_function(call.func, at)?;
+        let (k, width) = self.product_function(call.func, at)?;
+        if width != sum.block.unwrap_or(1) || (width > 1) != sum.block.is_some() {
+            return Err(not_built(
+                "a product whose function's result is not its var's shape",
+                at,
+            ));
+        }
         let format = |m: &Moved| self.words.get(m.tensor).and_then(|w| w.format);
         if format(&x) != Some(Format::Bf16) || format(&w) != Some(Format::Bf16) {
             return Err(not_built(
@@ -960,12 +992,22 @@ impl<'m> Walk<'m> {
                 at,
             ));
         }
-        if k != Some(x.block) || w.block != x.block {
+        if k != x.block || w.block != x.block * width {
             return Err(not_built(
-                "a product whose function's shapes are not its streams' blocks ([1, k] by [k, 1])",
+                "a product whose function's shapes are not its streams' blocks ([1, k] by [k, c])",
                 at,
             ));
         }
+        let field = match (sum.block, sum.local) {
+            (Some(_), Some(l)) => {
+                let source = local_name(self.module, self.at, l)
+                    .unwrap_or("acc")
+                    .to_string();
+                let ident = source.rsplit('.').next().unwrap_or(&source).to_string();
+                Some(Field { source, ident })
+            }
+            _ => None,
+        };
         let range = |o: Over| match o {
             Over::Rect(rect) => Ok(Range::Rect(rect)),
             Over::Tiles(first, n) => Ok(Range::Tiles { first, n }),
@@ -993,15 +1035,17 @@ impl<'m> Walk<'m> {
                 call,
                 store,
                 fidelity,
-                width: 1,
+                width,
+                field,
             }),
         })
     }
 
     /// Whether function `f` is the product of its two parameters, `return matmul(x,
-    /// w)`, x `[1, k]` (or a tile) and w `[k, 1]` (or a tile), its result an `f32`
-    /// tile: its k when it is, else refused at `at`.
-    fn product_function(&self, f: FuncId, at: Anchor) -> Result<Option<u64>, Refusal> {
+    /// w)`, x `[1, k]` (or a tile) and w `[k, c]` (or a tile), its result an `f32` tile
+    /// (c 1) or a block of one row of c `f32` tiles: its (k, c) when it is, else
+    /// refused at `at`.
+    fn product_function(&self, f: FuncId, at: Anchor) -> Result<(u64, u64), Refusal> {
         let func = self.module.funcs.get(f.0 as usize);
         let body = func.and_then(|func| func.body.as_ref());
         let (Some(func), Some(body)) = (func, body) else {
@@ -1025,13 +1069,18 @@ impl<'m> Walk<'m> {
             _ => None,
         };
         let shapes: Vec<Option<(u64, u64)>> = func.params.iter().map(shape).collect();
-        match (product, shapes.as_slice(), &func.ret) {
-            (true, [Some((1, k)), Some((rows, 1))], Type::Tile(Format::F32)) if k == rows => {
-                Ok(Some(*k))
+        let result = match &func.ret {
+            Type::Tile(Format::F32) => Some(1),
+            Type::Block(Format::F32, Count::Const(1), Count::Const(c)) => Some(*c),
+            _ => None,
+        };
+        match (product, shapes.as_slice(), result) {
+            (true, [Some((1, k)), Some((rows, c))], Some(width)) if k == rows && *c == width => {
+                Ok((*k, width))
             }
             _ => Err(not_built(
-                "a function in `acc +=` other than `matmul` of a [1, k] and a [k, 1] of bf16 \
-                 giving an f32 tile",
+                "a function in `acc +=` other than `matmul` of a [1, k] and a [k, c] of bf16 \
+                 giving c f32 tiles",
                 Anchor::Func(f),
             )),
         }
@@ -1073,18 +1122,25 @@ impl<'m> Walk<'m> {
                 Some(Val::Zeros)
             }
             Op::Set(l, v) => {
-                let tile = self.body.locals.get(l.0 as usize) == Some(&Type::Tile(Format::F32));
+                let ty = self.body.locals.get(l.0 as usize);
+                let tile = ty == Some(&Type::Tile(Format::F32));
+                let block = match ty {
+                    Some(Type::Block(Format::F32, Count::Const(1), Count::Const(c))) => Some(*c),
+                    _ => None,
+                };
                 match (self.val(*v), self.sum.local) {
-                    (Some(Val::Zeros), None) if tile && !self.looped => {
+                    (Some(Val::Zeros), None) if (tile || block.is_some()) && !self.looped => {
                         self.sum.local = Some(*l);
                         self.sum.zeros = Some(id);
+                        self.sum.block = block;
                     }
                     (Some(Val::Added), Some(local)) if local == *l && !self.sum.summed => {
                         self.sum.summed = true;
                     }
                     _ => {
                         return Err(
-                            "a var other than a tile<f32> of zeros the loop adds its tiles to"
+                            "a var other than a tile<f32> (or a block of one row of f32 tiles) \
+                             of zeros the loop adds to"
                                 .into(),
                         )
                     }
@@ -1121,6 +1177,35 @@ impl<'m> Walk<'m> {
                     );
                 }
                 self.sum.leader = Some(id);
+                None
+            }
+            Op::Store(view, v) if self.sum.product && self.sum.block.is_some() => {
+                // a block var's: into a rectangle of its tiles (R48)
+                let total = matches!(self.val(*v), Some(Val::Total));
+                let Some(Val::Rect { tensor, rect }) = self.val(*view) else {
+                    return Err("a store of a block var other than into a rectangle".into());
+                };
+                let (rows, cols) = rect.sides();
+                if !total
+                    || !self.ended
+                    || self.sum.store.is_some()
+                    || rows != Some(1)
+                    || cols != self.sum.block
+                {
+                    return Err(
+                        "a store other than of the product's var into a rectangle of one row \
+                         of its tiles, after its loop, once"
+                            .into(),
+                    );
+                }
+                self.sum.store = Some(Moved {
+                    tensor,
+                    block: cols.unwrap_or(0),
+                    inst: id,
+                    range: Range::Rect(rect),
+                    pattern: None,
+                });
+                self.sum.closed = true;
                 None
             }
             Op::Store(view, v) if self.sum.product => {

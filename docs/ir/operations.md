@@ -80,6 +80,12 @@ is known at compile); one bound at load or at the invocation, or `group.size`, t
 stream the blocks come from. A block of more than one row stands only as a parameter or the result
 of a function (`K010` elsewhere).
 
+A handler may hold a block of one row in a `var` of `zeros`: `var acc: tile<f32>[WIDTH] = zeros`.
+It is that invocation's own value, started at zeros. `acc += e` adds a block of its shape (`K102`
+otherwise), and `store view <- acc` writes its tiles in the view's order; a view of another count
+of tiles fails at the run. A frontend writes a field its handler fills, reads and frees in one
+invocation this way; what one invocation leaves for another is a state member.
+
 Its body is typed on blocks: a parameter is the block it is declared, and a tile `tile<F>` is
 `[1, 1]`. An elementwise operation (the arithmetic, the elementary functions, `where`, a
 conversion) takes operands of one shape, a scalar going to every tile, and gives that shape
@@ -118,7 +124,7 @@ is its own statement ([backends](backends.md)).
 | `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
 | `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
-| `store view <- value` | a view, a value | a view; a tile (a store of scalars: `K010`) | writes it, visible at completion | T4 |
+| `store view <- value` | a view, a value | a view; a tile, or a block of one row (a store of scalars: `K010`) | writes it, visible at completion; a block's tiles in the view's order | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
 
 A tensor is reached only through a view (`K107`).

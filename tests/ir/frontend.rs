@@ -618,3 +618,44 @@ fn program_6_through_the_frontend_is_todays_text_byte_for_byte() {
         same_as_today(&made, &module, &stand_ins, "small");
     }
 }
+
+#[test]
+fn program_7s_down_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // SwiGLU.down: the field self.out the handler's var of a block of one row from
+    // zeros (reading R48), each [1, CHUNK] block of the hidden's row by the [CHUNK,
+    // WIDTH] block of W2's columns added into it, stored to a rectangle of y; at the
+    // class's CHUNK, 2, and at 3 (both divide H, 96). The stand-ins: hidden [1, 96]
+    // and W2 [96, 32] tiles of bfloat16 pages of 2048 B, y [1, 32] of float32 pages of
+    // 4096 B.
+    let tensor = |pages: u64, bytes: u64, shape: (u64, u64)| LoadTensor {
+        pages,
+        layout: vec![2, bytes],
+        dram_page: None,
+        shape: Some(shape),
+    };
+    let stand_ins = [
+        tensor(96, 2048, (1, 96)),
+        tensor(3072, 2048, (96, 32)),
+        tensor(32, 4096, (1, 32)),
+    ];
+    for (name, chunk) in [("swiglu", 2), ("swiglu3", 3)] {
+        let made = made_given(name, "swiglu_class", "SwiGLU", None, &[("CHUNK", chunk)]);
+        let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+        let target = Target {
+            arch: chip::ARCH.to_string(),
+            features: Default::default(),
+        };
+        let output = Tensix
+            .compile(&module, &target)
+            .unwrap_or_else(|r| panic!("{r:?}"));
+        let Build::Kernels { at_load, .. } = &output.build else {
+            panic!("kernels built at load");
+        };
+        assert_eq!(at_load, &["movement.cpp"], "the file made at load");
+        same_as_today(&made, &module, &stand_ins, "swiglu");
+    }
+}
