@@ -7,25 +7,28 @@
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
 //! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and every
 //! vector function (`FUNCTIONS`), with every pass of that path and the load macro; tile
-//! products, alone or before the vector code, at the fidelity given. Refused by
-//! name (K964) where it would act: `flash_exp2`, several results, per-row operands and
-//! the band. Not on this path, so not ported: `drop_copies`, `common_values`, the
-//! per-row pre-pass and `allocate`'s high registers.
+//! products, alone or before the vector code, at the fidelity given; operands spread
+//! from a tile's row 0 (`.row()`) and per-row operands (`.col()`: a 4-row block's even
+//! and odd vectors, with `drop_copies`, `common_values`, the per-row pre-pass's
+//! estimate and the schedule's `interleave`). Refused by name (K964) where it would
+//! act: `flash_exp2`, several results, a per-row pre-pass cheaper than the rows, and
+//! the band. Not on this path, so not ported: `allocate`'s high registers.
 
 use std::collections::HashMap;
 
 use super::chain::{shape, Chain, ChainError, Compiler, Source};
 use super::checks::{
-    check_dst_window, hazard_checks, named_register, named_spans, NEG_ONE_BF16, STALL_SFPU, TILE,
-    WAIT_MATH,
+    check_dst_window, check_mad_readers, hazard_checks, named_register, named_spans, NEG_ONE_BF16,
+    STALL_SFPU, TILE, WAIT_MATH,
 };
 use super::ir::{Attr, KernelIR, NodeId};
 use super::matrix::{tile_products, wormhole_products};
 use super::py;
 use super::r#macro::{self, NoFit, Plan};
+use super::schedule::interleave;
 use super::unit::{
-    insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Sync,
-    UnitError, UnitProduct, UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, MATH, PACK,
+    insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Kind, Loop, Pass, Product,
+    Sync, UnitError, UnitProduct, UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, MATH, PACK,
     PROGRAMMABLE, REPLAY_ENTRIES, SAVED, SHIFT_IMM_VC, UNPACK, WORK,
 };
 use super::vector::{FnResult, VId, VValue, Vs};
@@ -44,6 +47,8 @@ pub const BANDS: i64 = 4;
 pub const DEST_MODES: [(&str, i64); 2] = [("fp32", 0), ("fp16a", 1)];
 /// Operand tiles a whole-tile stream body reads: Dst tiles 0 .. 3 (half the fp32 Dst).
 pub const OPERANDS: usize = 4;
+/// 4-row blocks of a tile (the per-row form's rows).
+pub const BLOCKS: i64 = FACES * ROWS / 2;
 /// SETRWC's mask and counter-reset bit of Dst.
 pub const SET_D: i64 = 0x4;
 /// SETRWC's counter-reset bit of Dst.
@@ -123,6 +128,17 @@ pub struct Body {
     pub scalars: Vec<(usize, String)>,
     /// The programmable constant registers by the bits they hold.
     bits: Vec<(i64, String)>,
+    /// The per-row form's operand reads, when it is the per-row form.
+    rows: Option<Rows>,
+}
+
+/// The per-row form's operand reads: a per-row operand loaded once and held, the
+/// others at the half of the 4-row block the value is of (0 even, 1 odd).
+#[derive(Clone, Debug, Default)]
+struct Rows {
+    per_row: Vec<usize>,
+    half: i64,
+    shared: Vec<(usize, Arg)>,
 }
 
 impl Body {
@@ -132,7 +148,8 @@ impl Body {
     }
 
     /// Appends `name`; a written register argument left out gets a new value, any
-    /// other field 0. Returns the value written.
+    /// other field 0 (a new value is counted for every written field, given or not,
+    /// as today's `setdefault` counts it). Returns the value written.
     fn op(&mut self, op: &str, note: &str, args: &[(&str, Arg)]) -> Result<Arg, ChainError> {
         self.word(op, note, args)?
             .ok_or_else(|| ChainError::Unit(format!("{op} writes no value")))
@@ -148,8 +165,8 @@ impl Body {
         let o = op_named(op).ok_or_else(|| UnitError(format!("no operation {op}")))?;
         let mut all: Vec<(&str, Arg)> = args.to_vec();
         for w in o.writes {
+            let v = self.fresh();
             if !all.iter().any(|(n, _)| n == w) {
-                let v = self.fresh();
                 all.push((w, Arg::Name(v)));
             }
         }
@@ -257,6 +274,33 @@ impl Body {
         )
     }
 
+    /// Operand `k` as the per-row form reads it, or none outside that form.
+    fn row_operand(&mut self, k: usize) -> Result<Option<Arg>, ChainError> {
+        let (per_row, half) = match &self.rows {
+            None => return Ok(None),
+            Some(r) => (r.per_row.contains(&k), r.half),
+        };
+        let address = TILE * k as i64;
+        if !per_row {
+            let note = format!("operand {k}, {}", if half == 0 { "even" } else { "odd" });
+            return self.load(address + 2 * half, &note).map(Some);
+        }
+        let held = self.rows.as_ref().and_then(|r| {
+            r.shared
+                .iter()
+                .find(|(i, _)| *i == k)
+                .map(|(_, v)| v.clone())
+        });
+        if let Some(v) = held {
+            return Ok(Some(v));
+        }
+        let v = self.load(address, &format!("per-row operand {k}"))?;
+        if let Some(r) = &mut self.rows {
+            r.shared.push((k, v.clone()));
+        }
+        Ok(Some(v))
+    }
+
     fn store(&mut self, value: Arg, address: i64, note: &str) -> Result<(), ChainError> {
         let args = [
             ("lreg_ind", value),
@@ -280,6 +324,8 @@ impl Body {
                 ("instr_mod0", Arg::Num(mode)),
                 ("imm16", Arg::Num(imm)),
             ];
+            // a new value counted for its written field, as `op` counts it
+            b.fresh();
             Insn::new("SFPLOADI", &args, &note).map(|w| b.code.push(w))
         };
         if bits & 0xFFFF == 0 {
@@ -867,6 +913,10 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
     };
     let out = match (node.kind, &node.value) {
         ("operand", VValue::Operand(index, part)) => {
+            if let Some(v) = b.row_operand(*index)? {
+                done.push((id, v.clone()));
+                return Ok(v);
+            }
             if part.is_some() {
                 return Err(plan_error(
                     "the unit program reads whole-tile operands".into(),
@@ -1152,6 +1202,365 @@ pub fn fuse_mad(code: &mut Vec<Insn>) -> Result<Vec<String>, ChainError> {
         code.remove(i);
     }
     Ok(done)
+}
+
+/// The depth of the lane conditions open after `insn`, from `depth` before it.
+fn depth_after(insn: &Insn, depth: usize) -> usize {
+    match (insn.sets_flags(), insn.op.name) {
+        (false, _) => depth,
+        (true, "SFPENCC") => 0,
+        (true, _) => depth + 1,
+    }
+}
+
+/// `insn`'s register fields that name a value of `alias`, renamed to its value.
+fn renamed(insn: &mut Insn, alias: &HashMap<Arg, Arg>) {
+    for a in insn.args.iter_mut() {
+        if let Some(to) = alias.get(a).filter(|_| matches!(a, Arg::Name(_))) {
+            *a = to.clone();
+        }
+    }
+}
+
+/// True for a value's name (`v<n>`): not a fixed, constant or numbered register.
+fn is_value(v: &Arg) -> bool {
+    matches!(v, Arg::Name(n) if n.starts_with('v'))
+}
+
+/// Algebra: a plain copy (SFPMOV) of a value read no more after it is no copy: its
+/// readers take the value itself. Returns what it did.
+pub fn drop_copies(code: &mut Vec<Insn>) -> Result<Vec<String>, ChainError> {
+    let mut first: HashMap<Arg, usize> = HashMap::new();
+    let mut last: HashMap<Arg, usize> = HashMap::new();
+    for (i, insn) in code.iter().enumerate() {
+        for v in insn.reads().into_iter().chain(insn.writes()?) {
+            first.entry(v.clone()).or_insert(i);
+            last.insert(v, i);
+        }
+    }
+    let (mut alias, mut keep, mut depth) = (HashMap::new(), Vec::new(), 0);
+    for (i, mut insn) in std::mem::take(code).into_iter().enumerate() {
+        renamed(&mut insn, &alias);
+        depth = depth_after(&insn, depth);
+        let source = insn.arg("lreg_c").cloned();
+        let out = insn.arg("lreg_dest").cloned();
+        if let (Some(source), Some(out)) = (source, out) {
+            let copy = insn.op.name == "SFPMOV"
+                && at(&insn, "instr_mod1") == Arg::Num(0)
+                && depth == 0
+                && is_value(&source)
+                && last.get(&source) == Some(&i)
+                && first.get(&out) == Some(&i);
+            if copy {
+                let end = last.get(&out).copied().unwrap_or(i);
+                last.insert(source.clone(), end);
+                alias.insert(out, source);
+                continue;
+            }
+        }
+        keep.push(insn);
+    }
+    let done = alias.len();
+    *code = keep;
+    Ok(if done > 0 {
+        vec![format!("{done} copies of values read no more")]
+    } else {
+        Vec::new()
+    })
+}
+
+/// A field's value as `common_values` compares it: a constant by its bits.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Known {
+    Bits(i64),
+    Value(Arg),
+}
+
+/// What an instruction computes, as `common_values` compares it: its operation and
+/// each field it does not write.
+type Computed = (&'static str, Vec<(&'static str, Known)>);
+
+/// Algebra: an instruction computing what an earlier one computed from the same values
+/// is dropped, its readers take the earlier result (a per-row value computed once a
+/// block, not once a vector). Values written once only. Returns what it did.
+pub fn common_values(code: &mut Vec<Insn>) -> Result<Vec<String>, ChainError> {
+    let mut writes: HashMap<Arg, usize> = HashMap::new();
+    let mut loaders: Vec<(Arg, Vec<usize>)> = Vec::new();
+    for (i, insn) in code.iter().enumerate() {
+        for v in insn.writes()? {
+            *writes.entry(v.clone()).or_insert(0) += 1;
+            match loaders.iter_mut().find(|(l, _)| *l == v) {
+                Some((_, at)) => at.push(i),
+                None => loaders.push((v, vec![i])),
+            }
+        }
+    }
+    // a constant is known by its bits, whichever value loads it (bits 0 are not known,
+    // as today's test of them)
+    let mut bits: HashMap<Arg, i64> = HashMap::new();
+    for (v, at) in &loaders {
+        if at.iter().all(|&i| code[i].op.name == "SFPLOADI") {
+            let words: Vec<&Insn> = at.iter().map(|&i| &code[i]).collect();
+            if let Some(b) = bits_of(&words).filter(|b| *b != 0) {
+                bits.insert(v.clone(), b);
+            }
+        }
+    }
+    let mut seen: HashMap<Computed, Arg> = HashMap::new();
+    let (mut alias, mut keep, mut depth) = (HashMap::new(), Vec::new(), 0);
+    let before = code.len();
+    for mut insn in std::mem::take(code) {
+        renamed(&mut insn, &alias);
+        depth = depth_after(&insn, depth);
+        // constants stay loaded where read (the constant passes place them)
+        let out = insn.writes()?;
+        let kind = insn.op.kind;
+        let reads_known = insn
+            .reads()
+            .iter()
+            .all(|v| writes.get(v).copied().unwrap_or(0) <= 1 || bits.contains_key(v));
+        let candidate = depth == 0
+            && !insn.sets_flags()
+            && matches!(kind, Kind::Mad | Kind::Simple)
+            && insn.op.name != "SFPSWAP"
+            && out.len() == 1
+            && is_value(&out[0])
+            && writes.get(&out[0]) == Some(&1)
+            && reads_known;
+        if candidate {
+            let fields: Vec<(&'static str, Known)> = insn
+                .op
+                .args
+                .iter()
+                .filter(|(f, _)| !insn.op.writes.contains(f))
+                .map(|(f, _)| {
+                    let v = at(&insn, f);
+                    let known = match bits.get(&v) {
+                        Some(b) => Known::Bits(*b),
+                        None => Known::Value(v),
+                    };
+                    (*f, known)
+                })
+                .collect();
+            let key = (insn.op.name, fields);
+            if let Some(earlier) = seen.get(&key) {
+                alias.insert(out[0].clone(), earlier.clone());
+                continue;
+            }
+            seen.insert(key, out[0].clone());
+        }
+        keep.push(insn);
+    }
+    let read: Vec<Arg> = keep
+        .iter()
+        .filter(|x| x.op.name != "SFPLOADI")
+        .flat_map(Insn::reads)
+        .collect();
+    let mut kept = Vec::new();
+    for x in keep {
+        let loads_unread =
+            x.op.name == "SFPLOADI" && x.writes()?.first().is_none_or(|w| !read.contains(w));
+        if !loads_unread {
+            kept.push(x);
+        }
+    }
+    let done = before - kept.len();
+    *code = kept;
+    Ok(if done > 0 {
+        vec![format!(
+            "{done} instructions computed once for their readers"
+        )]
+    } else {
+        Vec::new()
+    })
+}
+
+/// Rule per_row_prepass: the values of row code `code` made from the per-row operands'
+/// loads (at `addresses`) and constants alone, computed once a block in a pass over the
+/// operand tile first, stored over it (in all its lanes). Returns the pass's code (none
+/// when it is not made) and its report; `code` then loads the value.
+pub fn per_row_prepass(
+    code: &mut Vec<Insn>,
+    addresses: &[i64],
+) -> Result<(Option<Vec<Insn>>, Vec<String>), ChainError> {
+    let address_of = |x: &Insn| at(x, "dest_reg_addr").num();
+    let loads: Vec<usize> = (0..code.len())
+        .filter(|&i| {
+            code[i].op.name == "SFPLOAD"
+                && address_of(&code[i]).is_some_and(|a| addresses.contains(&a))
+        })
+        .collect();
+    let mut consts: Vec<Arg> = Vec::new();
+    for x in code.iter().filter(|x| x.op.name == "SFPLOADI") {
+        for v in x.writes()? {
+            let mut only_loadi = true;
+            for w in code.iter() {
+                if w.writes()?.contains(&v) && w.op.name != "SFPLOADI" {
+                    only_loadi = false;
+                }
+            }
+            if only_loadi && !consts.contains(&v) {
+                consts.push(v);
+            }
+        }
+    }
+    let fixed: Vec<Arg> = FIXED.iter().map(|(n, _)| name(n)).collect();
+    let mut only: Vec<Arg> = Vec::new();
+    for &i in &loads {
+        if let Some(v) = code[i].writes()?.into_iter().next() {
+            only.push(v);
+        }
+    }
+    let mut part: Vec<usize> = Vec::new();
+    for (i, x) in code.iter().enumerate() {
+        let skipped = loads.contains(&i)
+            || matches!(x.op.name, "SFPLOAD" | "SFPSTORE" | "SFPLOADI")
+            || x.sets_flags();
+        if skipped {
+            continue;
+        }
+        let reads = x.reads();
+        let fits = reads.iter().any(|v| only.contains(v))
+            && reads
+                .iter()
+                .all(|v| only.contains(v) || consts.contains(v) || fixed.contains(v));
+        let written = x.writes()?;
+        if fits && written.len() == 1 {
+            only.push(written[0].clone());
+            part.push(i);
+        }
+    }
+    if part.is_empty() {
+        let done = "nothing: no value of the per-row operands alone".to_string();
+        return Ok((None, vec![done]));
+    }
+    let mut computed: Vec<Arg> = Vec::new();
+    for &i in &part {
+        computed.extend(code[i].writes()?);
+    }
+    let rest: Vec<usize> = (0..code.len())
+        .filter(|i| !part.contains(i) && !loads.contains(i))
+        .collect();
+    let read_by_rest = |v: &Arg| rest.iter().any(|&i| code[i].reads().contains(v));
+    let mut frontier: Vec<Arg> = Vec::new();
+    for v in &computed {
+        if read_by_rest(v) && !frontier.contains(v) {
+            frontier.push(v.clone());
+        }
+    }
+    let (&[load], [value]) = (loads.as_slice(), frontier.as_slice()) else {
+        let done = format!(
+            "refused: one per-row operand and one value of it read by the rows ({} operand(s), {} value(s))",
+            loads.len(),
+            frontier.len()
+        );
+        return Ok((None, vec![done]));
+    };
+    let value = value.clone();
+    let operand_value = code[load].writes()?.into_iter().next();
+    if operand_value.is_some_and(|v| read_by_rest(&v)) {
+        return Ok((
+            None,
+            vec!["refused: the rows read the operand itself too".into()],
+        ));
+    }
+    let needed: Vec<Arg> = part
+        .iter()
+        .flat_map(|&i| code[i].reads())
+        .filter(|v| consts.contains(v))
+        .collect();
+    let mut setup: Vec<usize> = Vec::new();
+    for (i, x) in code.iter().enumerate() {
+        if x.op.name == "SFPLOADI" && x.writes()?.iter().any(|w| needed.contains(w)) {
+            setup.push(i);
+        }
+    }
+    let setup_words: Vec<Insn> = setup.iter().map(|&i| code[i].clone()).collect();
+    let part_words: Vec<Insn> = part.iter().map(|&i| code[i].clone()).collect();
+    let mut dropped: Vec<usize> = part.clone();
+    for &s in &setup {
+        let written = code[s].writes()?;
+        let read = (0..code.len())
+            .filter(|i| !part.contains(i) && !setup.contains(i))
+            .any(|i| code[i].reads().iter().any(|v| written.contains(v)));
+        if !read {
+            dropped.push(s);
+        }
+    }
+    let operand = code[load].clone();
+    let address = at(&operand, "dest_reg_addr");
+    code[load].set("lreg_ind", value.clone());
+    code[load].note = format!("{}: the per-row pass's value", code[load].note);
+    let mut kept = Vec::new();
+    for (i, x) in std::mem::take(code).into_iter().enumerate() {
+        if !dropped.contains(&i) {
+            kept.push(x);
+        }
+    }
+    *code = kept;
+    let mut pre = setup_words;
+    let mut reload = operand.clone();
+    reload.note = "per-row operand".into();
+    pre.push(reload);
+    pre.extend(part_words);
+    let store = [
+        ("lreg_ind", value),
+        ("instr_mod0", at(&operand, "instr_mod0")),
+        ("sfpu_addr_mode", Arg::Num(ADDR_MOD)),
+        ("dest_reg_addr", address),
+    ];
+    pre.push(Insn::new(
+        "SFPSTORE",
+        &store,
+        "the per-row value over the operand",
+    )?);
+    let done = format!(
+        "{} instruction(s) and {} load(s) a block, once",
+        part.len(),
+        setup.len()
+    );
+    Ok((Some(pre), vec![done]))
+}
+
+/// The per-row pass over the operand tile's 16 blocks (allocated, its constants loaded
+/// once before the walk, the step in its store), then Dst back to 0: what its cost is
+/// estimated on.
+pub fn prepass_loop(pre: &[Insn], prog: &[(String, Constant)]) -> Result<Vec<Item>, ChainError> {
+    let mut code = pre.to_vec();
+    let mut pinned = Vec::new();
+    for x in code.iter().filter(|x| x.op.name == "SFPLOADI") {
+        pinned.extend(x.writes()?);
+    }
+    allocate(&mut code, prog, &pinned)?;
+    let (consts, mut walk): (Vec<Insn>, Vec<Insn>) =
+        code.into_iter().partition(|x| x.op.name == "SFPLOADI");
+    walk.push(insn(
+        "INCRWC",
+        &[("rwc_cr", 0), ("rwc_d", 4), ("rwc_b", 0), ("rwc_a", 0)],
+        "next 4-row block",
+    )?);
+    store_step(&mut walk, 4);
+    let mut walk = items(walk);
+    check_mad_readers(&mut walk)?;
+    let step = setrwc(CR_D, 8, SET_D, "Dst + 8 rows")?;
+    let mut out = items(consts);
+    out.push(Item::Loop(Loop {
+        name: "face".into(),
+        count: Count::Times(FACES),
+        body: vec![
+            Item::Loop(Loop {
+                name: "row".into(),
+                count: Count::Times(ROWS / 2),
+                body: walk,
+                unroll: true,
+            }),
+            Item::Insn(step.clone()),
+            Item::Insn(step),
+        ],
+        unroll: false,
+    }));
+    out.push(Item::Insn(setrwc(0, 0, SET_D, "Dst counter back to 0")?));
+    Ok(out)
 }
 
 /// The 32-bit value SFPLOADI words build (FLOATB, FLOATA, USHORT, then UPPER), or
@@ -2071,11 +2480,9 @@ pub fn unit_program(
             TILE_DTYPES[1..].join(", ")
         )));
     }
-    if chain.operands.iter().any(|l| l.kind == "bcast_col") {
-        return Err(ChainError::NotPorted(
-            "per-row operands (a tile's .col())".into(),
-        ));
-    }
+    let per_row: Vec<usize> = (0..chain.operands.len())
+        .filter(|&k| chain.operands[k].kind == "bcast_col")
+        .collect();
     let mut body = Body {
         mode,
         ..Body::default()
@@ -2086,13 +2493,36 @@ pub fn unit_program(
         ));
     };
     let result = chain.vs.wrap(result);
-    let stored = value(&mut body, &chain.vs, result, &mut Vec::new())?;
-    body.store(stored, 0, "the result to Dst")?;
+    if per_row.is_empty() {
+        let stored = value(&mut body, &chain.vs, result, &mut Vec::new())?;
+        body.store(stored, 0, "the result to Dst")?;
+    } else {
+        // A per-row operand (a state tile, each row's value in all its lanes): a row
+        // step takes a 4-row block's even and odd vectors, the state loaded once.
+        body.rows = Some(Rows {
+            per_row: per_row.clone(),
+            ..Rows::default()
+        });
+        let mut results = Vec::new();
+        for half in [0, 1] {
+            if let Some(r) = &mut body.rows {
+                r.half = half;
+            }
+            results.push(value(&mut body, &chain.vs, result, &mut Vec::new())?);
+        }
+        body.rows = None;
+        for (half, stored) in results.into_iter().enumerate() {
+            let note = if half == 0 { "even" } else { "odd" };
+            let note = format!("the result to Dst ({note})");
+            body.store(stored, 2 * half as i64, &note)?;
+        }
+    }
     let mut unit = UnitProgram::new(&ir.name, dest);
     unit.operands = tensors;
     unit.row_operands = (0..chain.operands.len())
         .filter(|&k| chain.operands[k].kind == "bcast_row")
         .collect();
+    unit.col_operands = per_row.clone();
     unit.results = ir.stores.len() as i64;
     let templates = chain
         .templates
@@ -2104,6 +2534,38 @@ pub fn unit_program(
     unit.passes.push(pass("algebra", "fold_negation", done));
     let done = fuse_mad(&mut body.code)?;
     unit.passes.push(pass("algebra", "fuse_mad", done));
+    if !per_row.is_empty() {
+        // The even and odd vectors of a block are two independent chains.
+        let done = drop_copies(&mut body.code)?;
+        unit.passes.push(pass("algebra", "drop_copies", done));
+        let done = common_values(&mut body.code)?;
+        unit.passes.push(pass("algebra", "common_values", done));
+        let mut trial = body.code.clone();
+        let addresses: Vec<i64> = per_row.iter().map(|&k| TILE * k as i64).collect();
+        let (pre, mut done) = per_row_prepass(&mut trial, &addresses)?;
+        if let Some(pre) = pre {
+            let mut estimate = UnitProgram::new("estimate", dest);
+            estimate.tile[MATH] = prepass_loop(&pre, &[])?;
+            let spent = estimate.cost(MATH, 32)?.cycles.unwrap_or(0.0);
+            let saved = BLOCKS * (body.code.len() as i64 - trial.len() as i64);
+            done.push(format!(
+                "{saved} words a tile saved against {spent:.1} cycles of the pass"
+            ));
+            if spent < saved as f64 {
+                return Err(ChainError::NotPorted(
+                    "a per-row pre-pass cheaper than the rows".into(),
+                ));
+            }
+            done.push("kept in the rows (cheaper)".into());
+        }
+        unit.passes.push(pass("algebra", "per_row_prepass", done));
+        let end = body.code.len();
+        let moved = interleave(&mut body.code, 0, end)?;
+        let done = vec![format!(
+            "{moved} instructions moved in the even and odd chains"
+        )];
+        unit.passes.push(pass("schedule", "interleave", done));
+    }
     let (scalars, names) = scalar_loads(ir, &chain, &body)?;
     unit.scalars = names;
     let done = negated_zero(&mut body.code)?;
@@ -2174,7 +2636,7 @@ pub fn unit_program(
             "load_macro",
             vec![format!("refused: {dest} Dst")],
         ));
-    } else if load_macro {
+    } else if load_macro && per_row.is_empty() {
         let fitted = r#macro::fit(&mut body.code).and_then(|p| {
             let rows = p.rows();
             if rows == 0 || ROWS % rows != 0 {
@@ -2216,12 +2678,16 @@ pub fn unit_program(
     init.extend(items(setup));
     let (face, drained) = match &plan {
         None => {
-            let incr = 2;
+            let (incr, note, rows) = if per_row.is_empty() {
+                (2, "next 4 rows", ROWS)
+            } else {
+                (4, "next 4-row block", ROWS / 2)
+            };
             let mut row = std::mem::take(&mut body.code);
             row.push(insn(
                 "INCRWC",
                 &[("rwc_cr", 0), ("rwc_d", incr), ("rwc_b", 0), ("rwc_a", 0)],
-                "next 4 rows",
+                note,
             )?);
             let stepped = store_step(&mut row, incr);
             if stepped {
@@ -2235,7 +2701,7 @@ pub fn unit_program(
             unit.passes.push(pass("schedule", "store_step", done));
             let face = Loop {
                 name: "row".into(),
-                count: Count::Times(ROWS),
+                count: Count::Times(rows),
                 body: items(row),
                 unroll: true,
             };

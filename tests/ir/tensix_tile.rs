@@ -5,9 +5,10 @@
 //! the same KernelIR and the same vector-unit function (its SFPI code included), print
 //! the same listing from the data byte for byte, costs included, and the same header
 //! and listing after the emit, and encode every word of the operation table as today
-//! does. Today's `tile_wormhole.py`, `tile_checks.py` and `tile_matrix.py` give the
-//! Wormhole forms, the emit and its checks, the hazard checks, and the matrix unit's
-//! words, on units of a few words that the corpus does not reach.
+//! does. Today's `tile_wormhole.py`, `tile_checks.py`, `tile_matrix.py` and
+//! `tile_rows.py` give the Wormhole forms, the emit and its checks, the hazard checks,
+//! the matrix unit's words and the per-row passes, on code of a few words that the
+//! corpus does not reach.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,9 +20,12 @@ use komorebi_ir::backend::tensix::tile::checks::{
 };
 use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
-use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program};
+use komorebi_ir::backend::tensix::tile::lower::{
+    common_values, drop_copies, per_row_prepass, stream_chain, unit_program,
+};
 use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
+use komorebi_ir::backend::tensix::tile::schedule::interleave;
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, insns, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product,
     Runtime, Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
@@ -283,7 +287,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 41, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 46, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -551,7 +555,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 45);
+    assert_eq!(compared, 50);
 }
 
 /// What a caller reads of a unit that its listing does not print, as
@@ -680,6 +684,14 @@ fn each_unit_programs_listing_is_todays() {
         "t_project",
         "t_project_hifi2",
         "t_by_row",
+        "t_by_col",
+        "t_col_prepass",
+        "t_col_cheap",
+        "t_col_relu",
+        "t_col_min",
+        "t_col_select",
+        "t_col_silu",
+        "t_col_poly",
         "t_project_silu",
         "t_project_bias",
         "t_two_products",
@@ -709,12 +721,7 @@ fn each_unit_programs_listing_is_todays() {
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
-    let refused = [
-        "plus_band: the band (a body on the live rows)",
-        "by_col: per-row operands (a tile's .col())",
-        "col_prepass: per-row operands (a tile's .col())",
-        "col_cheap: per-row operands (a tile's .col())",
-    ];
+    let refused = ["plus_band: the band (a body on the live rows)"];
     let named: Vec<String> = not_ported
         .iter()
         .map(|l| l.replacen(": not ported", "", 1))
@@ -963,4 +970,87 @@ fn the_matrix_units_words_are_todays_at_each_fidelity_and_shape() {
         "the words differ, {}",
         first_difference(&want, &got)
     );
+}
+
+/// A word as `tile_rows.py` writes it: its operation, its fields, its note.
+fn row_line(x: &Insn) -> String {
+    let fields: Vec<String> =
+        x.op.args
+            .iter()
+            .zip(&x.args)
+            .map(|((f, _), v)| format!("{f}={v}"))
+            .collect();
+    format!("{} {} ; {}", x.op.name, fields.join(" "), x.note)
+}
+
+/// A word from its line (a field's value a number, else a name).
+fn row_word(line: &str) -> Insn {
+    let (head, note) = line.split_once(" ; ").unwrap_or((line, ""));
+    let mut parts = head.split(' ');
+    let op = parts.next().expect("an operation");
+    let args: Vec<(&str, Arg)> = parts
+        .map(|f| {
+            let (name, value) = f.split_once('=').expect("a field");
+            let value = value
+                .parse::<i64>()
+                .map_or_else(|_| Arg::Name(value.to_string()), Arg::Num);
+            (name, value)
+        })
+        .collect();
+    Insn::new(op, &args, note).unwrap_or_else(|e| panic!("{line}: {e}"))
+}
+
+#[test]
+fn the_per_row_passes_are_todays_on_a_few_words() {
+    let Some(folder) = run_today("tile_rows.py", "tensix-tile-rows") else {
+        return;
+    };
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .expect("the folder")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "in"))
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 8, "the cases: {cases:?}");
+    for case in cases {
+        let text = std::fs::read_to_string(&case).expect("the case");
+        let mut lines = text.lines();
+        let rule = lines.next().expect("the rule");
+        let mut code: Vec<Insn> = lines.map(row_word).collect();
+        let mut pre = None;
+        let done = match rule {
+            "interleave" => {
+                let end = code.len();
+                vec![format!(
+                    "{} moved",
+                    interleave(&mut code, 0, end).expect("interleave")
+                )]
+            }
+            "drop_copies" => drop_copies(&mut code).expect("drop_copies"),
+            "common_values" => common_values(&mut code).expect("common_values"),
+            _ => {
+                let (made, done) = per_row_prepass(&mut code, &[64, 128]).expect("prepass");
+                pre = made;
+                done
+            }
+        };
+        let mut got = vec![if done.is_empty() {
+            "nothing".to_string()
+        } else {
+            done.join("; ")
+        }];
+        got.extend(code.iter().map(row_line));
+        if let Some(pre) = pre {
+            got.push("PRE".into());
+            got.extend(pre.iter().map(row_line));
+        }
+        let got = got.join("\n") + "\n";
+        let want = std::fs::read_to_string(case.with_extension("out")).expect("today's");
+        assert!(
+            got == want,
+            "{}: {}",
+            case.display(),
+            first_difference(&want, &got)
+        );
+    }
 }

@@ -195,3 +195,23 @@ func t_col_prepass(a: tile<f32>, b: tile<f32>) -> tile<f32> {
 func t_col_cheap(a: tile<f32>, b: tile<f32>) -> tile<f32> {
     return a * (b.col() + 1.0)
 }
+
+func t_col_relu(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * relu(b.col())
+}
+
+func t_col_min(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return minimum(a, b.col())
+}
+
+func t_col_select(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(b.col() > 0.0, a, -a)
+}
+
+func t_col_silu(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return silu(a * b.col())
+}
+
+func t_col_poly(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * ((b.col() * 0.5 + 1.0) * b.col() + 2.0)
+}

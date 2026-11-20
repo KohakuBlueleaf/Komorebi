@@ -58,6 +58,14 @@ CASES = [
     ("by_col", lambda a, b: a * b.col(), [F, F], {}),
     ("col_prepass", lambda a, b: a * km.rsqrt(b.col() * 0.5 + 1.0), [F, F], {}),
     ("col_cheap", lambda a, b: a * (b.col() + 1.0), [F, F], {}),
+    # the per-row passes where they act: copies dropped, a per-row value read beside
+    # the operand, a select's run under lane flags moved whole, nothing moved
+    ("col_relu", lambda a, b: a * km.relu(b.col()), [F, F], {}),
+    ("col_min", lambda a, b: km.minimum(a, b.col()), [F, F], {}),
+    ("col_select", lambda a, b: km.where(b.col() > 0.0, a, -a), [F, F], {}),
+    ("col_silu", lambda a, b: km.silu(a * b.col()), [F, F], {}),
+    # a pre-pass estimated with its constants' loads (kept in the rows)
+    ("col_poly", lambda a, b: a * ((b.col() * 0.5 + 1.0) * b.col() + 2.0), [F, F], {}),
     # products before the vector code: one, one beside a loaded tile, two
     ("project_silu", lambda x, w: km.silu(x @ w), [BF, BF], {}),
     ("project_bias", lambda x, w, b: x @ w + b, [BF, BF, F], {}),
