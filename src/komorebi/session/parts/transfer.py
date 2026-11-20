@@ -300,7 +300,7 @@ class TransferMixin:
             run = self.run
             chunk = channel_module.chunk_bytes(page, run.backend.transfer.chunk)
             wanted = channel_module.ranks(pages, page, chunk, most)
-            group = channel_module.transfer_group(run.holds(), run.cores, wanted)
+            group = channel_module.transfer_group(run.holds(), run.island_ranks, wanted)
             if self.island is not None:  # the run takes flat ranks
                 graph, here = self.island
                 group = (group[0] + graph.first(here), *group[1:])

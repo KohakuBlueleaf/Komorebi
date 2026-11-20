@@ -53,7 +53,7 @@ class ChannelTransfer:
         chunk = channel_module.chunk_bytes(page, buffer.chunk)
         wanted = channel_module.ranks(tensor.pages, page, chunk, session.transfer_cores)
         first, count, field = channel_module.transfer_group(
-            run.holds(), run.cores, wanted
+            run.holds(), run.island_ranks, wanted
         )
         if session.island is not None:  # the run takes flat ranks
             graph, here = session.island

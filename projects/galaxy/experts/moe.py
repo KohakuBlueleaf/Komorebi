@@ -46,9 +46,6 @@ class Moe(
     KS = K_TILES // SPLIT_U  # SPLIT_U divides 160
     RS = HID // SPLIT_D  # SPLIT_D divides 72, RS even
     QS = HID // GQ  # GQ divides 72
-    # the sums of up and route in float32 fields (the form verified on the cards)
-    up_sums: km.L1[km.fp32, 1, WU, 32, 32]
-    route_sums: km.L1[km.fp32, 1, 1, 32, 32]
 
     @km.tile_function(fidelity="HiFi2")
     def project(x, w):
@@ -64,6 +61,7 @@ class Moe(
         c = self.rank // self.SPLIT
         k0 = share * self.KR
         start = first + c + k0 * self.SCORES
+        acc = km.tile.zeros(km.fp32, 1)
         for xb, wb in zip(
             km.Stream(x.tiles[0:1, k0 : k0 + self.KR], block=self.CHUNK),
             km.Stream(
@@ -71,8 +69,8 @@ class Moe(
                 block=self.CHUNK,
             ),
         ):
-            self.route_sums += self.project(xb, wb)
-        whole = km.reduce(self.route_sums, form="tree", group=self.SPLIT, local=True)
+            acc += self.project(xb, wb)
+        whole = km.reduce(acc, form="tree", group=self.SPLIT, local=True)
         if self.rank == self.leader:
             logits.tiles[0:1, c : c + 1].write(whole)
 
@@ -95,6 +93,7 @@ class Moe(
         for pos in range(e):
             for pick in table.pages(pos, 1).entries(Pick, size=3, fixed=1):
                 start = pick.w1 + half * (pick.w3 - pick.w1) + cc + k0 * self.HID
+                acc = km.tile.zeros(km.fp32, self.WU)
                 if eight == 0:
                     for xb, wb in zip(
                         km.Stream(x.tiles[0:1, k0 : k0 + self.KS], block=self.CHUNK),
@@ -106,7 +105,7 @@ class Moe(
                             block=self.U_BLOCK,
                         ),
                     ):
-                        self.up_sums += self.project(xb, wb)
+                        acc += self.project(xb, wb)
                 else:
                     for xb, wb in zip(
                         km.Stream(x.tiles[0:1, k0 : k0 + self.KS], block=self.CHUNK),
@@ -118,10 +117,8 @@ class Moe(
                             block=self.U_BLOCK,
                         ),
                     ):
-                        self.up_sums += self.project(xb, wb)
-                whole = km.reduce(
-                    self.up_sums, form="tree", group=self.SPLIT_U, local=True
-                )
+                        acc += self.project(xb, wb)
+                whole = km.reduce(acc, form="tree", group=self.SPLIT_U, local=True)
                 if self.rank == self.leader:
                     at = pos * 2 * self.HID + c
                     hg.tiles[0:1, at : at + self.WU].write(whole)

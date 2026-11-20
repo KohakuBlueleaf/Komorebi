@@ -1404,7 +1404,9 @@ class Run(EventsMixin, StopMixin):
         first = np.where(link, first - self._link_base + self.island_ranks, first)
         island_first = np.where(link, 0, self.island_first)
         base, cores = self.island_cores
-        end = np.where(link, base + self.island_span, base + cores)
+        # a flat group ends at the island's last rank, never on a link core after it
+        ranks = min(cores, self.island_ranks)
+        end = np.where(link, base + self.island_span, base + ranks)
         low = np.clip(first - island_first + base, base, end)
         high = np.clip(first + count - island_first + base, low, end)
         return low, high

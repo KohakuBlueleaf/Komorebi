@@ -68,6 +68,25 @@ Logits against the reference's: rel RMS 0.180 (prefill), 0.088, 0.089, 0.149 (de
 box time a decode step 1.55 s (projections 0.59, rotations 0.58, attention 0.39), the
 host's about 10 s (routed experts 9.4 s).
 
+## Piece 16 on the box: what an island holds between the pieces
+
+A layer L runs its sublayers on its home island H(L); row tensors are row tiles of 32 rows
+(a decode token in row 0, a prefill block in all 32). Each island holds, made once:
+
+| name | shape | written by | read by |
+|---|---|---|---|
+| `streams` | [4 x 32, 5120] bf16, stream k = tile row k | `hc_*_post`, `engram_mix`, the embed row (layer 0) | `hc_*_mixes`, `hc_*_pre`, `engram_mix`, `hc_head_pre` |
+| `pre_mix` | [32, 32] f32, columns 0-3 | `hc_ffn_mixes` of L | `hc_attn_pre` of L + 1 |
+| `h` | [32, 5120] bf16 | `hc_*_pre`, then the norm in place | `attn`, `ffn` |
+| `y` | [32, 5120] bf16 | `attn`, `ffn` | `hc_*_post` |
+
+The mixes' `post` and `comb`, the attention's window ring and the compressor's partial group
+stay inside their piece. When H(L + 1) differs from H(L), `streams` and `pre_mix` move to it.
+The compressed cache and the index keys are copied to every island that reads them, each new
+entry sent once when it is made, so the gather and the top-k are local to the reader. In the
+first all-box run the host carries these tensors between the pieces and keeps the embed row,
+the Engram lookup, the compressed cache, the index keys and the top-k.
+
 ## The modules
 
 ### `driver/check_path.py`
@@ -120,6 +139,12 @@ that keeps state on the box (the attention window, the global cache) reads `star
 from its inputs and owns that state; the driver then never calls the host state of that
 layer.
 
+Host hooks (`interface.HOOKS`): a piece that needs a host function declares the
+attribute as None and the driver sets it after `make` (in a piece process, to a call back
+over the pipe); no other attribute of a piece is ever set. `compress_hook(layer, x, qr,
+start_pos, offset)` returns the reference's `compress_kv` outputs (the compressed entries
+and the chosen ones), for an attention piece until the box makes and chooses them.
+
 Decode shape: one token (seqlen 1, start_pos >= 32). Prefill shape: one block of 32
 tokens (start_pos 0). The driver calls exactly the reference's sequence of sites, so a
 piece sees the same calls as golden/ records.
@@ -144,6 +169,15 @@ Sites that wrap other sites (chains): `attn` (the whole attention of a layer, pi
 Registering a box implementation for a chain takes all the sites inside it to the box at
 once.
 
+### `driver/remote.py`
+
+A piece given as `module:make@layers...#cards` runs in a process of its own, started with
+only those cards visible (two sessions in one process are refused: the second card is
+opened under another driver number than its lock). The driver's side, `RemotePiece`, is
+called as a piece; each site call's inputs and outputs, and each call of a host hook the
+piece makes (the attention's `compress_hook`), go over a pipe as pickled host tensors. The
+piece process writes its output to `<report>.piece<n>.log`.
+
 ### `driver/run.py`
 
 The driver: a prompt in, tokens out, every site on the host or on the box by a
@@ -152,13 +186,17 @@ switch.
     python -m galaxy.driver.run --ckpt <checkpoint> --golden <golden dir> \
         --prompt en --new 16 \
         [--cards 0-15,17-31] [--load all | --load layers@kinds[@formats]] \
-        [--piece module:make@layers[@site,site...][+layers@site,...]] ... [--force]
+        [--piece module:make@layers[@sites][+layers@sites][#cards]] ... [--force]
 
 --piece: a box piece (`driver/interface.py`): `module:make` is its factory, `layers` a
 list like `0-39` or `3,20` or `-` (the global sites), the optional last part the sites
 to route (default: all the piece offers); `+` adds another group of layers and sites
-for the same piece (one `make` with every layer named). Without any --piece no session
-is opened: everything is the reference.
+for the same piece (one `make` with every layer named); a last `#cards` runs the piece in a
+process of its own with only those cards visible (its session, the Checkpoint as its
+weights, or with `#cards%layers@kinds[@formats]` the loader's W of those weights;
+`driver/remote.py`): two sessions in one process are refused. `--kernel-bytes`:
+the kernel buffer of a joined session. Without any --piece no session is opened:
+everything is the reference.
 
 Free running (default): the driver's own tokens; it reports where they first differ from
 the reference's (golden/<prompt>/tokens.json) and by how much the logits differ there.

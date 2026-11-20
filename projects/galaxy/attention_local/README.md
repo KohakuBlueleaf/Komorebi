@@ -62,7 +62,7 @@ multiply is of ones and zeros, so the window holds kv's words.
 
 Layers 2-39 attend over the window and the selected compressed entries. Until the compressed
 attention's gather writes them on the chip, the piece takes them from the host:
-`piece.compress(layer, x, qr, start_pos, offset)` returns what the reference's
+`piece.compress_hook(layer, x, qr, start_pos, offset)` returns what the reference's
 `compress_kv` returns (the compressed entries [1, n, 512] and, a row, the chosen ones as
 offset + j, -1 for none; offset the window's rows the reference concatenates before them:
 the block's 32 at position 0, else 128). A step runs wq_a and q_norm, reads qr back, calls

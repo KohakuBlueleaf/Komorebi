@@ -292,13 +292,15 @@ def l1_cores(first, pages, width):
 
 
 def transfer_group(holds, cores, count):
-    """(first, count, program field) of `count` cores (fewer if no window that large
-    holds one program) whose cores all hold one program; `holds` None: cores 0 on."""
+    """(first, count, program field) of `count` of the first `cores` cores (the run's
+    ranks; fewer if no window that large holds one program) whose cores all hold one
+    program; `holds` None: cores 0 on."""
     if holds is None:
         return 0, min(count, cores), 0
     for wanted in range(min(count, cores), 0, -1):
         for field, held in enumerate(holds):
-            window = np.convolve(np.asarray(held, int), np.ones(wanted, int), "valid")
+            held = np.asarray(held[:cores], int)
+            window = np.convolve(held, np.ones(wanted, int), "valid")
             at = np.flatnonzero(window == wanted)
             if at.size:
                 return int(at[0]), wanted, field

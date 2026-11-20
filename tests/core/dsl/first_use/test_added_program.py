@@ -9,12 +9,13 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from class_handler_constants_fixture import grid, quiet
+from class_handler_constants_fixture import Pages, grid, quiet
 
 import komorebi as km
 from komorebi import formats
 from komorebi.builder.flags import BuildError
 from komorebi.device import native
+from komorebi.device.tensor import Tensor
 from komorebi.errors import ProgramError
 from komorebi.islands import run as island_run
 from komorebi.program import overlay, thread
@@ -288,6 +289,64 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
     wrong = dict(base, unpack_dst_format=[7] * 64)
     (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(wrong, sizes))
     with pytest.raises(added.AddError, match=r"unpack_dst_format .* is not the one"):
+        added_program.own_recipes(run, other, {"unpack": recipe})
+
+
+class Total(km.Program):
+    """An added class of float32 buffers: a tile a core, all-reduced (its out at 16)."""
+
+    @km.handler
+    def total(self, x: km.Tensor, y: km.Tensor):
+        total = km.tile.zeros(km.fp32)
+        for a in km.Stream(x.pages(self.rank, 1), block=1):
+            total += a
+        whole = km.all_reduce(total, local=True)
+        y.pages(self.rank, 1).write(whole)
+
+
+def float32_grid(rows, columns):
+    return Tensor(Pages(4096, rows * columns), (rows * 32, columns * 32), "float32",
+                  "tile")  # fmt: skip
+
+
+def test_an_added_class_takes_its_own_formats_where_the_loaded_one_has_others(tmp_path):
+    """The loaded kernels read no buffer by its format: the added class's float32
+    buffers at the loaded class's bfloat16 indices get its own entries in its copy;
+    the switch area's own index stays refused by name."""
+    loaded = twice(form="runtime")
+    other = Total(l1=1 << 20, log=quiet, form="runtime", x=float32_grid(1, 2),
+                  y=float32_grid(1, 2))  # fmt: skip
+    module = native_module()
+    run = run_of(loaded)
+    run.backend.card = SimpleNamespace(module=module, device=BLACKHOLE)
+    run.backend.switch_pad, run.backend.switch_loaded = 27, 1
+    names, modes = added_program._loaded_formats(run)
+    shared = [b.index for b in other.buffers if names[b.index] not in ("", b.format)]
+    assert 16 in shared and names[16] == "bfloat16"
+    assert added_program.refused(run, other) == ""
+    fp32 = bool(loaded.compute.get("fp32_dest_acc_en"))
+    listed = [modes.get(index, "Default") for index in range(64)]
+    base = module.format_tables(names, fp32, listed, False, "blackhole")
+    base = dict(zip(added_program.TABLES, base))
+    sizes = {name: [1088] * 64 for name in added_program.SIZES}
+    (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(base, sizes))
+    (tmp_path / "trisc0").mkdir()
+    recipe = Recipe(("-I..",), tmp_path / "trisc0" / "kernel.elf")
+    made = added_program.own_recipes(run, other, {"unpack": recipe})["unpack"]
+    text = (Path(made.includes[0][2:]) / "chlkc_descriptors.h").read_text()
+    mine, own = list(names), other.compute.get("unpack_to_dest_mode", {})
+    for buffer in other.buffers:
+        mine[buffer.index] = buffer.format
+        listed[buffer.index] = own.get(buffer.index, "Default")
+    wanted = module.format_tables(mine, fp32, listed, False, "blackhole")
+    for name, values in zip(added_program.TABLES, wanted):
+        assert [added_program._table(text, name)[i] for i in shared] == [
+            values[i] for i in shared
+        ]
+    sizes = added_program._table(text, "unpack_tile_size")
+    assert all(sizes[i] == 4096 for i in shared)
+    run.backend.switch_pad = 8  # an index the class takes, the area's own
+    with pytest.raises(added.AddError, match=r"buffer 8 is float32 .* switch area's"):
         added_program.own_recipes(run, other, {"unpack": recipe})
 
 

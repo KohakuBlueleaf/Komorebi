@@ -24,7 +24,8 @@ from projects.galaxy.attention_local import piece as pc  # noqa: E402
 
 
 def golden_entries(path, step, manifest):
-    """piece.compress from golden's compress_kv file of the attn call's layer, step."""
+    """piece.compress_hook from golden's compress_kv file of the attn call's layer and
+    step."""
     name = (
         os.path.basename(path).replace("_attn_", "_compress_kv_").replace("p07", "p10")
     )
@@ -88,7 +89,7 @@ def main():
                             if step != "prefill":  # a prompt recorded from a decode
                                 seed_window(piece, path, step, layer, manifest)
                         # a compressed layer's entries: golden's compress_kv
-                        piece.compress = golden_entries(path, step, manifest)
+                        piece.compress_hook = golden_entries(path, step, manifest)
                         t0 = time.time()
                         out = piece(site, layer, *ins)
                         dt = time.time() - t0

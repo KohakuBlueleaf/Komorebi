@@ -468,8 +468,12 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    states or caps it). Its record (its buffers' four words and its parts' table
    entries) is written to DRAM; the load command sets its buffers up as for a program
    given at the start.
-2. **Its buffer indices** are any the loaded kernels' buffers do not use with another
-   format: make it with `beside=` the loaded class to leave that class's indices.
+2. **Its buffer indices** are any but the runtime's own and the switch area's, also
+   those the loaded classes use with another format: the loaded kernels read no buffer
+   by its format (a load command sets a group's buffers up from the record, page size
+   included, and the program's part runs the hardware start-up on its own formats), so
+   each part reads its own entries. A float32 class added at a loaded bfloat16 class's
+   indices 0 and 16 ran exact over 12 switches on a Wormhole chip.
 3. **Its tensors** are command words, as every runtime-form class's are.
 4. **Its formats.** The kernel build bakes a table of each buffer index's formats
    (unpack source and destination, pack source and destination, the tile sizes) into
@@ -477,11 +481,11 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    loaded kernels' table with its own buffers' entries, recomputed by tt-metal's
    functions over the load's formats and its own; the copy must equal the kernels' at
    every other index (an added format that would change the shared Dst format is
-   refused). Its fp32 fields' `UnpackToDestFp32`, per buffer index, comes with it. The
-   reader's and writer's parts take the tables tt-metal gives a data-movement build,
-   made without fp32 Dst or unpacking to Dst, so a class is added beside a loaded class
-   with fp32 Dst (float32 tensors: 2,000 commands exact on a Blackhole card). The
-   loaded kernels are not rebuilt.
+   refused). Its unpack modes at its indices (its fp32 fields' `UnpackToDestFp32`)
+   come with it, whatever the load's are there. The reader's and writer's parts take
+   the tables tt-metal gives a data-movement build, made without fp32 Dst or unpacking
+   to Dst, so a class is added beside a loaded class with fp32 Dst (float32 tensors:
+   2,000 commands exact on a Blackhole card). The loaded kernels are not rebuilt.
 5. **Its compute options** that are one a kernel (fidelity, `fp32_dest_acc_en`,
    `dst_full_sync_en`, `math_approx_mode`, `bfp8_pack_precise`) equal the load's;
    refused by name with both values.

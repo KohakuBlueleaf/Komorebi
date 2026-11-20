@@ -309,9 +309,9 @@ def _format_indices(run):
 
 def own_recipes(run, program, recipes):
     """{part: Recipe}: `recipes` compiling with a copy of the kernel's descriptors file
-    holding the class's buffer formats (first among the includes). Refused when the
-    load's tables are not reproduced, an index holds another format there, or the
-    class's formats change a loaded index's entry."""
+    holding the class's buffer formats and unpack modes at its indices, whatever the
+    load's are there (first among the includes). Refused when the load's tables are not
+    reproduced, or the class's formats change another index's entry."""
     module = run.backend.card.module
     arch = run.backend.card.device.arch()  # the open device's, not the runtime's
     compute = run.programs[0].compute
@@ -321,19 +321,16 @@ def own_recipes(run, program, recipes):
     )
     names, modes = _loaded_formats(run)
     mine, own = list(names), dict(modes)
+    given, pad = program.compute.get("unpack_to_dest_mode", {}), run.backend.switch_pad
+    # the resident kernels read no buffer by its format: a part reads its own entries
     for buffer in program.buffers:
-        if names[buffer.index] not in ("", buffer.format):
+        if buffer.index == pad and buffer.format != names[pad]:
             raise added.AddError(
-                f"{program.name}: buffer {buffer.index} is {buffer.format} and the "
-                f"loaded kernels' buffer {buffer.index} is {names[buffer.index]}"
+                f"{program.name}: buffer {pad} is {buffer.format} and it is the switch "
+                f"area's own index ({names[pad]})"
             )
         mine[buffer.index] = buffer.format
-    for index, mode in program.compute.get("unpack_to_dest_mode", {}).items():
-        if own.setdefault(index, mode) != mode:
-            raise added.AddError(
-                f"{program.name}: unpack_to_dest_mode {mode} at buffer {index} and the "
-                f"load's {modes[index]}"
-            )
+        own[buffer.index] = given.get(buffer.index, "Default")
 
     def tables(buffers, unpack, mover):
         listed = [unpack.get(index, "Default") for index in _format_indices(run)]
@@ -708,8 +705,9 @@ def _commit(run, program, p):
     entries_s = _own_entries(run, p.own)
     run.programs.append(program)
     program.added_live = True  # a refusal naming the class's programs tells it
-    if run._holds is not None:
-        run._holds.append(np.zeros(run.cores, bool))
+    if run._holds is not None:  # over the cores the loaded programs' holds cover
+        cores = len(run._holds[0]) if run._holds else run.cores
+        run._holds.append(np.zeros(cores, bool))
     for thread in run.threads.values():  # kmx_load reaches it
         thread.write_records(run._switch)
     card.log(

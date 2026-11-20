@@ -90,14 +90,3 @@ def program(senders, kids, sample):
         defines={"TREE_PAGES": n, "TREE_KIDS": kids},
         handlers=KERNELS / "tree.h",
     )
-
-
-def go(session, run, tree, parent, home, phase, senders, a7=0, a8=0, timeout=30.0):
-    """One command of the program `tree` over every rank (islands outside `parent`
-    return at once); its card time (us)."""
-    ws = words(parent, home, phase, senders, a7, a8)
-    handle = run.island(0).submit(tree.handler("tree"), (0, session.ranks), ws)
-    (event,) = session.wait_together([(0, handle)], timeout=timeout)
-    if event.kind != "done":
-        raise km.KomorebiError(f"the tree, phase {phase}: {event}")
-    return event.microseconds

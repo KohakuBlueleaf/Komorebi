@@ -79,7 +79,7 @@ def rope_tables(freqs_cis, inverse):
 class AttentionPiece:
     sites = SITES
 
-    def __init__(self, session, loaded, layers, log=print):
+    def __init__(self, session, loaded, layers, log=print, run=None):
         self.session, self.log = session, log
         layers = sorted(layer for layer in layers if layer is not None and layer < 40)
         self.shared = ly.Shared(session, POSITIONS)
@@ -107,11 +107,11 @@ class AttentionPiece:
             "sinks": tensor((pj.HEADS * TILE, TILE)),
         }
         self.stack = ly.Stack(s, self.shared, self.layers[layers[0]], log=log)
-        self.stack.load()
+        self.stack.load(run)
         self.spent = {}
         # (layer, x, qr, start_pos, offset) -> the reference's compress_kv outputs
         # (compressed entries [1, n, 512], their indices [1, s, k], offset + j or -1)
-        self.compress = None
+        self.compress_hook = None
 
     def __call__(self, site, layer, *x):
         method = getattr(self, f"site_{site}")
@@ -267,7 +267,7 @@ class AttentionPiece:
     def site_attn(self, inputs, layer, x, start_pos):
         """A layer's whole attention from x at start_pos: a prefill block (32 tokens,
         start_pos a multiple of 32) or a decode token; a layer of compressed entries
-        takes them from `self.compress` (README.md, "Compressed layers")."""
+        takes them from `self.compress_hook` (README.md, "Compressed layers")."""
         st = self.stack
         tokens = x.shape[1]
         if tokens not in (1, TILE):
@@ -284,7 +284,7 @@ class AttentionPiece:
         out, both [32, 5120] bf16 tile; a compressed layer's hook takes x_host (x's
         values as the reference's tensor) or reads x back. {name: microseconds}."""
         st = self.stack
-        if x_host is None and COMPRESS_RATIOS[layer] != 0 and self.compress:
+        if x_host is None and COMPRESS_RATIOS[layer] != 0 and self.compress_hook:
             x_host = torch.from_numpy(st.read(x)[None, :tokens]).to(torch.bfloat16)
         select = self.chooser(layer, x_host, start_pos)
         self.spent = st.step(
@@ -293,17 +293,17 @@ class AttentionPiece:
         return self.spent
 
     def chooser(self, layer, x, start_pos):
-        """A compressed layer's select(qr) for Stack.step from `self.compress`; None
-        for a layer of the window alone."""
+        """A compressed layer's select(qr) for Stack.step from `self.compress_hook`;
+        None for a layer of the window alone."""
         if COMPRESS_RATIOS[layer] == 0:
             return None
-        if self.compress is None:
-            raise ValueError(f"layer {layer}: piece.compress gives its entries")
+        if self.compress_hook is None:
+            raise ValueError(f"layer {layer}: piece.compress_hook gives its entries")
         tokens = x.shape[1]
         offset = tokens if start_pos == 0 else wn.WINDOW  # the window_kv's rows
 
         def select(qr):
-            kv, idxs = self.compress(
+            kv, idxs = self.compress_hook(
                 layer, x, host(qr[None, :tokens], x), start_pos, offset
             )
             return selected(kv, idxs, offset)
@@ -321,10 +321,11 @@ def selected(kv, idxs, offset):
     return kv[0].float().numpy()[used], seen
 
 
-def make(session, weights, layers):
+def make(session, weights, layers, run=None):
     """The piece on the session's chip. `weights`: the loader's W when it holds the
     layers' linears on this chip; else (None, a W of other islands) they are loaded
-    here (the loader's subset load, projects/galaxy/weights)."""
+    here (the loader's subset load, projects/galaxy/weights). `run`: the shared load
+    (projects/galaxy/load) its programs are handed to; None: a load of its own."""
     joined = at.island_ranks(session) < session.ranks
     if joined and (session.kernel_bytes or 1 << 30) > KERNEL_BYTES:
         raise KernelBufferError(
@@ -336,4 +337,4 @@ def make(session, weights, layers):
     wanted = names(layers)
     if not (hasattr(weights, "arenas") and all(n in weights for n in wanted)):
         weights = cache.loader.load(session, wanted)
-    return AttentionPiece(session, weights, layers)
+    return AttentionPiece(session, weights, layers, run=run)

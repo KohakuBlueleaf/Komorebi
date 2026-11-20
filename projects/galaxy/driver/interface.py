@@ -4,11 +4,21 @@
 import importlib
 from typing import Protocol
 
+# a piece's attributes the driver sets to host functions, when the piece has them
+HOOKS = ("compress_hook",)
+
 
 class BoxPiece(Protocol):
     sites: tuple
 
     def __call__(self, site: str, layer, *inputs): ...
+
+
+def set_hooks(piece, hooks):
+    """Set each of HOOKS the piece declares (as None) to `hooks[name]`."""
+    for name in HOOKS:
+        if hasattr(piece, name):
+            setattr(piece, name, hooks[name])
 
 
 def load_factory(spec: str):

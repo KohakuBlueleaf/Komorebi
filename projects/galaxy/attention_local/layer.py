@@ -168,11 +168,17 @@ class Stack:
             self.attend: at.group(s),
         }
         self.run = self.holding = None
+        self.handed = False  # a shared load (projects/galaxy/load) says what is held
 
-    def load(self):
+    def load(self, run=None):
         """The dict's run: the attention on its rectangle, the others on the first
         island's cores left, the projections also on the other islands' ranks; every
-        step switches the first island's cores (`step`)."""
+        step switches the first island's cores (`step`). With `run` (the shared load,
+        projects/galaxy/load) the three programs are handed to it, nothing loaded."""
+        if run is not None:
+            run.take(self.groups)
+            self.run, self.holding, self.handed = run, None, True
+            return self
         low, count = at.group(self.session)
         rest = at.island_ranks(self.session) - count
         self.run = self.session.load(
@@ -184,6 +190,13 @@ class Stack:
         )
         self.holding = None
         return self
+
+    def holds(self, program):
+        """Whether the program's group holds it: a shared load says (another piece
+        may have switched these cores); a load of its own, the last one loaded."""
+        if self.handed:
+            return self.run.holds(program, self.groups[program])
+        return program is self.holding
 
     def stop(self):
         if self.run is not None:
@@ -382,7 +395,7 @@ class Stack:
         STORE_EVERY, a program loaded first where the cores hold another."""
         handles = []
         for name, program, handler, group, words in commands:
-            if program is not self.holding:
+            if not self.holds(program):
                 load = self.run.load(program, group=self.groups[program])
                 handles.append((f"load_{name}", load))
                 self.holding = program
@@ -425,7 +438,7 @@ class Stack:
         microseconds}."""
         spent = {}
         for name, program, handler, group, words in commands:
-            if program is not self.holding:
+            if not self.holds(program):
                 event = self.run.wait(
                     self.run.load(program, group=self.groups[program]), timeout=30.0
                 )

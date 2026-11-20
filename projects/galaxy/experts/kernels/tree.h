@@ -14,17 +14,17 @@ constexpr uint32_t kUp = 8;    // y (a7) up, added at each island; the home writ
 constexpr uint32_t kAck = 16;  // one page up in place of the block
 constexpr uint32_t kNone = 31;
 
-// An index where the class Moe holds bfloat16 or nothing (one format in the load);
-// kCbSum the first from 16, where the runtime's start-up packs
+// Indices where Moe and the attention's classes hold bf16 or nothing (28-31 are the
+// runtime's); kCbSum the first from 16 (the start-up packs it)
 constexpr uint32_t kCbOut = 0;      // n tiles: the block down (the home's, sent on)
 constexpr uint32_t kCbDown = 1;     // n tiles: the parent's block
-constexpr uint32_t kCbUp = 2;       // TREE_KIDS n tiles: a child's sum a slot
-constexpr uint32_t kCbOwn = 3;      // n tiles: the island's own y slice (compute)
-constexpr uint32_t kCbTiny = 6;     // one page
-constexpr uint32_t kCbX = 7;        // n tiles: the home's x slice (its writer sends it)
-constexpr uint32_t kCbSum = 17;     // n tiles: own + children (compute)
-constexpr uint32_t kCbUpTiny = 18;  // TREE_KIDS pages: a child's sync or ack page
-constexpr uint32_t kCbStamp = 22;   // 64 B
+constexpr uint32_t kCbSum = 18;     // n tiles: own + children (compute)
+constexpr uint32_t kCbUpTiny = 20;  // TREE_KIDS pages: a child's sync or ack page
+constexpr uint32_t kCbUp = 21;      // TREE_KIDS n tiles: a child's sum a slot
+constexpr uint32_t kCbOwn = 22;     // n tiles: the island's own y slice (compute)
+constexpr uint32_t kCbStamp = 23;   // 64 B
+constexpr uint32_t kCbTiny = 26;    // one page
+constexpr uint32_t kCbX = 27;       // n tiles: the home's x slice (its writer sends it)
 // one consumer a buffer: a dataflow core and compute each keep their own count of the
 // pages taken, so two consumers of one buffer would leave it full
 constexpr uint32_t kPageBytes = 2048;

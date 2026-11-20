@@ -22,6 +22,7 @@ class Run:
 
     def __init__(self, session):
         self.session, self.cores, self.sent = session, 120, []
+        self.island_ranks = 120
         self.backend = SimpleNamespace(
             transfer=SimpleNamespace(chunk=16 << 10, address=0x50000)
         )

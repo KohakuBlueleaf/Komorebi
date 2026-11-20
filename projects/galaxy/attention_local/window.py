@@ -38,7 +38,14 @@ def keep_put(old, m, y):
     return old * m + y
 
 
-class Window(km.Program):
+class Window(
+    km.Program,
+    compute={
+        "math_fidelity": "HiFi2",
+        "fp32_dest_acc_en": True,
+        "dst_full_sync_en": True,
+    },
+):
     """Two commands each, a product then the element-wise rest. rope_swap: y's tile row
     h = t's tiles 14, 15 of row h times the swap; rope: t = t c + y s in place.
     insert_move: y's tile c = e kv[0:1, c]; insert: the window's tile (row, c) = old m +

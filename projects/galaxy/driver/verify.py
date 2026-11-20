@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from ..reference.model_loader import Checkpoint
-from .interface import load_factory, load_weights
+from .interface import load_factory, load_weights, set_hooks
 from .run import open_session, parse_layers
 
 _DT = {
@@ -57,6 +57,24 @@ def load_site(path, manifest_key, manifest):
     return ins, out
 
 
+def golden_compress(path, step, manifest):
+    """A piece's `compress_hook` (the attention's compressed entries) from golden's
+    compress_kv file of the same call, as the reference's Path.compress_kv returns."""
+    name = (
+        os.path.basename(path).replace("_attn_", "_compress_kv_").replace("p07", "p10")
+    )
+
+    def compress(layer, x, qr, start_pos, offset):
+        ins, out = load_site(
+            os.path.join(os.path.dirname(path), name), f"{step}/{name}", manifest
+        )
+        if int(ins[3]) != offset:
+            raise ValueError(f"layer {layer}: offset {offset}, golden's {ins[3]}")
+        return out
+
+    return compress
+
+
 def compare(box, ref):
     """A list of per-output dicts."""
     if isinstance(ref, tuple):
@@ -89,7 +107,13 @@ def compare(box, ref):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--golden", required=True)
-    ap.add_argument("--piece", required=True)
+    ap.add_argument(
+        "--piece",
+        action="append",
+        required=True,
+        help="a factory; given twice or more, the pieces share one load",
+    )
+    ap.add_argument("--kernel-bytes", type=int, default=None)
     ap.add_argument("--cards", default=None)
     ap.add_argument("--load", default=None, help="the loader's W (as driver.run)")
     ap.add_argument(
@@ -107,7 +131,7 @@ def main():
     if a.cards:
         import komorebi as km  # noqa: PLC0415 (only a run with box pieces needs it)
 
-        session = open_session(km, parse_layers(a.cards, 0))
+        session = open_session(km, parse_layers(a.cards, 0), a.kernel_bytes)
     if a.load:
         W = load_weights(session, a.load, parse_layers)
     elif a.ckpt:
@@ -115,8 +139,20 @@ def main():
     else:
         W = None
     layers = parse_layers(a.layers, 40) if a.layers else list(range(40)) + [None]
-    piece = load_factory(a.piece)(session, W, layers)
-    sites = a.sites.split(",") if a.sites else list(piece.sites)
+    factories = [load_factory(spec) for spec in a.piece]
+    if len(factories) == 1:
+        pieces = [factories[0](session, W, layers)]
+    else:  # one load that stays, every piece's programs in it (projects/galaxy/load)
+        from projects.galaxy.load.shared import Shared  # noqa: PLC0415
+
+        run = Shared(session)
+        pieces = [factory(session, W, layers, run=run) for factory in factories]
+        run.start()
+    of_site = {}
+    for piece in pieces:
+        for site in piece.sites:
+            of_site.setdefault(site, piece)
+    sites = a.sites.split(",") if a.sites else list(of_site)
     pat = re.compile(r"p\d\d_(.+?)(?:_L(\d\d))?\.npz$")
     for prompt in a.prompts.split(","):
         with open(os.path.join(a.golden, prompt, "manifest.json")) as f:
@@ -132,6 +168,11 @@ def main():
                 ins, ref_out = load_site(
                     path, f"{step}/{os.path.basename(path)}", manifest
                 )
+                piece = of_site[site]
+                if site == "attn":
+                    set_hooks(
+                        piece, {"compress_hook": golden_compress(path, step, manifest)}
+                    )
                 t0 = time.time()
                 out = piece(site, layer, *ins)
                 dt = time.time() - t0

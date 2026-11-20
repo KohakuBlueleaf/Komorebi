@@ -12,7 +12,7 @@ import torch
 from ..reference.model_loader import load_reference
 from ..reference.prompts import encode, prompt_text
 from . import state
-from .interface import install, load_factory, load_weights
+from .interface import install, load_factory, load_weights, set_hooks
 from .path import SITE_PIECE, TokenPath
 
 
@@ -35,11 +35,12 @@ def parse_cards(text):
     return parse_layers(text, 0) if text else None
 
 
-def open_session(km, cards):
+def open_session(km, cards, kernel_bytes=None):
     """A one-card session, or a session of islands over several cards."""
+    given = {"kernel_bytes": kernel_bytes} if kernel_bytes else {}
     if len(cards) == 1:
-        return km.Session(card=cards[0]).__enter__()
-    return km.Session(cards=cards, links=1).__enter__()
+        return km.Session(card=cards[0], **given).__enter__()
+    return km.Session(cards=cards, links=1, **given).__enter__()
 
 
 def compare(logits, ref_logits):
@@ -63,6 +64,12 @@ def main():
         default=None,
         help="the loader's W: 'all' or layers@kinds[@formats] (else the Checkpoint)",
     )
+    ap.add_argument(
+        "--kernel-bytes",
+        type=int,
+        default=None,
+        help="a joined session's kernel buffer",
+    )
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--report", default=None, help="write the report as JSON here")
@@ -77,20 +84,26 @@ def main():
     ids = encode(ref, a.ckpt, prompt_text(ref, a.ckpt, a.prompt))
     assert ids == gold["prompt_ids"]
 
-    session, W, pieces = None, None, []
-    if a.piece:
+    session, W, pieces, remote = None, ref.ckpt, [], []
+    hooks = {
+        "compress_hook": lambda i, *x: path.compress_kv(
+            i, path.model.layers[i].attn, *x
+        )
+    }
+    if any("#" not in spec for spec in a.piece):
         import komorebi as km  # noqa: PLC0415 (only a run with box pieces needs it)
 
-        session = open_session(km, parse_cards(a.cards))
+        session = open_session(km, parse_cards(a.cards), a.kernel_bytes)
         if a.load:
             t0 = time.time()
             W = load_weights(session, a.load, parse_layers)
             print(f"loaded {len(W)} weights in {time.time() - t0:.1f} s", flush=True)
-        else:
-            W = ref.ckpt
+    if a.piece:
         n_layers = len(ref.model.layers)
-        for spec in a.piece:
-            fac, _, rest = spec.partition("@")
+        for n, spec in enumerate(a.piece):
+            spec_, _, where = spec.partition("#")
+            cards, _, load = where.partition("%")
+            fac, _, rest = spec_.partition("@")
             groups = []  # (layers, sites) a group: `layers@sites+layers@sites...`
             for group in (rest or "all").split("+"):
                 lay, _, sites = group.partition("@")
@@ -98,11 +111,18 @@ def main():
             every = sorted(
                 {x for g, _ in groups for x in g}, key=lambda x: (x is None, x)
             )
-            piece = load_factory(fac)(session, W, every)
-            if hasattr(piece, "compress"):  # compressed entries from the host's sites
-                piece.compress = lambda i, *x: path.compress_kv(
-                    i, path.model.layers[i].attn, *x
+            if cards:  # a process of its own, only these cards visible to it
+                from .remote import RemotePiece  # noqa: PLC0415 (remote imports run)
+
+                log = f"{os.path.splitext(a.report or 'run')[0]}.piece{n}.log"
+                every_text = ",".join("-" if x is None else str(x) for x in every)
+                piece = RemotePiece(
+                    fac, cards, every_text, a.ckpt, log, hooks, a.kernel_bytes, load
                 )
+                remote.append(piece)
+            else:
+                piece = load_factory(fac)(session, W, every)
+                set_hooks(piece, hooks)
             for layers, sites in groups:
                 install(
                     path,
@@ -176,6 +196,8 @@ def main():
     if a.report:
         with open(a.report, "w") as f:
             json.dump(report, f, indent=1, ensure_ascii=False)
+    for piece in remote:
+        piece.close()
     if session is not None:
         session.__exit__(None, None, None)
 

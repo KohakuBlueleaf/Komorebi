@@ -48,7 +48,11 @@ class Job(km.Entry):
 
 class AttendLocal(
     km.Program,
-    compute={"fp32_dest_acc_en": True, "math_fidelity": "HiFi2"},
+    compute={
+        "math_fidelity": "HiFi2",
+        "fp32_dest_acc_en": True,
+        "dst_full_sync_en": True,
+    },
     startup=km.Startup("ones", "causal", "p", order="reverse"),
     defines={
         "FLASH_HEAD_TILES": DT,
