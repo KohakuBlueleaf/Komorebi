@@ -1,7 +1,6 @@
 """Run: handles, batches, events and stopping, against a fake dispatcher."""
 
-import time
-
+import fake_port
 import numpy as np
 import pytest
 from fake_port import FakeBackend, FakePort
@@ -16,7 +15,7 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.program.description import Program
-from komorebi.session.parts import run_events
+from komorebi.session.parts import run_events, run_stop
 from komorebi.session.run import Run
 
 CONSTANTS = abi.headers().constants
@@ -425,15 +424,36 @@ def test_forget_releases_handles_read_after_a_drain():
     assert run._gone[:5].all()
 
 
-class SlowPort(FakePort):
-    """Each command (EXIT too) completes `delay` seconds after it was submitted."""
+class Clock:
+    """Seconds the test controls, read as `time` by the run's stop and the fake port:
+    each poll of the port moves them on by a tick, a sleep by its length."""
 
-    def __init__(self, delay):
+    def __init__(self, tick):
+        self.now, self.tick = 0.0, tick
+
+    def monotonic(self):
+        return self.now
+
+    perf_counter = monotonic
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class SlowPort(FakePort):
+    """Each command (EXIT too) completes `delay` seconds after it was submitted, on
+    the test's clock."""
+
+    def __init__(self, delay, clock):
         super().__init__()
-        self.delay, self.since = delay, {}
+        self.delay, self.since, self.clock = delay, {}, clock
+
+    def poll(self):
+        self.clock.sleep(self.clock.tick)
+        return super().poll()
 
     def _complete(self):
-        now = time.monotonic()
+        now = self.clock.monotonic()
         for slot, (sequence, req, _) in sorted(self.busy.items()):
             if now - self.since.setdefault(sequence, now) >= self.delay:
                 del self.busy[slot]
@@ -444,19 +464,21 @@ class SlowBackend(FakeBackend):
     """The kernel's result is ready `delay` seconds into finish(), if it waits."""
 
     def finish(self, timeout):
-        time.sleep(min(self.port.delay, timeout))
+        self.port.clock.sleep(min(self.port.delay, timeout))
         self.answer["result_ready"] = timeout >= self.port.delay
         return super().finish(timeout)
 
 
-def test_stop_ends_within_its_timeout_when_every_part_is_slow():
-    port = SlowPort(delay=0.06)  # drain, EXIT and finish: 0.18 s in all
+def test_stop_ends_within_its_timeout_when_every_part_is_slow(monkeypatch):
+    clock = Clock(tick=0.001)  # the host's load cannot move a step past the deadline
+    for module in (run_stop, run_events, fake_port):
+        monkeypatch.setattr(module, "time", clock)
+    port = SlowPort(delay=0.06, clock=clock)  # drain, EXIT and finish: 0.18 s in all
     run = Run(SlowBackend(port), GRID)
     run.submit(1, (0, 2))
-    started = time.monotonic()
     with pytest.raises(KernelFailed, match="never became ready"):
         run.stop(timeout=0.14)
-    assert time.monotonic() - started < 0.14 + 0.05 and run.stopped
+    assert clock.now <= 0.14 and run.stopped
 
 
 class CardThread:
