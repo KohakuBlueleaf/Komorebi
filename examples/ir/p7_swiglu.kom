@@ -1,0 +1,55 @@
+// SwiGLU of tests/ir/tensix/swiglu_class.py, as the DSL frontend writes it
+module swiglu
+
+tile [32, 32]
+format bf16, f32
+
+param D: u32 = 32 @bind(build)
+param H: u32 = 96 @bind(build)
+param WIDTH: u32 = 8 @bind(build)
+param CHUNK: u32 = 2 @bind(build)
+param W_BLOCK: u32 = 16 @bind(build)
+
+func project(
+    x: tile<bf16>[CHUNK],
+    w: tile<bf16>[CHUNK, WIDTH],
+) -> tile<f32>[WIDTH] @tensix.fidelity(HiFi2) {
+    return matmul(x, w)
+}
+
+func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {
+    return silu(h) * g
+}
+
+program SwiGLU {
+    handler up(
+        x: tensor<bf16>,
+        w1: tensor<bf16>,
+        w3: tensor<bf16>,
+        hidden: tensor<bf16>,
+    ) @on(group) {
+        var h: tile<f32>[WIDTH] = zeros
+        var g: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for xb, w1b, w3b in zip(
+            stream(x.tiles[0:1, 0:D], block = CHUNK),
+            stream(w1.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]),
+            stream(w3.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]),
+        ) {
+            h += project(xb, w1b)
+            g += project(xb, w3b)
+        }
+        store hidden.tiles[0:1, first:first + WIDTH] <- gate(h, g)
+    }
+    handler down(hidden: tensor<bf16>, w2: tensor<bf16>, y: tensor<f32>) @on(group) {
+        var out: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for hb, wb in zip(
+            stream(hidden.tiles[0:1, 0:H], block = CHUNK),
+            stream(w2.tiles[0:H, first:first + WIDTH], block = [CHUNK, WIDTH]),
+        ) {
+            out += project(hb, wb)
+        }
+        store y.tiles[0:1, first:first + WIDTH] <- out
+    }
+}

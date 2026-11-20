@@ -1,0 +1,40 @@
+// Movement of tests/ir/tensix/movement_class.py, as the DSL frontend writes it
+module movement
+
+tile [32, 32]
+format bf16
+
+param BLOCK: u32 = 16 @bind(build)
+
+program Movement {
+    handler read(
+        source: tensor<bf16>,
+        tiles: u32,
+        pattern: u32,
+        repetitions: u32,
+    ) @on(group) {
+        let pages = source.tiles(worker.rank * tiles, tiles)
+        for i in range(repetitions) {
+            for _ in stream(pages, block = BLOCK) @tensix.pattern(pattern) {
+            }
+        }
+    }
+    handler copy(
+        source: tensor<bf16>,
+        output: tensor<bf16>,
+        tiles: u32,
+        pattern: u32,
+    ) @on(group) {
+        let first = worker.rank * tiles
+        let out = sink(
+            output.tiles(first, tiles),
+            block = BLOCK,
+        ) @tensix.pattern(pattern)
+        for tile_ in stream(
+            source.tiles(first, tiles),
+            block = BLOCK,
+        ) @tensix.pattern(pattern) {
+            out.push(tile_)
+        }
+    }
+}

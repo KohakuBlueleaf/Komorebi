@@ -765,3 +765,15 @@ def test_the_text_is_in_the_writers_layout_its_origin_on_the_same_text(
         assert before[4:] == after[4:]
         was, now = held(raw.text, before), held(laid.text, after)
         assert kept(was) == kept(now), (before, was, after, now)
+
+
+def test_the_ir_examples_are_the_frontends_text_today():
+    # examples/ir/ cannot go stale: `ir_examples.py --write` refreshes them
+    spec = importlib.util.spec_from_file_location(
+        "ir_examples", Path(__file__).with_name("ir_examples.py")
+    )
+    examples = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(examples)
+    assert examples.stale() == []
+    names = sorted(p.name for p in examples.FOLDER.glob("*.kom"))
+    assert names == sorted(file for file, *_ in examples.EXAMPLES)

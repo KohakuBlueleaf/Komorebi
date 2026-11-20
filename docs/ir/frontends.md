@@ -82,6 +82,8 @@ first and last lines. A refused origin raises `IrError`, and its message says wh
 
 ## Komorebi's classes
 
+The text the frontend writes for each program it takes end to end is kept in `examples/ir/`.
+
 `komorebi.dsl.ir.built.module(cls, **make)` writes a class written as today's DSL writes it (a
 `km.Program` with `km.handler` methods) as an IR module. It reads the handlers with `ast`, as the
 class compiler does, and gives a `Made`: the text in the writer's layout and `made.origin` for

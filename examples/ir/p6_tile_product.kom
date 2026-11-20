@@ -1,0 +1,37 @@
+// Small of tests/ir/tensix/small_class.py, as the DSL frontend writes it
+module small
+
+tile [32, 32]
+format bf16, f32
+
+param M_TILES: u32 = 4 @bind(build)
+param K_TILES: u32 = 28 @bind(build)
+param N_TILES: u32 = 4 @bind(build)
+param CHUNK: u32 = 4 @bind(build)
+
+func project(
+    x: tile<bf16>[CHUNK],
+    w: tile<bf16>[CHUNK, 1],
+) -> tile<f32> @tensix.fidelity(HiFi2) {
+    return matmul(x, w)
+}
+
+program Small {
+    handler read(
+        x: tensor<bf16>,
+        w: tensor<bf16>,
+        y: tensor<f32>,
+        call: u32,
+    ) @on(group) {
+        let r = worker.rank / N_TILES
+        let n = worker.rank % N_TILES
+        var acc: tile<f32> = zeros
+        for xb, wb in zip(
+            stream(x.tiles[r:r + 1, 0:K_TILES], block = CHUNK),
+            stream(w.tiles[0:K_TILES, n:n + 1], block = [CHUNK, 1]),
+        ) {
+            acc += project(xb, wb)
+        }
+        store y.tiles(((call * M_TILES) * N_TILES) + worker.rank, 1) <- acc
+    }
+}

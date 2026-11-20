@@ -1,0 +1,33 @@
+// Gate of tests/ir/tensix/gate_class.py, as the DSL frontend writes it
+module gate
+
+tile [32, 32]
+format bf16
+
+param BLOCK: u32 = 8 @bind(build)
+
+func silu_gate(a: tile<bf16>[BLOCK], b: tile<bf16>[BLOCK]) -> tile<bf16>[BLOCK] {
+    return silu(a) * b
+}
+
+program Gate {
+    handler gate(
+        a: tensor<bf16>,
+        b: tensor<bf16>,
+        out: tensor<bf16>,
+        tiles: u32,
+        pattern: u32,
+    ) @on(group) {
+        let first = worker.rank * tiles
+        let results = sink(
+            out.tiles(first, tiles),
+            block = BLOCK,
+        ) @tensix.pattern(pattern)
+        for x, g in zip(
+            stream(a.tiles(first, tiles), block = BLOCK),
+            stream(b.tiles(first, tiles), block = BLOCK),
+        ) @tensix.pattern(pattern) {
+            results.push(silu_gate(x, g))
+        }
+    }
+}

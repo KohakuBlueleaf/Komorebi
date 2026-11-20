@@ -1,0 +1,19 @@
+// Scalars of tests/ir/tensix/scalars_line.py, as the DSL frontend writes it
+module scalars
+
+tile [32, 32]
+format bf16, f32
+
+func tile_line_20(x: tile<bf16>[8], scale: f32) -> tile<bf16>[8] {
+    return x * scale
+}
+
+program Scalars {
+    handler line(a: tensor<bf16>, out: tensor<f32>, scale: f32) @on(group) {
+        let first = worker.rank * 64
+        let results = sink(out.tiles(first, 64), block = 8)
+        for x in stream(a.tiles(first, 64), block = 8) {
+            results.push(tile_line_20(x, scale))
+        }
+    }
+}
