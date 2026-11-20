@@ -16,7 +16,7 @@ pub mod plan;
 pub mod unit;
 
 use crate::backend::{
-    check_statement, ArgKind, ArgWord, Backend, Bound, Build, Built, CacheKey, CompileArg,
+    check_statement, ArgKind, ArgWord, Backend, Bound, Buffer, Build, Built, CacheKey, CompileArg,
     EntryPoint, Expr, Kernel, LoadStatement, Machine, Output, Processor, Reads, Refusal, Statement,
     Target, NOT_BUILT,
 };
@@ -38,6 +38,11 @@ const INDENT: &str = "    ";
 const FIRST_READ: u32 = 0;
 /// The first index of a write pair.
 const FIRST_WRITE: u32 = 16;
+/// The blocks a read half holds: double buffering on each mover and one more each
+/// (`layout.READ_ITEMS`).
+const READ_ITEMS: u64 = 4;
+/// The blocks a write half holds (`layout.WRITE_ITEMS`).
+const WRITE_ITEMS: u64 = 2;
 /// A read stream's pattern when the class states none (`page_streams.READ_PATTERN`).
 const READ_PATTERN: &str = "AAAB";
 /// A write stream's (`page_streams.WRITE_PATTERN`).
@@ -82,6 +87,10 @@ struct Pair {
     block: u64,
     pattern: &'static str,
     what: String,
+    /// Its pages' format: the stream's tensor's.
+    format: Option<Format>,
+    /// Each half's pages: the role's items of a block (`layout.pair`).
+    pages: u64,
 }
 
 /// What the files print of the origin: the script's name and each place's comment.
@@ -218,17 +227,12 @@ fn pairs(plans: &[Plan], lines: &Lines) -> Vec<Pair> {
     for plan in plans {
         let body = BodyRef::Handler(plan.program, plan.handler);
         let mut opened = [
-            (
-                plan.write.inst,
-                "Write",
-                plan.write.block,
-                WRITE_PATTERN,
-                false,
-            ),
-            (plan.read.inst, "Read", plan.read.block, READ_PATTERN, true),
+            (plan.write.inst, "Write", &plan.write, WRITE_PATTERN, false),
+            (plan.read.inst, "Read", &plan.read, READ_PATTERN, true),
         ];
         opened.sort_by_key(|o| o.0);
-        for (inst, role, block, pattern, looped) in opened {
+        for (inst, role, moved, pattern, looped) in opened {
+            let block = moved.block;
             let name = format!("k{role}0");
             if out.iter().any(|p| p.name == name) {
                 continue;
@@ -250,12 +254,19 @@ fn pairs(plans: &[Plan], lines: &Lines) -> Vec<Pair> {
             let what = lines
                 .comment(anchor, head)
                 .unwrap_or_else(|| format!("{name}: a {} stream", role.to_lowercase()));
+            let items = if role == "Read" {
+                READ_ITEMS
+            } else {
+                WRITE_ITEMS
+            };
             out.push(Pair {
                 name,
                 index,
                 block,
                 pattern,
                 what,
+                format: plan.words.get(moved.tensor).and_then(|w| w.format),
+                pages: items * block,
             });
         }
     }
@@ -925,7 +936,10 @@ impl Backend for Tensix {
             key: CacheKey::for_backend(program, self, target),
             files,
             entries: entries(program, &plans),
-            build: Build::Kernels(kernels(&plans)),
+            build: Build::Kernels {
+                kernels: kernels(&plans),
+                buffers: buffers(&plans),
+            },
         })
     }
 }
@@ -973,6 +987,26 @@ fn entries(module: &Module, plans: &[Plan]) -> Vec<EntryPoint> {
             }
         })
         .collect()
+}
+
+/// The buffers: each pair's two halves, in the order the pairs are made, a half the
+/// pair's pages of its tensor's tiles (`layout.pair`, `BufferPair.halves`).
+fn buffers(plans: &[Plan]) -> Vec<Buffer> {
+    let lines = Lines { origin: None };
+    let mut out = Vec::new();
+    for pair in pairs(plans, &lines) {
+        // A stream's word is a tensor's by the walk (`plan`), so its format is known.
+        let format = pair.format.unwrap_or(Format::Bf16);
+        for index in [pair.index, pair.index + 1] {
+            out.push(Buffer {
+                index,
+                format,
+                page_bytes: chip::tile_bytes(format, chip::TILE),
+                pages: pair.pages,
+            });
+        }
+    }
+    out
 }
 
 /// The three kernels (`session/backend/backend.py`, `describe`): the movement source

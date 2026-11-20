@@ -27,9 +27,10 @@ emitted (`K960` to `K965`, [the checks](checks.md)). A backend never substitutes
 Its output is files, the entries an invocation names, and its build, as data: steps to run in the
 output's directory, or kernels the machine's runtime compiles at load (a kernel's source, the
 processor it runs on, defines, compile arguments, a tensor's layout among them filled at load,
-and options). Each entry carries the invocation's ABI, the same on every backend: its number,
-its argument words in order (a tensor's address, a tensor's tile count, a parameter's value), and
-the bounds a host checks before sending it. Compiling runs nothing and writes nothing. The
+and options) with the buffers in each core's memory they pass pages through (an index, a
+format, the bytes of a page, the pages). Each entry carries the invocation's ABI, the same on
+every backend: its number, its argument words in order (a tensor's address, a tensor's tile
+count, a parameter's value), and the bounds a host checks before sending it. Compiling runs nothing and writes nothing. The
 output's files are kept under a key over the hash of the parts the backend reads, the backend's
 name and version, and the target; what a build makes of them is the build's own cache.
 
@@ -78,7 +79,7 @@ The C++ that today's class DSL writes for Tenstorrent's chips, compiled by the c
 load. Its text names the script, each statement's line and the values' names, so its output
 depends on the positions and names too; its key covers the full hash. Its build is kernels: the
 movement source on the reader and on the writer, each tensor's layout as compile arguments, and
-the compute source. An entry's number counts from 1, a tensor is one argument word (its address),
+the compute source, with each stream's pair of buffers by today's layout rules. An entry's number counts from 1, a tensor is one argument word (its address),
 and its bounds are each stream's tiles, which a host checks before sending.
 
 A compile's target is `tensix` with no features: the text is one for both chips and the key holds

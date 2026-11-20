@@ -9,7 +9,7 @@ use crate::backend::{Refusal, NOT_BUILT};
 use crate::program::body::{Body, InstId, Op, ValueId};
 use crate::program::notes::{Anchor, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
-use crate::types::{ConstValue, FuncId, HandlerId, On, ProgramId, ScalarType, Type};
+use crate::types::{ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type};
 
 /// How a command word is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub struct Word {
     pub name: String,
     /// How it is read.
     pub kind: WordKind,
+    /// A tensor's element format; none for a scalar.
+    pub format: Option<Format>,
 }
 
 /// A partition the kernels print: `partition(t.tiles(first, n), rank, size)`, by its
@@ -150,7 +152,11 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         };
         let name = param_name(module, Owner::Handler(p, h), i as u32)
             .map_or_else(|| format!("p{i}"), str::to_string);
-        words.push(Word { name, kind });
+        let format = match ty {
+            Type::Tensor(f, _) => Some(*f),
+            _ => None,
+        };
+        words.push(Word { name, kind, format });
     }
     let body = BodyRef::Handler(p, h);
     let found = Walk::new(module, &handler.body, body, &words).run()?;

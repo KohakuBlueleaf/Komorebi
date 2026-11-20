@@ -39,8 +39,8 @@ def tensor():
 if __name__ == "__main__":
     made = Scale(log=lambda line: None, l1=1 << 20, x=tensor(), y=tensor())
     print(f"FOLDER {made.built.folder}")
-    # Each kernel the program hands the runtime: its role, source, processor as the
-    # backend's describe numbers it, compile arguments, defines and options.
+    # The kernels the program hands the runtime (role, source, describe's processor,
+    # compile arguments, defines, options), then its buffers (a pair's halves).
     for number, role in enumerate(("reader", "writer", "compute")):
         options = made.compute if role == "compute" else {}
         print(
@@ -56,3 +56,5 @@ if __name__ == "__main__":
                 for k, v in sorted(options.items())
             ),
         )
+    for buffer in made.buffers:
+        print("BUFFER", buffer.index, buffer.format, buffer.page_bytes, buffer.pages)

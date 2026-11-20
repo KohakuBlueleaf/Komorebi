@@ -301,8 +301,28 @@ pub struct Kernel {
 pub enum Build {
     /// Programs run in order in the directory the output's files are written to.
     Steps(Vec<Step>),
-    /// Kernels the machine's runtime compiles at load.
-    Kernels(Vec<Kernel>),
+    /// Kernels the machine's runtime compiles at load, and the buffers in each core's
+    /// memory they pass tiles through.
+    Kernels {
+        /// The kernels.
+        kernels: Vec<Kernel>,
+        /// The buffers.
+        buffers: Vec<Buffer>,
+    },
+}
+
+/// A buffer in a core's memory that kernels pass pages through (a circular buffer):
+/// the runtime makes it at load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buffer {
+    /// Its index, by which the kernels name it.
+    pub index: u32,
+    /// The format of its pages.
+    pub format: Format,
+    /// The bytes of a page.
+    pub page_bytes: u64,
+    /// Its pages.
+    pub pages: u64,
 }
 
 /// A backend's output: files, the entries, and how to build them; nothing is run and

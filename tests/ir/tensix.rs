@@ -20,7 +20,7 @@ use komorebi_ir::bytecode::{decode, encode};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::notes::{Anchor, Origin, Owner};
 use komorebi_ir::program::{BodyRef, Module};
-use komorebi_ir::types::{HandlerId, ProgramId};
+use komorebi_ir::types::{Format, HandlerId, ProgramId};
 
 fn here() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix")
@@ -165,7 +165,11 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
     let output = Tensix
         .compile(&module, &target("tensix"))
         .unwrap_or_else(|r| panic!("{r:?}"));
-    let Build::Kernels(built) = &output.build else {
+    let Build::Kernels {
+        kernels: built,
+        buffers,
+    } = &output.build
+    else {
         panic!("kernels built at load");
     };
     let loaded = load::kernels(&module, built, &stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
@@ -202,6 +206,30 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
         .filter(|l| l.starts_with("KERNEL "))
         .collect();
     assert_eq!(described, theirs, "the kernels handed to the runtime");
+    // The buffers, as the Program's halves (description.Buffer: its format by today's
+    // name of it, formats.py).
+    let dtype = |f: Format| match f {
+        Format::Bf16 => "bfloat16".to_string(),
+        Format::F32 => "float32".to_string(),
+        other => format!("{other}"),
+    };
+    let made: Vec<String> = buffers
+        .iter()
+        .map(|b| {
+            format!(
+                "BUFFER {} {} {} {}",
+                b.index,
+                dtype(b.format),
+                b.page_bytes,
+                b.pages
+            )
+        })
+        .collect();
+    let theirs: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("BUFFER "))
+        .collect();
+    assert_eq!(made, theirs, "the buffers made at load");
 
     // The folder's name is today's digest of its files (dsl/files.py, text_key): the
     // same files give the same folder.
@@ -349,7 +377,7 @@ fn the_backend_compiles_the_first_lesson_to_kernels_built_at_load() {
         count: Expr::Word(3),
     };
     assert_eq!(entry.bounds, [bound(0), bound(1)]);
-    let Build::Kernels(kernels) = &output.build else {
+    let Build::Kernels { kernels, .. } = &output.build else {
         panic!("kernels built at load");
     };
     let layouts = [
