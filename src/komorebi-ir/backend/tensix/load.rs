@@ -3,17 +3,18 @@
 //! (`<program>_thread.h`, today's `dsl/thread/class_thread.py`, `header_text`). It
 //! holds each tensor's page count and kind, which a compile does not know; so it is
 //! not one of the compiled files and not in the compile's key. A load also checks the
-//! machine it is on against what the compile sized (`machine`).
+//! machine it is on (`machine`) and sizes each reduce's arrival from its islands: the
+//! header `<program>.h` and the buffers again (`sized`).
 
 use crate::backend::{
-    CompileArg, Kernel, Machine, Processor, Refusal, Setting, Target, NOT_A_MACHINE, NOT_BUILT,
+    Buffer, CompileArg, Kernel, Machine, Processor, Refusal, Setting, Target, NOT_A_MACHINE,
+    NOT_BUILT,
 };
-use crate::program::notes::Anchor;
-use crate::program::{BodyRef, Module};
+use crate::program::Module;
 
 use super::chip::Chip;
 
-use super::plan::{Plan, Shape, WordKind};
+use super::plan::{Plan, WordKind};
 use super::Lines;
 
 /// A tensor a load is given for a tensor parameter, as the header reads it.
@@ -92,48 +93,30 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
     Ok(text(name, &plans, &names, tensors, &lines))
 }
 
-/// What a load refuses of `machine` for `module`: islands that are not a graph of its
-/// workers (`IslandGraph::hops`, as a run's load refuses them); a machine of more than
-/// one island when a reduce's arrivals are sized for one (a tree's rounds; today's
-/// make sizes them from a session's graph, which this backend does not read yet).
-pub fn machine(module: &Module, machine: &Machine) -> Result<(), Vec<Refusal>> {
+/// What a load refuses of `machine`: islands that are not a graph of its workers
+/// (`IslandGraph::hops`, as a run's load refuses them).
+pub fn machine(machine: &Machine) -> Result<(), Vec<Refusal>> {
     let workers = usize::try_from(machine.workers).unwrap_or(usize::MAX);
-    if let Err(why) = machine.islands.hops(workers) {
-        return Err(vec![Refusal {
+    match machine.islands.hops(workers) {
+        Ok(_) => Ok(()),
+        Err(why) => Err(vec![Refusal {
             code: NOT_A_MACHINE,
             what: why.sentence(),
             at: None,
-        }]);
+        }]),
     }
-    let (plans, _) = super::planned(module)?;
-    let islands = machine.islands.count();
-    if islands <= 1 {
-        return Ok(());
-    }
-    let refusals: Vec<Refusal> = plans
-        .iter()
-        .filter_map(|plan| match &plan.shape {
-            Shape::Summed(sum) => Some(Refusal {
-                code: NOT_BUILT,
-                what: format!(
-                    "a reduce's arrivals are sized for one island ({} slots, a tree's \
-                     rounds); a load on a machine of {islands} islands does not size them \
-                     from the machine's graph yet",
-                    super::TREE_ROUNDS
-                ),
-                at: Some(Anchor::Inst(
-                    BodyRef::Handler(plan.program, plan.handler),
-                    sum.reduce,
-                )),
-            }),
-            Shape::Mapped { .. } => None,
-        })
-        .collect();
-    if refusals.is_empty() {
-        Ok(())
-    } else {
-        Err(refusals)
-    }
+}
+
+/// What a load sizes on its machine: the header `<program>.h` (its name and text) and
+/// the buffers.
+pub type Sized = ((String, String), Vec<Buffer>);
+
+/// The header `<program>.h` (its name and text) and the buffers of `module` on
+/// `machine` (none: one island holding every worker): each reduce's arrival sized from
+/// the machine's islands, as today's make sizes it from its session's graph
+/// (`reduce.tree_slots`), a constant of the header the kernels include.
+pub fn sized(module: &Module, machine: Option<&Machine>) -> Result<Sized, Vec<Refusal>> {
+    super::sized(module, machine.map(|m| &m.islands))
 }
 
 /// A kernel as a load hands it to the chip's runtime: a compiled `Kernel` with each

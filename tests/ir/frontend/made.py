@@ -1,13 +1,14 @@
-"""A class form made both ways, for tests/ir/frontend.rs: today's emitter (its build
-folder, kernels and buffers) and the DSL's frontend (its module's text and origin).
-Run as `made.py <script> <class>` in the folder that holds a copy of the script from
-tests/ir/tensix/, `src` on the path."""
+"""A class made both ways for tests/ir/frontend.rs, today's (folder, kernels, buffers)
+and the frontend's: `made.py <script> <class> [<islands> <most>]`. With islands, ONE
+function is stood in for, `program.islands_of` (the session's graph, as the compile
+takes it), since no session is made without a device; nothing else is replaced."""
 
 import importlib
 import sys
 
 sys.path.insert(0, ".")
 
+from komorebi.dsl import program
 from komorebi.dsl.ir import module
 
 
@@ -18,7 +19,12 @@ def made_with(script):
     return {"l1": 1 << 20, "x": script.tensor(), "y": script.tensor()}
 
 
-def main(name, class_name):
+def main(name, class_name, islands=None, most=None):
+    if islands is not None:
+        # a session's islands reach today's compile by `islands_of` alone (its
+        # `compile_class(islands=...)`): no session is made, so no card is opened
+        given_islands = (int(islands), int(most))
+        program.islands_of = lambda session: given_islands
     script = importlib.import_module(name)
     cls = getattr(script, class_name)
     given = made_with(script)
@@ -59,4 +65,4 @@ def main(name, class_name):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:5])

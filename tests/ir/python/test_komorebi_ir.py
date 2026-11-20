@@ -235,7 +235,7 @@ def test_load_refuses_by_name():
         ir.load(T1, {"x": x, "y": x}, chip="tensix")
 
 
-def test_load_on_islands_refuses_a_reduce_sized_for_one():
+def test_load_sizes_a_reduces_arrivals_from_the_machines_islands():
     steps = (ROOT / "tests" / "ir" / "tensix" / "steps_sum.kom").read_text()
     s, t = ir.LoadTensor(768, [2, 4096]), ir.LoadTensor(1, [2, 4096])
 
@@ -243,10 +243,14 @@ def test_load_on_islands_refuses_a_reduce_sized_for_one():
         links = [(i - 1, i) for i in range(1, len(sizes))]
         return ir.Machine(sum(sizes), 1 << 20, ir.Islands(list(sizes), links), [])
 
-    with pytest.raises(ir.IrError, match="a load on a machine of 2 islands"):
-        ir.load(steps, {"s": s, "t": t}, machine=machine(6, 6))
-    one = ir.load(steps, {"s": s, "t": t}, machine=machine(12))
-    assert one == ir.load(steps, {"s": s, "t": t})
+    one = ir.load(steps, {"s": s, "t": t})
+    assert one.header_name == "stephandlers.h"
+    assert "kArrival0 = {8, 7, 1};" in one.header
+    for sizes in [(12,), (6, 6)]:
+        assert ir.load(steps, {"s": s, "t": t}, machine=machine(*sizes)) == one
+    two = ir.load(steps, {"s": s, "t": t}, machine=machine(120, 120))
+    assert "kArrival0 = {8, 8, 1};" in two.header
+    assert [b.pages for b in two.buffers if b.index == 8] == [8]
     x = ir.LoadTensor(2048, [2, 2048])
     ir.load(T1, {"x": x, "y": x}, machine=machine(6, 6))
 

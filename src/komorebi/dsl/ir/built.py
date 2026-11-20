@@ -203,9 +203,10 @@ def compile_args_of(loaded):
     return out
 
 
-def program(cls, **make):
+def program(cls, machine=None, **make):
     """The `Built` program of class `cls` made with `make` (a `km.Program`'s keywords,
-    as `module` takes them), built through the IR; its files written to
+    as `module` takes them), built through the IR and loaded on `machine` (a
+    `komorebi_ir.Machine`; None: one island); its files written to
     build/<name>-<text_key> beside the class's source, as today's make writes them."""
     log = make.get("log", print)
     made = module(cls, **make)
@@ -214,10 +215,11 @@ def program(cls, **make):
     tensors = {
         name: load_tensor(tensor) for name, tensor in given_tensors(cls, make).items()
     }
-    # no machine: one island holding every worker (a make's session= is refused by
-    # the walk, so none is known here)
-    loaded = komorebi_ir.load(compiled, tensors, machine=None)
+    # the program's header as the machine sizes it (a reduce's arrival from its
+    # islands), as today's make prints it from its session: in place of the compile's
+    loaded = komorebi_ir.load(compiled, tensors, machine=machine)
     files = {name: data.decode() for name, data in out.files}
+    files[loaded.header_name] = loaded.header
     files[loaded.thread_name] = loaded.thread
     name = cls.__name__.lower()
     digest = text_key(files)

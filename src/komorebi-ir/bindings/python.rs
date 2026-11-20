@@ -518,7 +518,8 @@ type MachineRow = (
 );
 
 /// A load on Tensix (`api::load`) of a module given its tensors by parameter name, on
-/// `chip` when one is named: (thread header's name, its text, kernels, buffers); a
+/// `chip` when one is named: (thread header's name, its text, kernels, buffers, the
+/// program header's name and text as the machine sizes it); a
 /// kernel (source, processor, defines, compile arguments, options), a buffer (index,
 /// the loader's format name, page bytes, pages, the pair's other half); on `machine`
 /// when one is given (none: one island holding every worker).
@@ -591,7 +592,10 @@ fn load<'py>(
         .map(|b| (b.index, b.dtype, b.page_bytes, b.pages, b.pair, b.unpack))
         .collect();
     let (name, text) = loaded.thread;
-    Ok((name, text, kernels, buffers).into_pyobject(py)?.into_any())
+    let (header_name, header) = loaded.header;
+    Ok((name, text, kernels, buffers, header_name, header)
+        .into_pyobject(py)?
+        .into_any())
 }
 
 /// The extension module.

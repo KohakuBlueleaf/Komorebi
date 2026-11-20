@@ -49,4 +49,6 @@ def load(
     str,
     list[tuple],
     list[tuple[int, str, int, int, int | None]],
+    str,
+    str,
 ]: ...

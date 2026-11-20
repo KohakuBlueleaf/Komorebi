@@ -105,15 +105,17 @@ tensor, partitioned alike. The Tensix backend prints one partition for the two.
 
 ### A class's program through the IR
 
-`komorebi.dsl.ir.built.program(cls, **make)` builds the class's `km_program.Program` (a `Built`)
-through the IR, apart from today's make, which it neither calls nor changes. It imports the
+`komorebi.dsl.ir.built.program(cls, machine=None, **make)` builds the class's `km_program.Program`
+(a `Built`) through the IR, apart from today's make, which it neither calls nor changes. It imports the
 komorebi-ir wheel, which `komorebi.dsl.ir` does not.
 
 1. `module` gives the module, which is compiled with its origin.
 2. The Tensix backend emits the module's files and kernels.
 3. `komorebi_ir.load` takes the make's tensors by parameter name. Each tensor gives its pages,
-   its layout words and its page in DRAM. The load gives the thread header, the kernels with each
-   tensor's layout in its place, and the buffers, their formats by the loader's names.
+   its layout words and its page in DRAM. The load is on `machine` (a `komorebi_ir.Machine`; None:
+   one island). It gives the thread header, the program's header as the machine sizes it (in
+   place of the compile's), the kernels with each tensor's layout in its place, and the buffers,
+   their formats by the loader's names.
 4. The files go to `build/<name>-<text_key>` beside the class's source, where today's make
    writes the same files.
 5. The Program is made of that output:

@@ -31,6 +31,9 @@ pub struct LoadBuffer {
 pub struct Loaded {
     /// The thread header's name (`<program>_thread.h`) and text.
     pub thread: (String, String),
+    /// The program's header (`<program>.h`) as the machine sizes it, in place of the
+    /// compile's: each reduce's arrival slots from the machine's islands.
+    pub header: (String, String),
     /// The kernels, each tensor's layout in its place.
     pub kernels: Vec<LoadedKernel>,
     /// The buffers.
@@ -47,9 +50,10 @@ fn refused(what: String) -> Vec<Refusal> {
 
 /// The load of `module` given `tensors` by parameter name, each name once and every
 /// tensor parameter named; on `chip` (`blackhole`, `wormhole_b0`) when one is named, a
-/// chip of another name refused; on `machine`, what the compile sized checked against
-/// its islands (`load::machine`), none one island holding every worker. A load names
-/// no chip when nothing is loaded yet (a make with no session).
+/// chip of another name refused; on `machine` (none: one island holding every worker),
+/// its islands checked (`load::machine`) and each reduce's arrival sized from them
+/// (`load::sized`). A load names no chip when nothing is loaded yet (a make with no
+/// session).
 pub fn load(
     module: &Module,
     tensors: &[(String, LoadTensor)],
@@ -70,7 +74,7 @@ pub fn load(
             features: Default::default(),
         },
     )?;
-    let Build::Kernels { kernels, buffers } = &output.build else {
+    let Build::Kernels { kernels, .. } = &output.build else {
         return Err(refused("a Tensix output built by steps".into()));
     };
     let names = load::tensor_names(module)?;
@@ -92,12 +96,13 @@ pub fn load(
         }
     }
     if let Some(machine) = machine {
-        load::machine(module, machine)?;
+        load::machine(machine)?;
     }
+    let (sized_header, buffers) = load::sized(module, machine)?;
     let header = load::thread_header(module, &ordered)?;
     let kernels = load::kernels(module, kernels, &ordered)?;
     let mut out = Vec::new();
-    for b in buffers {
+    for b in &buffers {
         let Some(dtype) = chip::dtype(b.format) else {
             return Err(refused(format!(
                 "a buffer of format {}, which the loader does not name",
@@ -116,6 +121,7 @@ pub fn load(
     let name = module.programs.first().map_or("", |p| p.name.as_str());
     Ok(Loaded {
         thread: (format!("{}_thread.h", name.to_lowercase()), header),
+        header: sized_header,
         kernels,
         buffers: out,
     })

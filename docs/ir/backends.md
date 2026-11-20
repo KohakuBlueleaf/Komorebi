@@ -110,9 +110,12 @@ the group's totals, and the leader stores the result in one tile. Which worker i
 the backend's statement, not the language's: on Tensix it is rank 0 of the group
 (`km_rank == 0`). A `reduce` whose combine is commutative leaves the grouping and order to the
 backend. On Tensix that is a tree over the NoC, as today's `form="tree"`. Its arrival buffer holds
-7 slots of one tile, one a round, on one island. A load on a machine of more than one island is
-refused by name for such a program until the slots are sized from the machine's graph at load.
-Its out buffer holds two tiles. Compute unpacks
+slots of one tile, sized at load from the machine's islands as today's `tree_slots` sizes them
+from a session's graph: 7 on one island; over several, the largest island's rounds and a slot
+each other island, whichever is more (8 on two islands of 120, 10 on four). The count is a
+constant of the header `<program>.h`, as in today's make, so the load writes that header again
+for its machine, in place of the compile's, and the folder is the load's. Its out buffer holds
+two tiles. Compute unpacks
 the read pair and the arrivals to Dst as float32, unrounded (a buffer's `unpack`, today's
 `unpack_to_dest_mode`). A reduce with another combine is refused. Everything else is refused with
 `K964`, by name.
@@ -168,11 +171,12 @@ Its `tensors` are `LoadTensor`s by parameter name, each with its pages, its layo
 page in DRAM. Its `machine` is a `Machine`: its workers, a worker's memory, its islands as a graph
 (`Islands`: the workers each holds, in order, and the connections between them, None for every
 pair) and the load's options. With none, the machine is one island holding every worker. The result holds:
+- the program's header `<program>.h` as the machine sizes it, in place of the compile's;
 - the thread header, its name and text;
 - the kernels, each tensor's layout among the compile arguments;
 - the buffers, each format by the name today's loader gives it (`bfloat16`; the block-float
   formats are the `_b` family, `bfp8` as `bfp8_b`).
 
 A named chip must be `blackhole` or `wormhole_b0`. A missing tensor, a tensor named twice and a
-name the program does not take are each refused by name, and so is a machine of more than one
-island for a program whose reduce's arrivals are sized for one.
+name the program does not take are each refused by name, and so is a machine whose islands are
+not a graph of its workers (`K966`).

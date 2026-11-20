@@ -26,7 +26,7 @@ use crate::bytecode::hash::{hex, sha256};
 use crate::program::body::InstId;
 use crate::program::notes::{Anchor, Origin};
 use crate::program::{BodyRef, Module};
-use crate::types::{Entry, Format, TileShape};
+use crate::types::{Entry, Format, IslandGraph, TileShape};
 use crate::types::{HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
@@ -56,7 +56,21 @@ const DST_HALF: u64 = 4;
 const FIRST_OTHER: u32 = 8;
 /// A tree reduce's arrival slots over the command's group on one island: a slot a
 /// round (`reduce.TREE_ROUNDS`, `km::kTreeRounds`).
-pub(crate) const TREE_ROUNDS: u64 = 7;
+const TREE_ROUNDS: u64 = 7;
+
+/// A tree reduce's arrival slots over the command's group on `islands`, the one
+/// statement of today's rule (`src/komorebi/dsl/compile/tiles/reduce.py:898`,
+/// `tree_slots`, its `size` none): `TREE_ROUNDS` on one island; over several, the
+/// largest island's rounds and a slot each other island, whichever is more.
+pub(crate) fn tree_slots(islands: &IslandGraph) -> u64 {
+    let parts = islands.count() as u64;
+    if parts <= 1 {
+        return TREE_ROUNDS;
+    }
+    let most = islands.sizes.iter().copied().max().unwrap_or(1) as u64;
+    let rounds = u64::from(64 - most.saturating_sub(1).leading_zeros()).max(1);
+    TREE_ROUNDS.max(rounds + parts - 1)
+}
 
 /// The compute kernel's includes (`program_sources.COMPUTE_INCLUDES`), in order, each
 /// with the need that brings it (none: every program's); the needs this emitter makes.
@@ -227,13 +241,8 @@ pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
     };
     let name = &program.name;
     let header = format!("{}.h", name.to_lowercase());
-    let pairs = pairs(&plans, &lines);
-    let others = others(&plans, &lines);
     let mut files = vec![
-        (
-            header.clone(),
-            header_text(name, &plans, &pairs, &others, &lines),
-        ),
+        (header.clone(), sized_header(module, &plans, TREE_ROUNDS)),
         (
             "movement.cpp".to_string(),
             movement_text(name, &header, &plans, &lines),
@@ -249,6 +258,33 @@ pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
     }
     files.sort();
     Ok(files)
+}
+
+/// The header of `plans` with each tree reduce's arrival of `slots` slots: the
+/// compile's on one island, a load's on its machine's (`load::sized`).
+fn sized_header(module: &Module, plans: &[Plan], slots: u64) -> String {
+    let lines = Lines {
+        origin: module.notes.origin.as_ref(),
+    };
+    let name = &module.programs[0].name;
+    let pairs = pairs(plans, &lines);
+    let others = others(plans, &lines, slots);
+    header_text(name, plans, &pairs, &others, &lines)
+}
+
+/// The header (`<program>.h`) and the buffers of `module` on a machine of `islands`
+/// (none: one island): the arrivals sized from its graph (`tree_slots`), the rest the
+/// compile's. The slots are a constant of the header, as today's make prints them
+/// from its session.
+pub(crate) fn sized(
+    module: &Module,
+    islands: Option<&IslandGraph>,
+) -> Result<load::Sized, Vec<Refusal>> {
+    let (plans, _) = planned(module)?;
+    let slots = islands.map_or(TREE_ROUNDS, tree_slots);
+    let name = format!("{}.h", module.programs[0].name.to_lowercase());
+    let header = sized_header(module, &plans, slots);
+    Ok(((name, header), buffers(&plans, slots)))
 }
 
 /// The buffer pairs in the order the streams open (`layout.pair`): each handler's
@@ -322,8 +358,8 @@ struct Other {
 }
 
 /// The sums' buffers in the order they are made: each reduce's arrival, from index 8,
-/// its slots a tree's rounds of one tile; then its out buffer, from 16, two writes.
-fn others(plans: &[Plan], lines: &Lines) -> Vec<Other> {
+/// `slots` of one tile (`tree_slots`); then its out buffer, from 16, two writes.
+fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
     let mut out: Vec<Other> = Vec::new();
     for plan in plans {
         let Shape::Summed(sum) = &plan.shape else {
@@ -344,8 +380,8 @@ fn others(plans: &[Plan], lines: &Lines) -> Vec<Other> {
         out.push(Other {
             name: "kArrival0".to_string(),
             index,
-            slots: Some(TREE_ROUNDS),
-            pages: TREE_ROUNDS,
+            slots: Some(slots),
+            pages: slots,
             what: what("kArrival0"),
         });
         let index = free(&out, FIRST_WRITE);
@@ -1379,7 +1415,7 @@ impl Backend for Tensix {
             entries: entries(program, &plans)?,
             build: Build::Kernels {
                 kernels: kernels(&plans),
-                buffers: buffers(&plans),
+                buffers: buffers(&plans, TREE_ROUNDS),
             },
         })
     }
@@ -1476,7 +1512,7 @@ fn host_expr(plan: &Plan, int: &Int, at: Anchor) -> Result<Expr, Refusal> {
 /// The buffers: each pair's two halves, in the order the pairs are made, a half the
 /// pair's pages of its tensor's tiles (`layout.pair`, `BufferPair.halves`); a float32
 /// read stream's unpacked to Dst as float32 (`page_streams`, `unpack_fp32`).
-fn buffers(plans: &[Plan]) -> Vec<Buffer> {
+fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
     let lines = Lines { origin: None };
     let mut out = Vec::new();
     for pair in pairs(plans, &lines) {
@@ -1496,7 +1532,7 @@ fn buffers(plans: &[Plan]) -> Vec<Buffer> {
         }
     }
     // a sum's arrivals are unpacked to Dst as float32; its out buffer is packed
-    for other in others(plans, &lines) {
+    for other in others(plans, &lines, slots) {
         let arrival = other.slots.is_some();
         out.push(Buffer {
             index: other.index,

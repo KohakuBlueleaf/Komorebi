@@ -16,14 +16,14 @@ use komorebi_ir::api::origin::{Given, Mapped};
 use komorebi_ir::api::{self, origin};
 use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
 use komorebi_ir::backend::tensix::{self, chip, Tensix};
-use komorebi_ir::backend::{Backend, Bound, Build, Expr, Processor, Setting, Target};
+use komorebi_ir::backend::{Backend, Bound, Build, Expr, Machine, Processor, Setting, Target};
 use komorebi_ir::bytecode;
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::notes::{Anchor, Owner};
 use komorebi_ir::program::BodyRef;
 use komorebi_ir::program::Module;
-use komorebi_ir::types::{HandlerId, ProgramId};
+use komorebi_ir::types::{HandlerId, IslandGraph, ProgramId};
 
 fn here() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir")
@@ -46,6 +46,12 @@ fn numbers(rest: &str) -> Vec<u32> {
 
 /// `made.py` run on a copy of `tensix/<script>.py` in its own folder, for `class`.
 fn made(name: &str, script: &str, class: &str) -> Made {
+    made_on(name, script, class, None)
+}
+
+/// `made`, today's make on a session of `islands` (islands, the largest's workers)
+/// as its compile takes it (`made.py`).
+fn made_on(name: &str, script: &str, class: &str, islands: Option<(usize, usize)>) -> Made {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("frontend-{name}"));
     std::fs::create_dir_all(&dir).expect("a folder for the script");
     let file = format!("{script}.py");
@@ -54,6 +60,12 @@ fn made(name: &str, script: &str, class: &str) -> Made {
     let out = Command::new(&python)
         .arg(here().join("frontend/made.py"))
         .args([script, class])
+        .args(
+            islands
+                .map(|(n, most)| [n.to_string(), most.to_string()])
+                .into_iter()
+                .flatten(),
+        )
         .current_dir(&dir)
         .env(
             "PYTHONPATH",
@@ -148,9 +160,30 @@ fn first_difference(a: &str, b: &str) -> String {
 /// kernels and buffers against `made.py`'s lines, and the folder's name
 /// (`<prefix>-<text_key>`).
 fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix: &str) {
-    let mut files = tensix::sources(module).unwrap_or_else(|r| panic!("{r:?}"));
+    same_on_machine(made, module, stand_ins, prefix, None);
+}
+
+/// `same_as_today` with the load on `machine`: the header and the buffers the load
+/// sizes from its islands, in place of the compile's.
+fn same_on_machine(
+    made: &Made,
+    module: &Module,
+    stand_ins: &[LoadTensor],
+    prefix: &str,
+    machine: Option<&Machine>,
+) {
+    let names = load::tensor_names(module).unwrap_or_else(|r| panic!("{r:?}"));
+    let given: Vec<(String, LoadTensor)> = names.into_iter().zip(stand_ins.to_vec()).collect();
+    let loaded = api::load::load(module, &given, None, machine).unwrap_or_else(|r| panic!("{r:?}"));
     let header = thread_header(module, stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
-    files.push((format!("{prefix}_thread.h"), header));
+    assert_eq!(loaded.thread, (format!("{prefix}_thread.h"), header));
+    let mut files: Vec<(String, String)> = tensix::sources(module)
+        .unwrap_or_else(|r| panic!("{r:?}"))
+        .into_iter()
+        .filter(|(n, _)| *n != loaded.header.0)
+        .collect();
+    files.push(loaded.header.clone());
+    files.push(loaded.thread.clone());
     files.sort();
     let mut today: Vec<String> = std::fs::read_dir(&made.folder)
         .expect("the build folder")
@@ -177,20 +210,17 @@ fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix:
     let output = Tensix
         .compile(module, &target)
         .unwrap_or_else(|r| panic!("{r:?}"));
-    let Build::Kernels {
-        kernels: built,
-        buffers,
-    } = &output.build
-    else {
+    let Build::Kernels { kernels: built, .. } = &output.build else {
         panic!("kernels built at load");
     };
-    let loaded = load::kernels(module, built, stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
+    let handed = load::kernels(module, built, stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
     let joined = |mut pairs: Vec<(String, String)>| {
         pairs.sort();
         let pairs: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}:{v}")).collect();
         pairs.join(",")
     };
-    let mut ours: Vec<String> = loaded
+    assert_eq!(handed, loaded.kernels, "the load's kernels");
+    let mut ours: Vec<String> = handed
         .iter()
         .map(|k| {
             let (role, number) = match k.processor {
@@ -211,9 +241,10 @@ fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix:
                 })
                 .collect();
             // the buffers unpacked to Dst, as today's compute option (a Python dict)
-            let unpacked: Vec<String> = buffers
+            let unpacked: Vec<String> = loaded
+                .buffers
                 .iter()
-                .filter_map(|b| b.unpack.map(|u| format!("{}: '{}'", b.index, u.name())))
+                .filter_map(|b| b.unpack.map(|u| format!("{}: '{u}'", b.index)))
                 .collect();
             if k.processor == Processor::Compute && !unpacked.is_empty() {
                 let dict = format!("{{{}}}", unpacked.join(", "));
@@ -228,12 +259,15 @@ fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix:
             )
         })
         .collect();
-    ours.extend(buffers.iter().map(|b| {
-        let dtype = chip::dtype(b.format).unwrap_or("none");
-        format!("BUFFER {} {dtype} {} {}", b.index, b.page_bytes, b.pages)
+    ours.extend(loaded.buffers.iter().map(|b| {
+        format!(
+            "BUFFER {} {} {} {}",
+            b.index, b.dtype, b.page_bytes, b.pages
+        )
     }));
     ours.extend(
-        buffers
+        loaded
+            .buffers
             .iter()
             .filter_map(|b| b.pair.filter(|o| b.index < *o).map(|o| (b.index, o)))
             .map(|(a, b)| format!("PAIR {a} {b}")),
@@ -343,6 +377,28 @@ fn program_2_through_the_frontend_is_todays_text_byte_for_byte() {
         dram_page: None,
     };
     same_as_today(&made, &module, &[tensor(768), tensor(1)], "stephandlers");
+    // On a machine of islands: today's make on a session of them against the load's
+    // arrival sized from the machine's graph, each file and the folder's name.
+    for sizes in [vec![6, 6], vec![120, 120], vec![60, 60, 60], vec![120; 4]] {
+        let most = sizes.iter().copied().max().unwrap_or(0);
+        let on = made_on(
+            &format!("steps-{}x{most}", sizes.len()),
+            "steps_sum",
+            "StepHandlers",
+            Some((sizes.len(), most)),
+        );
+        let machine = Machine {
+            workers: sizes.iter().sum::<usize>() as u64,
+            worker_memory: 1 << 20,
+            islands: IslandGraph {
+                links: Some((1..sizes.len()).map(|i| (i - 1, i)).collect()),
+                sizes,
+            },
+            options: Vec::new(),
+        };
+        let stand_ins = [tensor(768), tensor(1)];
+        same_on_machine(&on, &module, &stand_ins, "stephandlers", Some(&machine));
+    }
     // Every range is a bound: s's partitioned tiles 0 .. tiles, and t's one tile.
     let target = Target {
         arch: chip::ARCH.to_string(),

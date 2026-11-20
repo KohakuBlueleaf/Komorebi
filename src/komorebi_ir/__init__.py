@@ -245,12 +245,15 @@ class Machine(NamedTuple):
 
 class Loaded(NamedTuple):
     """What a load on Tensix makes from its tensors: the thread header (its name and
-    text), the kernels and the buffers."""
+    text), the kernels, the buffers, and the program's header as the machine sizes it
+    (each reduce's arrival from its islands), in place of the compile's."""
 
     thread_name: str
     thread: str
     kernels: list[LoadedKernel]
     buffers: list[LoadBuffer]
+    header_name: str
+    header: str
 
 
 def load(
@@ -271,12 +274,16 @@ def load(
         links = None if links is None else [tuple(link) for link in links]
         islands = (list(machine.islands.sizes), links)
         given = (machine.workers, machine.worker_memory, islands, list(machine.options))
-    name, text, kernels, buffers = _rs.load(program, rows, chip, given)
+    name, text, kernels, buffers, header_name, header = _rs.load(
+        program, rows, chip, given
+    )
     return Loaded(
         name,
         text,
         [LoadedKernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
         [LoadBuffer(*b) for b in buffers],
+        header_name,
+        header,
     )
 
 

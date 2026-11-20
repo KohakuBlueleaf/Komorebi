@@ -14,6 +14,7 @@ import pytest
 import komorebi as km
 import komorebi_ir as ir
 from komorebi.device.tensor import Tensor
+from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.ir import module
 from komorebi.dsl.ir.built import Entry, program
@@ -362,3 +363,24 @@ def test_program_3_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     assert list(today.add.args(a, b, out, p3.WIDTH)) == words
     with pytest.raises(km.ProgramError, match=f"at rank {p3.CORES} of {p3.CORES + 1}"):
         ours.entry("add").args(a, b, out, p3.WIDTH, group=more)
+
+
+def test_program_2_built_on_islands_is_todays_on_a_session_of_them(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "steps_sum.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "steps_sum.py", script)
+    spec = importlib.util.spec_from_file_location("steps_sum", script)
+    p2 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "steps_sum", p2)
+    spec.loader.exec_module(p2)
+    given = p2.made_with()
+    # a session's islands reach today's compile by `islands_of` alone: two of 120
+    monkeypatch.setattr(dsl_program, "islands_of", lambda session: (2, 120))
+    today = p2.StepHandlers(log=lambda line: None, **given)
+    machine = ir.Machine(240, 1 << 20, ir.Islands([120, 120], [(0, 1)]), [])
+    ours = program(p2.StepHandlers, machine=machine, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "stephandlers.h"
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert "kArrival0 = {8, 8, 1};" in ours.header.read_text()
