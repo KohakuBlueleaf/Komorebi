@@ -5,21 +5,25 @@
 //! the same KernelIR and the same vector-unit function (its SFPI code included), print
 //! the same listing from the data byte for byte, costs included, and the same header
 //! and listing after the emit, and encode every word of the operation table as today
-//! does. Today's `tile_wormhole.py` gives the Wormhole forms, the emit and its checks
-//! on units of a few words that the corpus does not reach.
+//! does. Today's `tile_wormhole.py` and `tile_checks.py` give the Wormhole forms, the
+//! emit and its checks, and the hazard checks, on units of a few words that the
+//! corpus does not reach.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
 use komorebi_ir::backend::tensix::tile::chain::{Chain, Source};
+use komorebi_ir::backend::tensix::tile::checks::{
+    check_config_nop, check_dst_window, check_mad_readers, check_saved, not_held,
+};
 use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program};
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
 use komorebi_ir::backend::tensix::tile::unit::{
-    decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
-    Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
+    decode, encode, insns, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product,
+    Runtime, Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
 };
 use komorebi_ir::backend::tensix::tile::wormhole::forms;
 
@@ -698,6 +702,92 @@ fn wormholes_forms_and_the_emit_with_its_checks_are_todays_on_a_few_words() {
         }
         let emitted = emit(&mut unit(&data)).unwrap_or_else(|e| format!("refused: {e}"));
         out.push(format!("EMIT\n{emitted}"));
+        let got = out.join("\n") + "\n";
+        assert!(
+            got == want,
+            "{case:?} differs, {}",
+            first_difference(&want, &got)
+        );
+    }
+}
+
+/// Today's hazard checks on the units of a few words (`tile_checks.py`), once for all
+/// the tests.
+fn today_checks() -> Option<PathBuf> {
+    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOLDER
+        .get_or_init(|| run_today("tile_checks.py", "tensix-tile-checks"))
+        .clone()
+}
+
+/// The `.unit` files of a folder, in name order.
+fn unit_files(folder: &Path) -> Vec<PathBuf> {
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(folder)
+        .expect("the folder")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "unit"))
+        .collect();
+    cases.sort();
+    cases
+}
+
+#[test]
+fn the_hazard_checks_are_todays_on_a_few_words() {
+    let Some(folder) = today_checks() else { return };
+    let cases = unit_files(&folder);
+    assert_eq!(cases.len(), 15, "the cases: {cases:?}");
+    let notes = |code: &[Item]| -> String {
+        let words: Vec<String> = code
+            .iter()
+            .filter_map(|x| match x {
+                Item::Insn(x) => Some(format!("{}:{}", x.op.name, x.note)),
+                _ => None,
+            })
+            .collect();
+        words.join(" ")
+    };
+    let refused = |e: UnitError| format!("refused: {e}");
+    for case in &cases {
+        let data = std::fs::read_to_string(case).expect("the data");
+        let want = std::fs::read_to_string(case.with_extension("out")).expect("today's");
+        let mut made = unit(&data);
+        let flat: Vec<Insn> = insns(&made.tile[MATH]).into_iter().cloned().collect();
+        let as_items = || -> Vec<Item> { flat.iter().cloned().map(Item::Insn).collect() };
+        let mut out = Vec::new();
+        let mut code = as_items();
+        let repairs = check_mad_readers(&mut code).unwrap_or_else(|e| panic!("{e}"));
+        out.push(format!("MAD\t{repairs}\t{}", notes(&code)));
+        let mut code = as_items();
+        let repairs = check_config_nop(&mut code).unwrap_or_else(|e| panic!("{e}"));
+        out.push(format!("CONFIG\t{repairs}\t{}", notes(&code)));
+        let refs: Vec<&Insn> = flat.iter().collect();
+        out.push(format!(
+            "SAVED\t{}",
+            check_saved(&refs).unwrap_or_else(refused)
+        ));
+        let held: Vec<String> = flat
+            .windows(2)
+            .map(|p| {
+                let written = p[0].writes().unwrap_or_else(|e| panic!("{e}"));
+                if not_held(&p[1], &written) {
+                    "True"
+                } else {
+                    "False"
+                }
+                .to_string()
+            })
+            .collect();
+        out.push(format!("HELD\t{}", held.join(" ")));
+        let windows: Vec<String> = (1..=3)
+            .map(|tiles| {
+                made.checks.clear();
+                match check_dst_window(&mut made, tiles) {
+                    Ok(()) => made.checks[0].verdict.clone(),
+                    Err(e) => refused(e),
+                }
+            })
+            .collect();
+        out.push(format!("WINDOW\t{}", windows.join("\t")));
         let got = out.join("\n") + "\n";
         assert!(
             got == want,
