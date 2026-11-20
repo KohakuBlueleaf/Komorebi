@@ -66,6 +66,10 @@ path = "tests/ir/parity.rs"
 name = "origin"
 path = "tests/ir/origin.rs"
 
+[[test]]
+name = "frontend"
+path = "tests/ir/frontend.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

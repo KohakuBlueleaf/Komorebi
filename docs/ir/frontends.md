@@ -63,3 +63,19 @@ An origin is refused by what is wrong with it, before the module is used:
 `komorebi_ir.check(text, origin)` and `komorebi_ir.compile(text, origin)` take a
 `komorebi_ir.Origin(files, lines, map, renames)`. A diagnostic then has a `place`: the file, and its
 first and last lines. A refused origin raises `IrError`, and its message says what is wrong.
+
+## Komorebi's classes
+
+`komorebi.dsl.ir.module(cls, **make)` writes a class written as today's DSL writes it (a
+`km.Program` with `km.handler` methods) as an IR module. It reads the handlers with `ast`, as the
+class compiler does, and gives a `Made`: the text and `made.origin` for `komorebi_ir.compile`. It
+does not import `komorebi_ir`, and today's make does not call it.
+
+It takes the lines of the first lesson: a partition of a tensor's pages, a write stream and a read
+loop over a partition, and a push of a tile function's result. Every other line is refused by name,
+with the class's line, and so is a make keyword that would change the module. The make's tensors
+give the module's formats; a tensor's pages must be one tile each, since an IR view is in tiles.
+`l1=`, `depth=` and `log=` are not part of the module.
+
+A partition the class applies to a second tensor (`y[src]`) is written as the same range of that
+tensor, partitioned alike. The Tensix backend prints one partition for the two.
