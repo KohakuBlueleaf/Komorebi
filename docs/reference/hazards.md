@@ -374,11 +374,15 @@ optimisation levels or the NoC of a kernel do not fit one build, and programs th
 declare a buffer index two ways do not fit one layout.
 
 **The rule.** Programs that share cores, and the programs of a dict, give the same
-`compute`, `opt` and `noc`, and declare a shared buffer index identically.
+`compute`, `opt` and `noc`, and declare a shared buffer index identically. In a dict
+each program's parts are built with its own buffers' format tables, so its buffers,
+`unpack_to_dest_mode` and `dst_full_sync_en` may differ from the other programs'.
 
-**The guard.** Refused: `run.load` raises `ProgramError` and says which symbol differs,
-and a list of programs with a buffer index declared two ways raises `L1LayoutError` with
-the L1 budget table.
+**The guard.** Refused: in a dict, `run.load` raises `ProgramError` naming the compute
+option and both programs' values (`switch_compute_refusal`), or which symbol of the
+groups' kernels differs; a list of programs with a buffer index declared two ways raises
+`L1LayoutError` with the L1 budget table. Before the guard named the options, a group
+switched to a program of other buffers and Dst mode hung its cores (a Wormhole chip).
 
 Described in [Host API, several programs in one run](host.md#several-programs-in-one-run)
 and [movement, the NoC of each CPU](movement.md#the-noc-of-each-cpu).
@@ -1260,6 +1264,26 @@ it in the B family.
 **The guard.** Nothing.
 
 Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
+
+### A product's fp32 sum that cancels to one unit below zero, on Wormhole
+
+**The hazard.** On a Wormhole chip, a product instruction whose fp32 `Dst` sum is
+exactly -1 in its last place writes -16 units of its exponent instead. The last place is
+the 23rd fractional bit at the largest exponent among the instruction's terms, so the
+wrong value is about -16 times its largest term. The product's later instructions add
+the rest of the sum on top, so one rare value is off by a negative power of two, the
+same on every run. No fidelity and neither form of a sum (a float32 field, `Dst`) is
+immune. HiFi4 meets it most often: its fourth phase leaves low bits 12 binades below the
+first phase's, against 7 binades at HiFi3.
+
+**The rule.** Inspect a clear outlier against float64. A `Dst` that starts at a positive
+power of two above every running sum of the product, subtracted afterwards, never meets
+it: that is the exact cure, and it costs those binades of the sum's 24 bits.
+
+**The guard.** Nothing. `komorebi.tools.wormhole_products` models a Wormhole product bit
+for bit, erratum included.
+
+Described in [Tile formats, the bits a product multiplies](formats.md#the-bits-a-product-multiplies).
 
 ### A tile function's sqrt, reciprocal and division outside their domain
 
@@ -2419,6 +2443,23 @@ thread's linked ELF and raises `km.KernelInstructionError`, naming the word, the
 thread, the kernel's source line and this entry. The tile compiler's own Wormhole
 words never trip it. A word whose operands are computed at run time (tt-llk's `TT_`
 form) is stored, not encoded, and the check does not see it.
+
+### A tile function's comparison with every register live on Wormhole
+
+**The hazard.** Wormhole has no `SFPGT`, which the tile compiler writes for `<`, `>`,
+`<=`, `>=` and `==` of two values (`==` as two of them). Its Wormhole form needs a work
+register (LReg 0 to 6) free at the word; where every register holds a value, as in a
+wide row's argmax `where(row == m.col(), cols.row(), 1e9)` (the row's chunk, its
+per-row value and the column field all held), there is none.
+
+**The rule.** On Wormhole compare a difference with 0: `row + (m * -1.0).col() == 0.0`
+(a sign test, no register; for finite values the same truth, but a +0 of the row
+equals a -0 per-row value there, and an infinity equals nothing). The argmax written so is exact on a Wormhole card
+for rows of 4, 5 and 14 tiles.
+
+**The guard.** Refused at the load on Wormhole (`chips.Chip.tile_refusal`), naming the
+program, the tile function, the operation and this entry; Blackhole builds it as
+written.
 
 ### A link packet for a far Wormhole chip's DRAM
 

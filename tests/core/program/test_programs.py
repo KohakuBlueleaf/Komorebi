@@ -222,6 +222,39 @@ def test_a_load_is_a_command_naming_the_program_and_its_record(tmp_path):
         stuck.load(second, (0, 4))
 
 
+def test_a_switch_between_programs_of_other_compute_options_is_refused_by_name(
+    tmp_path,
+):
+    first = made(tmp_path, "first", compute={"fp32_dest_acc_en": True})
+    full = made(
+        tmp_path,
+        "full",
+        compute={
+            "fp32_dest_acc_en": True,
+            "dst_full_sync_en": True,
+            "unpack_to_dest_mode": {10: "UnpackToDestFp32"},
+        },
+    )
+    assert (
+        programs.switch_compute_refusal([first, full]) is None
+    )  # its parts carry them
+    half = made(tmp_path, "half", compute={"math_fidelity": "HiFi4"})
+    refused = programs.switch_compute_refusal([first, full, half])
+    assert refused.startswith(
+        "first has compute option fp32_dest_acc_en=True and half fp32_dest_acc_en=None"
+    )
+    other = made(
+        tmp_path, "other", compute={"fp32_dest_acc_en": True, "math_approx_mode": True}
+    )
+    assert (
+        "option math_approx_mode=None and other math_approx_mode=True"
+        in programs.switch_compute_refusal([first, other])
+    )
+    stuck, _, _, second = switching_run(tmp_path / "options", refused=refused)
+    with pytest.raises(ProgramError, match="fp32_dest_acc_en=True and half"):
+        stuck.load(second, (0, 4))
+
+
 def test_the_dispatchers_table_refuses_with_reason_13(tmp_path):
     run, port, first, second = switching_run(tmp_path)
     run._holds = None  # past the host's check: the dispatcher's own

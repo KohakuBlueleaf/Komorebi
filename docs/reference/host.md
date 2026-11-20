@@ -263,8 +263,11 @@ commands for `program`.
   it does not fit. Buffer indices are below 32.
 - **One build of the runtime's kernels.** A program's parts run on any group's kernels,
   so the groups' runtime kernels must be the same build: programs of a dict share
-  compute options and `opt` levels (else `run.load` raises `ProgramError` and says
-  which symbol differs). A run loaded with one program or with a list has no `load`.
+  compute options and `opt` levels. Each program's parts carry its own buffers' format
+  tables, `unpack_to_dest_mode` and `dst_full_sync_en` (its start-up runs at its load),
+  so those may differ. Else `run.load` raises `ProgramError` naming the compute option
+  and both programs' values, or the symbol of the kernels that differs. A run loaded
+  with one program or with a list has no `load`.
 - **A thread may load too.** An X280 thread of the run gives a group another program
   with `kmx_load` ([threads](threads.md#a-thread-gives-a-group-another-program)). The
   host then no longer knows which program each core holds, so in a run loaded with a

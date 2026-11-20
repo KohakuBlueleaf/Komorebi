@@ -678,7 +678,7 @@ def code_table(program, built):
         if name not in compiled_overlays:
             lines.append(f"  {name}: resident, in the kernels")
             continue
-        number = compiled_overlays[name]
+        number = compiled_overlays[name] + getattr(program, "overlay_shift", 0)
         sizes = ", ".join(
             f"{part} {len(built.images[number, part]):,} B"
             for part in overlay.PARTS

@@ -1105,7 +1105,7 @@ class _Backend:
         )
         tensor = programs.words_tensor(self.card, rows)
         self.io.append(tensor)
-        refused = None
+        refused = programs.switch_compute_refusal(placed.programs)
         differ = sorted(
             (target, name)
             for each in symbols[1:]
@@ -1113,7 +1113,7 @@ class _Backend:
             for name in names.keys() | symbols[0].get(target, {}).keys()
             if names.get(name) != symbols[0].get(target, {}).get(name)
         )
-        if differ:
+        if differ and refused is None:
             refused = (
                 "the groups' runtime kernels differ (compute options or opt levels; "
                 f"{differ[0][0]}'s {differ[0][1]}, {len(differ)} symbols), so a "
@@ -1147,10 +1147,12 @@ class _Backend:
         by_group = kernel_module._group_recipes(
             descriptor.recipes(), len(placed.groups)
         )
-        declared = placed.programs[0].overlay_slots
+        declared = kernel_module.switch_slots(placed)
         built, symbols = [], []
+        arch = self.device.arch()
+        parts = [kernel_module.part_recipes(each, arch) for each in by_group]
         for number, group in enumerate(placed.groups):
-            recipes = kernel_module.part_recipes(by_group[number], self.device.arch())
+            recipes = parts[number]
             if placed.switch:  # a part runs on any group's kernels: the same globals
                 symbols.append(
                     {
@@ -1165,11 +1167,12 @@ class _Backend:
                     }
                 )
             held = [placed.programs[index] for index in group.programs]
-            # a group that may switch program holds every program's own overlays
+            # a group that may switch program holds every program's own overlays, each
+            # built with its program's group's recipes (its buffers' format tables)
             owners = placed.programs if placed.switch else held
             fits = False
             while not fits:  # a merged program over L1 places a source as an overlay
-                declared = placed.programs[0].overlay_slots
+                declared = kernel_module.switch_slots(placed)
                 made = overlay.build_overlays(
                     [
                         *(
@@ -1180,9 +1183,13 @@ class _Backend:
                             )
                         ),
                         *(
-                            each
-                            for owner in owners
-                            for each in programs.own_overlays(owner)
+                            added_program.home_overlays(placed, number, parts)
+                            if placed.switch
+                            else (
+                                each
+                                for owner in owners
+                                for each in programs.own_overlays(owner)
+                            )
                         ),
                         *added_program.ahead_overlays(self, placed, number, recipes),
                         overlay.service(recipes),
@@ -1204,7 +1211,11 @@ class _Backend:
                     made = kernel_module.fit_slots(
                         made, declared, card.l1()[1], rows, card.log
                     )
-                rows[2:2] = kernel_module.slot_rows(made.slots, made.service, made.why)
+                # a switch: the service overlay counted where the common slots put it
+                shown = kernel_module.switch_group_slots(made, declared, placed.switch)
+                rows[2:2] = kernel_module.slot_rows(
+                    shown.slots, shown.service, shown.why
+                )
                 table, fits = overlay.budget(card.l1()[1], rows)
                 names = ", ".join(program.name for program in held)
                 card.log(f"L1 budget of a core of {names}:\n{table}")

@@ -20,8 +20,11 @@ DECODE_VARIANTS = WINDOW  # a decode token at pos: variant min(pos, 127)
 # a block at start s (s % 32 == 0): 128 + s // 32 % 4 (+ 4 if s >= 128)
 PREFILL_VARIANTS = 8
 # The plan's sizes: Q's and V's tiles a row, query tile rows a job, key tiles a block
-# (block 0 the sink's and the window's), the window, the broadcast's length (README.md).
-DT, DV, R, KB, BROADCAST_WINDOW, LENGTH = 16, 16, 1, 6, 2, 9
+# (block 0 the sink's and the window's), the broadcast's length (README.md).
+DT, DV, R, KB, LENGTH = 16, 16, 1, 6, 9
+# blocks in flight a broadcast (384 KiB each): 1 fits a joined island's L1 beside the
+# service overlay's own slot; 2 when that overlay can share the reader's slots
+BROADCAST_WINDOW = 1
 if KB != MASKS + 1:
     raise ValueError("block 0 of the key list is the sink's and the window's tiles")
 SUB = pl.SUB_CHUNK  # key tiles a compute step
@@ -45,7 +48,7 @@ class Job(km.Entry):
 
 class AttendLocal(
     km.Program,
-    compute={"fp32_dest_acc_en": True, "math_fidelity": "HiFi3"},
+    compute={"fp32_dest_acc_en": True, "math_fidelity": "HiFi2"},
     startup=km.Startup("ones", "causal", "p", order="reverse"),
     defines={
         "FLASH_HEAD_TILES": DT,
@@ -236,11 +239,18 @@ def dims(key_tiles):
     return pl.dims(1, 1, 1, HEADS * TILE, key_tiles * TILE, HEAD_DIM, HEAD_DIM, False)
 
 
+def island_ranks(session):
+    """The ranks of the session's first island, where the piece runs: all of a card's
+    session, less the link cores on joined cards (75 of 79 on Wormhole)."""
+    graph = getattr(session, "graph", None)
+    return session.ranks if graph is None else graph.count(0)
+
+
 def grid(session):
-    """The class's broadcast rectangle: the whole rows of the session's ranks (a Tensix
-    dispatcher's row left out), columns x rows."""
+    """The class's broadcast rectangle: the whole rows of the first island's ranks (a
+    Tensix dispatcher's row left out), columns x rows."""
     columns = session.nocs().grid[0]
-    return columns, session.ranks // columns
+    return columns, island_ranks(session) // columns
 
 
 def group(session):
@@ -254,12 +264,7 @@ def plan_of(session, key_tiles):
     not the class's."""
     sizes = {"rows": R, "block_keys": KB, "length": LENGTH}
     made = pl.make(dims(key_tiles), grid(session), **sizes)
-    if key_tiles > KEY_TILES or (made.r, made.kb, made.window, made.length) != (
-        R,
-        KB,
-        BROADCAST_WINDOW,
-        LENGTH,
-    ):
+    if key_tiles > KEY_TILES or (made.r, made.kb, made.length) != (R, KB, LENGTH):
         raise km.KomorebiError(f"plan {made.summary()}: the class is of {R, KB}")
     return made
 

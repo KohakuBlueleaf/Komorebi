@@ -15,6 +15,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import formats  # noqa: E402
+from projects.galaxy.attention_local import layer as ly  # noqa: E402
 from projects.galaxy.attention_local import proj as pj  # noqa: E402
 
 STARTED = time.monotonic()
@@ -38,6 +39,9 @@ def errors(got, want):
         "bf16_equal": float((bf16(want.astype(np.float32)) == got).mean()),
         "bf16_units_max": int(units(got, want).max()),
     }
+
+
+KERNEL_BYTES = 104_448  # the kernels' 103,408 B and the load's margin, aligned
 
 
 def units(got, want):
@@ -83,8 +87,11 @@ def main():
     o = np.zeros((32, pj.HEADS * pj.HEAD_DIM), np.float32)
     o[: a.tokens] = bf16(rng.standard_normal((a.tokens, o.shape[1]), dtype=np.float32))
     reports = []
-    with km.Session(log=log) as s:
-        t = {name: s.tensor(w, fmt, "tile") for name, w in weights.items()}
+    # the class's kernels take 103,408 B: opened at that size (a reopen at the load
+    # brings a written tensor back at another address)
+    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as s:
+        # each W seen as one tile column, as the loader's arenas (first page 0)
+        t = {name: ly.column(s.tensor(w, fmt, "tile")) for name, w in weights.items()}
         act = {
             "x": s.tensor(x, "bfloat16", "tile"),
             "o": s.tensor(o, "bfloat16", "tile"),
@@ -141,13 +148,13 @@ def main():
             )
 
         steps = [  # (step, handler, ranks, words)
-            ("wq_a", "wq_a", pj.cores("wq_a"), (act["x"], t["wq_a"], act["qa"])),
+            ("wq_a", "wq_a", pj.cores("wq_a"), (act["x"], t["wq_a"], act["qa"], 0)),
             ("q_norm", "norm_q", 1, (act["qa"], act["gq"], act["qr"])),
-            ("wq_b", "wq_b", pj.cores("wq_b"), (act["qr"], t["wq_b"], act["q"])),
-            ("wkv", "wkv", pj.cores("wkv"), (act["x"], t["wkv"], act["kv0"])),
+            ("wq_b", "wq_b", pj.cores("wq_b"), (act["qr"], t["wq_b"], act["q"], 0)),
+            ("wkv", "wkv", pj.cores("wkv"), (act["x"], t["wkv"], act["kv0"], 0)),
             ("kv_norm", "norm_kv", 1, (act["kv0"], act["gkv"], act["kv"])),
-            ("wo_a", "wo_a", pj.cores("wo_a"), (act["o"], t["wo_a"], act["oa"])),
-            ("wo_b", "wo_b", pj.cores("wo_b"), (act["oa"], t["wo_b"], act["y"])),
+            ("wo_a", "wo_a", pj.cores("wo_a"), (act["o"], t["wo_a"], act["oa"], 0)),
+            ("wo_b", "wo_b", pj.cores("wo_b"), (act["oa"], t["wo_b"], act["y"], 0)),
         ]
         times = {name: [] for name, *_ in steps}
         for _ in range(a.repeat):

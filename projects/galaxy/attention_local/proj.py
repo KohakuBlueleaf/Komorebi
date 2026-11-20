@@ -32,106 +32,163 @@ def rms_kv(row, weight):
 
 class Projections(km.Program):
     """A product a handler: Y[:, first:first + WIDTH] = X[:, K range] W[K range, ...]
-    for the group's block of Y columns (wo_a's W stacked by `wo_a_stacked`, K in the
-    block's group); norm_q / norm_kv: x rsqrt(mean(x^2) + eps) g on one core."""
+    for the group's block of Y columns, W the pages from `at` of a one-column arena
+    (README.md, "Weights"); norm_q / norm_kv: x rsqrt(mean(x^2) + eps) g on one core."""
 
     CHUNK = km.constant(CHUNK)
     # each product's K tiles (wo_a: a group's) and K split (ranks a group of WIDTH
-    # columns): at most 79 ranks, the trees' arrival slots inside L1
+    # columns): at most 75, a joined island's ranks; the trees' arrival slots in L1
     QA_K, QA_SPLIT = km.constant(DIM // TILE), km.constant(15)
-    KV_K, KV_SPLIT = km.constant(DIM // TILE), km.constant(39)
+    KV_K, KV_SPLIT = km.constant(DIM // TILE), km.constant(37)
     QB_K, QB_SPLIT = km.constant(Q_RANK // TILE), km.constant(1)
     OA_K, OA_SPLIT = km.constant(HEADS * HEAD_DIM // O_GROUPS // TILE), km.constant(4)
     OA_COLS = km.constant(O_RANK // TILE)
     OB_K, OB_SPLIT = km.constant(O_GROUPS * O_RANK // TILE), km.constant(3)
+    # each W's tile columns (its rows' pages apart in the arena); a rank's K tiles, one
+    # more on the first REM ranks of a group (each walk's count known to the build)
+    QA_N, KV_N = km.constant(Q_RANK // TILE), km.constant(HEAD_DIM // TILE)
+    QB_N, OB_N = km.constant(HEADS * HEAD_DIM // TILE), km.constant(DIM // TILE)
+    QA_KS, QA_REM = km.constant(DIM // TILE // 15), km.constant(DIM // TILE % 15)
+    KV_KS, KV_REM = km.constant(DIM // TILE // 37), km.constant(DIM // TILE % 37)
+    QB_KS = km.constant(Q_RANK // TILE)
+    OA_KS = km.constant(HEADS * HEAD_DIM // O_GROUPS // TILE // 4)
+    OB_KS = km.constant(O_GROUPS * O_RANK // TILE // 3)
+    OB_REM = km.constant(O_GROUPS * O_RANK // TILE % 3)
     wide_sums: km.L1[km.fp32, 1, WIDE, 32, 32]
     narrow_sums: km.L1[km.fp32, 1, NARROW, 32, 32]
     q_weight: km.L1[km.fp32, Q_TILES // 2, 32, 32]
     kv_weight: km.L1[km.fp32, KV_TILES // 2, 32, 32]
 
-    @km.tile_function(fidelity="HiFi3")
+    @km.tile_function(fidelity="HiFi2")
     def project(x, w):
         return x @ w
 
     @km.handler
-    def wq_a(self, x: km.Tensor, w_qa: km.Tensor, y: km.Tensor):
+    def wq_a(self, x: km.Tensor, w_qa: km.Tensor, y: km.Tensor, at: int):
         share = self.rank % self.QA_SPLIT
         first = self.rank // self.QA_SPLIT * WIDE
-        k0 = share * self.QA_K // self.QA_SPLIT
-        k1 = (share + 1) * self.QA_K // self.QA_SPLIT
+        k0 = share * self.QA_KS + min(share, self.QA_REM)
+        r0 = at + k0 * self.QA_N + first
         for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
-            km.Stream(w_qa.tiles[k0:k1, first : first + WIDE], block=self.CHUNK * WIDE),
+            km.Stream(x.tiles[0:1, k0 : k0 + self.QA_KS], block=self.CHUNK),
+            km.Stream(
+                w_qa.tiles[r0 : r0 + self.QA_KS * self.QA_N : self.QA_N, 0:WIDE],
+                block=self.CHUNK * WIDE,
+            ),
         ):
             self.wide_sums += self.project(xb, wb)
-        whole = km.reduce(self.wide_sums, form="tree", group=self.QA_SPLIT)
+        if share < self.QA_REM:  # its one more K tile
+            k = k0 + self.QA_KS
+            r = r0 + self.QA_KS * self.QA_N
+            for xb, wb in zip(
+                km.Stream(x.tiles[0:1, k : k + 1], block=1),
+                km.Stream(
+                    w_qa.tiles[r : r + 1 * self.QA_N : self.QA_N, 0:WIDE], block=WIDE
+                ),
+            ):
+                self.wide_sums += self.project(xb, wb)
+        whole = km.reduce(self.wide_sums, form="tree", group=self.QA_SPLIT, local=True)
         if self.rank == self.leader:
             y.pages(first, WIDE).write(whole)
 
     @km.handler
-    def wkv(self, x: km.Tensor, w_kv: km.Tensor, y: km.Tensor):
+    def wkv(self, x: km.Tensor, w_kv: km.Tensor, y: km.Tensor, at: int):
         share = self.rank % self.KV_SPLIT
         first = self.rank // self.KV_SPLIT * WIDE
-        k0 = share * self.KV_K // self.KV_SPLIT
-        k1 = (share + 1) * self.KV_K // self.KV_SPLIT
+        k0 = share * self.KV_KS + min(share, self.KV_REM)
+        r0 = at + k0 * self.KV_N + first
         for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
-            km.Stream(w_kv.tiles[k0:k1, first : first + WIDE], block=self.CHUNK * WIDE),
+            km.Stream(x.tiles[0:1, k0 : k0 + self.KV_KS], block=self.CHUNK),
+            km.Stream(
+                w_kv.tiles[r0 : r0 + self.KV_KS * self.KV_N : self.KV_N, 0:WIDE],
+                block=self.CHUNK * WIDE,
+            ),
         ):
             self.wide_sums += self.project(xb, wb)
-        whole = km.reduce(self.wide_sums, form="tree", group=self.KV_SPLIT)
+        if share < self.KV_REM:  # its one more K tile
+            k = k0 + self.KV_KS
+            r = r0 + self.KV_KS * self.KV_N
+            for xb, wb in zip(
+                km.Stream(x.tiles[0:1, k : k + 1], block=1),
+                km.Stream(
+                    w_kv.tiles[r : r + 1 * self.KV_N : self.KV_N, 0:WIDE], block=WIDE
+                ),
+            ):
+                self.wide_sums += self.project(xb, wb)
+        whole = km.reduce(self.wide_sums, form="tree", group=self.KV_SPLIT, local=True)
         if self.rank == self.leader:
             y.pages(first, WIDE).write(whole)
 
     @km.handler
-    def wq_b(self, qr: km.Tensor, w_qb: km.Tensor, y: km.Tensor):
+    def wq_b(self, qr: km.Tensor, w_qb: km.Tensor, y: km.Tensor, at: int):
         share = self.rank % self.QB_SPLIT
         first = self.rank // self.QB_SPLIT * NARROW
-        k0 = share * self.QB_K // self.QB_SPLIT
-        k1 = (share + 1) * self.QB_K // self.QB_SPLIT
+        k0 = share * self.QB_KS
+        r0 = at + k0 * self.QB_N + first
         for xb, wb in zip(
-            km.Stream(qr.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(qr.tiles[0:1, k0 : k0 + self.QB_KS], block=self.CHUNK),
             km.Stream(
-                w_qb.tiles[k0:k1, first : first + NARROW], block=self.CHUNK * NARROW
+                w_qb.tiles[r0 : r0 + self.QB_KS * self.QB_N : self.QB_N, 0:NARROW],
+                block=self.CHUNK * NARROW,
             ),
         ):
             self.narrow_sums += self.project(xb, wb)
-        whole = km.reduce(self.narrow_sums, form="tree", group=self.QB_SPLIT)
+        whole = km.reduce(
+            self.narrow_sums, form="tree", group=self.QB_SPLIT, local=True
+        )
         if self.rank == self.leader:
             y.pages(first, NARROW).write(whole)
 
     @km.handler
-    def wo_a(self, o: km.Tensor, w_oa: km.Tensor, y: km.Tensor):
+    def wo_a(self, o: km.Tensor, w_oa: km.Tensor, y: km.Tensor, at: int):
         share = self.rank % self.OA_SPLIT
         first = self.rank // self.OA_SPLIT * NARROW
         group = first // self.OA_COLS
         koff = group * self.OA_K
         wcol = first - group * self.OA_COLS
-        k0 = koff + share * self.OA_K // self.OA_SPLIT
-        k1 = koff + (share + 1) * self.OA_K // self.OA_SPLIT
+        k0 = koff + share * self.OA_KS
+        r0 = at + k0 * self.OA_COLS + wcol
         for xb, wb in zip(
-            km.Stream(o.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(o.tiles[0:1, k0 : k0 + self.OA_KS], block=self.CHUNK),
             km.Stream(
-                w_oa.tiles[k0:k1, wcol : wcol + NARROW], block=self.CHUNK * NARROW
+                w_oa.tiles[
+                    r0 : r0 + self.OA_KS * self.OA_COLS : self.OA_COLS, 0:NARROW
+                ],
+                block=self.CHUNK * NARROW,
             ),
         ):
             self.narrow_sums += self.project(xb, wb)
-        whole = km.reduce(self.narrow_sums, form="tree", group=self.OA_SPLIT)
+        whole = km.reduce(
+            self.narrow_sums, form="tree", group=self.OA_SPLIT, local=True
+        )
         if self.rank == self.leader:
             y.pages(first, NARROW).write(whole)
 
     @km.handler
-    def wo_b(self, oa: km.Tensor, w_ob: km.Tensor, y: km.Tensor):
+    def wo_b(self, oa: km.Tensor, w_ob: km.Tensor, y: km.Tensor, at: int):
         share = self.rank % self.OB_SPLIT
         first = self.rank // self.OB_SPLIT * WIDE
-        k0 = share * self.OB_K // self.OB_SPLIT
-        k1 = (share + 1) * self.OB_K // self.OB_SPLIT
+        k0 = share * self.OB_KS + min(share, self.OB_REM)
+        r0 = at + k0 * self.OB_N + first
         for xb, wb in zip(
-            km.Stream(oa.tiles[0:1, k0:k1], block=self.CHUNK),
-            km.Stream(w_ob.tiles[k0:k1, first : first + WIDE], block=self.CHUNK * WIDE),
+            km.Stream(oa.tiles[0:1, k0 : k0 + self.OB_KS], block=self.CHUNK),
+            km.Stream(
+                w_ob.tiles[r0 : r0 + self.OB_KS * self.OB_N : self.OB_N, 0:WIDE],
+                block=self.CHUNK * WIDE,
+            ),
         ):
             self.wide_sums += self.project(xb, wb)
-        whole = km.reduce(self.wide_sums, form="tree", group=self.OB_SPLIT)
+        if share < self.OB_REM:  # its one more K tile
+            k = k0 + self.OB_KS
+            r = r0 + self.OB_KS * self.OB_N
+            for xb, wb in zip(
+                km.Stream(oa.tiles[0:1, k : k + 1], block=1),
+                km.Stream(
+                    w_ob.tiles[r : r + 1 * self.OB_N : self.OB_N, 0:WIDE], block=WIDE
+                ),
+            ):
+                self.wide_sums += self.project(xb, wb)
+        whole = km.reduce(self.wide_sums, form="tree", group=self.OB_SPLIT, local=True)
         if self.rank == self.leader:
             y.pages(first, WIDE).write(whole)
 
@@ -161,7 +218,7 @@ PRODUCTS = {
         HEADS * HEAD_DIM // TILE,
         HEADS * HEAD_DIM // TILE,
     ),
-    "wkv": (WIDE, DIM // TILE, 39, HEAD_DIM // TILE, HEAD_DIM // TILE),
+    "wkv": (WIDE, DIM // TILE, 37, HEAD_DIM // TILE, HEAD_DIM // TILE),
     "wo_a": (
         NARROW,
         HEADS * HEAD_DIM // O_GROUPS // TILE,

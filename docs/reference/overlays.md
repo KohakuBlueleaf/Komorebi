@@ -613,6 +613,14 @@ declare overlays of their own. The 62 numbers below the service overlay are shar
   the run numbers them, shift added; `program.overlay_shift` is that shift, set at the
   load.
 - Overlays added to the live run take the lowest numbers left.
+- In a run loaded with a dict, every group holds every program's own overlays, and
+  each is built, on every group, with the recipes of the group that holds its program
+  (`komorebi.program.addon.program.home_overlays`), as the program's part is: its
+  buffers' format tables and Dst mode are its program's. Built with another group's
+  recipes, a part read its buffers through that group's tables: a group switched to
+  a program whose buffers that group lacks ran the program's overlay with no format
+  for them, and the core hung (four float32 copies into a bfloat16 pack, on a
+  Wormhole chip).
 
 At load the plan refuses (`ProgramError`) programs whose own overlays reach the
 programs' numbers, and one slot on a kernel with own parts: a program's part runs from

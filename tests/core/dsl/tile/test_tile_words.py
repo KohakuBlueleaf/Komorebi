@@ -14,6 +14,7 @@ from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.tile import emit, matrix, trace, unit_program
 from komorebi.dsl.tile import unit as unit_module
+from komorebi.dsl.tile.forms.rows import chunk_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.errors import ProgramError
 from komorebi.session import kernels
@@ -140,6 +141,7 @@ def test_the_stall_on_the_matrix_unit_is_written_by_its_names():
 
 def test_wormhole_refuses_the_instructions_and_modifiers_it_does_not_have():
     assert "Wormhole does not have" in WORMHOLE(None, word("SFPGT", instr_mod1=1))
+    assert "no work register free" in WORMHOLE(None, word("SFPGT", instr_mod1=1))
     assert "NEGATE_VA" in WORMHOLE(None, word("SFPMAD", "mad", instr_mod1=1))
     assert WORMHOLE(None, word("SFPMAD", "mad", instr_mod1=0)) is None
     assert "ARG_IMM_USE_VC" in WORMHOLE(None, word("SFPSHFT", instr_mod1=5))
@@ -161,6 +163,15 @@ def test_wormhole_refuses_a_result_read_the_cycle_after_it_is_not_held():
     assert WORMHOLE(word("SFPNOP"), reader) is None
     lanes = word("SFPSHFT2", writes=[2], instr_mod1=3)
     assert "lane mode" in WORMHOLE(lanes, word("SFPMOV", reads=[2], instr_mod1=0))
+    # Wormhole's simple sub-unit takes no word the cycle after a lane mode, whatever
+    # it reads; the multiply-add unit does (Blackhole stalls for both)
+    move = word("SFPMOV", reads=[5], writes=[6], instr_mod1=0)
+    assert "lane mode" in WORMHOLE(lanes, move)
+    add = word("SFPADD", "mad", reads=[5], writes=[6], instr_mod1=0)
+    assert WORMHOLE(lanes, add) is None
+    copy4 = word("SFPSHFT2", writes=[0, 1, 2, 3], instr_mod1=2)
+    load = word("SFPLOAD", "load", writes=[1], sfpu_addr_mode=3)
+    assert "after SFPSHFT2's copy" in WORMHOLE(copy4, load)
     swap = word("SFPSWAP", writes=[0, 1], instr_mod1=1)
     assert "collide" in WORMHOLE(swap, word("SFPLOADI", instr_mod0=8))
     template = word("SFPSWAP", instr_mod1=1, lreg_dest=13)
@@ -228,3 +239,50 @@ def test_a_word_without_a_wormhole_form_is_refused_by_name():
     kernels.tile_words_checked([program], "blackhole")
     with pytest.raises(ProgramError, match=r"gated: tile function gate \(in run, line"):
         kernels.tile_words_checked([program], "wormhole_b0")
+
+
+def _row_ir(fn, residents):
+    x = TensorParam("x", False, F32)
+    held = [TensorParam(f"g{k}", False, F32) for k in range(residents)]
+    ir = KernelIR("f", [x, *held, TensorParam("y", True, F32)], [], {})
+    with trace.Tracer(ir):
+        xs, ys = trace.TensorProxy(x), trace.TensorProxy(ir.tensors[-1])
+        rows = [trace.resident(trace.TensorProxy(g).tiles[0, :]) for g in held]
+        for t in trace.grid(trace.num_tile_rows(xs)):
+            trace.store(ys.tiles[t, :], fn(trace.load(xs.tiles[t, :]), *rows))
+    return ir
+
+
+def _argmax(row, cols):
+    m = trace.reduce_max(row, exact=True)
+    taken = trace.where(row + (m * -1.0).col() == 0.0, cols.row(), 1e9)
+    return trace.reduce_min(taken).col()
+
+
+def _layer(row, w, b):
+    mean = trace.reduce_sum(row, exact=True) * (1.0 / 448)
+    d = row - mean.col()
+    var = trace.reduce_sum(d * d, exact=True) * (1.0 / 448)
+    return d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row()
+
+
+@pytest.mark.parametrize("fn, residents", [(_argmax, 1), (_layer, 2)])
+def test_a_wide_row_in_levels_passes_wormhole_s_check(fn, residents):
+    """A wide row's argmax and layer norm (`row - mean.col()` negated with every
+    register live) pass Wormhole's check in every part; a simple sub-unit word after
+    a lane-mode SFPSHFT2 waits an SFPNOP (without it the argmax read other rows on a
+    Wormhole card)."""
+    unit = chunk_program(_row_ir(fn, residents), 14)
+    emit(unit)
+    held = 0
+    for function in (unit.init["math"], unit.tile["math"], *unit.parts.values()):
+        for run in unit_module.chip_words(function):
+            assert all(WORMHOLE(b, w) is None for b, w in zip([None, *run], run))
+            held += sum(
+                a[0] == "SFPSHFT2"
+                and a[1]["instr_mod1"] == 3
+                and b[0] == "SFPNOP"
+                and c[0] in chips.SHFT2_NOT_NEXT
+                for a, b, c in zip(run, run[1:], run[2:])
+            )
+    assert held > 0 or fn is _layer

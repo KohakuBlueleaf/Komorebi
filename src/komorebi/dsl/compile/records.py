@@ -41,6 +41,7 @@ class Buffer:
         default_factory=list
     )  # a pair's streaming handlers (or None)
     padded: bool = False  # a read pair handlers of other blocks share (KM_RING_PADDED)
+    items: list = field(default_factory=list)  # an out buffer's item widths
 
 
 @dataclass

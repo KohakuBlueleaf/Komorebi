@@ -709,6 +709,33 @@ def _own_slots_kept(placed, common):
             )
 
 
+def switch_slots(placed):
+    """The declared slots a load's kernels and slots are built for: its first program's;
+    in a switching run every program must ask the same place of the service overlay
+    (slots(service=)), else refused by name: one set of slots serves them all."""
+    declared = placed.programs[0].overlay_slots
+    if not placed.switch:
+        return declared
+    for program in placed.programs[1:]:
+        if program.overlay_slots.service != declared.service:
+            raise ProgramError(
+                f"slots(service={program.overlay_slots.service!r}) on "
+                f"{program.name}, slots(service={declared.service!r}) on "
+                f"{placed.programs[0].name}: the programs of a switching run share one "
+                "set of slots; give them all the same service place"
+            )
+    return declared
+
+
+def switch_group_slots(made, declared, switch):
+    """A group's built overlays as its L1 check counts them: in a switching run the
+    service overlay in the reader slots when slots(service="shared") asks, as the
+    run's common slots place it (_common_slots, then overlay.choose)."""
+    if not switch or declared.service != "shared" or not made.service_part:
+        return made
+    return dataclasses.replace(overlay.shared(made), why="as slots() asks")
+
+
 def _loaded_own_kernels(placed):
     """The kernels where a program the run loads has a part of an overlay of its own
     (its handlers' overlays, besides its program overlay)."""

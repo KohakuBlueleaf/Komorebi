@@ -331,6 +331,30 @@ def same_guard(programs):
             )
 
 
+# compute options a program's parts carry (its format tables, its start-up at a load):
+# programs of a dict whose groups switch may differ in them
+OWN_OPTIONS = ("unpack_to_dest_mode", "dst_full_sync_en")
+
+
+def switch_compute_refusal(programs):
+    """Why a group of a dict cannot switch between `programs`: the first two that differ
+    in a compute option their parts do not carry (not OWN_OPTIONS), named with both
+    values; None when none do."""
+    first = programs[0]
+    for program in programs[1:]:
+        names = (first.compute.keys() | program.compute.keys()) - set(OWN_OPTIONS)
+        for name in sorted(names):
+            mine, theirs = first.compute.get(name), program.compute.get(name)
+            if mine != theirs:
+                return (
+                    f"{first.name} has compute option {name}={mine!r} and "
+                    f"{program.name} {name}={theirs!r}: a group switched between them "
+                    "would run one's parts on kernels built for the other; give the "
+                    f"programs of a dict the same {name}"
+                )
+    return None
+
+
 def _same(programs, attribute, what):
     values = [getattr(program, attribute) for program in programs]
     if any(value != values[0] for value in values[1:]):

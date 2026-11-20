@@ -159,6 +159,14 @@ programs of the measurement equal this model exactly, at every fidelity and form
 The sum is not exact even when every product is: 32 products of bfloat16 operands at
 HiFi4 summed in an fp32 `Dst` are 2.9e-4 (median, unbiased) from the float64 sum.
 
+**A sum that cancels to -1 unit, on Wormhole.** A product instruction adds its terms
+and the `Dst` value in fixed point at their largest exponent (23 fractional bits in an
+fp32 `Dst`). On a Wormhole chip, a result of exactly -1 in that last place is written as
+-16 units, and the later instructions add to that wrong value
+([hazards](hazards.md#a-products-fp32-sum-that-cancels-to-one-unit-below-zero-on-wormhole)).
+`komorebi.tools.wormhole_products` models it: in0 goes to SrcB, and a K tile is issued
+phase by phase, each phase taking inner terms 0 to 15 and then 16 to 31.
+
 **The fidelity is a kernel's, not a product's.** The library's product reads the compute
 kernel's `MATH_FIDELITY` at compile time, so every product of a kernel runs at one
 fidelity; a class with products of two fidelities is refused ("the fidelity is the

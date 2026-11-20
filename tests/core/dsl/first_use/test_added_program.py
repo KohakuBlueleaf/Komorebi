@@ -491,6 +491,49 @@ def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
     )  # no own overlay: one is enough
 
 
+def switching_pair(first_service, second_service):
+    first, second = twice(form="runtime"), project(form="runtime")
+    first.slots(count=1, service=first_service)
+    second.slots(count=1, service=second_service)
+    return programs.plan({first: (0, 60), second: (60, 60)}, 120)
+
+
+def test_a_switching_run_puts_the_service_overlay_in_the_reader_slots_when_asked():
+    made = overlay.Built({}, {"reader": (1, 56320), "writer": (1, 30848)}, 58816,
+                         58816)  # fmt: skip
+    totals = {}
+    for service in (None, "shared"):
+        placed = switching_pair(service, service)
+        assert placed.switch
+        declared = session_kernels.switch_slots(placed)
+        common = session_kernels._common_slots(placed, declared, [made], 4)
+        common = session_kernels.fit_slots(common, declared, 1 << 20, [], quiet)
+        checked = session_kernels.switch_group_slots(made, declared, True)
+        rows = session_kernels.slot_rows(common.slots, common.service, common.why)
+        total = sum(size for _, size in rows)
+        group = session_kernels.slot_rows(checked.slots, checked.service)
+        assert sum(size for _, size in group) == total  # the run's slots, counted
+        totals[service] = (common.service, common.slots, total)
+    assert totals[None] == (58816, {"reader": (1, 56320), "writer": (1, 30848)},
+                            145_984)  # fmt: skip
+    assert totals["shared"] == (0, {"reader": (1, 58816), "writer": (1, 30848)},
+                                89_664)  # fmt: skip
+    plain = session_kernels.switch_group_slots(made, overlay.Slots(), True)
+    assert plain is made  # the option not given: the group's check as before
+    alone = session_kernels.switch_group_slots(made, overlay.Slots(service="shared"),
+                                               False)  # fmt: skip
+    assert alone is made  # one program: fit_slots places it (overlay.choose)
+
+
+def test_programs_of_a_switching_run_that_ask_two_service_places_are_refused():
+    with pytest.raises(ProgramError, match=r"share one set of slots"):
+        session_kernels.switch_slots(switching_pair("shared", None))
+    with pytest.raises(ProgramError, match=r"slots\(service='own'\) on"):
+        session_kernels.switch_slots(switching_pair("shared", "own"))
+    one = programs.plan([twice(form="runtime")], 120)
+    assert session_kernels.switch_slots(one) is one.programs[0].overlay_slots
+
+
 def test_a_class_made_after_the_load_takes_the_shift_of_its_kind_named_ahead():
     named = twice(form="runtime")
     named.program_field, named.added_own_shift = 1, 4

@@ -14,6 +14,7 @@ from komorebi.dsl.tile.hazards import wormhole
 from komorebi.dsl.tile.unit import Insn, Loop
 
 WORMHOLE = chips.chip("wormhole_b0").tile_refusal
+COMPSIGN = 1  # SFPMOV instr_mod1: the copy's sign complemented
 
 
 def mad(op="SFPMAD", a=1, b=2, c=3, d=4, mod1=0):
@@ -58,12 +59,15 @@ def test_both_negations_use_the_destination_and_a_dead_register():
 
 
 def test_a_write_after_a_flag_change_does_not_free_a_register():
-    """The write after SFPGT keeps the lanes it skips: their old value stays live."""
+    """The write after SFPGT keeps the lanes it skips: their old value stays live, so
+    no copy goes to LReg 3; the operands are negated in their own registers."""
     x = mad(a=4, b=3, c=5, d=6, mod1=3)
     flags = Insn(
         "SFPSETCC", {"imm12_math": 0, "lreg_c": 4, "lreg_dest": 0, "instr_mod1": 0}
     )
-    assert formed(x, flags, mad(a=1, b=2, c=9, d=3), *busy(0, 1, 2, 4, 5, 6)) == []
+    words = formed(x, flags, mad(a=1, b=2, c=9, d=3), *busy(0, 1, 2, 4, 5, 6))
+    assert [w[0] for w in words] == ["SFPMOV", "SFPMOV", "SFPMAD", "SFPMOV", "SFPMOV"]
+    assert all(w[1]["lreg_dest"] != 3 for w in words)
 
 
 def test_the_shift_of_another_register_is_a_copy_then_wormhole_s_shift():
@@ -110,6 +114,27 @@ def test_a_write_after_every_lane_is_on_frees_a_register():
     )
     words = formed(x, flags, every, mad(a=1, b=2, c=9, d=3), *busy(0, 1, 2, 4, 5, 6))
     assert [w[0] for w in words] == ["SFPMOV", "SFPMOV", "SFPMAD"]
+
+
+def test_a_negated_operand_with_every_register_live_is_negated_in_place():
+    """d = a b - c with LReg 0 .. 6 live after it and d a factor: c's own register
+    sign-complemented before the word and back after it."""
+    words = formed(
+        mad("SFPADD", a=10, b=5, c=3, d=5, mod1=2), *busy(0, 1, 2, 3, 4, 5, 6)
+    )
+    assert [(w[0], w[1].get("lreg_c"), w[1]["lreg_dest"]) for w in words] == [
+        ("SFPMOV", 3, 3),
+        ("SFPADD", None, 5),
+        ("SFPMOV", 3, 3),
+    ]
+    assert words[0][1]["instr_mod1"] == words[2][1]["instr_mod1"] == COMPSIGN
+    assert words[1][1]["lreg_src_c"] == 3 and words[1][1]["instr_mod1"] == 0
+
+
+def test_an_operand_read_twice_is_not_negated_in_place():
+    """c also a factor: negating its register would negate the product too."""
+    x = mad("SFPMAD", a=3, b=5, c=3, d=5, mod1=2)
+    assert formed(x, *busy(0, 1, 2, 3, 4, 5, 6)) == []
 
 
 # The lanes of a few vector words (Wormhole's functional model), one value a lane
@@ -326,12 +351,16 @@ def looped(first):
         init={"math": []}, tile={"math": [Loop("i", 4, body)]}, parts={}
     )
     wormhole.forms(unit)
-    return [w.op for w in x.wormhole]
+    return [w.op for w in x.wormhole], {w.args["lreg_dest"] for w in x.wormhole}
 
 
 def test_a_register_the_next_pass_writes_first_is_dead_at_a_loop_body_s_end():
-    assert looped(mad(a=1, b=2, c=9, d=5)) == ["SFPMOV", "SFPMOV", "SFPMAD"]
+    ops, _ = looped(mad(a=1, b=2, c=9, d=5))
+    assert ops == ["SFPMOV", "SFPMOV", "SFPMAD"]
 
 
 def test_a_register_the_next_pass_reads_first_is_live():
-    assert looped(word("SFPABS", 5, 5)) == []
+    """LReg 5 is not taken: the operands are negated in their own registers."""
+    ops, written = looped(word("SFPABS", 5, 5))
+    assert ops == ["SFPMOV", "SFPMOV", "SFPMAD", "SFPMOV", "SFPMOV"]
+    assert 5 not in written

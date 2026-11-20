@@ -369,10 +369,39 @@ def _negated(x, free):
     if found is None and 2 in bits and x.args["lreg_src_c"] == ZERO:
         found = _copies(dict(x.args), [b for b in bits if b != 2], registers)
     if found is None:
-        return []  # no register: refused on Wormhole
+        return _negated_in_place(x, bits)
     args, words = found
     args["instr_mod1"] = x.args["instr_mod1"] & ~3
     return [*words, Insn(x.op, args, x.note, x.uses, x.runtime)]
+
+
+def _negated_in_place(x, bits):
+    """Without a free register: each negated operand's own work register
+    sign-complemented in place before the word and back after it (not when the word
+    writes it), one the word reads in no other field; or none (refused on Wormhole).
+    The lanes the flags leave off are untouched by all three."""
+    args, before = dict(x.args), []
+    for b in bits:
+        field = next(
+            (
+                f
+                for f in NEGATED[b]
+                if args[f] in WORK
+                and all(args[g] != args[f] for g in SOURCES if g != f)
+                and all(w.args["lreg_c"] != args[f] for w in before)
+            ),
+            None,
+        )
+        if field is None:
+            return []
+        before.append(_move(args[field], args[field], COMPSIGN, f"Wormhole: -{field}"))
+    after = [
+        _move(m.args["lreg_c"], m.args["lreg_c"], COMPSIGN, "Wormhole: restored")
+        for m in before
+        if m.args["lreg_c"] != args["lreg_dest"]
+    ]
+    args["instr_mod1"] = x.args["instr_mod1"] & ~3
+    return [*before, Insn(x.op, args, x.note, x.uses, x.runtime), *after]
 
 
 def _copies(args, bits, registers):

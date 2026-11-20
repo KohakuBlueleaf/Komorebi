@@ -151,22 +151,26 @@ def shareable(compiled, buffer, role, page_format, handler):
     )
 
 
-def out_buffer(compiled, name, dtype, page_bytes, pages, what):
-    """The buffer `name` of pages compute packs and mover B writes, grown to `pages`
-    when it is there in this format; else a new one (under another name if taken)."""
-    for buffer in compiled.buffers:
-        if buffer.name == name and (buffer.dtype, buffer.page_bytes) == (
-            dtype,
-            page_bytes,
-        ):
-            buffer.pages = (max(buffer.pages[0], pages),)
-            return buffer
-    while any(b.name == name for b in compiled.buffers):
+def out_buffer(compiled, name, dtype, page_bytes, pages, what, item=None):
+    """The buffer `name` of pages compute packs and mover B writes, items of `item`
+    pages (else `pages`), grown to `pages` when it is there in this format with items
+    of that width only (its positions last across commands: an item of another width
+    passes the ring's end, bad_item); else the next name that does, or a new one."""
+    item = item or pages
+    taken = {b.name: b for b in compiled.buffers}
+    while name in taken:
+        buffer = taken[name]
+        if (buffer.dtype, buffer.page_bytes) == (dtype, page_bytes):
+            most = max(buffer.pages[0], pages)
+            if (buffer.items or [buffer.pages[0]]) == [item] and most % item == 0:
+                buffer.pages = (most,)
+                return buffer
         name += "b"
     index = free_index(compiled, FIRST_WRITE)
     if index > LAST_INDEX:
         raise Refused(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, "out", index, None, dtype, page_bytes, (pages,), 1, what)
+    buffer.items = [item]
     return added(compiled, buffer)
 
 

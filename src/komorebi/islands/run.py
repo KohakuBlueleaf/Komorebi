@@ -143,11 +143,11 @@ class IslandRun(TreeCalls, RunCalls):
                 starts = (0,)  # one tensor in the card's DRAM: no copy to gather
             for call in calls:
                 if isinstance(call, front.HandlerCall):
-                    self._check_local(call.method, call.cores or group)
+                    self._check_local(call.handler, call.cores or group)
                     island_local.check_direct(
                         self.graph, call.method, call.cores or group, call.values
                     )
-                    number = self.runs[0]._handler(call.method)[1]
+                    number = self.runs[0]._handler(call.handler)[1]
                     for island, _, _ in self.graph.split(call.cores or group):
                         low = self.graph.first(island)
                         island_local.check_near(

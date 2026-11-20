@@ -204,6 +204,23 @@ def ahead_overlays(backend, placed, number, recipes):
     return out
 
 
+def home_overlays(placed, number, recipes):
+    """Every program's own overlays for group `number` of a switching run: those of a
+    program another group holds are built with that group's recipes ({target: Recipe}
+    by group), so its buffers' format tables and Dst mode are its own, as its part's."""
+    home = {i: at for at, group in enumerate(placed.groups) for i in group.programs}
+    out = []
+    for index, owner in enumerate(placed.programs):
+        at = home.get(index, number)
+        made = programs.own_overlays(owner)
+        if at == number:
+            out += made
+            continue
+        by_part = {overlay.TARGETS[target]: r for target, r in recipes[at].items()}
+        out += [_Own(each, by_part) for each in made]
+    return out
+
+
 class _Own:
     """A class's overlay whose parts are built with its own recipes (build_overlays
     calls build_part when an overlay has one)."""

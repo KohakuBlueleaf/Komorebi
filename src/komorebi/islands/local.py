@@ -22,7 +22,8 @@ def check_local(runs, graph, handler, group):
         or not any(getattr(p, "reduce_local", None) for p in runs[0].programs)
     ):
         return
-    program = runs[0].programs[runs[0]._handler(method)[1]]
+    # asked with the handler as named: a ClassHandler keeps the program it was bound to
+    program = runs[0].programs[runs[0]._handler(handler)[1]]
     line = getattr(program, "reduce_local", {}).get(method.name)
     if line is None:
         return

@@ -47,7 +47,7 @@ class Window(km.Program):
     pair_sums: km.L1[km.fp32, 1, ROPE_TILES, 32, 32]
     one_sum: km.L1[km.fp32, 1, 1, 32, 32]
 
-    @km.tile_function(fidelity="HiFi3")
+    @km.tile_function(fidelity="HiFi2")
     def project(x, w):
         return x @ w
 
@@ -64,7 +64,7 @@ class Window(km.Program):
             ),
         ):
             self.pair_sums += self.project(xb, wb)
-        whole = km.reduce(self.pair_sums, form="tree", group=1)
+        whole = km.reduce(self.pair_sums, form="tree", group=1, local=True)
         if self.rank == self.leader:
             y.pages(h * ROPE_TILES, ROPE_TILES).write(whole)
 
@@ -97,7 +97,7 @@ class Window(km.Program):
             km.Stream(kv.tiles[0:1, c : c + 1], block=1),
         ):
             self.one_sum += self.project(xb, wb)
-        whole = km.reduce(self.one_sum, form="tree", group=1)
+        whole = km.reduce(self.one_sum, form="tree", group=1, local=True)
         if self.rank == self.leader:
             moved.pages(c, 1).write(whole)
 

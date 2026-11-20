@@ -31,13 +31,16 @@ def moved(frame, node, tensor, how):
 
 def out_buffer(frame, dtype, page_bytes, what, width=1, name=None):
     """The buffer of the page(s) compute packs and mover B writes: the program's
-    next one of this handler (handlers share them), two writes of `width`; or the
-    one `name`d (rows of a field's sums: rows of one width a buffer)."""
+    next one of this handler (handlers share them while their items are of one
+    width), two writes of `width`; or the one `name`d (rows of a field's sums: rows
+    of one width a buffer)."""
     if name is None:
         name = f"kOut{frame.writes}"
         frame.writes += 1
     pages = WRITE_ITEMS * width
-    return layout.out_buffer(frame.compiled, name, dtype, page_bytes, pages, what)
+    return layout.out_buffer(
+        frame.compiled, name, dtype, page_bytes, pages, what, item=width
+    )
 
 
 def page_wait(frame, value, pages=1):

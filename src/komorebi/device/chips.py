@@ -38,6 +38,28 @@ SHFT2_LANES = (
     3,
     4,
 )  # SFPSHFT2's lane modes: their result is not held the next cycle
+# the simple sub-unit's words Wormhole may not run the cycle after an SFPSHFT2 lane mode
+# (tt-isa-documentation, SFPSHFT2, Instruction scheduling; Blackhole stalls for them)
+SHFT2_NOT_NEXT = (
+    "SFPABS",
+    "SFPAND",
+    "SFPCAST",
+    "SFPDIVP2",
+    "SFPEXEXP",
+    "SFPEXMAN",
+    "SFPIADD",
+    "SFPLZ",
+    "SFPMOV",
+    "SFPNOT",
+    "SFPOR",
+    "SFPSETEXP",
+    "SFPSETMAN",
+    "SFPSETSGN",
+    "SFPSHFT",
+    "SFP_STOCH_RND",
+    "SFPXOR",
+)
+SHFT2_COPY4 = 2  # SFPSHFT2_MOD1_SUBVEC_SHFLROR1_AND_COPY4: also LReg 0 .. 3 next cycle
 HALF_WRITES = {"SFPLOADI": (8, 10), "SFPLOAD": (14, 15)}  # instr_mod0: half an LReg
 TEMPLATE_VD = 12  # a word whose VD is 12 + k stores load macro template k (back door)
 REPLAY_MOST = 32  # Wormhole's replay count: 0 is 32 (64 on Blackhole), above it wraps
@@ -49,6 +71,10 @@ ABSENT_OPCODES = {0x96: "SFPLE", 0x97: "SFPGT", 0x98: "SFPMUL24", 0x99: "SFPAREC
 MAD_OPCODES = {0x84: "SFPMAD", 0x85: "SFPADD", 0x86: "SFPMUL"}
 WORMHOLE_HAZARD = (
     "docs/reference/hazards.md, 'A Blackhole vector-unit word in a kernel'"
+)
+WORMHOLE_COMPARISON = (
+    "docs/reference/hazards.md, 'A tile function's comparison with every register "
+    "live on Wormhole'"
 )
 
 
@@ -94,6 +120,13 @@ def wormhole_tile_refusal(before, word):
     """
     op, args, _, _, reads, _ = word
     mod1 = args.get("instr_mod1", 0)
+    if op == "SFPGT" and mod1 & 1:  # its Wormhole forms take a free work register
+        return (
+            "SFPGT is an instruction Wormhole does not have, and its Wormhole form "
+            "finds no work register free at this word (LReg 0 to 6 hold values): "
+            "compare a difference with 0 instead (x == y as x + y * -1.0 == 0.0; "
+            f"{WORMHOLE_COMPARISON})"
+        )
     if op in WORMHOLE_ABSENT:
         return f"{op} is an instruction Wormhole does not have"
     if op in ("SFPMAD", "SFPADD", "SFPMUL") and mod1 & MAD_NEGATE:
@@ -128,7 +161,7 @@ def wormhole_hold(before, word):
     """Why `word` right after `before` (unit.chip_words' words) runs otherwise on a
     Wormhole core, which an SFPNOP between them mends (the tile compiler writes one
     there on Wormhole), or None."""
-    op, args, _, _, reads, _ = word
+    op, args, _, _, reads, writes = word
     b_op, b_args, _, b_kind, _, b_writes = before
     held_not = set(reads) & set(b_writes)
     if b_kind == "mad" and held_not:
@@ -136,8 +169,17 @@ def wormhole_hold(before, word):
             f"{op} reads LReg {min(held_not)}, {b_op}'s result, the next cycle: "
             "Wormhole does not hold it back (an SFPNOP between)"
         )
-    if b_op == "SFPSHFT2" and b_args["instr_mod1"] in SHFT2_LANES and held_not:
+    lanes = b_op == "SFPSHFT2" and b_args["instr_mod1"] in SHFT2_LANES
+    if lanes and held_not:
         return f"{op} reads LReg {min(held_not)} the cycle after SFPSHFT2's lane mode"
+    if lanes and (
+        op in SHFT2_NOT_NEXT
+        or (op == "SFPSHFT2" and args["instr_mod1"] not in SHFT2_LANES)
+    ):
+        return f"{op} the cycle after SFPSHFT2's lane mode: Wormhole runs it otherwise"
+    near = (set(reads) | set(writes)) & {0, 1, 2, 3}
+    if lanes and b_args["instr_mod1"] == SHFT2_COPY4 and near:
+        return f"{op} names LReg {min(near)} the cycle after SFPSHFT2's copy"
     half = args.get("instr_mod0") in HALF_WRITES.get(op, ())
     if b_op == "SFPSWAP" and (op in ("SFP_STOCH_RND", "SFPSHFT2") or half):
         return f"{op} right after SFPSWAP: their writes collide on Wormhole"
