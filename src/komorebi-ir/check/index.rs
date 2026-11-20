@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::attrs::named_args;
+use super::attrs::word_args;
 use super::body::as_int;
 use super::ty::Count;
 use super::Name;
@@ -44,7 +44,7 @@ impl Index {
                     let place = ParamId(counts.params);
                     counts.params += 1;
                     ix.params.entry(p.name.name.clone()).or_insert(place);
-                    if named_args(&p.attrs, "bind").contains("build") {
+                    if word_args(&p.attrs, "bind").contains("build") {
                         ix.build_params.insert(p.name.name.clone());
                         if let ParamValue::Expr(e) = &p.value {
                             if let Some(n) = as_int(e) {

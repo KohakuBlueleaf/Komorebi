@@ -61,6 +61,12 @@ impl Checker<'_> {
                         return None;
                     }
                 }
+                // an operand's name between backticks is the module's, and no item of
+                // the module names an operand (R50)
+                Some(name) if name.quoted => {
+                    self.unknown(name);
+                    return None;
+                }
                 Some(name) => match form.iter().position(|o| o.name == name.name) {
                     Some(i) if form[i].named && given[i].is_none() => {
                         given[i] = Some(&arg.value);
@@ -283,7 +289,7 @@ impl Checker<'_> {
         if what == "forward"
             && args
                 .values()
-                .any(|a| a.name.as_ref().is_some_and(|n| n.name == "as"))
+                .any(|a| a.name.as_ref().is_some_and(|n| n.name == "as" && !n.quoted))
         {
             self.error(
                 codes::NOT_BUILT,
@@ -386,7 +392,11 @@ impl Checker<'_> {
                     _ => self.operand(cx, o[0], &Ty::Tile(None), "the operand"),
                 };
                 self.word_operand(o[1], &["row", "col"], "the axis");
-                let axis = match o[1].and_then(as_name).map(|n| n.name.as_str()) {
+                let axis = match o[1]
+                    .and_then(as_name)
+                    .filter(|n| !n.quoted)
+                    .map(|n| n.name.as_str())
+                {
                     Some("row") => Axis::Row,
                     Some("col") => Axis::Col,
                     _ => return Ty::Unknown,
@@ -649,7 +659,11 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
                 self.word_operand(o[0], &["row", "col"], "`along`");
-                match o[0].and_then(as_name).map(|n| n.name.as_str()) {
+                match o[0]
+                    .and_then(as_name)
+                    .filter(|n| !n.quoted)
+                    .map(|n| n.name.as_str())
+                {
                     Some("row") => self.note_op(span, OpKind::Broadcast(Axis::Row), &o[1..]),
                     Some("col") => self.note_op(span, OpKind::Broadcast(Axis::Col), &o[1..]),
                     _ => {}
@@ -1140,8 +1154,16 @@ impl Checker<'_> {
         span: Span,
     ) -> Ty {
         let what = name.name.as_str();
+        // a method between backticks is the module's, and the module has no methods
+        // (R50)
+        if name.quoted {
+            self.unknown(name);
+            return Ty::Unknown;
+        }
         if let Some(word) = as_name(base) {
-            if cx.lookup(&word.name).is_none() && cx.state(&word.name).is_none() {
+            // a bare `group` or `island` is the language's, whatever the module names;
+            // the module's value of that name is written between backticks (R50)
+            if !word.quoted {
                 match word.name.as_str() {
                     "group" => return self.group_method(cx, word, name, args, span),
                     "island" => {

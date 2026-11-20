@@ -1118,3 +1118,118 @@ fn a_bare_name_of_the_language_is_the_languages_and_one_between_backticks_the_mo
     let refused = komorebi_ir::api::build(&bare).expect_err("a bare `func square`");
     assert_eq!(refused[0].code, "K120");
 }
+
+/// The language's methods beside the module's values of the same names: the values
+/// between backticks, the bare calls the language's.
+const METHODS_MODULE: &str = "module names
+
+tile [32, 32]
+format f32
+
+requires {
+    islands >= 2
+}
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        seen: u32[4] @filled(element) @export
+    }
+
+    handler h(`group`: u32, `island`: u32) @on(group) {
+        seen[0] = group.id(0)
+        seen[1] = island.of(worker.id)
+        seen[2] = `group` + `island`
+        let far = island.crosses(worker.id)
+        seen[3] = group.size
+    }
+}
+";
+
+#[test]
+fn a_bare_method_of_the_language_beside_a_value_of_its_name_is_the_languages() {
+    use komorebi_ir::program::print::print;
+    let tree = parse(METHODS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(write(&tree), METHODS_MODULE, "canonical");
+    let module = komorebi_ir::api::build(METHODS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    let text = print(&module);
+    let has = |what: &str| text.lines().filter(|l| l.contains(what)).count();
+    // `group.id`, `island.of`, `island.crosses` and `group.size` the language's; the
+    // parameters added
+    for op in [
+        "GroupId",
+        "IslandOf",
+        "IslandCrosses",
+        "GroupSize",
+        "Binary Add v0 v1",
+    ] {
+        assert_eq!(has(op), 1, "{op}: {text}");
+    }
+    // the parameter between backticks is the module's: a u32, which has no `id`
+    let quoted = METHODS_MODULE.replace("group.id(0)", "`group`.id(0)");
+    let refused = komorebi_ir::check(&quoted).expect_err("the parameter's");
+    assert_eq!(
+        (refused[0].code, refused[0].message.as_str()),
+        ("K102", "u32 has no `id`")
+    );
+}
+
+/// A handler whose attributes, members, methods and operands' names are written between
+/// backticks one at a time: each is the module's only, and no item of the module is
+/// named so there.
+#[test]
+fn a_name_between_backticks_with_no_item_of_that_name_is_refused_by_name() {
+    let module = |on: &str, scope: &str, filled: &str, bind: &str, body: &str| {
+        format!(
+            "module names\n\ntile [32, 32]\nformat f32\n\nrequires {{\n    group = grid\n}}\n\n\
+             param N: u32 = 4 @bind({bind})\n\n\
+             program P {{\n    state @scope({scope}) @lifetime(program) {{\n        \
+             seen: u32[4] @filled({filled}) @export\n    }}\n\n    \
+             handler h(x: tensor<f32>) @on({on}) {{\n        {body}\n    }}\n}}\n"
+        )
+    };
+    let plain = |body: &str| module("grid[4, 8]", "worker", "element", "build", body);
+    let clean = plain("seen[0] = worker.rank + group.size + N");
+    assert_eq!(komorebi_ir::check(&clean).map(|_| ()), Ok(()));
+    let cases = [
+        (
+            module("`group`", "worker", "element", "build", "seen[0] = N"),
+            "group",
+        ),
+        (
+            module("`grid`[4, 8]", "worker", "element", "build", "seen[0] = N"),
+            "grid",
+        ),
+        (
+            module("grid[4, 8]", "`worker`", "element", "build", "seen[0] = N"),
+            "worker",
+        ),
+        (
+            module("grid[4, 8]", "worker", "`element`", "build", "seen[0] = N"),
+            "element",
+        ),
+        (
+            module("grid[4, 8]", "worker", "element", "`build`", "seen[0] = N"),
+            "build",
+        ),
+        (plain("seen[0] = `group`.id(0)"), "group"),
+        (plain("seen[0] = group.`id`(0)"), "id"),
+        (plain("seen[0] = worker.`rank`"), "rank"),
+        (plain("seen[0] = group.`size`"), "size"),
+        (plain("let t = x.tiles(0, 1)[0].`T`"), "T"),
+        (plain("let v = x.`tiles`(0, 1)"), "tiles"),
+        (
+            plain("let t = reduce_sum(x.tiles(0, 1)[0], `axis` = row)"),
+            "axis",
+        ),
+    ];
+    for (text, name) in cases {
+        let refused = komorebi_ir::check(&text).expect_err(name);
+        let wanted = format!("`{name}` is not declared");
+        assert!(
+            refused
+                .iter()
+                .any(|d| d.code == "K101" && d.message == wanted),
+            "{name}: {refused:?}"
+        );
+    }
+}

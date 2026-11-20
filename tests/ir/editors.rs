@@ -416,9 +416,6 @@ fn the_textmate_grammar_names_every_word_of_the_language() {
     );
 }
 
-/// A name between backticks (a word of the text as a name, R50) is coloured as a name:
-/// no word's pattern matches inside backticks, and each pattern that names a declared
-/// name or a name in an expression takes the backticked form too.
 /// The sets of the text's names (`syntax::CALLS`, `CONVERSIONS`, `COMBINATIONS`), which
 /// the writer and `K120` read, are the checker's: the calls of its family match and its
 /// compute functions, the scalar types, the provided combinations (R50).
@@ -450,6 +447,9 @@ fn the_texts_sets_of_the_languages_names_are_the_checkers() {
     assert_eq!(set(&scalars), set(&syntax::CONVERSIONS));
 }
 
+/// A name between backticks (a word of the text as a name, R50) is coloured as a name:
+/// no word's pattern matches inside backticks, and each pattern that names a declared
+/// name or a name in an expression takes the backticked form too.
 #[test]
 fn the_textmate_grammar_colours_a_name_between_backticks_as_a_name() {
     let mut res = Vec::new();

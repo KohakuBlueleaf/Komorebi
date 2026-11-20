@@ -31,19 +31,42 @@ const KNOWN: [&str; 15] = [
     "body",
 ];
 
-/// True when `@on(...)` among `attrs` names a grid.
+/// The attributes whose operands are words of the language (`@on(group)`,
+/// `@scope(worker)`, `@bind(load)`): a name between backticks is the module's only and
+/// means nothing there (R50).
+const TAKE_WORDS: [&str; 5] = ["on", "scope", "lifetime", "filled", "bind"];
+
+/// True when `@on(...)` among `attrs` names a grid: the bare word (R50).
 pub(crate) fn on_grid(attrs: &[Attr]) -> bool {
     attrs.iter().filter(|a| is_named(a, "on")).any(|a| {
         a.args.as_ref().is_some_and(|args| {
             args.values().any(|arg| match &arg.value.kind {
                 ExprKind::Index { base, .. } => {
-                    matches!(&base.kind, ExprKind::Name(n) if n.name == "grid")
+                    matches!(&base.kind, ExprKind::Name(n) if n.name == "grid" && !n.quoted)
                 }
-                ExprKind::Name(n) => n.name == "grid",
+                ExprKind::Name(n) => n.name == "grid" && !n.quoted,
                 _ => false,
             })
         })
     })
+}
+
+/// The bare words an attribute such as `@bind(load)` gives: a name between backticks
+/// is the module's, never the word (R50).
+pub(crate) fn word_args(attrs: &[Attr], name: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for attr in attrs.iter().filter(|a| is_named(a, name)) {
+        if let Some(args) = &attr.args {
+            for arg in args.values() {
+                if let ExprKind::Name(n) = &arg.value.kind {
+                    if !n.quoted {
+                        out.insert(n.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The names an attribute such as `@reads(a, b)` gives.
@@ -96,6 +119,26 @@ impl Checker<'_> {
                     format!("`@{name}` has no meaning on {place}"),
                     attr.span,
                 );
+            }
+            // an operand's name is the language's, as is a word where the attribute
+            // takes words: one between backticks is the module's only, and no item of
+            // the module means anything there (R50)
+            let words = TAKE_WORDS.contains(&name);
+            for arg in attr.args.iter().flat_map(|args| args.values()) {
+                if let Some(label) = arg.name.as_ref().filter(|n| n.quoted) {
+                    self.unknown(label);
+                }
+                let word = match &arg.value.kind {
+                    ExprKind::Name(n) => Some(n),
+                    ExprKind::Index { base, .. } => match &base.kind {
+                        ExprKind::Name(n) => Some(n),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(n) = word.filter(|n| words && n.quoted) {
+                    self.unknown(n);
+                }
             }
         }
     }
@@ -208,7 +251,7 @@ impl Checker<'_> {
                     self.attrs_in(&p.attrs, &["bind"], "a module parameter");
                     self.require_attr(&p.attrs, "bind", "a parameter", p.span);
                     if matches!(p.value, ParamValue::Fit(_)) {
-                        let bind = named_args(&p.attrs, "bind");
+                        let bind = word_args(&p.attrs, "bind");
                         let has_bind = p.attrs.iter().any(|a| is_named(a, "bind"));
                         if has_bind && !bind.contains("load") {
                             self.error(

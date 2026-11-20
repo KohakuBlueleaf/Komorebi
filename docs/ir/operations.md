@@ -17,15 +17,21 @@ backticks are not part of the name: the byte code, a backend and a message use t
 
 A bare name means the language's wherever the language has a meaning for it in that place, so no
 line changes its meaning with the module's names: `zip(stream(a), stream(b))` is the language's
-`zip` in every module. An item of the module takes backticks, at its declaration and at every use,
-only where its kind stands beside a language name of the same spelling: a function (`func`,
-`combine`, `extern func`) named by one of the language's calls, a conversion (`u32`) or a
-combination (`sum max min and or`) is `` func `square` `` and is called `` `square`(x) ``; a
-value (a local, a parameter, a loop's name, a state member, a module constant) named `zeros`,
-`worker`, `group` or `island`; a record or a message named by a type's word. A name between
-backticks is the module's item only. A handler, a run, a chain, a program, a field and a message
+`zip` in every module. An item of the module takes backticks only where its kind stands beside a
+language name of the same spelling: a function (`func`, `combine`, `extern func`) named by one of
+the language's calls, a conversion (`u32`) or a combination (`sum max min and or`) is
+`` func `square` `` and is called `` `square`(x) ``; a value (a local, a parameter, a loop's
+name, a state member, a module constant) named `zeros`, `worker`, `group` or `island`; a record
+or a message named by a type's word. Such an item declared bare is refused (`K120`). The
+canonical layout writes its backticks at its declaration and at every use; the checker takes a
+bare use as the module's item only where the language has no meaning for the name in that place
+(`` `group` + 1 `` is the parameter, `group.id(0)` the language's beside it). A name between
+backticks is the module's item only, so where no item of the module can stand it is an unknown
+name (`K101`): a word an attribute takes (`` @on(`group`) ``, `` @scope(`worker`) ``), a member
+or a method of the language's values (`` worker.`rank` ``, `` x.`tiles`(0, 1) ``) and an
+operand's name (`` `axis` = row ``). A handler, a run, a chain, a program, a field and a message
 member stand where only an author's name does, so `handler zip`, `var sum` and a parameter `row`
-are written bare. Such an item declared bare is refused (`K120`).
+are written bare.
 
 Each operation has one form, the one the lessons write; another spelling is refused (`K111` in
 [the IR's checks](checks.md)). An operand is either **by position**, in the order given, or **by

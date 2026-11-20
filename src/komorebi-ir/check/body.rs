@@ -296,7 +296,9 @@ fn call_part(call: &Call, chain: &[Attr], build: &HashSet<String>) -> Option<(St
         .filter_map(|a| a.args.as_ref())
         .flat_map(|args| args.values())
         .find_map(|a| match &a.value.kind {
-            ExprKind::Index { base, index } if as_name(base).is_some_and(|n| n.name == "grid") => {
+            ExprKind::Index { base, index }
+                if as_name(base).is_some_and(|n| n.name == "grid" && !n.quoted) =>
+            {
                 let dims: Vec<Option<u64>> = index
                     .values()
                     .map(|i| match i {
@@ -2000,8 +2002,14 @@ impl Checker<'_> {
 
     pub(super) fn member(&mut self, cx: &mut Cx, base: &Expr, name: &Ident, span: Span) -> Ty {
         if let Some(word) = as_name(base) {
-            // a bare `worker`, `group` or `island` is the language's (R50)
+            // a bare `worker`, `group` or `island` is the language's (R50), and none
+            // has a member of the module's: one between backticks is no member of it
             if !word.quoted {
+                let language = matches!(word.name.as_str(), "worker" | "group" | "island");
+                if language && name.quoted {
+                    self.unknown(name);
+                    return Ty::Unknown;
+                }
                 match word.name.as_str() {
                     "worker" => return self.worker(cx, word, name, span),
                     "group" => {
@@ -2031,6 +2039,12 @@ impl Checker<'_> {
             }
         }
         let ty = self.expr(cx, base);
+        // a member between backticks is the module's only: a field of a message or a
+        // record (R50)
+        if name.quoted && !matches!(ty, Ty::Message(_) | Ty::Record(_) | Ty::Unknown) {
+            self.unknown(name);
+            return Ty::Unknown;
+        }
         let kind = match (&ty, name.name.as_str()) {
             (Ty::Tile(_), "T") => Some(OpKind::Transpose),
             (Ty::Block(..), "T") if self.on_blocks => Some(OpKind::Transpose),

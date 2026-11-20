@@ -83,7 +83,7 @@ impl Checker<'_> {
         match &e.kind {
             ExprKind::Paren(inner) => self.view_key(cx, inner),
             ExprKind::Name(n) => cx.lookup(&n.name).and_then(|l| l.view.clone()),
-            ExprKind::Member { base, name } if name.name == "T" => {
+            ExprKind::Member { base, name } if name.name == "T" && !name.quoted => {
                 let inner = self.view_key(cx, base)?;
                 Some(ViewKey {
                     tensor: inner.tensor,
@@ -125,7 +125,7 @@ impl Checker<'_> {
                         })
                     }
                     ExprKind::Member { base, name }
-                        if name.name == "tiles" || name.name == "items" =>
+                        if !name.quoted && (name.name == "tiles" || name.name == "items") =>
                     {
                         let tensor = as_name(base)?.name.clone();
                         let range = if name.name == "tiles" {
@@ -162,7 +162,12 @@ pub(super) fn peers_of(attr: &Attr) -> Peers {
         let ExprKind::List(items) = &arg.value.kind else {
             continue;
         };
-        match arg.name.as_ref().map(|n| n.name.as_str()) {
+        match arg
+            .name
+            .as_ref()
+            .filter(|n| !n.quoted)
+            .map(|n| n.name.as_str())
+        {
             Some("offsets") => peers.offsets.extend(items.values().filter_map(as_int)),
             Some("pairs") => {
                 for item in items.values() {

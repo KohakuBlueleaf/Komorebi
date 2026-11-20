@@ -350,9 +350,10 @@ fn has(attrs: &[Attr], name: &str) -> bool {
     attrs.iter().any(|a| is_named(a, name))
 }
 
-/// True when an attribute `name` among `attrs` gives the word `word`.
+/// True when an attribute `name` among `attrs` gives the word `word`, bare (R50).
 fn gives(attrs: &[Attr], name: &str, word: &str) -> bool {
-    args(attrs, name).any(|a| matches!(&a.value.kind, ExprKind::Name(n) if n.name == word))
+    args(attrs, name)
+        .any(|a| matches!(&a.value.kind, ExprKind::Name(n) if n.name == word && !n.quoted))
 }
 
 fn number(e: &ast::Expr) -> Option<u64> {
@@ -517,7 +518,7 @@ fn member(ix: &Index, m: &ast::StateMember, block: &[Attr]) -> Result<Member, Sp
 fn on(attrs: &[Attr]) -> Result<On, Span> {
     for arg in args(attrs, "on") {
         if let ExprKind::Index { base, index } = &arg.value.kind {
-            if matches!(&base.kind, ExprKind::Name(n) if n.name == "grid") {
+            if matches!(&base.kind, ExprKind::Name(n) if n.name == "grid" && !n.quoted) {
                 let dims: Vec<Option<u64>> = index
                     .values()
                     .map(|i| match i {
@@ -543,7 +544,12 @@ fn peers(attrs: &[Attr]) -> Result<Peers, Span> {
     let ExprKind::List(items) = &arg.value.kind else {
         return Err(arg.span);
     };
-    match arg.name.as_ref().map(|n| n.name.as_str()) {
+    match arg
+        .name
+        .as_ref()
+        .filter(|n| !n.quoted)
+        .map(|n| n.name.as_str())
+    {
         Some("offsets") => items
             .values()
             .map(number)
