@@ -117,8 +117,9 @@ def run(program: str | bytes, script: str) -> str:
 class EntryPoint(NamedTuple):
     """What a host invokes: ``Program.handler``, kind, number, symbol, parameter kinds,
     words (``("address" | "tiles" | "word", p)``), the ranges a host checks, ``(tensor,
-    first, count)``, each end ``("word", i)``, ``("const", n)``, ``("rank",)``,
-    ``("size",)``, ``("add" | "sub" | "mul", a, b)``."""
+    first, count, cols)`` (a rectangle's rows, ``cols`` its columns, else None); an end
+    ``("word" | "const", n)``, ``("rank" | "size",)`` or ``(op, a, b)``, ``+ - * / %``.
+    """
 
     name: str
     kind: str
@@ -165,7 +166,8 @@ class Step(NamedTuple):
 class Emitted(NamedTuple):
     """A backend's output: its cache key (hex), its files ``(name, bytes)``, its entry
     points, and how it is built: kernels and buffers for the machine's runtime, or
-    steps run here."""
+    steps run here; ``at_load`` the kernels' files the load makes, by name (their
+    text needs the load's tensors: ``Loaded.files``), which are not among ``files``."""
 
     key: str
     files: list[tuple[str, bytes]]
@@ -173,6 +175,7 @@ class Emitted(NamedTuple):
     kernels: list[Kernel]
     buffers: list[Buffer]
     steps: list[Step]
+    at_load: list[str]
 
 
 def emit(
@@ -181,7 +184,9 @@ def emit(
     """The output of a module on a backend (``"tensix"`` or ``"cpu"``); ``target`` its
     architecture, by default the backend's (no chip for ``"tensix"``, the host's for
     ``"cpu"``). Nothing is written or run."""
-    key, files, entries, kernels, buffers, steps = _rs.emit(program, backend, target)
+    key, files, entries, kernels, buffers, steps, at_load = _rs.emit(
+        program, backend, target
+    )
     return Emitted(
         key,
         [(name, data) for name, data in files],
@@ -192,17 +197,20 @@ def emit(
         [Kernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
         [Buffer(*b) for b in buffers],
         [Step(p, list(a)) for p, a in steps],
+        list(at_load),
     )
 
 
 class LoadTensor(NamedTuple):
     """A tensor a load is given for a tensor parameter: its pages, its layout as the
-    kernels' compile arguments take it (tensors of one layout share a kind), and the
-    bytes of a page in DRAM when a thread may fetch and store it."""
+    kernels' compile arguments take it (tensors of one layout share a kind), the
+    bytes of a page in DRAM when a thread may fetch and store it, and its shape in
+    tiles ``(rows, columns)``, which a handler that streams a rectangle of it needs."""
 
     pages: int
     layout: list[int]
     dram_page: int | None = None
+    shape: tuple[int, int] | None = None
 
 
 class LoadedKernel(NamedTuple):
@@ -249,8 +257,9 @@ class Machine(NamedTuple):
 
 class Loaded(NamedTuple):
     """What a load on Tensix makes from its tensors: the thread header (its name and
-    text), the kernels, the buffers, and the program's header as the machine sizes it
-    (each reduce's arrival from its islands), in place of the compile's."""
+    text), the kernels, the buffers, the program's header as the machine sizes it
+    (each reduce's arrival from its islands), in place of the compile's, and the
+    files the output names ``at_load`` ``(name, text)``."""
 
     thread_name: str
     thread: str
@@ -258,6 +267,7 @@ class Loaded(NamedTuple):
     buffers: list[LoadBuffer]
     header_name: str
     header: str
+    files: list[tuple[str, str]]
 
 
 def load(
@@ -270,7 +280,8 @@ def load(
     ``chip`` (``blackhole``, ``wormhole_b0``) checked when named; on ``machine`` (None:
     one island holding every worker). Nothing is written or run."""
     rows = [
-        (name, (t.pages, list(t.layout), t.dram_page)) for name, t in tensors.items()
+        (name, (t.pages, list(t.layout), t.dram_page, t.shape))
+        for name, t in tensors.items()
     ]
     given = None
     if machine is not None:
@@ -278,7 +289,7 @@ def load(
         links = None if links is None else [tuple(link) for link in links]
         islands = (list(machine.islands.sizes), links)
         given = (machine.workers, machine.worker_memory, islands, list(machine.options))
-    name, text, kernels, buffers, header_name, header = _rs.load(
+    name, text, kernels, buffers, header_name, header, files = _rs.load(
         program, rows, chip, given
     )
     return Loaded(
@@ -288,6 +299,7 @@ def load(
         [LoadBuffer(*b) for b in buffers],
         header_name,
         header,
+        [(file, data) for file, data in files],
     )
 
 

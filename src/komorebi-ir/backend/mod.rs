@@ -223,20 +223,29 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
     /// A product.
     Mul(Box<Expr>, Box<Expr>),
+    /// A quotient, rounded down (a host refuses a division by 0).
+    Div(Box<Expr>, Box<Expr>),
+    /// A remainder (a host refuses one by 0).
+    Rem(Box<Expr>, Box<Expr>),
 }
 
 /// What a host checks before it sends an invocation: tiles `first` to
 /// `first + count - 1` of the tensor passed as parameter `tensor` lie in it, for each
-/// rank of the group when an end reads the rank. One that does not ends the
-/// invocation failed (`view_end`) without sending it.
+/// rank of the group when an end reads the rank; for a rectangle, its rows `first` to
+/// `first + count - 1` lie in the tensor's rows of tiles and its columns (`cols`) in
+/// its width, and the tensor is as wide as the one the load was given (the load wrote
+/// the text for that width). One that does not ends the invocation failed
+/// (`view_end`) without sending it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bound {
     /// The tensor's parameter.
     pub tensor: usize,
-    /// The first tile.
+    /// The first tile, or a rectangle's first row of tiles.
     pub first: Expr,
-    /// The tiles.
+    /// The tiles, or a rectangle's rows of tiles.
     pub count: Expr,
+    /// A rectangle's columns of tiles: the first, and how many.
+    pub cols: Option<(Expr, Expr)>,
 }
 
 /// One thing of the module an invocation names, in the output: the invocation ABI, the
@@ -331,6 +340,10 @@ pub enum Build {
         kernels: Vec<Kernel>,
         /// The buffers.
         buffers: Vec<Buffer>,
+        /// The files of the kernels the load makes, not the compile, by name: their
+        /// text needs a fact of the load's tensors (a rectangle's walk, in rows of its
+        /// tensor's width). They are not among the output's files.
+        at_load: Vec<String>,
     },
 }
 

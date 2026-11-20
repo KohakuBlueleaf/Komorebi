@@ -2023,12 +2023,14 @@ fn a_reduction_along_a_row_of_a_block_of_two_rows_runs_along_each_row() {
 }
 
 #[test]
-fn the_shapes_of_blocks_are_checked_and_their_rows_are_a_number_written() {
+fn the_shapes_of_blocks_are_checked_and_their_rows_are_known_at_build() {
     // R45: `matmul` of blocks takes the left's columns of tiles as the right's rows;
-    // the rows of a block are a literal; a sink of several rows is not built (K010)
+    // the rows of a block are a number written or a module parameter bound at build
+    // (program 6); a sink of several rows is not built (K010)
     let func = |sig: &str, body: &str| {
         format!(
-            "module shapes\n\ntile [32, 32]\nformat f32\n\nparam n: u32 = 2 @bind(build)\n\n\
+            "module shapes\n\ntile [32, 32]\nformat f32\n\nparam n: u32 = 2 @bind(build)\n\
+             param m: u32 = 2 @bind(load)\nparam k: u32 = 2 @bind(invoke)\n\n\
              func f({sig} {{\n    return {body}\n}}\n"
         )
     };
@@ -2044,6 +2046,11 @@ fn the_shapes_of_blocks_are_checked_and_their_rows_are_a_number_written() {
         (
             "x: tile<f32>[2, 3]) -> tile<f32>[2, 3]",
             "reduce_sum(x, axis = row).col() * x",
+        ),
+        // rows of a parameter bound at build: its value, known at compile
+        (
+            "x: tile<f32>[n], w: tile<f32>[n, 1]) -> tile<f32>",
+            "matmul(x, w)",
         ),
     ];
     for (sig, body) in built {
@@ -2061,9 +2068,19 @@ fn the_shapes_of_blocks_are_checked_and_their_rows_are_a_number_written() {
             "takes operands of one shape, element by element: [2, 2] and [4]",
         ),
         (
-            "x: tile<f32>[n, 2]) -> tile<f32>[n, 2]",
+            "x: tile<f32>[m, 2]) -> tile<f32>[m, 2]",
             "x",
-            "the rows of a block `[r, c]` are a number written in the text",
+            "a number written in the text or a module parameter bound at build",
+        ),
+        (
+            "x: tile<f32>[k, 2]) -> tile<f32>[k, 2]",
+            "x",
+            "a module parameter bound at build (one bound at load or at the invocation",
+        ),
+        (
+            "x: tile<f32>[n, 3], w: tile<f32>[2, 1]) -> tile<f32>",
+            "matmul(x, w)",
+            "the left's columns of tiles are the right's rows",
         ),
     ];
     for (sig, body, what) in refused {
@@ -2080,4 +2097,72 @@ fn the_shapes_of_blocks_are_checked_and_their_rows_are_a_number_written() {
                 let s = sink(out.tiles(0, 4), block = [2, 2])\n    }\n}\n";
     let found = komorebi_ir::check(sink).expect_err("a sink of two rows");
     assert!(found.iter().any(|d| d.code == "K010"), "{found:?}");
+}
+
+#[test]
+fn program_6_sums_each_ranks_products_of_a_row_of_x_and_a_column_of_w() {
+    // Small.read as the frontend writes it (reading R45): rank r N + n reads X's row r
+    // in blocks of CHUNK and W's column n in blocks of [CHUNK, 1], and adds the
+    // products into a tile of zeros, which it stores at Y's tile call M N + rank
+    let m = module(
+        "module small
+
+tile [32, 32]
+format bf16, f32
+
+param M_TILES: u32 = 4 @bind(build)
+param K_TILES: u32 = 28 @bind(build)
+param N_TILES: u32 = 4 @bind(build)
+param CHUNK: u32 = 4 @bind(build)
+
+func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, 1]) -> tile<f32> {
+    return matmul(x, w)
+}
+
+program Small {
+    handler read(x: tensor<bf16>, w: tensor<bf16>, y: tensor<f32>, call: u32) @on(group) {
+        let r = worker.rank / N_TILES
+        let n = worker.rank % N_TILES
+        var acc: tile<f32> = zeros
+        for xb, wb in zip(stream(x.tiles[r:r + 1, 0:K_TILES], block = CHUNK), stream(w.tiles[0:K_TILES, n:n + 1], block = [CHUNK, 1])) {
+            acc += project(xb, wb)
+        }
+        store y.tiles(((call * M_TILES) * N_TILES) + worker.rank, 1) <- acc
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 16, &[], Options::default()).expect("loads");
+    // X's tile (r, k) holds r + 1, W's tile (k, n) holds k + n; Y two calls' worth
+    let x = tensor(&mut run, Format::Bf16, (4, 28), |i, _| (i / 28 + 1) as f64);
+    let w = tensor(&mut run, Format::Bf16, (28, 4), |i, _| {
+        (i / 4 + i % 4) as f64
+    });
+    let y = tensor(&mut run, Format::F32, (8, 4), |_, _| -1.0);
+    let args = [
+        Arg::Tensor(x),
+        Arg::Tensor(w),
+        Arg::Tensor(y),
+        Arg::Scalar(u32s(1)),
+    ];
+    assert_eq!(
+        run.invoke("Small.read", &args, (0, 16), &[]),
+        End::Completed(None)
+    );
+    // By hand: each element of Y's tile (r, n) is the sum over k of 32 (r + 1)(k + n),
+    // 32 (r + 1)(378 + 28 n); call 1 writes tiles 16 to 31, call 0's stay -1
+    for rank in 0..16 {
+        let (r, n) = ((rank / 4) as f64, (rank % 4) as f64);
+        let want = 32.0 * (r + 1.0) * (378.0 + 28.0 * n);
+        let got = tile_f64(&run, y, 16 + rank);
+        assert!(
+            got.iter().all(|v| *v == want),
+            "rank {rank}: {} for {want}",
+            got[0]
+        );
+        assert!(
+            tile_f64(&run, y, rank).iter().all(|v| *v == -1.0),
+            "tile {rank}"
+        );
+    }
 }

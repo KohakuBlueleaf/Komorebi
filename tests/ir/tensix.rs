@@ -136,6 +136,7 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let stand_ins = [stand_in.clone(), stand_in];
     let header = thread_header(&module, &stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
@@ -168,6 +169,7 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
     let Build::Kernels {
         kernels: built,
         buffers,
+        ..
     } = &output.build
     else {
         panic!("kernels built at load");
@@ -409,6 +411,7 @@ fn the_ranges_and_values_not_built_are_refused_by_name() {
         tensor,
         first: Expr::Word(2),
         count: less.clone(),
+        cols: None,
     };
     assert_eq!(output.entries[0].bounds, [bound(0), bound(1)]);
 }
@@ -455,6 +458,7 @@ fn the_backend_compiles_the_first_lesson_to_kernels_built_at_load() {
         tensor,
         first: Expr::Word(2),
         count: Expr::Word(3),
+        cols: None,
     };
     assert_eq!(entry.bounds, [bound(0), bound(1)]);
     let Build::Kernels { kernels, .. } = &output.build else {
@@ -583,6 +587,7 @@ fn a_load_takes_its_tensors_by_name_and_names_formats_as_the_loader_does() {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let given = |names: &[&str]| -> Vec<(String, LoadTensor)> {
         names.iter().map(|n| (n.to_string(), t.clone())).collect()
@@ -672,6 +677,7 @@ fn a_load_sizes_a_reduces_arrivals_from_the_machines_islands() {
         pages,
         layout: vec![2, 4096],
         dram_page: None,
+        shape: None,
     };
     let source = std::fs::read_to_string(here().join("steps_sum.kom")).expect("the .kom");
     let sum = komorebi_ir::api::build(&source).unwrap_or_else(|d| panic!("{d:?}"));
@@ -721,6 +727,7 @@ fn a_load_sizes_a_reduces_arrivals_from_the_machines_islands() {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
     assert_eq!(
@@ -739,6 +746,7 @@ fn a_load_refuses_islands_that_are_not_a_graph_of_its_workers_as_a_run_does() {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
     let on = |sizes: &[usize], links: Option<&[(usize, usize)]>| Machine {
@@ -966,4 +974,121 @@ fn the_trace_refuses_a_function_on_blocks_that_is_not_element_by_element_by_name
             refusal.what
         );
     }
+}
+
+/// Program 6 as the frontend writes it (reading R45), its rows' and columns' ends as
+/// given: `x.tiles[XR, XC]` and `w.tiles[WR, WC]`.
+fn small(x: &str, w: &str) -> Module {
+    let text = format!(
+        "module small
+
+tile [32, 32]
+format bf16, f32
+
+param M_TILES: u32 = 4 @bind(build)
+param K_TILES: u32 = 28 @bind(build)
+param N_TILES: u32 = 4 @bind(build)
+param CHUNK: u32 = 4 @bind(build)
+
+func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, 1]) -> tile<f32> {{
+    return matmul(x, w)
+}}
+
+program Small {{
+    handler read(x: tensor<bf16>, w: tensor<bf16>, y: tensor<f32>, call: u32) @on(group) {{
+        let r = worker.rank / N_TILES
+        let n = worker.rank % N_TILES
+        var acc: tile<f32> = zeros
+        for xb, wb in zip(stream(x.tiles[{x}], block = CHUNK), stream(w.tiles[{w}], block = [CHUNK, 1])) {{
+            acc += project(xb, wb)
+        }}
+        store y.tiles(((call * M_TILES) * N_TILES) + worker.rank, 1) <- acc
+    }}
+}}
+"
+    );
+    komorebi_ir::api::build(&text).unwrap_or_else(|d| panic!("{d:?}"))
+}
+
+#[test]
+fn a_rectangles_movement_is_the_loads_for_its_tensors_width() {
+    use komorebi_ir::api::load::load;
+    let module = small("r:r + 1, 0:K_TILES", "0:K_TILES, n:n + 1");
+    // the compile names the file it does not write
+    let target = Target {
+        arch: chip::ARCH.to_string(),
+        features: Default::default(),
+    };
+    let output = Tensix
+        .compile(&module, &target)
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let Build::Kernels { at_load, .. } = &output.build else {
+        panic!("kernels");
+    };
+    assert_eq!(at_load, &["movement.cpp"]);
+    let names: Vec<&str> = output.files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["compute.cpp", "small.h"]);
+    let scale = edited("module scale", "module scale");
+    assert_eq!(tensix::at_load(&scale), Ok(Vec::new()));
+    let tensor = |pages: u64, bytes: u64, shape: Option<(u64, u64)>| LoadTensor {
+        pages,
+        layout: vec![2, bytes],
+        dram_page: None,
+        shape,
+    };
+    let given = |x: Option<(u64, u64)>, w: Option<(u64, u64)>| {
+        vec![
+            ("x".to_string(), tensor(112, 2048, x)),
+            ("w".to_string(), tensor(112, 2048, w)),
+            ("y".to_string(), tensor(512, 4096, Some((128, 4)))),
+        ]
+    };
+    let movement = |x, w| {
+        let loaded = load(&module, &given(x, w), None, None).unwrap_or_else(|r| panic!("{r:?}"));
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.files[0].0, "movement.cpp");
+        loaded.files[0].1.clone()
+    };
+    // one compiled module, the walk in rows of each load's widths: W 4 tiles wide, then 8
+    let four = movement(Some((4, 28)), Some((28, 4)));
+    let eight = movement(Some((4, 28)), Some((28, 8)));
+    assert!(
+        four.contains("km::Walk{((0) * 4 + (n)), ((28) + 3) / 4, 16, 4, 4, 1,"),
+        "{four}"
+    );
+    assert!(
+        eight.contains("km::Walk{((0) * 8 + (n)), ((28) + 3) / 4, 32, 4, 8, 1,"),
+        "{eight}"
+    );
+    assert!(four.contains("((r) * 28 + (0)), 28, kRead0Block"), "{four}");
+    // X twice as wide: its row is still one run, from its own width
+    let wide = movement(Some((2, 56)), Some((28, 4)));
+    assert!(wide.contains("((r) * 56 + (0)), 28, kRead0Block"), "{wide}");
+    // refused by name at load: a tensor a rectangle walks given no shape, and a
+    // rectangle whose columns or rows do not fit its tensor
+    let refused = |x, w| {
+        let r = load(&module, &given(x, w), None, None).expect_err("refused");
+        assert_eq!(r[0].code, "K964");
+        r[0].what.clone()
+    };
+    assert!(
+        refused(None, Some((28, 4))).contains("the tensor `x` is given with no shape in tiles"),
+        "no shape"
+    );
+    assert_eq!(
+        refused(Some((4, 27)), Some((28, 4))),
+        "the rectangle's columns 0:28 of `x`, which has 27 columns of tiles at this load"
+    );
+    assert_eq!(
+        refused(Some((4, 28)), Some((27, 4))),
+        "the rectangle's rows 0:28 of `w`, which has 27 rows of tiles at this load"
+    );
+    // rows the compile does not know are refused at compile, by name
+    let unknown = small("r:r + call, 0:K_TILES", "0:K_TILES, n:n + 1");
+    let r = tensix::sources(&unknown).expect_err("refused");
+    assert!(
+        r[0].what
+            .contains("a rectangle whose rows or columns the compile does not know"),
+        "{r:?}"
+    );
 }

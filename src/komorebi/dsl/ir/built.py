@@ -18,6 +18,9 @@ from komorebi.errors import ProgramError
 from komorebi.program import description as km_program
 from komorebi.program.movement import Pattern
 
+# an end of a range's operations and their signs, as the handler writes them
+SIGNS = {"add": "+", "sub": "-", "mul": "*", "div": "/", "rem": "%"}
+
 # a scalar parameter's kind as today's command word takes it (front.word_of)
 WORD_KINDS = {"f32": "float", "u8": "int", "u16": "int", "u32": "int", "i32": "int"}
 
@@ -41,10 +44,13 @@ class Entry(km_program.Handler):
     `args(...)`, the command words of a call, each range the IR states checked
     against its tensor before anything is sent (docs/ir/frontends.md)."""
 
-    def __new__(cls, point, program, names):
+    def __new__(cls, point, program, names, widths=None):
         made = super().__new__(cls, point.number, program)
         made.point, made.names = point, list(names)
         made.short = point.name.split(".")[-1]
+        # the tile width of each tensor the load was given its shape, by parameter
+        # name: a rectangle's text is the load's, for that width
+        made.widths = dict(widths or {})
         return made
 
     def args(self, *values, group=None):
@@ -56,20 +62,70 @@ class Entry(km_program.Handler):
                 f"{short}: {len(values)} arguments, the handler takes {len(self.names)}"
             )
         words = [self.word(kind, p, values[p]) for kind, p in point.words]
-        for tensor, first, count in point.bounds:
-            ranked = reads_group(first) or reads_group(count)
+        for tensor, first, count, cols in point.bounds:
+            ends = (first, count) + (cols or ())
+            ranked = any(reads_group(end) for end in ends)
             if ranked and group is None:
                 raise ProgramError(
                     f"{short}: a range of {self.names[tensor]} reads the rank: give "
                     "args(..., group=(first, count)), the submit's group"
                 )
+            if cols is not None:
+                self.width_checked(values[tensor], self.names[tensor])
             size = int(group[1]) if ranked else None
             for rank in range(size) if ranked else (None,):
                 at = {"rank": rank, "size": size}
+                if cols is not None:
+                    self.rect_checked(
+                        values[tensor],
+                        self.names[tensor],
+                        (first, count),
+                        cols,
+                        words,
+                        at,
+                    )
+                    continue
                 self.bound_checked(
                     values[tensor], self.names[tensor], first, count, words, at
                 )
         return words
+
+    def width_checked(self, tensor, name):
+        """Refuses a tensor whose width in tiles is not the one the load was given
+        (the load wrote its rectangles' text for that width), in today's words."""
+        width, wide = self.widths.get(name), width_of(tensor)
+        if width is not None and wide is not None and wide != width:
+            raise ProgramError(
+                f"{self.short}: {name} is {wide} tiles wide, and the handler's "
+                f"rectangles of {name} were built for {width} (the example tensor's): "
+                "make the program with a tensor of this width"
+            )
+
+    def rect_checked(self, tensor, name, rows, cols, words, at):
+        """Refuses a call whose rectangle of `tensor` (at rank `at["rank"]` of
+        `at["size"]`, when it reads it) has a side not past its start, or rows past
+        the tensor's rows of tiles or columns past its width."""
+        rank = at["rank"]
+        where = "" if rank is None else f" at rank {rank} of {at['size']}"
+        held = shape_of(tensor)
+        for what, (first, count), most in zip(
+            ("rows", "columns"), (rows, cols), held or (None, None)
+        ):
+            start, many = value_of(first, words, at), value_of(count, words, at)
+            low, high = self.text(first), self.text(("add", first, count))
+            if many < 1:
+                raise ProgramError(
+                    f"{self.short}: {name}'s rectangle: its {what} {low} : {high} are "
+                    f"{start} : {start + many}{where} at this call, {many} long: a "
+                    "slice whose end is before its start (reversed) or at it "
+                    "(empty) is no tiles; give the start before the end"
+                )
+            if most is not None and (start < 0 or start + many > most):
+                raise ProgramError(
+                    f"{self.short}: {name}'s rectangle: its {what} {start} to "
+                    f"{start + many - 1}{where} at this call, and {name} has {most} "
+                    f"{what} of tiles: keep the rectangle inside the tensor"
+                )
 
     def word(self, kind, p, value):
         """The word of parameter `p` given `value`: a tensor's address or tiles, a
@@ -130,12 +186,30 @@ class Entry(km_program.Handler):
             return str(expr[1])
         if expr[0] in ("rank", "size"):
             return {"rank": "worker.rank", "size": "group.size"}[expr[0]]
-        if expr[0] in ("add", "sub", "mul"):
-            sign = {"add": "+", "sub": "-", "mul": "*"}[expr[0]]
+        if expr[0] in SIGNS:
+            sign = SIGNS[expr[0]]
             text = f"{self.text(expr[1], True)} {sign} {self.text(expr[2], True)}"
             return f"({text})" if inner else text
         kind, p = self.point.words[expr[1]]
         return self.names[p] if kind == "word" else f"{self.names[p]}'s {kind}"
+
+
+def width_of(tensor):
+    """A tensor's width in tiles, when it is in tiles of two dimensions or more."""
+    shape = shape_of(tensor)
+    return None if shape is None else shape[1]
+
+
+def shape_of(tensor):
+    """A tensor's shape in tiles (rows, columns), when it is in tiles of two
+    dimensions or more: its rows every dimension but the last."""
+    dims = tuple(getattr(tensor, "shape", ()))
+    if getattr(tensor, "layout", None) != "tile" or len(dims) < 2:
+        return None
+    rows = 1
+    for d in dims[:-1]:
+        rows *= int(d)
+    return (rows // 32, int(dims[-1]) // 32)
 
 
 def tiles_of(tensor):
@@ -147,13 +221,14 @@ def reads_group(expr):
     """Whether an end of a range reads the worker's rank or the group's size."""
     if expr[0] in ("rank", "size"):
         return True
-    pair = expr[0] in ("add", "sub", "mul")
+    pair = expr[0] in SIGNS
     return pair and (reads_group(expr[1]) or reads_group(expr[2]))
 
 
 def value_of(expr, words, at):
     """An end of a range at a call: of its words, constants, the rank and size in
-    `at`, sums, differences (below 0 a range the check refuses) and products."""
+    `at`, sums, differences (below 0 a range the check refuses), products, quotients
+    rounded down and remainders (by 0 refused)."""
     kind = expr[0]
     if kind == "word":
         return words[expr[1]]
@@ -162,16 +237,24 @@ def value_of(expr, words, at):
     if kind in ("rank", "size"):
         return at[kind]
     left, right = value_of(expr[1], words, at), value_of(expr[2], words, at)
+    if kind in ("div", "rem") and right == 0:
+        raise ProgramError(f"an end of a range divides {left} by 0 at this call")
+    if kind == "div":
+        return left // right
+    if kind == "rem":
+        return left % right
     return {"add": left + right, "sub": left - right, "mul": left * right}[kind]
 
 
 def load_tensor(tensor):
     """A make's tensor as a load takes it: its pages, its layout words (what km::Tensor
-    reads) and its page in DRAM, when it is in DRAM and the tensor knows it."""
+    reads), its page in DRAM, when it is in DRAM and the tensor knows it, and its
+    shape in tiles (rows, columns), when it is in tiles of two dimensions or more."""
     page = getattr(tensor, "aligned_page_bytes", None)
     if not getattr(tensor, "in_dram", True):
         page = None
-    return komorebi_ir.LoadTensor(int(tensor.pages), list(tensor.tensor_args()), page)
+    args = list(tensor.tensor_args())
+    return komorebi_ir.LoadTensor(int(tensor.pages), args, page, shape_of(tensor))
 
 
 def buffers_of(loaded):
@@ -236,6 +319,7 @@ def program(cls, machine=None, **make):
     files = {name: data.decode() for name, data in out.files}
     files[loaded.header_name] = loaded.header
     files[loaded.thread_name] = loaded.thread
+    files.update(loaded.files)  # the files the output names as made at load
     name = cls.__name__.lower()
     digest = text_key(files)
     folder = Path(file_of(cls)).parent / BUILD / f"{name}-{digest}"
@@ -261,5 +345,6 @@ def program(cls, machine=None, **make):
     for point in out.entries:
         short = point.name.split(".")[-1]
         names = list(inspect.signature(getattr(cls, short).function).parameters)[1:]
-        made.entries[short] = Entry(point, made, names)
+        widths = {n: t.shape[1] for n, t in tensors.items() if t.shape is not None}
+        made.entries[short] = Entry(point, made, names, widths)
     return made

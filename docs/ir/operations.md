@@ -74,8 +74,9 @@ The function body of a `func` uses only these (`K202`). Operands of different fo
 
 A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. A block is
 a matrix of tiles: `tile<F>[r, c]` is r rows of c tiles, and `tile<F>[n]` is `[1, n]`, one row of n
-tiles. Its rows are a number written in the text; a module parameter or `group.size` there is
-refused (`K102`). Its columns are a number in the text or a module parameter, the block of the
+tiles. Its rows are a number written in the text or a module parameter bound at build (its value
+is known at compile); one bound at load or at the invocation, or `group.size`, there is refused
+(`K102`). Its columns are a number in the text or a module parameter, the block of the
 stream the blocks come from. A block of more than one row stands only as a parameter or the result
 of a function (`K010` elsewhere).
 
@@ -113,7 +114,7 @@ is its own statement ([backends](backends.md)).
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); r a number written in the text (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
+| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
 | `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
 | `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |

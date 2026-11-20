@@ -13,6 +13,13 @@ use super::codes;
 use super::index::Index;
 use super::Checker;
 
+/// Why the rows of a block are refused: a number written in the text or a module
+/// parameter bound at build (R45); one bound at load or at the invocation, or
+/// `group.size`, is not built.
+pub(super) const ROWS_BUILT: &str = "the rows of a block `[r, c]` are a number written in the \
+     text or a module parameter bound at build (one bound at load or at the invocation, or \
+     `group.size`, there is not built)";
+
 /// Where a type is written; it decides which types are allowed there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -492,7 +499,8 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
         };
-        // `tile<F>[r, c]` (R45): r rows of c tiles, r a number the text writes
+        // `tile<F>[r, c]` (R45): r rows of c tiles, r a number the text writes or a
+        // module parameter bound at build (its value known at compile)
         let rows = match ty.rows.as_deref().map(|r| (&r.kind, r.span)) {
             None => Count::Known(1),
             Some((crate::syntax::ast::ExprKind::Int(text), span)) => match parse_int(text) {
@@ -506,14 +514,33 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
             },
+            Some((crate::syntax::ast::ExprKind::Name(name), span)) => {
+                match env.ix.param_count(&name.name) {
+                    Some(Count::Known(r)) if r > 0 => Count::Known(r),
+                    Some(Count::Known(_)) => {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            "a block has one row or more".into(),
+                            span,
+                        );
+                        return Ty::Unknown;
+                    }
+                    Some(_) => {
+                        self.error(codes::WRONG_TYPE, ROWS_BUILT.into(), span);
+                        return Ty::Unknown;
+                    }
+                    None => {
+                        self.error(
+                            codes::UNKNOWN_NAME,
+                            format!("`{}` is not a declared parameter", name.name),
+                            name.span,
+                        );
+                        return Ty::Unknown;
+                    }
+                }
+            }
             Some((_, span)) => {
-                self.error(
-                    codes::WRONG_TYPE,
-                    "the rows of a block `[r, c]` are a number written in the text (a module \
-                     parameter or `group.size` there is not built)"
-                        .into(),
-                    span,
-                );
+                self.error(codes::WRONG_TYPE, ROWS_BUILT.into(), span);
                 return Ty::Unknown;
             }
         };

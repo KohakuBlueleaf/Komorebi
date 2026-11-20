@@ -157,7 +157,7 @@ def test_emit_gives_the_tensix_output_as_data():
     assert entry.words == [("address", 0), ("address", 1)] + [
         ("word", i) for i in (2, 3, 4)
     ]
-    assert entry.bounds == [(t, ("word", 2), ("word", 3)) for t in (0, 1)]
+    assert entry.bounds == [(t, ("word", 2), ("word", 3), None) for t in (0, 1)]
     assert entry.patterns == []  # no word of T1 is a pattern
     # a range of a difference is stated too: every range of a tensor is a bound
     less = T1.replace("x.tiles(first, tiles)", "x.tiles(first, tiles - first)").replace(
@@ -165,7 +165,7 @@ def test_emit_gives_the_tensix_output_as_data():
     )
     (entry,) = ir.emit(ir.compile(less), "tensix").entries
     count = ("sub", ("word", 3), ("word", 2))
-    assert entry.bounds == [(t, ("word", 2), count) for t in (0, 1)]
+    assert entry.bounds == [(t, ("word", 2), count, None) for t in (0, 1)]
     layouts = [("layout", 0), ("layout", 1)]
     assert [(k.source, k.processor, k.args) for k in out.kernels] == [
         ("movement.cpp", "reader", layouts),
@@ -234,6 +234,57 @@ def test_load_refuses_by_name():
             ir.load(T1, tensors)
     with pytest.raises(ir.IrError, match="blackhole or wormhole_b0, not `tensix`"):
         ir.load(T1, {"x": x, "y": x}, chip="tensix")
+
+
+SMALL = """module small
+
+tile [32, 32]
+format bf16, f32
+
+param K: u32 = 28 @bind(build)
+
+func project(
+    x: tile<bf16>[4],
+    w: tile<bf16>[4, 1],
+) -> tile<f32> @tensix.fidelity(HiFi2) {
+    return matmul(x, w)
+}
+
+program Small {
+    handler read(x: tensor<bf16>, w: tensor<bf16>, y: tensor<f32>) @on(group) {
+        var acc: tile<f32> = zeros
+        let rank = worker.rank
+        let xs = stream(x.tiles[0:1, 0:K], block = 4)
+        for xb, wb in zip(xs, stream(w.tiles[0:K, rank:rank + 1], block = [4, 1])) {
+            acc += project(xb, wb)
+        }
+        store y.tiles(worker.rank, 1) <- acc
+    }
+}
+"""
+
+
+def test_a_rectangles_movement_is_named_at_compile_and_made_at_load():
+    out = ir.emit(SMALL)
+    assert out.at_load == ["movement.cpp"]
+    assert "movement.cpp" not in [name for name, _ in out.files]
+    assert ("math_fidelity", "HiFi2") in out.kernels[2].options
+    assert out.entries[0].bounds[1][3] == (
+        ("rank",),
+        ("sub", ("add", ("rank",), ("const", 1)), ("rank",)),
+    )
+    assert ir.emit(T1).at_load == []
+    x = ir.LoadTensor(28, [2, 2048], shape=(1, 28))
+    w = ir.LoadTensor(112, [2, 2048], shape=(28, 4))
+    y = ir.LoadTensor(4, [2, 4096], shape=(1, 4))
+    loaded = ir.load(SMALL, {"x": x, "w": w, "y": y})
+    ((name, text),) = loaded.files
+    assert name == "movement.cpp"
+    assert "km::Walk{((0) * 4 + (km_rank)), ((28) + 3) / 4, 16, 4, 4, 1," in text
+    with pytest.raises(ir.IrError, match="the tensor `w` is given with no shape"):
+        ir.load(SMALL, {"x": x, "w": w._replace(shape=None), "y": y})
+    with pytest.raises(ir.IrError, match="columns 0:28 of `x`, which has 27 columns"):
+        ir.load(SMALL, {"x": x._replace(shape=(1, 27)), "w": w, "y": y})
 
 
 def test_load_sizes_a_reduces_arrivals_from_the_machines_islands():

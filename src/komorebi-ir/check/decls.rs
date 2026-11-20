@@ -411,7 +411,8 @@ fn count(ix: &Index, e: &ast::Expr) -> Result<Count, Span> {
 /// The type a declaration writes, as `program` sees the names of types.
 fn ty(ix: &Index, t: &ast::Type, attrs: &[Attr], program: Option<&str>) -> Result<Type, Span> {
     let n = t.count.as_deref().map(|c| count(ix, c)).transpose()?;
-    // the rows of `tile<F>[r, c]` (R45): a number the text writes; `[n]` is one row
+    // the rows of `tile<F>[r, c]` (R45): a number the text writes or a module parameter
+    // bound at build; `[n]` is one row
     let rows = match t.rows.as_deref() {
         Some(r) => match count(ix, r)? {
             Count::Const(r) if r > 0 => Count::Const(r),

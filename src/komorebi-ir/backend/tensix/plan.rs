@@ -1,9 +1,10 @@
 //! What a handler's body is, in the terms today's class DSL compiles: its command
 //! words, its named int values, the one partition its streams share or the range
 //! each streams, and a loop over a read stream, or over two zipped, that either pushes
-//! a tile function's result into a write stream, or sums its tiles into a `var`
-//! reduced over the group and stored by the leader. A body of another form is refused
-//! by name (K964).
+//! a tile function's result into a write stream, sums its tiles into a `var` reduced
+//! over the group and stored by the leader, or adds the products of the two streams'
+//! blocks into a `var` each rank stores. A body of another form is refused by name
+//! (K964).
 
 use std::collections::HashMap;
 
@@ -53,8 +54,41 @@ pub enum Int {
     Size,
     /// A named value: an index into the plan's `locals`.
     Local(usize),
-    /// `(a op b)`: `+`, `-` or `*`.
+    /// `(a op b)`: `+`, `-`, `*`, `/` or `%`.
     Bin(char, Box<Int>, Box<Int>),
+}
+
+/// The tiles from `lo` to `hi` (not included), when the compile knows how many: two
+/// numbers, or `hi` written `lo + n`.
+pub fn span(lo: &Int, hi: &Int) -> Option<u64> {
+    match (lo, hi) {
+        (Int::Const(a), Int::Const(b)) => b.checked_sub(*a),
+        (lo, Int::Bin('+', a, b)) if **a == *lo => match **b {
+            Int::Const(n) => Some(n),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A rectangle of a tensor's tiles, `t.tiles[r0:r1, c0:c1]`, row-major in a row of the
+/// tensor's width (which the load gives): its rows' ends and its columns'.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// `r0` and `r1`.
+    pub rows: (Int, Int),
+    /// `c0` and `c1`.
+    pub cols: (Int, Int),
+}
+
+impl Rect {
+    /// The rows and the columns, when the compile knows them.
+    pub fn sides(&self) -> (Option<u64>, Option<u64>) {
+        (
+            span(&self.rows.0, &self.rows.1),
+            span(&self.cols.0, &self.cols.1),
+        )
+    }
 }
 
 impl Int {
@@ -93,7 +127,8 @@ pub struct Part {
     pub inst: InstId,
 }
 
-/// The tiles a stream moves: a partition's part, or `t.tiles(first, n)` as it is.
+/// The tiles a stream moves: a partition's part, `t.tiles(first, n)` as it is, or a
+/// rectangle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Range {
     /// An index into the plan's `parts`.
@@ -105,6 +140,8 @@ pub enum Range {
         /// The tiles.
         n: Int,
     },
+    /// `t.tiles[r0:r1, c0:c1]`.
+    Rect(Rect),
 }
 
 /// A stream of whole tiles over its range.
@@ -156,6 +193,26 @@ pub enum Shape {
     /// `total += tile` from `zeros`, the total reduced over the group, the leader's
     /// result stored (program 2).
     Summed(Sum),
+    /// `acc += f(x, w)` from `zeros`, f the product of the two streams' blocks, each
+    /// rank's result stored (program 6, reading R45).
+    Product(Product),
+}
+
+/// The products of two streams' blocks added into a tile: `var acc: tile<f32> =
+/// zeros`, `acc += f(xb, wb)` in the loop over the two zipped, f `matmul` of its
+/// parameters (`[1, k]` by `[k, 1]`), and `store t.tiles(first, 1) <- acc` after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Product {
+    /// The `zeros` the tile starts at.
+    pub zeros: InstId,
+    /// The call of f in the loop.
+    pub call: Call,
+    /// The store: its tensor and tiles, one block of one tile.
+    pub store: Moved,
+    /// f's fidelity (`@tensix.fidelity`, else the backend's).
+    pub fidelity: String,
+    /// The columns of tiles of the result (acc's tiles).
+    pub width: u64,
 }
 
 /// A sum of a stream's tiles: `var total: tile<f32> = zeros`, `total += tile` in the
@@ -206,6 +263,7 @@ impl Plan {
         match &self.shape {
             Shape::Mapped { write, .. } => Some(write),
             Shape::Summed(sum) => Some(&sum.store),
+            Shape::Product(product) => Some(&product.store),
             Shape::Dropped => None,
         }
     }
@@ -219,6 +277,7 @@ impl Plan {
             } => call.inst,
             Shape::Mapped { push, .. } => *push,
             Shape::Summed(sum) => sum.add,
+            Shape::Product(product) => product.call.inst,
             Shape::Dropped => self.reads[0].inst,
         }
     }
@@ -297,11 +356,15 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         mut shape,
         repeat,
     } = found;
-    if let (Shape::Summed(_), Some((inst, _))) = (&shape, patterns.first()) {
-        return Err(not_built(
-            "a reduce's stream in a pattern the command gives",
-            Anchor::Inst(body, *inst),
-        ));
+    if let (Some((inst, _)), true) = (
+        patterns.first(),
+        matches!(shape, Shape::Summed(_) | Shape::Product(_)),
+    ) {
+        let what = match shape {
+            Shape::Product(_) => "a product's stream in a pattern the command gives",
+            _ => "a reduce's stream in a pattern the command gives",
+        };
+        return Err(not_built(what, Anchor::Inst(body, *inst)));
     }
     // the loop's hint is each stream's it walks (zipped, the loop opens the first)
     for (inst, word) in &patterns {
@@ -402,6 +465,10 @@ enum Val {
         n: Int,
     },
     Part(usize, Part),
+    Rect {
+        tensor: usize,
+        rect: Rect,
+    },
     Stream,
     Sink,
     /// The loop's tile from read stream `i`.
@@ -419,6 +486,7 @@ enum Val {
 enum Over {
     Part(Part),
     Tiles(Int, Int),
+    Rect(Rect),
 }
 
 /// What the walk found.
@@ -442,6 +510,8 @@ struct Summing {
     leader: Option<InstId>,
     store: Option<Moved>,
     closed: bool,
+    /// The add is of a call's result (a product), not of the loop's tile.
+    product: bool,
 }
 
 /// The body read instruction by instruction: arguments, ints of words, numbers and
@@ -544,10 +614,12 @@ impl<'m> Walk<'m> {
                 ));
             }
             if self.sum.closed {
-                return Err(not_built(
-                    "a handler's lines after its leader's store",
-                    anchor,
-                ));
+                let what = if self.sum.product {
+                    "a handler's lines after its store"
+                } else {
+                    "a handler's lines after its leader's store"
+                };
+                return Err(not_built(what, anchor));
             }
             let val = self
                 .step(&inst.op, id)
@@ -594,9 +666,20 @@ impl<'m> Walk<'m> {
         if reads.iter().any(|r| r.block != write.block) {
             return Err(not_built("a sink in blocks other than its loop's", at));
         }
+        if overs
+            .iter()
+            .chain([&wover])
+            .any(|o| matches!(o, Over::Rect(_)))
+        {
+            return Err(not_built(
+                "a sink or a pushing loop's stream of a rectangle",
+                at,
+            ));
+        }
         let count = |o: &Over| match o {
             Over::Part(p) => p.n.clone(),
             Over::Tiles(_, n) => n.clone(),
+            Over::Rect(_) => Int::Const(0),
         };
         if overs.iter().any(|o| count(o) != count(&wover)) {
             return Err(not_built(
@@ -610,7 +693,7 @@ impl<'m> Walk<'m> {
                 .into_iter()
                 .filter_map(|o| match o {
                     Over::Part(p) => Some(p),
-                    Over::Tiles(..) => None,
+                    Over::Tiles(..) | Over::Rect(_) => None,
                 })
                 .collect();
             let (parts, index) = shared(&given);
@@ -623,7 +706,7 @@ impl<'m> Walk<'m> {
                 .into_iter()
                 .filter_map(|o| match o {
                     Over::Tiles(first, n) => Some(Range::Tiles { first, n }),
-                    Over::Part(_) => None,
+                    Over::Part(_) | Over::Rect(_) => None,
                 })
                 .collect();
             (Vec::new(), ranges)
@@ -724,6 +807,7 @@ impl<'m> Walk<'m> {
         let ints = parts.iter().flat_map(|p| [&p.first, &p.n]).chain(
             moved.iter().map(|m| &m.range).flat_map(|r| match r {
                 Range::Tiles { first, n } => vec![first, n],
+                Range::Rect(rect) => vec![&rect.rows.0, &rect.rows.1, &rect.cols.0, &rect.cols.1],
                 Range::Part(_) => Vec::new(),
             }),
         );
@@ -768,6 +852,9 @@ impl<'m> Walk<'m> {
     /// A sum's plan: its stream of a partition or of tiles, its total of `f32` tiles
     /// of one a block, its reduce and the leader's store; every named value read.
     fn summed(mut self, at: Anchor) -> Result<Found, Refusal> {
+        if self.sum.product {
+            return self.product(at);
+        }
         let sum = std::mem::take(&mut self.sum);
         if self.sink.is_some() {
             return Err(not_built("a sink in a handler of a sum", at));
@@ -811,6 +898,7 @@ impl<'m> Walk<'m> {
                     ..read
                 },
             ),
+            Over::Rect(_) => return Err(not_built("a sum of a rectangle's stream", at)),
         };
         self.locals_read(&parts, &[&store, &read], at)?;
         Ok(Found {
@@ -828,6 +916,127 @@ impl<'m> Walk<'m> {
         })
     }
 
+    /// A product's plan (program 6, reading R45): two streams zipped, of rectangles or
+    /// of tiles, the first in blocks of k tiles (`[1, k]`) and the second of k rows of
+    /// one tile (`[k, 1]`), both `bf16`; the call of a function that is `matmul` of its
+    /// two parameters, its result an `f32` tile added to the `var` of zeros; the store
+    /// of that tile into one `f32` tile; every named value read.
+    fn product(mut self, at: Anchor) -> Result<Found, Refusal> {
+        let sum = std::mem::take(&mut self.sum);
+        let call = self.call.take();
+        if self.sink.is_some() {
+            return Err(not_built("a sink in a handler of a product", at));
+        }
+        let (reads, overs) = self.walked_streams();
+        let (Ok([x, w]), Ok([xo, wo]), Some(zeros), Some(call), true) = (
+            <[Moved; 2]>::try_from(reads),
+            <[Over; 2]>::try_from(overs),
+            sum.zeros,
+            call,
+            sum.summed,
+        ) else {
+            return Err(not_built(
+                "a product other than of two zipped streams' blocks added into a var",
+                at,
+            ));
+        };
+        let (Some(store), true) = (sum.store, sum.closed) else {
+            return Err(not_built(
+                "a product's var other than stored after its loop",
+                at,
+            ));
+        };
+        let k = self.product_function(call.func, at)?;
+        let format = |m: &Moved| self.words.get(m.tensor).and_then(|w| w.format);
+        if format(&x) != Some(Format::Bf16) || format(&w) != Some(Format::Bf16) {
+            return Err(not_built(
+                "a product of streams other than of bf16 tiles",
+                at,
+            ));
+        }
+        if format(&store) != Some(Format::F32) {
+            return Err(not_built(
+                "a product stored into a tensor other than f32",
+                at,
+            ));
+        }
+        if k != Some(x.block) || w.block != x.block {
+            return Err(not_built(
+                "a product whose function's shapes are not its streams' blocks ([1, k] by [k, 1])",
+                at,
+            ));
+        }
+        let range = |o: Over| match o {
+            Over::Rect(rect) => Ok(Range::Rect(rect)),
+            Over::Tiles(first, n) => Ok(Range::Tiles { first, n }),
+            Over::Part(_) => Err(not_built("a product's stream of a partition", at)),
+        };
+        let reads = vec![
+            Moved {
+                range: range(xo)?,
+                ..x
+            },
+            Moved {
+                range: range(wo)?,
+                ..w
+            },
+        ];
+        let fidelity = super::unit::fidelity(self.module, call.func)?;
+        self.locals_read(&[], &[&store, &reads[0], &reads[1]], at)?;
+        Ok(Found {
+            locals: self.locals,
+            parts: Vec::new(),
+            reads,
+            repeat: None,
+            shape: Shape::Product(Product {
+                zeros,
+                call,
+                store,
+                fidelity,
+                width: 1,
+            }),
+        })
+    }
+
+    /// Whether function `f` is the product of its two parameters, `return matmul(x,
+    /// w)`, x `[1, k]` (or a tile) and w `[k, 1]` (or a tile), its result an `f32`
+    /// tile: its k when it is, else refused at `at`.
+    fn product_function(&self, f: FuncId, at: Anchor) -> Result<Option<u64>, Refusal> {
+        let func = self.module.funcs.get(f.0 as usize);
+        let body = func.and_then(|func| func.body.as_ref());
+        let (Some(func), Some(body)) = (func, body) else {
+            return Err(not_built("a product's function with no body", at));
+        };
+        let ops: Vec<&Op> = body.insts.iter().map(|i| &i.op).collect();
+        let defs = |i: usize| {
+            body.insts
+                .get(i)
+                .and_then(|inst| inst.defs.first().copied())
+        };
+        let product = match ops.as_slice() {
+            [Op::Arg(0), Op::Arg(1), Op::Matmul(a, b), Op::Return(Some(r))] => {
+                Some(*a) == defs(0) && Some(*b) == defs(1) && Some(*r) == defs(2)
+            }
+            _ => false,
+        };
+        let shape = |t: &Type| match t {
+            Type::Tile(Format::Bf16) => Some((1, 1)),
+            Type::Block(Format::Bf16, Count::Const(r), Count::Const(c)) => Some((*r, *c)),
+            _ => None,
+        };
+        let shapes: Vec<Option<(u64, u64)>> = func.params.iter().map(shape).collect();
+        match (product, shapes.as_slice(), &func.ret) {
+            (true, [Some((1, k)), Some((rows, 1))], Type::Tile(Format::F32)) if k == rows => {
+                Ok(Some(*k))
+            }
+            _ => Err(not_built(
+                "a function in `acc +=` other than `matmul` of a [1, k] and a [k, 1] of bf16 \
+                 giving an f32 tile",
+                Anchor::Func(f),
+            )),
+        }
+    }
+
     /// What one instruction is, or why it is not built.
     fn step(&mut self, op: &Op, id: InstId) -> Result<Option<Val>, String> {
         Ok(match op {
@@ -843,6 +1052,20 @@ impl<'m> Walk<'m> {
                     return Err("an add of tiles other than the total's in the loop, once".into());
                 }
                 self.sum.add = Some(id);
+                Some(Val::Added)
+            }
+            // a product's: the call's result added (program 6)
+            Op::Binary(BinOp::Add, a, b)
+                if matches!(self.val(*a), Some(Val::Total))
+                    && matches!(self.val(*b), Some(Val::Called)) =>
+            {
+                if !self.looped || self.ended || self.sum.add.is_some() {
+                    return Err(
+                        "an add of a call's result other than the var's in the loop, once".into(),
+                    );
+                }
+                self.sum.add = Some(id);
+                self.sum.product = true;
                 Some(Val::Added)
             }
             Op::Zeros if !self.looped && self.sum.zeros.is_none() => {
@@ -900,6 +1123,28 @@ impl<'m> Walk<'m> {
                 self.sum.leader = Some(id);
                 None
             }
+            Op::Store(view, v) if self.sum.product => {
+                let total = matches!(self.val(*v), Some(Val::Total));
+                let Some(Val::Tiles { tensor, first, n }) = self.val(*view) else {
+                    return Err("a store other than into t.tiles(first, n) of a parameter".into());
+                };
+                if !total || !self.ended || self.sum.store.is_some() || n != Int::Const(1) {
+                    return Err(
+                        "a store other than of the product's var into one tile, after its loop, \
+                         once"
+                            .into(),
+                    );
+                }
+                self.sum.store = Some(Moved {
+                    tensor,
+                    block: 1,
+                    inst: id,
+                    range: Range::Tiles { first, n },
+                    pattern: None,
+                });
+                self.sum.closed = true;
+                None
+            }
             Op::Store(view, v) => {
                 let reduced = matches!(self.val(*v), Some(Val::Reduced));
                 let inside = self.sum.leader.is_some() && !self.sum.closed;
@@ -930,7 +1175,9 @@ impl<'m> Walk<'m> {
                     BinOp::Add => '+',
                     BinOp::Sub => '-',
                     BinOp::Mul => '*',
-                    _ => return Err("an int operation other than + - *".into()),
+                    BinOp::Div => '/',
+                    BinOp::Rem => '%',
+                    _ => return Err("an int operation other than + - * / %".into()),
                 };
                 let (Some(a), Some(b)) = (self.int(*a), self.int(*b)) else {
                     return Err("an operation other than of u32 words, numbers and the rank".into());
@@ -962,6 +1209,32 @@ impl<'m> Walk<'m> {
                     return Err("a view other than t.tiles(first, n) of a parameter".into());
                 };
                 Some(Val::Tiles { tensor, first, n })
+            }
+            Op::Rect { tensor, rows, cols } => {
+                let end = |v: ValueId| self.int(v);
+                let tensor = self.word(*tensor, WordKind::Tensor);
+                let ends = (end(rows.lo), end(rows.hi), end(cols.lo), end(cols.hi));
+                let (Some(tensor), (Some(r0), Some(r1), Some(c0), Some(c1)), None, None) =
+                    (tensor, ends, rows.step, cols.step)
+                else {
+                    return Err(
+                        "a rectangle other than t.tiles[r0:r1, c0:c1] of a parameter, its ends \
+                         of u32 words, numbers and the rank"
+                            .into(),
+                    );
+                };
+                let rect = Rect {
+                    rows: (r0, r1),
+                    cols: (c0, c1),
+                };
+                if rect.sides().0.is_none() || rect.sides().1.is_none() {
+                    return Err(
+                        "a rectangle whose rows or columns the compile does not know (each \
+                         side two numbers, or `a:a + n`)"
+                            .into(),
+                    );
+                }
+                Some(Val::Rect { tensor, rect })
             }
             Op::Partition(view, rank, size) => {
                 match (self.val(*view), self.int(*rank), self.int(*size)) {
@@ -999,11 +1272,10 @@ impl<'m> Walk<'m> {
                     .get(id.0 as usize)
                     .and_then(|i| i.defs.first())
                     .and_then(|v| self.body.values.get(v.0 as usize));
-                if let Some(Type::Stream(_, r, _) | Type::Sink(_, r, _)) = rows {
-                    if *r != Count::ONE {
-                        return Err("a stream in blocks of more than one row of tiles".into());
-                    }
-                }
+                let rows = match rows {
+                    Some(Type::Stream(_, r, _) | Type::Sink(_, r, _)) => *r,
+                    _ => Count::ONE,
+                };
                 let block = match self.int(*block) {
                     Some(Int::Const(b)) => b,
                     _ => return Err("a stream in a block that is not a constant".into()),
@@ -1011,9 +1283,29 @@ impl<'m> Walk<'m> {
                 let (tensor, over) = match self.val(*view) {
                     Some(Val::Part(tensor, part)) => (tensor, Over::Part(part)),
                     Some(Val::Tiles { tensor, first, n }) => (tensor, Over::Tiles(first, n)),
+                    Some(Val::Rect { tensor, rect }) => (tensor, Over::Rect(rect)),
                     _ => {
                         return Err(
-                            "a stream other than of a partition or of t.tiles(first, n)".into()
+                            "a stream other than of a partition, of t.tiles(first, n) or of a \
+                             rectangle"
+                                .into(),
+                        )
+                    }
+                };
+                // blocks of r rows of c tiles: today's blocks of r c tiles of a rectangle of
+                // c columns, walked row by row (R45)
+                let block = match (rows, &over) {
+                    (Count::Const(1), _) => block,
+                    (Count::Const(r), Over::Rect(rect))
+                        if rect.sides().1 == Some(block) && matches!(op, Op::Stream(..)) =>
+                    {
+                        r * block
+                    }
+                    _ => {
+                        return Err(
+                            "a stream in blocks of more than one row of tiles other than of a \
+                             rectangle of the block's columns"
+                                .into(),
                         )
                     }
                 };

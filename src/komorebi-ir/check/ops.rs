@@ -444,15 +444,17 @@ impl Checker<'_> {
                             );
                             return Ty::Unknown;
                         };
-                        let rows = match as_int(r) {
-                            Some(n) if n > 0 => n,
+                        // a number written or a module parameter bound at build
+                        let rows = match count_of(cx, r) {
+                            Count::Known(n) if n > 0 => n,
                             _ => {
                                 self.error(
                                     codes::WRONG_TYPE,
                                     format!(
                                         "the rows of a `{what}`'s block `[r, c]` are a number \
-                                         written in the text (a module parameter or \
-                                         `group.size` there is not built)"
+                                         written in the text or a module parameter bound at \
+                                         build (one bound at load or at the invocation, or \
+                                         `group.size`, there is not built)"
                                     ),
                                     r.span,
                                 );

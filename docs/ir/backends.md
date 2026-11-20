@@ -37,8 +37,12 @@ through (an index, a format, the bytes of a page, the pages, and the other half'
 buffer is one half of a pair, one half for each mover). Each entry carries the invocation's ABI, the same on
 every backend: its number, its argument words in order (a tensor's address, a tensor's tile
 count, a parameter's value), and the bounds a host checks before sending it: tensor tiles whose
-first and count are of the words, numbers, the worker's rank and the group's size, by `+ - *`,
-checked for each rank of the group when they read the rank. Compiling runs nothing and writes nothing. The
+first and count are of the words, numbers, the worker's rank and the group's size, by
+`+ - * / %`, checked for each rank of the group when they read the rank. A rectangle's bound is
+its rows of tiles and its columns (`cols`), checked against the tensor's rows of tiles and its
+width, and the tensor must be as wide as the one the load was given. A kernel's file whose text
+needs a fact of the load's tensors is not among the output's files: the output names it as made
+at load (`at_load`), and the load writes it. Compiling runs nothing and writes nothing. The
 output's files are kept under a key over the hash of the parts the backend reads, the backend's
 name and version, and the target; what a build makes of them is the build's own cache.
 
@@ -104,8 +108,8 @@ tiles `t.tiles(first, n)` themselves, its ends `u32` words, numbers, the rank, `
 values of these (`let first = worker.rank * 64`, a line of the movers). A kernel's case reads
 only the rank, size and words its lines use. Partitions of the same values are printed once.
 A tile function may be on blocks, the function applied to each valid tile of the block (today's
-compute loop), when its body is element by element: a function on blocks with a product or a
-reduction, and a stream of blocks of more than one row, are refused by name.
+compute loop), when its body is element by element: a function on blocks with a reduction is
+refused by name, and so is a stream of blocks of more than one row other than a product's (below).
 
 It also emits the corpus's program 2 (`StepHandlers.sum`). Its loop adds each `f32` tile of a
 stream, one tile a block, to a `var` of `zeros`. After the loop, `reduce(total, with = sum)` sums
@@ -158,6 +162,28 @@ Compute copies each tile of the block to Dst tile 0 and packs it into the out ha
 counted loop is refused by name: one with more in it than the stream loop, one after the stream
 loop, and one around a loop that pushes.
 
+It also emits the corpus's program 6 (`Small.read`). Two `bf16` streams are zipped. The first is
+a row of X in blocks of `[1, k]` (`block = CHUNK`); the second is a column of W in blocks of
+`[k, 1]` (`block = [CHUNK, 1]`). Each pair of blocks goes to a function that is
+`matmul` of its two parameters and gives an `f32` tile. The loop adds each result to a `var` of
+`zeros` (`acc += project(xb, wb)`), and every rank stores that tile into one tile of an `f32`
+tensor after the loop. Compute fills Dst tile 0 with zeros and sets the matrix unit once.
+Then, for each pair of blocks, it adds each tile of the first by the matching tile of the second
+(`matmul_block`, today's `stream_product`), and packs the tile into an out buffer of two tiles.
+Mover B writes it. The function's `@tensix.fidelity` is the compute kernel's `math_fidelity`,
+one for the program's products.
+
+Each stream there is of a rectangle, `t.tiles[r0:r1, c0:c1]`, whose sides the compile knows:
+two numbers, or `a:a + n`. Its ends are `u32` words, numbers, the rank and `+ - * / %` of these
+(`let r = worker.rank / N_TILES`). The movers walk it in rows of its tensor's width. One row, or
+rows as wide as the tensor, is one run of tiles; otherwise a walk of its rows (`km::Walk`). The
+width is a fact of the load, not of the module, so the movement source is made at load: the
+compile's output names `movement.cpp` among the files made at load (`at_load`) and holds no text
+for it, and the load writes it from each tensor's shape in tiles. One compiled module serves a
+tensor of any width. A tensor a rectangle walks given no shape is refused by name at load, and so
+is a rectangle whose rows or columns, where the compile knows their end, do not fit its tensor.
+The ends that read the rank or a word are checked at submit (the entry's bounds).
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of
@@ -189,6 +215,8 @@ chip, `tensix`, and the CPU backend for the host's architecture.
 The result, `Emitted`, holds:
 - the cache key, in hex;
 - the files, each its name and bytes;
+- `at_load`, the names of the kernels' files the load makes instead (a movement source that
+  walks a rectangle in rows of its tensor's width), which are not among the files;
 - the entry points, each with its number, argument words, the ranges a host checks and the
   parameters whose word is a pattern;
 - how the output is built:
@@ -202,15 +230,17 @@ A backend's refusal raises `IrError` with each refusal's code, and so does a bac
 is not one of these two.
 
 `komorebi_ir.load(program, tensors, chip=None, machine=None)` gives what a load on Tensix makes.
-Its `tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words and its
-page in DRAM. Its `machine` is a `Machine`: its workers, a worker's memory, its islands as a graph
+Its `tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words, its
+page in DRAM and its shape in tiles `(rows, columns)`, which a handler that streams a rectangle of
+it needs. Its `machine` is a `Machine`: its workers, a worker's memory, its islands as a graph
 (`Islands`: the workers each holds, in order, and the connections between them, None for every
 pair) and the load's options. With none, the machine is one island holding every worker. The result holds:
 - the program's header `<program>.h` as the machine sizes it, in place of the compile's;
 - the thread header, its name and text;
 - the kernels, each tensor's layout among the compile arguments;
 - the buffers, each format by the name today's loader gives it (`bfloat16`; the block-float
-  formats are the `_b` family, `bfp8` as `bfp8_b`).
+  formats are the `_b` family, `bfp8` as `bfp8_b`);
+- the files the output names `at_load`, each its name and text.
 
 A named chip must be `blackhole` or `wormhole_b0`. A missing tensor, a tensor named twice and a
 name the program does not take are each refused by name, and so is a machine whose islands are

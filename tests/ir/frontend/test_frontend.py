@@ -372,7 +372,7 @@ def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monke
     run = ours.entry("run")
     assert run.program is ours
     # T1's ranges read no rank: as before, no group needed
-    assert run.point.bounds == [(t, ("word", 2), ("word", 3)) for t in (0, 1)]
+    assert run.point.bounds == [(t, ("word", 2), ("word", 3), None) for t in (0, 1)]
     assert run.args(x, y, 0, 64, 2.0) == list(today.run.args(x, y, 0, 64, 2.0))
     assert run.args(x, y, 0, x.pages, 2.0) == [0x1000, 0x1000, 0, 2048, 0x40000000]
     # one tile past the end: today's make keeps no range for pages under a partition
@@ -389,7 +389,7 @@ def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monke
         run.args(x, y, 1, x.pages, 2.0)
     # a count of a difference below 0 (a wrapped word on the card) is refused too
     less = ("sub", ("word", 3), ("word", 2))
-    point = run.point._replace(bounds=[(0, ("word", 2), less)])
+    point = run.point._replace(bounds=[(0, ("word", 2), less, None)])
     ranged = Entry(point, ours, run.names)
     assert ranged.args(x, y, 4, 4, 2.0)[2:4] == [4, 4]
     with pytest.raises(km.ProgramError, match=r"x.tiles\(first, tiles - first\)"):
@@ -560,3 +560,61 @@ def test_program_2_built_on_islands_is_todays_on_a_session_of_them(
     assert ours.sources() == today.sources()
     assert ours.buffers == today.buffers
     assert "kArrival0 = {8, 8, 1};" in ours.header.read_text()
+
+
+def test_program_6_built_through_the_ir_is_todays_and_checks_its_rectangles(
+    tmp_path, monkeypatch
+):
+    script = tmp_path / "small_class.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "small_class.py", script)
+    spec = importlib.util.spec_from_file_location("small_class", script)
+    p6 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "small_class", p6)
+    spec.loader.exec_module(p6)
+    given = p6.made_with()
+    today = p6.Small(log=lambda line: None, **given)
+    ours = program(p6.Small, log=lambda line: None, **given)
+    # the movement source is the load's (its rectangles walked in rows of the tensors'
+    # widths), written into the same folder as today's
+    assert ours.header == today.built.folder / "small.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.compute["math_fidelity"] == "HiFi2"
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    x, w, y = given["x"], given["w"], given["y"]
+    read, group = ours.entry("read"), (0, 16)
+    # the rectangles' bounds: rows, then the columns, each end of the rank
+    rows = ("div", ("rank",), ("const", 4))
+    assert read.point.bounds[0] == (
+        0,
+        rows,
+        ("sub", ("add", rows, ("const", 1)), rows),
+        (("const", 0), ("sub", ("const", 28), ("const", 0))),
+    )
+    # an exact rectangle at every rank: today's words
+    words = read.args(x, w, y, 3, group=group)
+    assert words == list(today.read.args(x, w, y, 3))
+    # a row past X's 4 rows of tiles at rank 16 of a group of 20
+    with pytest.raises(km.ProgramError) as refused:
+        read.args(x, w, y, 0, group=(0, 20))
+    assert str(refused.value) == (
+        "read: x's rectangle: its rows 4 to 4 at rank 16 of 20 at this call, and x "
+        "has 4 rows of tiles: keep the rectangle inside the tensor"
+    )
+    # a column past W's 4 columns of tiles, at rank 4 of 5 (a rectangle of the rank's
+    # column)
+    column = (1, ("const", 0), ("const", 28), (("rank",), ("const", 1)))
+    ranged = Entry(read.point._replace(bounds=[column]), ours, read.names, read.widths)
+    assert ranged.args(x, w, y, 0, group=(0, 4)) == words[:3] + [0]
+    with pytest.raises(km.ProgramError, match="its columns 4 to 4 at rank 4 of 5"):
+        ranged.args(x, w, y, 0, group=(0, 5))
+    # a tensor of another width than the load's: the load wrote the text for 28
+    wide = p6.Tensor(p6.Pages(2048, 4 * 29), (128, 928), "bfloat16", "tile")
+    with pytest.raises(km.ProgramError) as refused:
+        read.args(wide, w, y, 0, group=group)
+    assert str(refused.value) == (
+        "read: x is 29 tiles wide, and the handler's rectangles of x were built for "
+        "28 (the example tensor's): make the program with a tensor of this width"
+    )

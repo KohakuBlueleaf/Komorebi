@@ -30,10 +30,13 @@ def emit(
     list[tuple],
     list[tuple[int, str, int, int, int | None]],
     list[tuple[str, list[str]]],
+    list[str],
 ]: ...
 def load(
     program: str | bytes,
-    tensors: list[tuple[str, tuple[int, list[int], int | None]]],
+    tensors: list[
+        tuple[str, tuple[int, list[int], int | None, tuple[int, int] | None]]
+    ],
     chip: str | None = None,
     machine: (
         tuple[
@@ -51,4 +54,5 @@ def load(
     list[tuple[int, str, int, int, int | None]],
     str,
     str,
+    list[tuple[str, str]],
 ]: ...

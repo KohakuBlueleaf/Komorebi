@@ -4,7 +4,7 @@
 //! (`chip::dtype`). Nothing is written and nothing run.
 
 use crate::backend::tensix::load::{self, LoadTensor, LoadedKernel};
-use crate::backend::tensix::{chip, Tensix};
+use crate::backend::tensix::{self, chip, Tensix};
 use crate::backend::{Backend, Build, Machine, Refusal, Target, NOT_BUILT};
 use crate::program::Module;
 
@@ -38,6 +38,9 @@ pub struct Loaded {
     pub kernels: Vec<LoadedKernel>,
     /// The buffers.
     pub buffers: Vec<LoadBuffer>,
+    /// The files the load makes (the output's `at_load`), each name and text: their
+    /// text needs the tensors' shapes.
+    pub files: Vec<(String, String)>,
 }
 
 fn refused(what: String) -> Vec<Refusal> {
@@ -101,6 +104,12 @@ pub fn load(
     let (sized_header, buffers) = load::sized(module, machine)?;
     let header = load::thread_header(module, &ordered)?;
     let kernels = load::kernels(module, kernels, &ordered)?;
+    let shapes: Vec<(String, Option<(u64, u64)>)> = names
+        .iter()
+        .cloned()
+        .zip(ordered.iter().map(|t| t.shape))
+        .collect();
+    let files = tensix::sources_at_load(module, &shapes)?;
     let mut out = Vec::new();
     for b in &buffers {
         let Some(dtype) = chip::dtype(b.format) else {
@@ -124,5 +133,6 @@ pub fn load(
         header: sized_header,
         kernels,
         buffers: out,
+        files,
     })
 }

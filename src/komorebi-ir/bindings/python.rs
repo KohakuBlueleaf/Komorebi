@@ -316,7 +316,8 @@ fn run(py: Python<'_>, program: &Bound<'_, PyAny>, script: &str) -> PyResult<Str
         .map_err(|e| error(py, &format!("the run script is refused: {e}"), Vec::new()))
 }
 
-/// The data of an argument expression: `("word", i)`, `("const", n)`, `("add", a, b)`.
+/// The data of an argument expression: `("word", i)`, `("const", n)`, `("add", a, b)`
+/// (and `sub`, `mul`, `div`, `rem`).
 fn expr<'py>(py: Python<'py>, e: &Expr) -> PyResult<Bound<'py, PyAny>> {
     Ok(match e {
         Expr::Word(i) => ("word", *i).into_pyobject(py)?.into_any(),
@@ -330,6 +331,12 @@ fn expr<'py>(py: Python<'py>, e: &Expr) -> PyResult<Bound<'py, PyAny>> {
             .into_pyobject(py)?
             .into_any(),
         Expr::Mul(a, b) => ("mul", expr(py, a)?, expr(py, b)?)
+            .into_pyobject(py)?
+            .into_any(),
+        Expr::Div(a, b) => ("div", expr(py, a)?, expr(py, b)?)
+            .into_pyobject(py)?
+            .into_any(),
+        Expr::Rem(a, b) => ("rem", expr(py, a)?, expr(py, b)?)
             .into_pyobject(py)?
             .into_any(),
     })
@@ -363,7 +370,11 @@ fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAn
     let words: Vec<(&str, usize)> = e.words.iter().map(arg_word).collect();
     let mut bounds = Vec::new();
     for b in &e.bounds {
-        bounds.push((b.tensor, expr(py, &b.first)?, expr(py, &b.count)?));
+        let cols = match &b.cols {
+            Some((first, count)) => Some((expr(py, first)?, expr(py, count)?)),
+            None => None,
+        };
+        bounds.push((b.tensor, expr(py, &b.first)?, expr(py, &b.count)?, cols));
     }
     let row = (
         e.name.clone(),
@@ -419,8 +430,9 @@ type KernelRow<'py> = (
 );
 
 /// A module's output on a backend (`api::emit`), as data: (key, files, entries,
-/// kernels, buffers, steps); a backend that builds by steps has no kernels and no
-/// buffers, one whose machine compiles kernels has no steps.
+/// kernels, buffers, steps, the files made at load by name); a backend that builds by
+/// steps has no kernels, no buffers and no files made at load, one whose machine
+/// compiles kernels has no steps.
 #[pyfunction]
 #[pyo3(signature = (program, backend="tensix", target=None))]
 fn emit<'py>(
@@ -461,8 +473,12 @@ fn emit<'py>(
     for e in &output.entries {
         entries.push(entry_point(py, e)?);
     }
-    let (kernels, buffers, steps) = match &output.build {
-        Build::Kernels { kernels, buffers } => (
+    let (kernels, buffers, steps, at_load) = match &output.build {
+        Build::Kernels {
+            kernels,
+            buffers,
+            at_load,
+        } => (
             kernels
                 .iter()
                 .map(|k| kernel(py, k))
@@ -482,6 +498,7 @@ fn emit<'py>(
                 })
                 .collect(),
             Vec::new(),
+            at_load.clone(),
         ),
         Build::Steps(steps) => (
             Vec::new(),
@@ -490,12 +507,21 @@ fn emit<'py>(
                 .iter()
                 .map(|s| (s.program.clone(), s.args.clone()))
                 .collect(),
+            Vec::new(),
         ),
     };
     let kernels: Vec<KernelRow> = kernels;
     let buffers: Vec<BufferRow> = buffers;
     let steps: Vec<(String, Vec<String>)> = steps;
-    let row = (output.key.hex(), files, entries, kernels, buffers, steps);
+    let row = (
+        output.key.hex(),
+        files,
+        entries,
+        kernels,
+        buffers,
+        steps,
+        at_load,
+    );
     Ok(row.into_pyobject(py)?.into_any())
 }
 
@@ -507,8 +533,9 @@ fn setting<'py>(py: Python<'py>, value: &Setting) -> PyResult<Bound<'py, PyAny>>
     })
 }
 
-/// A tensor a load is given: (pages, layout words, DRAM page bytes or None).
-type TensorRow = (u64, Vec<u64>, Option<u64>);
+/// A tensor a load is given: (pages, layout words, DRAM page bytes or None, its shape
+/// in tiles (rows, columns) or None).
+type TensorRow = (u64, Vec<u64>, Option<u64>, Option<(u64, u64)>);
 
 /// The machine a load is on: (workers, a worker's memory bytes, its islands (each
 /// one's workers, the connections or None: every pair), the named options).
@@ -521,7 +548,8 @@ type MachineRow = (
 
 /// A load on Tensix (`api::load`) of a module given its tensors by parameter name, on
 /// `chip` when one is named: (thread header's name, its text, kernels, buffers, the
-/// program header's name and text as the machine sizes it); a
+/// program header's name and text as the machine sizes it, the files it makes (name,
+/// text)); a
 /// kernel (source, processor, defines, compile arguments, options), a buffer (index,
 /// the loader's format name, page bytes, pages, the pair's other half); on `machine`
 /// when one is given (none: one island holding every worker).
@@ -537,11 +565,12 @@ fn load<'py>(
     let m = module(py, program)?;
     let given: Vec<(String, LoadTensor)> = tensors
         .into_iter()
-        .map(|(name, (pages, layout, dram_page))| {
+        .map(|(name, (pages, layout, dram_page, shape))| {
             let tensor = LoadTensor {
                 pages,
                 layout,
                 dram_page,
+                shape,
             };
             (name, tensor)
         })
@@ -595,7 +624,8 @@ fn load<'py>(
         .collect();
     let (name, text) = loaded.thread;
     let (header_name, header) = loaded.header;
-    Ok((name, text, kernels, buffers, header_name, header)
+    let files = loaded.files;
+    Ok((name, text, kernels, buffers, header_name, header, files)
         .into_pyobject(py)?
         .into_any())
 }

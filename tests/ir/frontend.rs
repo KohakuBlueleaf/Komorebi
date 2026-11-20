@@ -196,6 +196,7 @@ fn same_on_machine(
         .collect();
     files.push(loaded.header.clone());
     files.push(loaded.thread.clone());
+    files.extend(loaded.files.iter().cloned());
     files.sort();
     let mut today: Vec<String> = std::fs::read_dir(&made.folder)
         .expect("the build folder")
@@ -334,6 +335,7 @@ fn the_class_through_the_frontend_is_todays_text_byte_for_byte() {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     same_as_today(&made, &module, &[stand_in.clone(), stand_in], "scale");
 }
@@ -353,6 +355,7 @@ fn program_1_through_the_frontend_is_todays_text_byte_for_byte() {
         pages: 768,
         layout: vec![2, page],
         dram_page: None,
+        shape: None,
     };
     same_as_today(&made, &module, &[tensor(2048), tensor(4096)], "scalars");
     // Its ranges read the rank: a host checks a.tiles(worker.rank * 64, 64) and out's
@@ -368,6 +371,7 @@ fn program_1_through_the_frontend_is_todays_text_byte_for_byte() {
         tensor,
         first: Expr::Mul(Box::new(Expr::Rank), Box::new(Expr::Const(64))),
         count: Expr::Const(64),
+        cols: None,
     };
     assert_eq!(output.entries[0].bounds, [bound(0), bound(1)]);
 }
@@ -387,6 +391,7 @@ fn program_2_through_the_frontend_is_todays_text_byte_for_byte() {
         pages,
         layout: vec![2, 4096],
         dram_page: None,
+        shape: None,
     };
     same_as_today(&made, &module, &[tensor(768), tensor(1)], "stephandlers");
     // On a machine of islands: today's make on a session of them against the load's
@@ -423,6 +428,7 @@ fn program_2_through_the_frontend_is_todays_text_byte_for_byte() {
         tensor,
         first: Expr::Const(0),
         count,
+        cols: None,
     };
     assert_eq!(
         output.entries[0].bounds,
@@ -445,6 +451,7 @@ fn program_3_through_the_frontend_is_todays_text_byte_for_byte() {
         pages: 768,
         layout: vec![2, 4096],
         dram_page: None,
+        shape: None,
     };
     let stand_ins = [tensor.clone(), tensor.clone(), tensor];
     same_as_today(&made, &module, &stand_ins, "stephandlers");
@@ -461,6 +468,7 @@ fn program_3_through_the_frontend_is_todays_text_byte_for_byte() {
         tensor,
         first: Expr::Mul(Box::new(Expr::Rank), Box::new(Expr::Word(3))),
         count: Expr::Word(3),
+        cols: None,
     };
     assert_eq!(output.entries[0].bounds, [bound(0), bound(1), bound(2)]);
 }
@@ -480,6 +488,7 @@ fn a_tile_functions_calls_keep_their_own_lines_as_todays_listing_names_them() {
         pages: 768,
         layout: vec![2, 4096],
         dram_page: None,
+        shape: None,
     };
     same_as_today(
         &made,
@@ -517,6 +526,7 @@ fn program_4_through_the_frontend_is_todays_text_byte_for_byte() {
         pages: 768,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let stand_ins = [tensor.clone(), tensor.clone(), tensor];
     same_as_today(&made, &module, &stand_ins, "gate");
@@ -537,6 +547,7 @@ fn program_4_with_another_block_is_todays_at_that_block() {
         pages: 768,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let stand_ins = [tensor.clone(), tensor.clone(), tensor];
     same_as_today(&made, &module, &stand_ins, "gate");
@@ -557,7 +568,53 @@ fn program_5_through_the_frontend_is_todays_text_byte_for_byte() {
         pages: 768,
         layout: vec![2, 2048],
         dram_page: None,
+        shape: None,
     };
     let stand_ins = [tensor.clone(), tensor];
     same_as_today(&made, &module, &stand_ins, "movement");
+}
+
+#[test]
+fn program_6_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // Small.read: a row of X in blocks of CHUNK by a column of W in blocks of
+    // [CHUNK, 1] (reading R45), each product added to a tile of zeros, stored by every
+    // rank; at the class's CHUNK, 4, and at 7 (both divide K_TILES, 28). The movement
+    // source is the load's (a rectangle walked in rows of its tensor's width).
+    // The stand-ins: X [4, 28] and W [28, 4] tiles of 112 bfloat16 pages of 2048 B,
+    // Y [128, 4] of 512 float32 pages of 4096 B.
+    let tensor = |pages: u64, bytes: u64, shape: (u64, u64)| LoadTensor {
+        pages,
+        layout: vec![2, bytes],
+        dram_page: None,
+        shape: Some(shape),
+    };
+    let stand_ins = [
+        tensor(112, 2048, (4, 28)),
+        tensor(112, 2048, (28, 4)),
+        tensor(512, 4096, (128, 4)),
+    ];
+    for (name, chunk) in [("small", 4), ("small7", 7)] {
+        let made = made_given(name, "small_class", "Small", None, &[("CHUNK", chunk)]);
+        let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+        let target = Target {
+            arch: chip::ARCH.to_string(),
+            features: Default::default(),
+        };
+        let output = Tensix
+            .compile(&module, &target)
+            .unwrap_or_else(|r| panic!("{r:?}"));
+        let Build::Kernels { at_load, .. } = &output.build else {
+            panic!("kernels built at load");
+        };
+        assert_eq!(at_load, &["movement.cpp"], "the file made at load");
+        assert!(
+            output.files.iter().all(|(n, _)| n != "movement.cpp"),
+            "the compile writes no movement source"
+        );
+        same_as_today(&made, &module, &stand_ins, "small");
+    }
 }

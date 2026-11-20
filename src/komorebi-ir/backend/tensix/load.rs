@@ -31,6 +31,9 @@ pub struct LoadTensor {
     /// The bytes of a page in DRAM, for a tensor a thread may fetch and store; none
     /// for one it may not (no `<program>_<tensor>_dram` function then).
     pub dram_page: Option<u64>,
+    /// Its shape in tiles, (rows, columns), when given: a rectangle of it is walked in
+    /// rows of its columns, so a handler that streams one needs it (`at_load`).
+    pub shape: Option<(u64, u64)>,
 }
 
 /// The chip a load's target names: `blackhole` or `wormhole_b0`; any other is refused

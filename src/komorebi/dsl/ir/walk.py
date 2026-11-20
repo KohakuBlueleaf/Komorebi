@@ -72,7 +72,10 @@ class Value:
     first: str = ""
     count: str = ""
     tiles: int = 1
-    block: str = ""  # a block's count as the text writes it, when not a number
+    block: str = (
+        ""  # a block's count (or rows) as the text writes it, when not a number
+    )
+    rows: int = 1  # a block's rows of tiles: a stream of a column's in [n, 1]
 
 
 @dataclass
@@ -118,10 +121,11 @@ def module(cls, **make):
     functions = {}
     for walk in walks:
         walk.read()
-        for name, (function, kinds) in walk.functions.items():
-            if functions.setdefault(name, (function, kinds))[1] != kinds:
+        for name, (function, kinds, result) in walk.functions.items():
+            given = functions.setdefault(name, (function, kinds, result))
+            if given[1:] != (kinds, result):
                 raise Refused(
-                    f"{cls.__name__}: {name} is called on {functions[name][1]} and on "
+                    f"{cls.__name__}: {name} is called on {given[1]} and on "
                     f"{kinds}: a tile function on a second format is not written yet"
                 )
     formats = []
@@ -140,9 +144,9 @@ def module(cls, **make):
         # fixed when the module is built: the make's value (a compile input)
         text.line(0, f"param {name}: u32 = {constants[name]} @bind(build)")
     helpers = {}
-    for function, kinds in functions.values():
+    for function, kinds, result in functions.values():
         text.line(0, "")
-        tile_function(text, function, kinds, helpers)
+        tile_function(text, function, kinds, helpers, result)
     written = set()
     while len(written) < len(helpers):  # a helper's own helpers join as it is written
         for name, (helper, kinds) in list(helpers.items()):
@@ -244,9 +248,8 @@ class Handler:
         self.where = Where(cls.__name__, method.name, lines, first, self.file)
         self.globals = method.function.__globals__
         self.params, self.scope = {}, {}
-        self.functions = (
-            {}
-        )  # tile function name -> (TileFunction, its parameters' kinds)
+        # tile function name -> (TileFunction, its parameters' kinds, its result's)
+        self.functions = {}
         self.restated = {}  # (partition, tensor) -> the name of its restatement
         self.statements = []  # (node, [(depth offset, text)], children)
         self.renames, self.names = [], {}
@@ -417,8 +420,13 @@ class Handler:
         return f"let {self.name(target)} = {partition_text(view)}"
 
     def zeros(self, node, target, value):
-        """`total = km.tile.zeros(km.fp32)`: a tile of zeros the handler adds to."""
-        (arg,) = value.args if len(value.args) == 1 and not value.keywords else (None,)
+        """`total = km.tile.zeros(km.fp32)` (or `(km.fp32, 1)`, one tile): a tile of
+        zeros the handler adds to."""
+        given = list(value.args)
+        one = len(given) == 2 and isinstance(given[1], ast.Constant)
+        if one and given[1].value == 1 and type(given[1].value) is int:
+            given = given[:1]
+        (arg,) = given if len(given) == 1 and not value.keywords else (None,)
         format_ = None
         if (
             isinstance(arg, ast.Attribute)
@@ -436,8 +444,17 @@ class Handler:
         return f"var {self.name(target)}: tile<{format_}> = zeros"
 
     def augment(self, node):
-        """`total += tile`: the loop's tile added to a tile of the handler."""
+        """`total += tile`: the loop's tile added to a tile of the handler; or
+        `acc += self.f(xb, wb)`, a tile function's result (a product of blocks)."""
         target, value = node.target, node.value
+        if (
+            isinstance(node.op, ast.Add)
+            and isinstance(target, ast.Name)
+            and self.kind(target.id) == "tile"
+            and isinstance(value, ast.Call)
+        ):
+            result = f"tile<{self.scope[target.id].format}>"
+            return f"{self.name(target.id)} += {self.tile_call(node, value, result)}"
         if not (
             isinstance(node.op, ast.Add)
             and isinstance(target, ast.Name)
@@ -500,14 +517,17 @@ class Handler:
         return (node, ["if worker.is_leader {"], self.body(node.body))
 
     def store(self, node, call):
-        """`t.pages(a, b).write(whole)`: a reduce's result written to t's tiles."""
+        """`t.pages(a, b).write(whole)`: a reduce's result, or a tile of the handler,
+        written to t's tiles."""
         pages = call.func.value
         whole = call.args[0] if len(call.args) == 1 and not call.keywords else None
-        if not (isinstance(whole, ast.Name) and self.kind(whole.id) == "reduced"):
+        if not (
+            isinstance(whole, ast.Name) and self.kind(whole.id) in ("reduced", "tile")
+        ):
             self.refuse(
                 node,
-                "a page write of what is not a reduce's result",
-                "write the tile km.reduce(...) gives",
+                "a page write of what is not a reduce's result or a tile",
+                "write the tile km.reduce(...) gives, or a tile of the handler",
             )
         if not (
             isinstance(pages, ast.Call)
@@ -542,6 +562,11 @@ class Handler:
         if self.pages_of(view):
             first, count = (bare(self.word(node, arg)) for arg in view.args)
             return f"{self.name(view.func.value.id)}.tiles({first}, {count})"
+        rectangle = self.rectangle_of(view)
+        if rectangle is not None:
+            ends = [bare(self.word(node, end)) for part in rectangle for end in part]
+            tensor = self.name(view.value.value.id)
+            return f"{tensor}.tiles[{ends[0]}:{ends[1]}, {ends[2]}:{ends[3]}]"
         if not (
             isinstance(view, ast.Subscript)
             and isinstance(view.value, ast.Name)
@@ -568,6 +593,29 @@ class Handler:
             lines.append(f"let {name} = {partition_text(text)}")
         return self.restated[key]
 
+    def rectangle_of(self, view):
+        """`t.tiles[r0:r1, c0:c1]` of a tensor parameter t: its (r0, r1) and (c0, c1)
+        nodes; None for another view. A step is refused."""
+        if not (
+            isinstance(view, ast.Subscript)
+            and isinstance(view.value, ast.Attribute)
+            and view.value.attr == spelling("tiles")
+            and isinstance(view.value.value, ast.Name)
+            and self.kind(view.value.value.id) == "tensor"
+            and isinstance(view.slice, ast.Tuple)
+            and len(view.slice.elts) == 2
+            and all(isinstance(s, ast.Slice) for s in view.slice.elts)
+        ):
+            return None
+        parts = view.slice.elts
+        if any(s.step is not None or s.lower is None or s.upper is None for s in parts):
+            self.refuse(
+                view,
+                "a rectangle with a step or an end not written",
+                "write t.tiles[r0:r1, c0:c1]",
+            )
+        return [(s.lower, s.upper) for s in parts]
+
     def stream(self, node, call, write):
         """The lines of `km.Stream(t[p], block=n)` (n 1 when not given), the last one
         the stream itself."""
@@ -588,8 +636,29 @@ class Handler:
         lines = []
         view = self.view(node, call.args[0], lines)
         word = "sink" if write else "stream"
-        lines.append(f"{word}({view}, block = {block})")
+        lines.append(f"{word}({view}, block = {self.block_text(node, call)})")
         return lines
+
+    def block_text(self, node, call):
+        """A stream's block as the text writes it (`block_of`); of a rectangle of one
+        column, `[n, 1]`: n rows of one tile (a block is a matrix of tiles, R45)."""
+        text, _ = self.block_of(node, call)
+        rectangle = self.rectangle_of(call.args[0]) is not None
+        return f"[{text}, 1]" if rectangle and self.column(call.args[0]) else text
+
+    def column(self, view):
+        """Whether a rectangle is one column of tiles: `c : c + 1`, or two numbers one
+        apart."""
+        lower, upper = self.rectangle_of(view)[1]
+        if isinstance(lower, ast.Constant) and isinstance(upper, ast.Constant):
+            return upper.value == lower.value + 1
+        return (
+            isinstance(upper, ast.BinOp)
+            and isinstance(upper.op, ast.Add)
+            and ast.dump(upper.left) == ast.dump(lower)
+            and isinstance(upper.right, ast.Constant)
+            and upper.right.value == 1
+        )
 
     def block_of(self, node, call):
         """A stream's block as the text writes it and its tiles: a number (1 when not
@@ -682,11 +751,13 @@ class Handler:
         lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
         for name, call in zip(names, calls):
             text, block = self.block_of(node, call)
+            column = self.block_text(node, call).startswith("[")
             self.scope[name.id] = Value(
                 "block",
                 format=self.scope_format(call),
-                tiles=block,
+                tiles=1 if column else block,
                 block="" if text == str(block) else text,
+                rows=block if column else 1,
             )
         children = self.body(node.body)
         return (node, lines, children)
@@ -714,6 +785,8 @@ class Handler:
         view = call.args[0]
         if isinstance(view, ast.Name):
             return self.scope[self.scope[view.id].tensor].format
+        if self.rectangle_of(view) is not None:
+            return self.scope[view.value.value.id].format
         tensor = view.func.value if isinstance(view, ast.Call) else view.value
         return self.scope[tensor.id].format
 
@@ -753,33 +826,34 @@ class Handler:
         function = Inline(name, node, value, names, self.where)
         return self.tile_operands(node, function, names, "a tile expression")
 
-    def tile_call(self, node, call):
-        """A tile function's call on a block and scalar parameters."""
+    def tile_call(self, node, call, result=None):
+        """A tile function's call on a block and scalar parameters: `f(...)` of the
+        module, or `self.f(...)` of the class; `result` the type of its result, when
+        not its first operand's (a product's, the tile it is added to)."""
+        func = call.func if isinstance(call, ast.Call) else None
+        method = self_attribute(func)
         if not (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and not call.keywords
+            (isinstance(func, ast.Name) or method is not None) and not call.keywords
         ):
             self.refuse(
                 node,
                 "a push of what is not a tile function's call",
                 "push f(block, ...)",
             )
-        function = self.globals.get(call.func.id)
+        name = method if method is not None else func.id
+        if method is not None:
+            found = [vars(k)[name] for k in self.cls.__mro__ if name in vars(k)]
+            function = found[0] if found else None
+        else:
+            function = self.globals.get(name)
         if not isinstance(function, front.TileFunction):
             self.refuse(
                 node,
-                f"{call.func.id} is not a tile function",
+                f"{name} is not a tile function",
                 "decorate it with km.tile_function",
             )
-        # tolerance= is taken and writes nothing: the IR states no precision, and
-        # today's files are the same with it or without (it is a check of the trace)
-        if function.fidelity is not None:
-            self.refuse(
-                node,
-                f"{function.name}'s options are not written in an IR module yet",
-                "leave them out",
-            )
+        # tolerance= writes nothing (the IR states no precision; today's files are the
+        # same without it); fidelity= is the hint `@tensix.fidelity(...)`
         if not all(isinstance(arg, ast.Name) for arg in call.args):
             self.refuse(
                 node,
@@ -787,11 +861,12 @@ class Handler:
                 "pass the loop's block or a float",
             )
         names = [arg.id for arg in call.args]
-        return self.tile_operands(node, function, names, "a tile function")
+        return self.tile_operands(node, function, names, "a tile function", result)
 
-    def tile_operands(self, node, function, names, what):
+    def tile_operands(self, node, function, names, what, result=None):
         """The call of `function` on the handler's `names`: a block first, then floats;
-        a block of n tiles typed `tile<F>[n]` (the function is declared on blocks)."""
+        a block of n tiles typed `tile<F>[n]`, of r rows `tile<F>[r, n]` (the function
+        is declared on blocks)."""
         kinds = []
         for name in names:
             if self.kind(name) not in ("block", "f32"):
@@ -802,6 +877,8 @@ class Handler:
                 )
             value = self.scope[name]
             tiles = f"[{value.block or value.tiles}]" if value.tiles > 1 else ""
+            if value.rows > 1:
+                tiles = f"[{value.block or value.rows}, {value.tiles}]"
             kinds.append(
                 f"tile<{value.format}>{tiles}" if value.kind == "block" else "f32"
             )
@@ -811,7 +888,7 @@ class Handler:
                 f"{what} whose first operand is not a block",
                 "pass the block first",
             )
-        self.functions[function.name] = (function, tuple(kinds))
+        self.functions[function.name] = (function, tuple(kinds), result or kinds[0])
         return f"{function.name}({', '.join(self.name(n) for n in names)})"
 
     def kind(self, name):
@@ -833,14 +910,15 @@ class Handler:
             self.refuse(
                 node,
                 "a word that is not an int parameter or value, a number, the rank, "
-                "+ - or *",
+                "a constant of the class, + - * // or %",
                 "write it of those",
             )
         return text
 
     def int_text(self, expression):
         """The text of an int expression of int parameters and values, numbers (a
-        module's int constant as its number), `self.rank`, + - *; else None."""
+        module's int constant as its number), `self.rank`, a class's constant (its
+        module parameter), + - * // %; else None."""
         if isinstance(expression, ast.Name) and self.kind(expression.id) == "u32":
             return self.name(expression.id)
         if isinstance(expression, ast.Name) and expression.id not in self.scope:
@@ -856,7 +934,10 @@ class Handler:
             and expression.attr == spelling("rank")
         ):
             return "worker.rank"
+        if self_attribute(expression) in self.constants:
+            return expression.attr
         operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
+        operators |= {ast.FloorDiv: "/", ast.Mod: "%"}
         if isinstance(expression, ast.BinOp) and type(expression.op) in operators:
             left = self.int_text(expression.left)
             right = self.int_text(expression.right)
@@ -971,11 +1052,11 @@ class Body:
     helpers: dict
 
 
-def tile_function(text, function, kinds, helpers):
-    """A tile function as a `func`: its one `return` of + - * / over its parameters and
-    numbers, the tile compiler's functions of one tile and calls of helpers, its
-    parameters typed by the call; a tile expression (`Inline`) alike. A call on a line
-    after the statement's first is written on a line of its own, placed at the call."""
+def tile_function(text, function, kinds, helpers, result=None):
+    """A tile function as a `func`: its one `return` of + - * / @ over its parameters
+    and numbers, the tile compiler's functions of one tile and calls of helpers, typed
+    by the call (`result`, else its first parameter's); a tile expression alike. A call
+    on a line after the statement's first is written on a line of its own."""
     if isinstance(function, Inline):
         where, parameters = function.where, function.names
         definition = returned = function.node
@@ -1013,7 +1094,9 @@ def tile_function(text, function, kinds, helpers):
     start = text.line(0, f"func {function.name}(")
     for name, kind in zip(parameters, kinds):
         text.line(1, f"{name}: {kind},")
-    text.line(0, f") -> {kinds[0]} {{")
+    fidelity = getattr(function, "fidelity", None)
+    hint = f" @tensix.fidelity({fidelity})" if fidelity else ""
+    text.line(0, f") -> {result or kinds[0]}{hint} {{")
     line = len(text.lines) + 1
     depth, current, opened = 1, "return ", []
     marks = f"({CALL_OPEN}[0-9]+,[0-9]+{CALL_OPEN}|{CALL_CLOSE})"
@@ -1044,14 +1127,18 @@ def docstring(definition):
 
 
 def expression(body, value):
-    """A tile function's expression: + - * / of its parameters and numbers, the tile
-    compiler's functions of one tile (`km.exp(x)`) and calls of helpers on its
-    parameters."""
+    """A tile function's expression: + - * / of its parameters and numbers, `a @ b`
+    (`matmul(a, b)`), the tile compiler's functions of one tile (`km.exp(x)`) and calls
+    of helpers on its parameters."""
     operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
     if isinstance(value, ast.Name) and value.id in body.kinds:
         return value.id
     if isinstance(value, ast.Constant) and type(value.value) in (int, float):
         return repr(value.value)
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.MatMult):
+        left = bare(expression(body, value.left))
+        right = bare(expression(body, value.right))
+        return f"matmul({left}, {right})"
     if isinstance(value, ast.BinOp) and type(value.op) in operators:
         left = expression(body, value.left)
         right = expression(body, value.right)

@@ -7,8 +7,12 @@
 //! Built: one program of handlers on a group, each a loop over a read stream of a
 //! partition of `t.tiles(first, n)` that pushes a tile function's result into a sink
 //! of the same partition (the first lesson); or that sums its `f32` tiles, the sum
-//! reduced over the group by tree and stored by the leader, rank 0 (program 2).
-//! Everything else is refused by name (K964).
+//! reduced over the group by tree and stored by the leader, rank 0 (program 2); or
+//! that adds the products of two streams' blocks into a tile each rank stores
+//! (program 6). Everything else is refused by name (K964).
+//!
+//! A stream of a rectangle walks it in rows of its tensor's width, which the load
+//! gives: the movement source is then made at load (`at_load`, `sources_at_load`).
 
 pub mod chip;
 pub mod load;
@@ -27,10 +31,10 @@ use crate::program::body::InstId;
 use crate::program::notes::{Anchor, Origin};
 use crate::program::{BodyRef, Module};
 use crate::types::{Entry, Format, IslandGraph, TileShape};
-use crate::types::{HandlerId, ProgramId};
+use crate::types::{FuncId, HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
-use self::plan::{Int, Moved, Part, Plan, Range, Shape, Sum, WordKind};
+use self::plan::{Int, Moved, Part, Plan, Product, Range, Rect, Shape, Sum, WordKind};
 use self::unit::Unit;
 
 /// One indent of the generated text (`program_sources.INDENT`).
@@ -80,6 +84,7 @@ const COMPUTE_INCLUDES: &[(&str, Option<&str>)] = &[
     ("api/compute/compute_kernel_hw_startup.h", None),
     ("api/compute/eltwise_binary_sfpu.h", Some("add")),
     ("api/compute/eltwise_unary/fill.h", Some("fill")),
+    ("api/compute/matmul.h", Some("matmul")),
     ("api/compute/pack.h", None),
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
@@ -89,13 +94,22 @@ const COMPUTE_INCLUDES: &[(&str, Option<&str>)] = &[
 ];
 
 /// What the handlers need of the includes (`compiled.includes`): a sum's add, fill
-/// and port; its store's ask.
+/// and port, a product's fill and matmul; their store's ask.
 fn needs(plans: &[Plan]) -> Vec<&'static str> {
-    if plans.iter().any(|p| matches!(p.shape, Shape::Summed(_))) {
-        vec!["add", "fill", "port", "ask"]
-    } else {
-        Vec::new()
+    let mut out = Vec::new();
+    for plan in plans {
+        let wanted: &[&str] = match plan.shape {
+            Shape::Summed(_) => &["add", "fill", "port", "ask"],
+            Shape::Product(_) => &["fill", "matmul", "ask"],
+            _ => &[],
+        };
+        for need in wanted {
+            if !out.contains(need) {
+                out.push(*need);
+            }
+        }
     }
+    out
 }
 
 /// `name` with each `_`-separated part capitalized (`files.camel`).
@@ -215,6 +229,32 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
             refusals.push(r);
         }
     }
+    // the fidelity is the compute kernel's: one for the program's products
+    // (`products.stream_product`)
+    let mut fidelity: Option<&Product> = None;
+    for plan in &plans {
+        let Shape::Product(product) = &plan.shape else {
+            continue;
+        };
+        match fidelity {
+            Some(first) if first.fidelity != product.fidelity => {
+                let name = |f: FuncId| module.funcs[f.0 as usize].name.clone();
+                refusals.push(Refusal {
+                    code: NOT_BUILT,
+                    what: format!(
+                        "{}'s fidelity is {} and another product's {}: the fidelity is the \
+                         compute kernel's",
+                        name(product.call.func),
+                        product.fidelity,
+                        first.fidelity
+                    ),
+                    at: Some(Anchor::Func(product.call.func)),
+                });
+            }
+            Some(_) => {}
+            None => fidelity = Some(product),
+        }
+    }
     let mut units: Vec<Unit> = Vec::new();
     for plan in &plans {
         let Shape::Mapped {
@@ -234,8 +274,9 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     Ok((plans, units))
 }
 
-/// The generated files of `module`: each name and text, in name order; or every
-/// refusal of what is not built.
+/// The generated files of `module` the compile makes: each name and text, in name
+/// order; or every refusal of what is not built. A file made at load (`at_load`) is
+/// not among them.
 pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
     let (plans, units) = planned(module)?;
     let program = &module.programs[0];
@@ -247,20 +288,61 @@ pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
     let mut files = vec![
         (header.clone(), sized_header(module, &plans, TREE_ROUNDS)),
         (
-            "movement.cpp".to_string(),
-            movement_text(name, &header, &plans, &lines),
-        ),
-        (
             "compute.cpp".to_string(),
             compute_text(name, &header, &plans, &units, &lines),
         ),
     ];
+    if !walks_rectangles(&plans) {
+        let movement = movement_text(name, &header, &plans, &lines, &[]).map_err(|r| vec![r])?;
+        files.push(("movement.cpp".to_string(), movement));
+    }
     for u in units {
         files.push((format!("tile_{}.hpp", u.name), u.words));
         files.push((format!("tile_{}.txt", u.name), u.listing));
     }
     files.sort();
     Ok(files)
+}
+
+/// Whether a handler streams a rectangle, whose walk needs its tensor's width.
+fn walks_rectangles(plans: &[Plan]) -> bool {
+    plans
+        .iter()
+        .flat_map(|p| &p.reads)
+        .any(|r| matches!(r.range, Range::Rect(_)))
+}
+
+/// The files of `module` the load makes, by name: the movement source when a handler
+/// streams a rectangle (its walk is in rows of the tensor's width, a fact of the
+/// load); none else.
+pub fn at_load(module: &Module) -> Result<Vec<String>, Vec<Refusal>> {
+    let (plans, _) = planned(module)?;
+    Ok(if walks_rectangles(&plans) {
+        vec!["movement.cpp".to_string()]
+    } else {
+        Vec::new()
+    })
+}
+
+/// The files the load makes (`at_load`) given each tensor parameter's shape in tiles
+/// (rows, columns) by name; a tensor a rectangle walks given no shape, or a rectangle
+/// whose known ends do not fit its tensor, is refused by name.
+pub fn sources_at_load(
+    module: &Module,
+    shapes: &[(String, Option<(u64, u64)>)],
+) -> Result<Vec<(String, String)>, Vec<Refusal>> {
+    let (plans, _) = planned(module)?;
+    if !walks_rectangles(&plans) {
+        return Ok(Vec::new());
+    }
+    let program = &module.programs[0];
+    let lines = Lines {
+        origin: module.notes.origin.as_ref(),
+    };
+    let header = format!("{}.h", program.name.to_lowercase());
+    let movement =
+        movement_text(&program.name, &header, &plans, &lines, shapes).map_err(|r| vec![r])?;
+    Ok(vec![("movement.cpp".to_string(), movement)])
 }
 
 /// The header of `plans` with each tree reduce's arrival of `slots` slots: the
@@ -366,7 +448,28 @@ struct Other {
 /// `slots` of one tile (`tree_slots`); then its out buffer, from 16, two writes.
 fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
     let mut out: Vec<Other> = Vec::new();
+    let free = |out: &[Other], first: u32| {
+        (first..)
+            .find(|i| out.iter().all(|o| o.index != *i))
+            .unwrap_or(first)
+    };
     for plan in plans {
+        if let Shape::Product(product) = &plan.shape {
+            // the tile each rank stores, packed by compute and written by mover B
+            let body = BodyRef::Handler(plan.program, plan.handler);
+            let what = lines
+                .comment(Anchor::Inst(body, product.store.inst), None)
+                .unwrap_or_else(|| "kOut0: a store's".to_string());
+            let index = free(&out, FIRST_WRITE);
+            out.push(Other {
+                name: "kOut0".to_string(),
+                index,
+                slots: None,
+                pages: WRITE_ITEMS,
+                what,
+            });
+            continue;
+        }
         let Shape::Summed(sum) = &plan.shape else {
             continue;
         };
@@ -375,11 +478,6 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             lines
                 .comment(anchor, None)
                 .unwrap_or_else(|| format!("{name}: a reduce's"))
-        };
-        let free = |out: &[Other], first: u32| {
-            (first..)
-                .find(|i| out.iter().all(|o| o.index != *i))
-                .unwrap_or(first)
         };
         let index = free(&out, FIRST_OTHER);
         out.push(Other {
@@ -636,7 +734,37 @@ fn range_ints<'p>(plan: &'p Plan, range: &'p Range) -> Vec<&'p Int> {
     match range {
         Range::Part(p) => vec![&plan.parts[*p].first, &plan.parts[*p].n],
         Range::Tiles { first, n } => vec![first, n],
+        Range::Rect(rect) => vec![&rect.rows.0, &rect.rows.1, &rect.cols.0, &rect.cols.1],
     }
+}
+
+/// A rectangle's tiles in the kernels' terms (`ranges.rectangle`, `stream_cxx`): its
+/// first tile in rows of the tensor's `width`, and either one run of tiles (a row, or
+/// rows the tensor's width) or the walk of its rows in blocks of `block` tiles.
+fn rect_tiles(plan: &Plan, rect: &Rect, width: u64, block: u64) -> (String, Option<String>) {
+    let (rows, cols) = rect.sides();
+    let (rows, cols) = (rows.unwrap_or(0), cols.unwrap_or(0));
+    let first = format!(
+        "(({}) * {width} + ({}))",
+        int_text(plan, &rect.rows.0),
+        int_text(plan, &rect.cols.0)
+    );
+    if rows == 1 || cols == width {
+        return (format!("{first}, {}", rows * cols), None);
+    }
+    let per = block / cols.max(1);
+    let blocks = format!("(({rows}) + {}) / {per}", per.saturating_sub(1));
+    let walk = format!(
+        "km::Walk{{{first}, {blocks}, {}, {per}, {width}, {cols}, 1, {cols}, {block}, ({rows}) - \
+         ({blocks} - 1) * {per}, {cols}}}",
+        per * width
+    );
+    (
+        walk,
+        Some(format!(
+            "// the rectangle's rows, {cols} tiles each, {width} apart"
+        )),
+    )
 }
 
 /// A case's opening lines: the rank and size where the kernel reads them, then the
@@ -690,8 +818,16 @@ fn case_line(plan: &Plan, lines: &Lines) -> String {
     format!("case kHandler{}: {{{line}", camel(&plan.name))
 }
 
-/// The movement source both movers build (`program_sources.movement_source`).
-fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> String {
+/// The movement source both movers build (`program_sources.movement_source`); a
+/// rectangle's walk in rows of its tensor's width, from `shapes` (each tensor's rows
+/// and columns of tiles, by name, as the load gives them).
+fn movement_text(
+    name: &str,
+    header: &str,
+    plans: &[Plan],
+    lines: &Lines,
+    shapes: &[(String, Option<(u64, u64)>)],
+) -> Result<String, Refusal> {
     let mut out = vec![
         format!("// {}", lines.made(name)),
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).".to_string(),
@@ -759,7 +895,26 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
         case_head(&mut out, plan, "movement", &reads);
         let stream = |kind: &str, var: &str, pair: &str, moved: &Moved| {
             let t = &plan.words[moved.tensor].name;
+            let at = Anchor::Inst(body, moved.inst);
+            let mut walked = None;
             let tiles = match &moved.range {
+                Range::Rect(rect) => {
+                    let shape = shapes.iter().find(|(n, _)| n == t).and_then(|(_, s)| *s);
+                    let Some((rows, width)) = shape else {
+                        return Err(Refusal {
+                            code: NOT_BUILT,
+                            what: format!(
+                                "the tensor `{t}` is given with no shape in tiles, and its \
+                                 rectangle is walked in rows of its width"
+                            ),
+                            at: Some(at),
+                        });
+                    };
+                    fits(plan, rect, t, (rows, width), at)?;
+                    let (tiles, comment) = rect_tiles(plan, rect, width, moved.block);
+                    walked = comment.map(|c| (c, tiles.clone()));
+                    tiles
+                }
                 Range::Part(p) => {
                     // a partition's first tile: its range's first plus its start
                     let part = &plan.parts[*p];
@@ -779,10 +934,16 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
                 (Some(r), "km::kMoveRead") => int_text(plan, r),
                 _ => "1".to_string(),
             };
-            format!(
-                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, {repeat}, {pair}, {pattern}\n);",
-                camel(t),
-            )
+            Ok(match walked {
+                Some((comment, walk)) => format!(
+                    "{comment}\nconst km::Stream {var}(\n{INDENT}{kind}, {}({t}), {walk}, {repeat}, {pair}, {pattern}\n);",
+                    camel(t),
+                ),
+                None => format!(
+                    "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, {repeat}, {pair}, {pattern}\n);",
+                    camel(t),
+                ),
+            })
         };
         // The statements in the order written, a comment where the place changes.
         let mut statements: Vec<(InstId, String, Option<u32>)> = plan
@@ -803,7 +964,7 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
         if let Shape::Mapped { write, .. } = &plan.shape {
             statements.push((
                 write.inst,
-                stream("km::kMoveWrite", "km_write0", "kWrite0", write),
+                stream("km::kMoveWrite", "km_write0", "kWrite0", write)?,
                 None,
             ));
         }
@@ -815,7 +976,7 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
                     &format!("km_read{i}"),
                     &format!("kRead{i}"),
                     read,
-                ),
+                )?,
                 head_last(lines, plan),
             ));
         }
@@ -831,6 +992,7 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
             indented(&mut out, 4, &text);
         }
         match &plan.shape {
+            Shape::Product(product) => movement_product(&mut out, plan, product, lines),
             Shape::Mapped { .. } => {
                 let moved: Vec<String> = (0..plan.reads.len())
                     .map(|i| format!("km_read{i}"))
@@ -860,7 +1022,69 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
     indented(&mut out, 2, "}");
     indented(&mut out, 1, "});");
     out.push("}".to_string());
-    out.join("\n") + "\n"
+    Ok(out.join("\n") + "\n")
+}
+
+/// Refuses at `at` a rectangle of tensor `t` (rows and columns of tiles `shape`) whose
+/// ends the compile knows and that does not fit it; ends of the run are checked at
+/// submit (the entry's rectangles).
+fn fits(plan: &Plan, rect: &Rect, t: &str, shape: (u64, u64), at: Anchor) -> Result<(), Refusal> {
+    for ((lo, hi), held, what) in [
+        (&rect.rows, shape.0, "rows"),
+        (&rect.cols, shape.1, "columns"),
+    ] {
+        let end = match (lo, hi) {
+            (_, Int::Const(hi)) => Some(*hi),
+            _ => None,
+        };
+        if end.is_some_and(|end| end > held) {
+            return Err(Refusal {
+                code: NOT_BUILT,
+                what: format!(
+                    "the rectangle's {what} {}:{} of `{t}`, which has {held} {what} of tiles \
+                     at this load",
+                    int_text(plan, lo),
+                    int_text(plan, hi)
+                ),
+                at: Some(at),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A product's movement after its streams (`writes.write_moved`): mover B writes the
+/// tile compute packs of the var, each rank its own.
+fn movement_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    let moved: Vec<String> = (0..plan.reads.len())
+        .map(|i| format!("km_read{i}"))
+        .collect();
+    indented(
+        out,
+        4,
+        &format!(
+            "if (!movement.move({})) {{\n    return false;\n}}",
+            moved.join(", ")
+        ),
+    );
+    let store = &product.store;
+    comment(out, 4, lines.comment(Anchor::Inst(body, store.inst), None));
+    out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+    let t = &plan.words[store.tensor].name;
+    let ints = range_ints(plan, &store.range);
+    let (first, n) = (int_text(plan, ints[0]), int_text(plan, ints[1]));
+    indented(
+        out,
+        4,
+        &format!(
+            "if (!movement.wait_front(kOut0, {n}) ||\n    \
+             !km::write_pages(movement, command, {}({t}), {first}, {n}, get_read_ptr(kOut0))) {{\n    \
+             return false;\n}}\nnoc_async_writes_flushed();\ncb_pop_front(kOut0, {n});",
+            camel(t)
+        ),
+    );
+    out.push("#endif".to_string());
 }
 
 /// A sum's movement after its stream (`reduce.tile_reduce`, `writes.write_moved`): mover
@@ -945,7 +1169,7 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
     indented(&mut out, 1, "km::Compute compute;");
     // the first read and the first written buffer (a sum's out buffer)
     let written = match plans.first().map(|p| &p.shape) {
-        Some(Shape::Summed(_)) => "kOut0",
+        Some(Shape::Summed(_) | Shape::Product(_)) => "kOut0",
         _ => "kWrite0.mover_a",
     };
     indented(
@@ -976,6 +1200,7 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
                 compute_mapped(&mut out, plan, None, write, lines);
             }
             Shape::Summed(sum) => compute_sum(&mut out, plan, sum, lines),
+            Shape::Product(product) => compute_product(&mut out, plan, product, lines),
             Shape::Dropped => compute_dropped(&mut out, plan, lines),
         }
         indented(&mut out, 4, "break;");
@@ -1000,7 +1225,107 @@ fn compute_count(plan: &Plan) -> (Uses, Option<&Part>, String) {
             (reads, Some(part), format!("{}.len", part.name))
         }
         Range::Tiles { n, .. } => (Uses::of(plan, [n]), None, int_text(plan, n)),
+        Range::Rect(rect) => {
+            let (rows, cols) = rect.sides();
+            let tiles = rows.unwrap_or(0) * cols.unwrap_or(0);
+            (Uses::default(), None, tiles.to_string())
+        }
     }
+}
+
+/// A product's compute case (`products.stream_product`): the var in Dst tile 0 from
+/// zeros; the matrix unit set once for the loop; each tile k of the first stream's
+/// block by row k of the second's added into it (`matmul_block`); each block freed;
+/// the var packed into the out buffer.
+fn compute_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    let (reads, _, p) = compute_count(plan);
+    case_head(out, plan, "compute", &reads);
+    indented(out, 4, "bool km_ok = true;");
+    comment(
+        out,
+        4,
+        lines.comment(Anchor::Inst(body, product.zeros), None),
+    );
+    indented(
+        out,
+        4,
+        "tile_regs_acquire();\nfill_tile_init();\nfill_tile(0, 0.0f);",
+    );
+    comment(
+        out,
+        4,
+        lines.comment(
+            Anchor::Inst(body, plan.reads[0].inst),
+            head_last(lines, plan),
+        ),
+    );
+    let width = product.width;
+    indented(
+        out,
+        4,
+        &format!(
+            "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;\n\
+             // the zeros' fills (vector unit) done before the matrix unit adds\n\
+             MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n\
+             KM_UNPACK_FORMATS(kRead1.mover_a, kRead0.mover_a);\n\
+             matmul_block_init(kRead0.mover_a, kRead1.mover_a, 0, {width}, 1, kRead0Block);\n\
+             for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{"
+        ),
+    );
+    for i in 0..plan.reads.len() {
+        indented(
+            out,
+            5,
+            &format!(
+                "const uint32_t km_half{i} = km::block_half(kRead{i}, kRead{i}Pattern, km_block0);\n\
+                 km_ok = compute.wait_front(km_half{i}, kRead{i}Block);\n\
+                 if (!km_ok) {{\n    break;\n}}"
+            ),
+        );
+    }
+    indented(
+        out,
+        5,
+        &format!(
+            "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
+             for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; km_tile0++) {{"
+        ),
+    );
+    comment(
+        out,
+        6,
+        lines.comment(Anchor::Inst(body, product.call.inst), None),
+    );
+    indented(
+        out,
+        6,
+        &format!(
+            "matmul_block(km_half0, km_half1, km_tile0, km_tile0 * {width}, 0, 0, {width}, 1, kRead0Block);"
+        ),
+    );
+    indented(out, 5, "}");
+    for i in 0..plan.reads.len() {
+        indented(out, 5, &format!("cb_pop_front(km_half{i}, kRead{i}Block);"));
+    }
+    indented(out, 4, "}");
+    comment(
+        out,
+        4,
+        lines.comment(Anchor::Inst(body, product.store.inst), None),
+    );
+    indented(
+        out,
+        4,
+        "tile_regs_commit();\n\
+         tile_regs_wait();\n\
+         if (km_ok && compute.reserve_back(kOut0, 1)) {\n    \
+         KM_PACK_FORMAT(kOut0);\n    \
+         pack_tile(0, kOut0);\n    \
+         cb_push_back(kOut0, 1);\n\
+         }\n\
+         tile_regs_release();",
+    );
 }
 
 /// A sum's compute case (`dst_tiles`, `reduce.tile_reduce`): the total in Dst tile 0
@@ -1624,6 +1949,7 @@ impl Backend for Tensix {
             build: Build::Kernels {
                 kernels: kernels(&plans),
                 buffers: buffers(&plans, TREE_ROUNDS),
+                at_load: at_load(program)?,
             },
         })
     }
@@ -1672,15 +1998,34 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
 fn bounds(plan: &Plan) -> Result<Vec<Bound>, Refusal> {
     let mut bounds = Vec::new();
     for moved in plan.reads.iter().chain(plan.written()) {
-        let (first, n) = match &moved.range {
-            Range::Part(p) => (&plan.parts[*p].first, &plan.parts[*p].n),
-            Range::Tiles { first, n } => (first, n),
-        };
         let at = Anchor::Inst(BodyRef::Handler(plan.program, plan.handler), moved.inst);
-        let bound = Bound {
-            tensor: moved.tensor,
-            first: host_expr(plan, first, at)?,
-            count: host_expr(plan, n, at)?,
+        let side = |(lo, hi): &(Int, Int)| -> Result<(Expr, Expr), Refusal> {
+            let lo = host_expr(plan, lo, at)?;
+            let many = Expr::Sub(Box::new(host_expr(plan, hi, at)?), Box::new(lo.clone()));
+            Ok((lo, many))
+        };
+        let bound = match &moved.range {
+            Range::Part(p) => Bound {
+                tensor: moved.tensor,
+                first: host_expr(plan, &plan.parts[*p].first, at)?,
+                count: host_expr(plan, &plan.parts[*p].n, at)?,
+                cols: None,
+            },
+            Range::Tiles { first, n } => Bound {
+                tensor: moved.tensor,
+                first: host_expr(plan, first, at)?,
+                count: host_expr(plan, n, at)?,
+                cols: None,
+            },
+            Range::Rect(rect) => {
+                let (first, count) = side(&rect.rows)?;
+                Bound {
+                    tensor: moved.tensor,
+                    first,
+                    count,
+                    cols: Some(side(&rect.cols)?),
+                }
+            }
         };
         if !bounds.contains(&bound) {
             bounds.push(bound);
@@ -1691,7 +2036,7 @@ fn bounds(plan: &Plan) -> Result<Vec<Bound>, Refusal> {
 }
 
 /// An int as a host computes it from the command's words and group: words, numbers,
-/// the rank and size, `+ - *` and named values of these; another is refused at `at`.
+/// the rank and size, `+ - * / %` and named values of these.
 fn host_expr(plan: &Plan, int: &Int, at: Anchor) -> Result<Expr, Refusal> {
     let both = |a: &Int, b: &Int| -> Result<_, Refusal> {
         Ok((
@@ -1708,6 +2053,8 @@ fn host_expr(plan: &Plan, int: &Int, at: Anchor) -> Result<Expr, Refusal> {
         Int::Bin('+', a, b) => both(a, b).map(|(a, b)| Expr::Add(a, b))?,
         Int::Bin('-', a, b) => both(a, b).map(|(a, b)| Expr::Sub(a, b))?,
         Int::Bin('*', a, b) => both(a, b).map(|(a, b)| Expr::Mul(a, b))?,
+        Int::Bin('/', a, b) => both(a, b).map(|(a, b)| Expr::Div(a, b))?,
+        Int::Bin('%', a, b) => both(a, b).map(|(a, b)| Expr::Rem(a, b))?,
         Int::Bin(op, ..) => {
             return Err(Refusal {
                 code: NOT_BUILT,
@@ -1761,8 +2108,16 @@ fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
 /// The three kernels (`session/backend/backend.py`, `describe`): the movement source
 /// on the reader and on the writer, each tensor's layout as its compile arguments in
 /// order (`km::Tensor<...>`); the compute source with today's compute options
-/// (`program.compute_options`: a bf16 class's Dst is fp32, `HiFi4`).
+/// (`program.compute_options`: a bf16 class's Dst is fp32, its products' fidelity or
+/// `HiFi4`).
 fn kernels(plans: &[Plan]) -> Vec<Kernel> {
+    let fidelity = plans
+        .iter()
+        .find_map(|p| match &p.shape {
+            Shape::Product(product) => Some(product.fidelity.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| tile::lower::FIDELITY.to_string());
     let mut params = Vec::new();
     for plan in plans {
         for (p, w) in plan.words.iter().enumerate() {
@@ -1792,10 +2147,7 @@ fn kernels(plans: &[Plan]) -> Vec<Kernel> {
             args: Vec::new(),
             options: vec![
                 ("fp32_dest_acc_en".to_string(), Setting::Bool(true)),
-                (
-                    "math_fidelity".to_string(),
-                    Setting::Text("HiFi4".to_string()),
-                ),
+                ("math_fidelity".to_string(), Setting::Text(fidelity)),
             ],
         },
     ]
@@ -1838,7 +2190,14 @@ mod tests {
         };
         let at = Anchor::Handler(ProgramId(0), HandlerId(0));
         let halved = Int::Bin('/', Box::new(Int::Word(3)), Box::new(Int::Const(2)));
-        let refused = host_expr(&plan, &halved, at).expect_err("refused");
+        let stated = host_expr(&plan, &halved, at).expect("a quotient");
+        assert_eq!(
+            stated,
+            Expr::Div(Box::new(Expr::Word(3)), Box::new(Expr::Const(2)))
+        );
+        // an operation the plan does not make is refused, not dropped
+        let other = Int::Bin('&', Box::new(Int::Word(3)), Box::new(Int::Const(2)));
+        let refused = host_expr(&plan, &other, at).expect_err("refused");
         assert_eq!(refused.code, NOT_BUILT);
         assert!(
             refused.what.contains("cannot be stated as a bound yet"),

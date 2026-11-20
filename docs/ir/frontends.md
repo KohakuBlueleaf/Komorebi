@@ -144,10 +144,11 @@ komorebi-ir wheel, which `komorebi.dsl.ir` does not.
 1. `module` gives the module, which is compiled with its origin.
 2. The Tensix backend emits the module's files and kernels.
 3. `komorebi_ir.load` takes the make's tensors by parameter name. Each tensor gives its pages,
-   its layout words and its page in DRAM. The load is on `machine` (a `komorebi_ir.Machine`; None:
+   its layout words, its page in DRAM and its shape in tiles. The load is on `machine` (a `komorebi_ir.Machine`; None:
    one island). It gives the thread header, the program's header as the machine sizes it (in
-   place of the compile's), the kernels with each tensor's layout in its place, and the buffers,
-   their formats by the loader's names.
+   place of the compile's), the kernels with each tensor's layout in its place, the buffers,
+   their formats by the loader's names, and the files the output names as made at load (a
+   movement source that walks a rectangle in rows of its tensor's width).
 4. The files go to `build/<name>-<text_key>` beside the class's source, where today's make
    writes the same files.
 5. The Program is made of that output:
@@ -161,7 +162,9 @@ komorebi-ir wheel, which `komorebi.dsl.ir` does not.
    and its `args(...)` gives the command words of a call, as today's make gives them. A range
    that reads the rank (program 1's `a.tiles(worker.rank * 64, 64)`) is checked for every rank
    of the group, `args(..., group=(first, count))` as the submit's, and refused at the rank
-   that does not fit.
+   that does not fit. A rectangle's rows are checked against its tensor's rows of tiles and its
+   columns against its width, and a tensor of another width than the load's is refused, in
+   today's words (program 6).
 
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
