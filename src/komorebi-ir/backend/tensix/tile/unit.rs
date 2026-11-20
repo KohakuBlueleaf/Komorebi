@@ -580,7 +580,8 @@ pub struct Insn {
 
 impl Insn {
     /// `name` with exactly its operation's fields; a field that is not a register's
-    /// (`lreg_*`) is a number.
+    /// (`lreg_*`) is a number, but SFPCONFIG's `config_dest`, which names a constant
+    /// register until the layout pass.
     pub fn new(name: &str, args: &[(&str, Arg)], note: &str) -> Result<Insn, UnitError> {
         let op = op_named(name).ok_or_else(|| UnitError(format!("no operation {name}")))?;
         let mut out = Vec::new();
@@ -590,7 +591,8 @@ impl Insn {
                 .find(|(n, _)| n == field)
                 .map(|(_, v)| v.clone())
                 .ok_or_else(|| UnitError(format!("{name}: no {field}")))?;
-            if !field.starts_with("lreg") && value.num().is_none() {
+            let named = field.starts_with("lreg") || *field == "config_dest";
+            if !named && value.num().is_none() {
                 return Err(UnitError(format!("{name} {field}={value}: not a number")));
             }
             out.push(value);
@@ -618,6 +620,17 @@ impl Insn {
             .iter()
             .position(|(n, _)| *n == name)
             .and_then(|i| self.args.get(i))
+    }
+
+    /// Field `name` set to `value`; false when the operation has no such field.
+    pub fn set(&mut self, name: &str, value: Arg) -> bool {
+        match self.op.args.iter().position(|(n, _)| *n == name) {
+            Some(i) if i < self.args.len() => {
+                self.args[i] = value;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Field `name` as a number (0 when the operation has no such numeric field: the

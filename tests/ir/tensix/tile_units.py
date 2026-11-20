@@ -1,7 +1,7 @@
 """Today's tile compiler on a corpus of tile functions: the reference for the port
 (backend/tensix/tile/; tile_units.kom has them in the IR's text). Writes each KernelIR
-(`<case>.ir`), chain (`.chain`), unit as data (`.unit`) and listing (`.txt`), every
-word's encoding (`encode.txt`), the refusals (`refused.txt`). Usage: <this> <folder>."""
+(`<case>.ir`), chain (`.chain`), unit as data (`.unit`) and listing (`.txt`), each
+word's encoding, the refusals, each case's Dst and band. Usage: <this> <folder>."""
 
 import inspect
 import operator
@@ -67,6 +67,8 @@ CASES = [
     ("divide", lambda a, b: a / b, [F, F], {}),
     ("floor", lambda a: km.floor(a), [F], {}),
     ("twice_k", lambda a, k: a * k + k * a, [F, SCALAR], {}),
+    # a value takes the register of an operand dying there, not the lowest free one
+    ("chained", lambda a, b, c: a * b * c - a, [F, F, F], {}),
     ("five", lambda a, b, c, d, e: a * b + (c - d) * e, [F] * 5, {}),
     ("by5", lambda a, j, k, m, n, p: a * j * k * m * n * p, [F, *[SCALAR] * 5], {}),
     (
@@ -233,8 +235,9 @@ def encodings():
 def main(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    refused = []
+    refused, cases = [], []
     for case, function, formats, options in CASES:
+        cases.append(f"{case}\t{tile_dest(formats)}\t{int(bool(options.get('rows')))}")
         ir = traced(case, function, formats)
         (folder / f"{case}.ir").write_text(ir.dump() + "\n")
         try:
@@ -251,6 +254,7 @@ def main(folder):
         (folder / f"{case}.txt").write_text(text + "\n")
     (folder / "encode.txt").write_text("\n".join(encodings()) + "\n")
     (folder / "refused.txt").write_text("".join(f"{r}\n" for r in refused))
+    (folder / "cases.txt").write_text("".join(f"{c}\n" for c in cases))
 
 
 if __name__ == "__main__":

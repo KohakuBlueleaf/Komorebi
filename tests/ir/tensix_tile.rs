@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
-use komorebi_ir::backend::tensix::tile::chain::{stream_chain, Chain, Source};
+use komorebi_ir::backend::tensix::tile::chain::{Chain, Source};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
+use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program_unchecked};
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
     Sync, UnitProgram, CPUS, OPS,
@@ -231,7 +232,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 27, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 28, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -471,5 +472,119 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 30);
+    assert_eq!(compared, 31);
+}
+
+/// Today's listing without the hazard checks' lines (the port's unit program is the one
+/// before them, but for the `resident` check, which the layout pass makes).
+fn unchecked(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with("  check ") || l.starts_with("  check resident "))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+#[test]
+fn each_unit_program_before_its_checks_is_todays() {
+    let Some(folder) = today() else { return };
+    let module = corpus();
+    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("cases.txt");
+    let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
+    let (mut same, mut passes, mut not_ported) = (Vec::new(), Vec::new(), Vec::new());
+    for line in cases.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (case, dest, band) = (f[0], f[1], f[2] == "1");
+        let ir = kernel_ir(&module, func(&module, &format!("t_{case}")), case)
+            .unwrap_or_else(|r| panic!("{case}: {}", r.what));
+        let made = unit_program_unchecked(&ir, dest, true, band);
+        let today = refused
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{case}\t")));
+        if let Some(today) = today {
+            // refused today: the same text, but for the place it names (K962)
+            let error = made.expect_err(case);
+            assert_eq!(
+                error.text(),
+                today.split(" (at ").next().unwrap_or(today),
+                "{case}"
+            );
+            assert_eq!(error.refusal(None).code, "K962", "{case}");
+            continue;
+        }
+        let unit = match made {
+            Ok(unit) => unit,
+            Err(e) => {
+                let refusal = e.refusal(None);
+                assert_eq!(refusal.code, "K964", "{case}: {}", refusal.what);
+                not_ported.push(format!("{case}: {}", e.text()));
+                continue;
+            }
+        };
+        let want =
+            std::fs::read_to_string(folder.join(format!("{case}.txt"))).expect("the listing");
+        let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+        if !want.contains(": repaired: ") {
+            let want = unchecked(&want);
+            assert!(
+                got == want,
+                "{case} differs, {}",
+                first_difference(&want, &got)
+            );
+            same.push(case);
+            continue;
+        }
+        // today's checks repaired the code (an SFPNOP, a STALLWAIT): the passes but the
+        // replay, which records the repaired row, are the same
+        let of = |t: &str| -> String {
+            t.lines()
+                .filter(|l| l.starts_with("  pass ") && !l.starts_with("  pass schedule replay"))
+                .map(|l| format!("{l}\n"))
+                .collect()
+        };
+        assert!(
+            of(&got) == of(&want),
+            "{case}'s passes differ, {}",
+            first_difference(&of(&want), &of(&got))
+        );
+        passes.push(case);
+    }
+    // the whole-tile arithmetic, `a * k` among it, with and without a load macro
+    let whole = [
+        "times",
+        "plus",
+        "plus_bfp8",
+        "scaled_sum",
+        "square",
+        "neg",
+        "twice_k",
+        "chained",
+    ];
+    assert_eq!(same, whole);
+    assert_eq!(passes, ["smooth"]);
+    let refused = [
+        "plus_band: the band (a body on the live rows)",
+        "gate: the vector function sigmoid",
+        "silu_gate_bf16: the vector function sigmoid",
+        "clamp01: the vector operation min",
+        "leaky: the vector operation select",
+        "project: a function that is one tile product",
+        "exp: the vector function exp",
+        "sigmoid: the vector function sigmoid",
+        "silu: the vector function sigmoid",
+        "tanh: the vector function tanh",
+        "erf: the vector function erf",
+        "log: the vector function log",
+        "sqrt: the vector function sqrt",
+        "rsqrt: the vector function rsqrt",
+        "recip: the vector function recip",
+        "relu: the vector operation max",
+        "divide: the vector function recip",
+        "floor: the vector operation select",
+        "called: the vector operation select",
+    ];
+    let named: Vec<String> = not_ported
+        .iter()
+        .map(|l| l.replacen(": not ported", "", 1))
+        .collect();
+    assert_eq!(named, refused);
 }

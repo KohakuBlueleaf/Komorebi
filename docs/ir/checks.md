@@ -212,7 +212,7 @@ and names what. It never substitutes other behaviour silently"). What depends on
 |---|---|---|
 | `K960` | A requirement the backend does not provide: `group = grid`, `dynamic`, `islands >= n`, `local_state >= ...` (the amounts on the machine, at load) | The backend's check, at compile and at load |
 | `K961` | An external function with no fallback whose implementation the backend does not have | The backend's check |
-| `K962` | A program over one of the backend's limits: handlers in a program, parameters or argument words of a handler, run or chain, fields of a message | The backend's check |
+| `K962` | A program over one of the backend's limits: handlers in a program, parameters or argument words of a handler, run or chain, fields of a message; a tile function the backend's compute unit cannot take, with the unit's reason | The backend's check |
 | `K963` | A format the module declares that the backend does not compute | The backend's check |
 | `K964` | A construct the backend does not emit yet | The backend's check |
 | `K965` | A module whose tile shape the backend does not compute on | The backend's check |

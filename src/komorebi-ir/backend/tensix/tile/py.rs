@@ -161,6 +161,59 @@ pub fn format_g(x: f64, precision: usize) -> String {
     }
 }
 
+/// The fp16 bits of `x` when fp16 holds it exactly (what `struct.pack("<e", x)` packs
+/// for such a value), else none.
+pub fn half_bits(x: f32) -> Option<u16> {
+    let bits = x.to_bits();
+    let sign = ((bits >> 31) as u16) << 15;
+    if x == 0.0 {
+        return Some(sign);
+    }
+    if x.is_nan() {
+        return None;
+    }
+    if x.is_infinite() {
+        return Some(sign | 0x7C00);
+    }
+    let biased = (bits >> 23) & 0xFF;
+    let mantissa = bits & 0x7F_FFFF;
+    if biased == 0 {
+        return None; // an fp32 subnormal: far below fp16's least
+    }
+    let e = biased as i32 - 127;
+    if e > 15 {
+        return None;
+    }
+    if e >= -14 {
+        if mantissa & 0x1FFF != 0 {
+            return None;
+        }
+        return Some(sign | (((e + 15) as u16) << 10) | (mantissa >> 13) as u16);
+    }
+    // fp16 subnormal: x = m 2^-24, m in 1 .. 1023
+    let shift = (-(e + 1)) as u32;
+    let significand = (1u32 << 23) | mantissa;
+    if shift >= 32 || significand & ((1u32 << shift) - 1) != 0 {
+        return None;
+    }
+    Some(sign | (significand >> shift) as u16)
+}
+
+/// The fp32 of fp16 bits `h` (`struct.unpack("<e", ...)`), exactly.
+pub fn half_to_f32(h: u16) -> f32 {
+    let sign = u32::from(h >> 15) << 31;
+    let biased = u32::from((h >> 10) & 0x1F);
+    let mantissa = u32::from(h & 0x3FF);
+    match biased {
+        0 => {
+            let magnitude = mantissa as f32 * f32::from_bits(0x3380_0000); // 2^-24
+            f32::from_bits(sign | magnitude.to_bits())
+        }
+        31 => f32::from_bits(sign | 0x7F80_0000 | mantissa << 13),
+        _ => f32::from_bits(sign | (biased + 127 - 15) << 23 | mantissa << 13),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +286,27 @@ mod tests {
         ];
         for (x, p, want) in g {
             assert_eq!(format_g(x, p), want, "{x} {p}");
+        }
+    }
+
+    #[test]
+    fn halves_pack_as_python_packs_them() {
+        // Python: struct.unpack("<H", struct.pack("<e", x))[0], for x fp16 holds
+        let exact = [
+            (1.5f32, 0x3E00),
+            (-2.0, 0xC000),
+            (65504.0, 0x7BFF),
+            (6.103_515_6e-5, 0x0400),
+            (5.960_464_5e-8, 0x0001),
+            (-0.0, 0x8000),
+            (0.333_251_95, 0x3555),
+        ];
+        for (x, h) in exact {
+            assert_eq!(half_bits(x), Some(h), "{x}");
+            assert_eq!(half_to_f32(h).to_bits(), x.to_bits(), "{h:#x}");
+        }
+        for x in [0.1f32, 65520.0, 2.980_232_2e-8, 1.000_000_1] {
+            assert_eq!(half_bits(x), None, "{x}");
         }
     }
 }

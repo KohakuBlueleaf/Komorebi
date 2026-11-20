@@ -1,8 +1,6 @@
 //! The chain compiler (today's `komorebi.dsl.tile.chain`): the vector-unit function
 //! (`Chain`) computing a stored value over at most four register slots, with each
-//! transcendental's template; and the stream form's entry to it (today's
-//! `lower.stream_chain`, `_stream_chains`, `products_of`): each load is a register
-//! operand, and so is each tile product.
+//! transcendental's template. The stream form's entry to it is in `lower`.
 //!
 //! Not ported: the row form (`banded`, `grouped`, per-row and broadcast operands,
 //! slices, `cat`, `.even` / `.odd`, casts), and the templates chosen by a stated error
@@ -11,7 +9,10 @@
 
 use super::ir::{Attr, KernelIR, NodeId};
 use super::py;
+use super::unit::UnitError;
 use super::vector::{self, FnResult, GeneratedFn, Val, Vs};
+use crate::backend::{Refusal, NOT_BUILT, OVER_LIMIT};
+use crate::program::notes::Anchor;
 
 /// Destination register slots of one half with fp32 registers.
 pub const SLOTS: usize = 4;
@@ -19,14 +20,22 @@ pub const SLOTS: usize = 4;
 /// ln(2) as today writes it (`0.6931471805599453`), by its bits: `exp2`'s factor.
 pub const LN2: f64 = f64::from_bits(0x3FE6_2E42_FEFA_39EF);
 
-/// Why a chain is not made: today's refusal (its text, and the line it names), or a
-/// part of today's compiler not ported.
+/// Why a chain or a unit program is not made: today's refusal (its text, and the
+/// line it names), or a part of today's compiler not ported.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChainError {
     /// Today's `PlanError`: the message, and the source line when the node has one.
     Plan(String, Option<String>),
+    /// Today's `UnitError`: its message whole.
+    Unit(String),
     /// A part not ported, by name.
     NotPorted(String),
+}
+
+impl From<UnitError> for ChainError {
+    fn from(e: UnitError) -> ChainError {
+        ChainError::Unit(e.0)
+    }
 }
 
 impl ChainError {
@@ -37,7 +46,25 @@ impl ChainError {
                 format!("komorebi.dsl.tile: {message} (at {line})")
             }
             ChainError::Plan(message, None) => format!("komorebi.dsl.tile: {message}"),
+            ChainError::Unit(message) => message.clone(),
             ChainError::NotPorted(what) => format!("not ported: {what}"),
+        }
+    }
+
+    /// The backend's refusal of the function at `at`: what today refuses too is over
+    /// the compute unit's limits (K962, today's text whole), the rest not built (K964).
+    pub fn refusal(&self, at: Option<Anchor>) -> Refusal {
+        match self {
+            ChainError::NotPorted(what) => Refusal {
+                code: NOT_BUILT,
+                what: format!("the Tensix backend's tile compiler does not take {what} yet"),
+                at,
+            },
+            _ => Refusal {
+                code: OVER_LIMIT,
+                what: self.text(),
+                at,
+            },
         }
     }
 
@@ -148,7 +175,7 @@ const fn accurate(error: f64, low: f64) -> Template {
 }
 
 /// The form of a node in the stream form: `tile` or `scalar`, or why it is not taken.
-fn shape(
+pub(crate) fn shape(
     ir: &KernelIR,
     node: NodeId,
     of: &mut Vec<Option<&'static str>>,
@@ -195,7 +222,7 @@ fn shape(
 }
 
 /// Builds the vector-unit functions of a kernel.
-struct Compiler<'k> {
+pub(crate) struct Compiler<'k> {
     ir: &'k KernelIR,
     shapes: Vec<Option<&'static str>>,
     scalars: Vec<Scalar>,
@@ -205,7 +232,29 @@ struct Compiler<'k> {
     products: Vec<NodeId>,
 }
 
-impl Compiler<'_> {
+impl<'k> Compiler<'k> {
+    /// A compiler of `ir`'s chains, the forms of its nodes `shapes` and its tile
+    /// products `products` known.
+    pub(crate) fn new(
+        ir: &'k KernelIR,
+        shapes: Vec<Option<&'static str>>,
+        products: Vec<NodeId>,
+    ) -> Compiler<'k> {
+        Compiler {
+            ir,
+            shapes,
+            scalars: Vec::new(),
+            count: 0,
+            templates: Vec::new(),
+            products,
+        }
+    }
+
+    /// The templates chosen so far, in order.
+    pub(crate) fn templates(&self) -> &[(String, String)] {
+        &self.templates
+    }
+
     fn plan(&self, message: String, node: NodeId) -> ChainError {
         let line = self.ir.arena.get(node.0).and_then(|n| n.line.clone());
         ChainError::Plan(message, line)
@@ -226,7 +275,7 @@ impl Compiler<'_> {
 
     /// The Chain computing `root`; a chain reading more blocks than the register slots
     /// runs as stages (`Chain.prev`), its first operand of `root` computed first.
-    fn chain(&mut self, root: NodeId) -> Result<Chain, ChainError> {
+    pub(crate) fn chain(&mut self, root: NodeId) -> Result<Chain, ChainError> {
         let error = match self.single(root, None) {
             Ok(chain) => return Ok(chain),
             Err(e) if e.slots() => e,
@@ -553,96 +602,6 @@ fn compare_kind(text: &str) -> Result<&'static str, ChainError> {
         .into_iter()
         .find(|k| *k == text)
         .ok_or_else(|| ChainError::NotPorted(format!("the comparison {text}")))
-}
-
-/// The tile products of a stream kernel (today's `lower.products_of`), each refused
-/// unless the unpack can feed it: both operands a 32 x 32 tile read from a buffer.
-pub fn products_of(
-    ir: &KernelIR,
-    nodes: &[NodeId],
-    shapes: &mut Vec<Option<&'static str>>,
-) -> Result<Vec<NodeId>, ChainError> {
-    let mut out = Vec::new();
-    for &n in nodes {
-        let Some(node) = ir.arena.get(n.0) else {
-            continue;
-        };
-        if node.kind != "matmul" {
-            continue;
-        }
-        for (side, &arg) in ["left", "right"].iter().zip(&node.args) {
-            let kind = ir.arena.get(arg.0).map_or("", |a| a.kind.as_str());
-            if kind != "load" && kind != "resident" {
-                let made = if kind == "matmul" {
-                    "a product, its result in Dst".to_string()
-                } else {
-                    format!("a {kind}, computed on the vector unit")
-                };
-                return Err(ChainError::Plan(
-                    format!(
-                        "{}: a product after vector code: the {side} operand of `@` is {made}, and the matrix unit reads its operands unpacked from a buffer into SrcA and SrcB; give that value to a second body (pack, then unpack)",
-                        ir.name
-                    ),
-                    node.line.clone(),
-                ));
-            }
-            if shape(ir, arg, shapes)? != "tile" {
-                return Err(ChainError::Plan(
-                    format!(
-                        "{}: the unpack feeds a product one 32 x 32 tile a side (x.tiles[t]); the {side} operand of `@` is a row block",
-                        ir.name
-                    ),
-                    node.line.clone(),
-                ));
-            }
-        }
-        out.push(n);
-    }
-    Ok(out)
-}
-
-/// The Chain of each store of a stream kernel (today's `_stream_chains`): one compiler,
-/// so one record of the templates, which every chain carries whole.
-pub fn stream_chains(ir: &KernelIR) -> Result<Vec<Chain>, ChainError> {
-    let mut shapes = vec![None; ir.arena.len()];
-    let nodes = ir.nodes();
-    let products = products_of(ir, &nodes, &mut shapes)?;
-    for &n in &nodes {
-        shape(ir, n, &mut shapes)?;
-    }
-    let mut compiler = Compiler {
-        ir,
-        shapes,
-        scalars: Vec::new(),
-        count: 0,
-        templates: Vec::new(),
-        products,
-    };
-    let mut chains = Vec::new();
-    for store in &ir.stores {
-        chains.push(compiler.chain(store.value)?);
-    }
-    for chain in &mut chains {
-        let mut stage = Some(chain);
-        while let Some(c) = stage {
-            c.templates = compiler.templates.clone();
-            stage = c.prev.as_deref_mut();
-        }
-    }
-    Ok(chains)
-}
-
-/// The Chain of a stream kernel's one store (today's `lower.stream_chain`).
-pub fn stream_chain(ir: &KernelIR) -> Result<Chain, ChainError> {
-    if ir.stores.len() != 1 {
-        return Err(ChainError::Plan(
-            format!("{}: the unit program takes one store", ir.name),
-            None,
-        ));
-    }
-    stream_chains(ir)?
-        .pop()
-        .ok_or_else(|| ChainError::NotPorted("a kernel of no store".into()))
 }
 
 #[cfg(test)]
