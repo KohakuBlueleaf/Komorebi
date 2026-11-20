@@ -11,6 +11,9 @@
 //! prints the program structure. Both take a `.kom` (checked, as `komo check` does) or a
 //! `.komc` (read, validated, derived again and verified: a refusal is
 //! `file.komc: byte N: code: text`).
+//!
+//! `komo run <file> <script>` runs a run script (docs/ir/run-scripts.md) on the
+//! interpreter and prints its report: each invocation's end, and each tensor it reads.
 
 use std::process::ExitCode;
 
@@ -19,7 +22,8 @@ const USAGE: &str = "usage: komo fmt [--check] <file.kom>
        komo check <file.kom>
        komo compile <file.kom> [-o <file.komc>]
        komo hashes <file.kom|file.komc>
-       komo print <file.kom|file.komc>";
+       komo print <file.kom|file.komc>
+       komo run <file.kom|file.komc> <script>";
 
 fn main() -> ExitCode {
     komorebi_ir::deep::on_deep_stack(run)
@@ -42,6 +46,7 @@ fn run() -> ExitCode {
             println!("full     {}", komorebi_ir::bytecode::hex(&h.full));
         }),
         ["print", file] => with_module(file, |m| print!("{}", komorebi_ir::program::print(m))),
+        ["run", file, script] => run_script(file, script),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -126,6 +131,34 @@ fn compile(file: &str, out: Option<&str>) -> ExitCode {
             eprintln!("{out}: {error}");
             ExitCode::from(2)
         }
+    }
+}
+
+fn run_script(file: &str, script: &str) -> ExitCode {
+    let text = match read(script) {
+        Ok(text) => text,
+        Err(code) => return code,
+    };
+    let script_read = match komorebi_ir::api::script::parse(&text) {
+        Ok(s) => s,
+        Err(error) => {
+            eprintln!("{script}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let mut failed = None;
+    let code = with_module(file, |m| {
+        match komorebi_ir::api::script::run(m, &script_read) {
+            Ok(report) => print!("{}", report.print()),
+            Err(error) => failed = Some(error),
+        }
+    });
+    match failed {
+        Some(error) => {
+            eprintln!("{script}: {error}");
+            ExitCode::from(2)
+        }
+        None => code,
     }
 }
 

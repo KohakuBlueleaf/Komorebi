@@ -1,0 +1,6 @@
+# T1 on a group of 1: five tiles of x, each element of tile i is i + 1, scaled by 2.
+options workers 8
+tensor x bf16 160 32 fill tile+1
+tensor y bf16 160 32
+invoke Scale.run x y 0:u32 5:u32 2.0:f32 on 0 1
+read y

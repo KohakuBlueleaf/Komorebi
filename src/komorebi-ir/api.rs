@@ -1,6 +1,8 @@
 //! The core's entry points. Each runs its work on the stack the depth limit needs
 //! (`crate::deep`), whatever thread calls it.
 
+pub mod script;
+
 use crate::bytecode::Refusal;
 use crate::check::{check_module, codes, Checked};
 use crate::deep::on_deep_stack;

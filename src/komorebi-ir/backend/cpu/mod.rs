@@ -5,6 +5,7 @@
 //! How it computes a format is its own document (`docs/ir/backends.md`); nothing here
 //! claims a precision.
 
+pub mod build;
 pub mod emit;
 
 use crate::bytecode::hash::{hashes, hex};
@@ -21,6 +22,7 @@ pub const FRAMEWORK: &[(&str, &str)] = &[
     ("komo_cpu.h", include_str!("framework/komo_cpu.h")),
     ("komo_cpu.hpp", include_str!("framework/komo_cpu.hpp")),
     ("pool.cpp", include_str!("framework/pool.cpp")),
+    ("driver.cpp", include_str!("framework/driver.cpp")),
 ];
 
 /// The emitted source's file name in the output.
@@ -28,6 +30,12 @@ pub const SOURCE: &str = "module.cpp";
 
 /// The shared library the build makes.
 pub const LIBRARY: &str = "module.so";
+
+/// The driver the build makes: it runs a run script on the module.
+pub const DRIVER: &str = "driver";
+
+/// The compiler's flags, before the files.
+const FLAGS: &[&str] = &["-std=c++17", "-O2", "-fPIC", "-pthread", "-I."];
 
 /// The CPU backend.
 pub struct Cpu;
@@ -107,25 +115,19 @@ impl Backend for Cpu {
             key: CacheKey::of(program, self.name(), &self.version(), target),
             files,
             entries,
-            build: vec![Step {
-                program: "c++".to_string(),
-                args: [
-                    "-std=c++17",
-                    "-O2",
-                    "-fPIC",
-                    "-pthread",
-                    "-shared",
-                    "-I.",
-                    SOURCE,
-                    "pool.cpp",
-                    "-o",
-                    LIBRARY,
-                ]
-                .iter()
-                .map(|a| (*a).to_string())
-                .collect(),
-            }],
+            build: vec![
+                compiler_step(&["-shared", SOURCE, "pool.cpp", "-o", LIBRARY]),
+                compiler_step(&[SOURCE, "pool.cpp", "driver.cpp", "-o", DRIVER]),
+            ],
         })
+    }
+}
+
+/// A step of the C++ compiler (`c++`: the build runs `$CXX` in its place when set).
+fn compiler_step(rest: &[&str]) -> Step {
+    Step {
+        program: "c++".to_string(),
+        args: FLAGS.iter().chain(rest).map(|a| (*a).to_string()).collect(),
     }
 }
 

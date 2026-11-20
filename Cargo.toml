@@ -54,6 +54,10 @@ path = "tests/ir/bytecode.rs"
 name = "backend"
 path = "tests/ir/backend.rs"
 
+[[test]]
+name = "parity"
+path = "tests/ir/parity.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

@@ -159,6 +159,7 @@ nav:
       - ir/operations.md
       - ir/bytecode.md
       - ir/backends.md
+      - ir/run-scripts.md
   - Measured: measured.md
   - Releases:
       - releases/0.4.0.md

@@ -378,7 +378,7 @@ fn body_text(s: &mut String, body: &Body, place: In) {
                     Op::Return(Some(x)) => format!("return {};", val(x)),
                     Op::Return(None) => "return Status::ok();".to_string(),
                     Op::Tiles { tensor, first, n } => format!(
-                        "const View {d} = tiles({}, {}, {});",
+                        "KOMO_LET(View, {d}, tiles({}, {}, {}, TILE));",
                         val(tensor),
                         val(first),
                         val(n)

@@ -32,6 +32,23 @@ namespace komo_cpu {
         out_of_range = 9,
     };
 
+    // A failure's name, as a control program writes it.
+    inline const char* failure_name(u32 number) {
+        static const char* const names[] = {
+            "view_end",
+            "empty_state",
+            "send_refused",
+            "capacity",
+            "given_up",
+            "dependency",
+            "not_a_peer",
+            "over_bound",
+            "divide_by_zero",
+            "out_of_range",
+        };
+        return number < 10 ? names[number] : "unknown";
+    }
+
     // How a worker's part of an invocation ended: completed, failed by name, or not a
     // program (with what).
     struct Status {
@@ -211,16 +228,26 @@ namespace komo_cpu {
 
     // ---- Views, streams, sinks ----
 
-    // Tiles `first` to `first + n - 1` of a tensor, row of tiles after row of tiles;
-    // a number past the tensor fails (`view_end`) only when it is read or written.
+    // Tiles `first` to `first + n - 1` of a tensor, row of tiles after row of tiles.
     struct View {
         const komo_tensor* tensor;
         u64 first;
         u64 n;
     };
 
-    inline View tiles(const komo_tensor& t, u64 first, u64 n) {
-        return View{&t, first, n};
+    inline u64 tile_count(const komo_tensor& t, TileShape s) {
+        u64 grid_rows = (t.rows + s.rows - 1) / s.rows;
+        u64 grid_cols = (t.cols + s.cols - 1) / s.cols;
+        return grid_rows * grid_cols;
+    }
+
+    // The view `t.tiles(first, n)`; one past the tensor's tiles fails (`view_end`).
+    inline Result<View> tiles(const komo_tensor& t, u64 first, u64 n, TileShape s) {
+        View v{&t, first, n};
+        if (first > tile_count(t, s) || n > tile_count(t, s) - first) {
+            return Result<View>{Status::fail(Failure::view_end), v};
+        }
+        return ok(v);
     }
 
     // This worker's part of a view: the same rule on every backend (the parts as even
@@ -234,12 +261,6 @@ namespace komo_cpu {
         u64 first = rank * base + (rank < extra ? rank : extra);
         u64 n = base + (rank < extra ? 1 : 0);
         return ok(View{v.tensor, v.first + first, n});
-    }
-
-    inline u64 tile_count(const komo_tensor& t, TileShape s) {
-        u64 grid_rows = (t.rows + s.rows - 1) / s.rows;
-        u64 grid_cols = (t.cols + s.cols - 1) / s.cols;
-        return grid_rows * grid_cols;
     }
 
     // Each element of tile `number` of `t`, with its place in the tensor; one past

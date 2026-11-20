@@ -36,8 +36,19 @@ At this stage it emits what the first lesson uses: a handler on a group over ten
 views of tiles, a partition by rank, streams and sinks of blocks of one tile, and functions on
 tiles. Everything else is refused with `K964`, by name.
 
-The build runs `$CXX` (else `c++`). The tests that build an output fail without a compiler;
-`KOMO_IR_NO_CXX=1` skips them.
+The output builds into `module.so`, the module behind a C interface (`komo_cpu.h`), and `driver`,
+which runs a [run script](run-scripts.md) on the module and prints the same report as
+`komo run`. The build runs `$CXX` (else `c++`) and keeps its results in a cache of two levels:
+
+- the sources, under the output's key;
+- what the compiler made, under that key, the compiler's `--version` line and its flags.
+
+A different compiler therefore rebuilds only the second level. The cache is `KOMO_IR_CACHE`,
+else `$XDG_CACHE_HOME/komorebi-ir`, else `~/.cache/komorebi-ir`.
+
+The tests that build an output fail without a compiler; `KOMO_IR_NO_CXX=1` skips them. The parity
+test runs every script in `tests/ir/parity/` on the interpreter and on the driver, and compares the
+two reports by the rules of [run scripts](run-scripts.md#between-backends).
 
 ### How it computes
 

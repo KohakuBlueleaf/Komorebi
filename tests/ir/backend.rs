@@ -379,27 +379,11 @@ fn the_cpu_output_of_the_first_lesson_builds() {
     if no_cxx() {
         return;
     }
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cpu-{}", out.key.hex()));
-    std::fs::create_dir_all(&dir).expect("the build directory");
-    for (name, bytes) in &out.files {
-        std::fs::write(dir.join(name), bytes).expect("written");
-    }
-    for step in &out.build {
-        let program = if step.program == "c++" {
-            std::env::var("CXX").unwrap_or_else(|_| "c++".into())
-        } else {
-            step.program.clone()
-        };
-        let run = std::process::Command::new(&program)
-            .args(&step.args)
-            .current_dir(&dir)
-            .output()
-            .unwrap_or_else(|e| panic!("{program}: {e} (KOMO_IR_NO_CXX=1 skips this)"));
-        assert!(
-            run.status.success(),
-            "{program}: {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
-    }
-    assert!(dir.join("module.so").is_file());
+    let cache = Path::new(env!("CARGO_TARGET_TMPDIR")).join("komo-ir-cache");
+    let built = komorebi_ir::backend::cpu::build::build(&out, &cache)
+        .unwrap_or_else(|e| panic!("{e} (KOMO_IR_NO_CXX=1 skips this)"));
+    assert!(built.library().is_file());
+    assert!(built.driver().is_file());
+    let again = komorebi_ir::backend::cpu::build::build(&out, &cache).expect("found built");
+    assert_eq!(built, again, "built once, then found");
 }
