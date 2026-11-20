@@ -12,7 +12,7 @@ use komorebi_ir::backend::{
     Refusal, Statement, Target,
 };
 use komorebi_ir::backend::{
-    Limit, FORMAT_NOT_COMPUTED, NOT_PROVIDED, NO_IMPLEMENTATION, OVER_LIMIT,
+    Limit, FORMAT_NOT_COMPUTED, NOT_BUILT, NOT_PROVIDED, NO_IMPLEMENTATION, OVER_LIMIT,
 };
 use komorebi_ir::program::body::Body;
 use komorebi_ir::program::notes::Anchor;
@@ -316,4 +316,90 @@ fn the_walk_gives_every_instruction_one_event_and_nests() {
         }
     }
     assert!(seen > 500, "only {seen} instructions walked");
+}
+
+// ---- The CPU backend ----
+
+/// Whether the tests that run a C++ compiler are skipped: only when `KOMO_IR_NO_CXX=1`
+/// says so; without it a missing compiler fails them.
+fn no_cxx() -> bool {
+    std::env::var("KOMO_IR_NO_CXX").is_ok_and(|v| v == "1")
+}
+
+#[test]
+fn the_cpu_backend_refuses_by_name_what_it_does_not_emit_yet() {
+    let cpu = komorebi_ir::backend::cpu::Cpu;
+    let mut emitted = Vec::new();
+    for (name, text) in modules("lessons") {
+        let module = built(&text);
+        let refusals = cpu.check(&module, &target());
+        if refusals.is_empty() {
+            emitted.push(name);
+            continue;
+        }
+        for r in &refusals {
+            assert!(r.at.is_some(), "{name}: {r:?}");
+            assert!(
+                [
+                    NOT_PROVIDED,
+                    NO_IMPLEMENTATION,
+                    OVER_LIMIT,
+                    FORMAT_NOT_COMPUTED,
+                    NOT_BUILT
+                ]
+                .contains(&r.code),
+                "{name}: {r:?}"
+            );
+        }
+        assert!(cpu.compile(&module, &target()).is_err(), "{name}");
+    }
+    assert_eq!(emitted, ["t01_scale"]);
+}
+
+#[test]
+fn the_cpu_output_of_the_first_lesson_builds() {
+    let cpu = komorebi_ir::backend::cpu::Cpu;
+    let t01 = lesson("t01_scale");
+    let out = cpu.compile(&t01, &target()).expect("t01 is emitted");
+    assert_eq!(out, cpu.compile(&t01, &target()).expect("again"), "pure");
+    assert_eq!(out.entries.len(), 1);
+    assert_eq!(out.entries[0].name, "Scale.run");
+    let source = out
+        .files
+        .iter()
+        .find(|(n, _)| n == "module.cpp")
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+        .expect("the source");
+    for i in 0..t01.programs[0].handlers[0].body.insts.len() {
+        assert!(
+            source.contains(&format!("// i{i} ")),
+            "i{i} has its statement"
+        );
+    }
+    if no_cxx() {
+        return;
+    }
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cpu-{}", out.key.hex()));
+    std::fs::create_dir_all(&dir).expect("the build directory");
+    for (name, bytes) in &out.files {
+        std::fs::write(dir.join(name), bytes).expect("written");
+    }
+    for step in &out.build {
+        let program = if step.program == "c++" {
+            std::env::var("CXX").unwrap_or_else(|_| "c++".into())
+        } else {
+            step.program.clone()
+        };
+        let run = std::process::Command::new(&program)
+            .args(&step.args)
+            .current_dir(&dir)
+            .output()
+            .unwrap_or_else(|e| panic!("{program}: {e} (KOMO_IR_NO_CXX=1 skips this)"));
+        assert!(
+            run.status.success(),
+            "{program}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    assert!(dir.join("module.so").is_file());
 }

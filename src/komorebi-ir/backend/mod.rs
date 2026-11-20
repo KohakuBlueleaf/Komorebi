@@ -14,6 +14,7 @@
 //! a position or a name of the notes' positions (P): the cache key covers S and H, so
 //! two files with one key must give one output.
 
+pub mod cpu;
 pub mod emit;
 
 use std::collections::BTreeSet;
