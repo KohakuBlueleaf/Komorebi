@@ -1,6 +1,7 @@
 """The card check's shared open on the mock: a child that dies before its BUILT lines
-is named by its return code and stderr, and each attempt keeps its own log; the
-tensix lines' card and dispatcher; the rule that judges a result's last JSON line."""
+is named by its return code and stderr, and each attempt keeps its own log; the tensix
+lines' card and dispatcher; the rule that judges a result's last JSON line; the stamp
+says if its prebuild saw a card, and the regression takes only one that saw none."""
 
 import json
 import re
@@ -102,3 +103,59 @@ def test_a_number_a_string_or_null_under_such_a_key_is_not_a_verdict():
 def test_keys_that_are_not_verdicts_and_a_result_without_one_are_not_read():
     assert judged({"count": 3, "rows": [{"wrong": 2}]}) is None
     assert judged({"ok": True}, code=1) == "exit 1"
+
+
+def whole_stamp(off_card):
+    """A stamp of this code with every line of the list and every shared open built."""
+    stamp = {"code": card_check.remembered.code_digest(), "off_card": off_card}
+    stamp["checks"], stamp["shared"] = {}, {}
+    for cards in card_check.SHAPES:
+        lines = [check.line for check in card_check.read_list(card_check.LIST, cards)]
+        stamp["checks"].update({line: 65536 for line in lines})
+        stamp["shared"][cards] = lines
+    return stamp
+
+
+def test_the_regression_takes_only_a_stamp_made_off_card(tmp_path):
+    path = card_check.stamp_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    for off_card, taken in ((True, True), (False, False), (None, False)):
+        stamp = whole_stamp(off_card)
+        if off_card is None:  # a stamp from before the rule: it does not say
+            del stamp["off_card"]
+        path.write_text(json.dumps(stamp))
+        assert card_check.fresh_off_card(tmp_path) is taken
+
+
+def test_a_device_node_or_a_driver_entry_means_a_card_is_seen(tmp_path):
+    dev, sys = tmp_path / "dev", tmp_path / "sys"
+    assert card_check.made_off_card(dev, sys)  # neither folder: no card
+    (sys / "class" / "tenstorrent").mkdir(parents=True)
+    dev.mkdir()
+    assert card_check.made_off_card(dev, sys)  # empty, as off_card.sh makes them
+    (sys / "class" / "tenstorrent" / "tenstorrent!0").mkdir()
+    assert not card_check.made_off_card(dev, sys)
+    (sys / "class" / "tenstorrent" / "tenstorrent!0").rmdir()
+    (dev / "0").write_text("")
+    assert not card_check.made_off_card(dev, sys)
+
+
+def test_the_prebuild_writes_what_it_saw_and_keeps_no_line_built_the_other_way(
+    monkeypatch, tmp_path
+):
+    path = card_check.stamp_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(whole_stamp(True)))
+    check = card_check.Check("1", "examples/a.py", ())
+    monkeypatch.setattr(card_check, "made_off_card", lambda: False)
+    monkeypatch.setattr(
+        card_check,
+        "prebuilt",
+        lambda checks, *_: [(check, "0", 4096, 0, 0.1, 0, "")],
+    )
+    monkeypatch.setattr(card_check, "shared_pass", lambda *_: (True, 0))
+    card_check.prebuild([check], tmp_path, tmp_path, 1, card_check.LIST)
+    stamp = json.loads(path.read_text())
+    assert stamp["off_card"] is False
+    assert stamp["checks"] == {check.line: 4096}
+    assert not card_check.fresh_off_card(tmp_path)

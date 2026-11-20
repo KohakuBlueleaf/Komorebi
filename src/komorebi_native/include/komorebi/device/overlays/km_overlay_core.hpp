@@ -677,7 +677,30 @@ namespace km {
 
         // Reads the parts the tile does not hold (the followers' once they are parked),
         // invalidates their cores' caches in one write, then gives each follower go.
+#if defined(ARCH_BLACKHOLE) && defined(COMPILE_FOR_BRISC)
+        __attribute__((noinline))  // one window a kernel, however many loads it has
+#endif
         bool load_tile(uint32_t control) {
+#if defined(ARCH_BLACKHOLE) && defined(COMPILE_FOR_BRISC)
+            // the branch predictor off (cfg0.DisBp) from before the first fetch to 33
+            // instructions after the load: with it on, a core can stall after a load
+            asm volatile("csrrsi zero, 0x7c0, 2" ::: "memory");
+            const bool loaded = load_tile_parts(control);
+            asm volatile(
+                "li t1, 16\n"
+                "1:\taddi t1, t1, -1\n\t"
+                "bnez t1, 1b\n\t"
+                "csrrci zero, 0x7c0, 2" ::
+                    : "t1", "memory"
+            );
+            return loaded;
+#else
+            return load_tile_parts(control);
+#endif
+        }
+
+        // load_tile's work, inside its window on Blackhole.
+        bool load_tile_parts(uint32_t control) {
             const bool mine = overlay_has_part(control, number_, kOverlayPartReader);
             const uint32_t members = overlay_members(control, number_);
             if (!mine && members == 0) {

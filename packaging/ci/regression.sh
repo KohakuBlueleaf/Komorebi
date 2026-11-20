@@ -2,8 +2,9 @@
 # The whole regression on the card machine (two P150 cards), from the repository's root:
 # a CPU lane and a card lane, a line a part with its seconds, the total; exit 1 on any
 # failure or on a total over LIMIT seconds. Usage: bash packaging/ci/regression.sh
-# The card list is prebuilt first when its stamp is stale (after a code change); a warm
-# prebuild counts in the total, a cold build's (it compiled kernels) does not.
+# The card list is prebuilt first when its stamp is stale (after a code change, or not
+# made off card); a warm prebuild counts in the total, a cold build's (it compiled
+# kernels) does not.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT" || exit 2
@@ -37,21 +38,10 @@ part() {
     return "$code"
 }
 
-# The card list's stamp: fresh when every line was prebuilt with this code, and the
-# shared opens of both shapes were built for this list.
-stale=$("$PY" - <<'EOF'
-from komorebi.tools import card_check as tool
-stamp = tool.read_stamp(".")
-for cards in ("1", "2", "tensix"):
-    lines = [c.line for c in tool.read_list(tool.LIST, cards)]
-    if any(l not in stamp.get("checks", {}) for l in lines):
-        print("stale")
-        break
-    if stamp.get("shared", {}).get(cards) != lines:
-        print("stale")
-        break
-EOF
-)
+# The card list's stamp: fresh when its prebuild ran off card (it says so itself), every
+# line was prebuilt with this code, and the shared opens were built for this list.
+stale=$("$PY" -c 'from komorebi.tools import card_check as tool
+print("" if tool.fresh_off_card(".") else "stale")')
 started=$(now)
 if [ -n "$stale" ]; then
     part prebuild $OFF "$PY" -m komorebi.tools.card_check --prebuild --jobs "$JOBS" ||

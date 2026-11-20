@@ -168,14 +168,16 @@ product's words are checked against float64 of its input as the card left it: bf
 8.2e-3 to 8.5e-3, bfp4_b 0.113 to 0.116, the same as a command a step.
 
 ```
-python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 101120
+python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 101376
 python experiments/language/bounds/decode_cost.py --cards 0 --part terms --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
 python experiments/language/bounds/decode_cost.py --cards 0,1 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 204800
 python experiments/language/bounds/bounds.py --cards 0 --format bfp4_b --rows 1 --repeat 5 --kernel-bytes 57344 --chunk 4
 ```
 
 The two-card row below ran at a kernel buffer of 180,224 B. Since then the two-card
-kernels take 184,128 B, so the command gives 204,800.
+kernels take 184,128 B, so the command gives 204,800. The chain's 101,376 B is the
+smallest buffer its kernels fit, to the next 64 B, at 54aaa1b7 (the reader's window
+around an overlay load on Blackhole): they take 101,328 B there.
 
 Main at 8ccdf6d9 with these scripts, 2026-11-17, p150a cards at AICLK 1,350 MHz,
 dispatcher microseconds, median of 10:
@@ -300,11 +302,13 @@ o reads 128) and gate's and up's outputs (672) cannot be gathered. o reads a and
 reads m instead.
 
 ```
-python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213504
+python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213632
 ```
 
-The kernel buffer is the one the session names on main bdd6b963 (2026-11-18). The
-class's kernels took 187,344 B in the run below and take 203,904 B there (mock builds
+The kernel buffer is the one the session named on main bdd6b963 (2026-11-18), raised
+to the smallest buffer the class's kernels fit, to the next 64 B, at 54aaa1b7 (the
+reader's window around an overlay load on Blackhole, where they take 213,600 B). The
+class's kernels took 187,344 B in the run below and 203,904 B at bdd6b963 (mock builds
 of the class, empty caches): +2,352 B by 4014bcac (pages of k tiles, the island page
 runs), +6,688 B in the gated read (4e438a49 and 1316d3a3: BRISC +3,068, NCRISC
 +3,608), +5,424 B by cc9552c8 (the shared arrival and the shared read pair among

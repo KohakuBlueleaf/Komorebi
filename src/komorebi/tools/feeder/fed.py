@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi.device import chips
+from komorebi.device import chips, mock
 from komorebi.program.several import compute_config
 from komorebi.session import kernels as kernel_module
 from komorebi.session import process
@@ -81,7 +81,7 @@ class Result:
     control: np.ndarray | None = None  # every core's control block, uint32 words
     lines: np.ndarray | None = None  # dynamic run: [workers, 4] status lines
     rows: np.ndarray | None = None  # the feeder's result rows, uint32
-    aiclk: int = 0  # the clock the chip reported (tt_aiclk), MHz
+    aiclk: int | None = 0  # the clock the chip reported (tt_aiclk), MHz; None: not read
 
 
 class Fed:
@@ -101,9 +101,13 @@ class Fed:
             self.noc.append(noc_x | noc_y << 16)
         self.worker_set = core_set(self.logical[: self.workers])
         self.feeder_set = core_set(self.logical[self.workers :])
-        self.aiclk = aiclk_mhz(session.device)
-        # the ticks a microsecond: what cycles become time by, and limits cycles by
-        self.mhz = chips.tick_mhz(session.device.arch(), self.aiclk)
+        if mock.active():  # a prebuild's stand-in card: no card's clock to read
+            log("aiclk not read: the prebuild's stand-in card")
+            self.aiclk, self.mhz = None, mock.mhz(session.device.arch())
+        else:
+            self.aiclk = aiclk_mhz(session.device)
+            # the ticks a microsecond: what cycles become time by, and limits cycles by
+            self.mhz = chips.tick_mhz(session.device.arch(), self.aiclk)
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""
