@@ -515,11 +515,16 @@ class LinkPlanMixin:
 
     def _table_of(self, session):
         """The island table in the L1 of every core of `session`'s card, each core its
-        own island's (graph.table): KM_ISLAND_TABLE, sized by the island count."""
+        own island's (graph.table): KM_ISLAND_TABLE, sized by the island count and
+        the most ranks an island (km::team_meet's words, a rank each)."""
         columns, rows = session.grid
         count = len(self.graph.islands)
-        # the entries (2 words an island), far tiles (2), counts (1), children (1)
-        words = np.zeros((columns * rows, -(-6 * count // 16) * 16), np.uint32)
+        ranks = max(self.graph.count(island) for island in range(count))
+        # the entries (2 words an island), far tiles (2), counts (1), children (1),
+        # the meeting words (their number, then one a rank)
+        size = 6 * count + 1 + ranks
+        words = np.zeros((columns * rows, -(-size // 16) * 16), np.uint32)
+        words[:, 6 * count] = ranks
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)

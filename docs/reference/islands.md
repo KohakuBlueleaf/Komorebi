@@ -1672,8 +1672,14 @@ two releases in a row always differ) into a word of its own control block, then 
 bytes to the same word on the island's other cores, one rectangle each for the rest of
 its row, the other rows of the grid's first panel and the second panel; each rank
 waits for the marker. The reduce's go before the adds is the same release. A team that
-is not a whole island, or an island the host gave no rectangles, keeps an atomic a
-rank. And `IslandRun.send` (the wait sends first) hands every island's lines to one
+is not a whole island, or an island the host gave no rectangles, gets the marker by a
+write a rank. A meeting is a marker too: each rank writes the meeting's marker into its
+own word of the leader's meeting words (after the island table's children, a word a
+rank of the largest island), and the leader waits until every word holds it. A count
+of meetings, as before, kept the meetings of a collective given up at its deadline
+before its leader met, and every later meeting of that leader passed one early: a
+reduce then missed a rank's part, now and then, for the rest of the load. And
+`IslandRun.send` (the wait sends first) hands every island's lines to one
 native call that writes every dispatcher's ring and read count, then one fence.
 
 Measured again from a kernel (`account.py --cards 0,1 --sizes 2,144,272 --calls

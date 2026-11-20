@@ -198,6 +198,18 @@ namespace km {
 #endif
         }
 
+        // The meeting words' L1 address on this island's cores (km::team_meet), after
+        // the table's children: a word, how many follow, then a word a rank of a team;
+        // 0: none (one island).
+        uint32_t meetings() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            return table != 0 ? table + 4 * 6 * count() : 0;
+#endif
+        }
+
         // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 core | CPU << 8 | far island
         // << 16 | links << 24, word 1 the far tile | the far island's port back << 24.
         uint32_t port_link(uint32_t port, uint32_t l, uint32_t word) const {

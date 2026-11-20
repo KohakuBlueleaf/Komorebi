@@ -2879,11 +2879,13 @@ namespace km {
         uint32_t index;
     };
 
-    // The releases so far in this command: every call's markers follow the last call's,
-    // so a second collective in one command never meets the first's marker.
+    // The releases and meetings so far in this command: every call's markers follow
+    // the last call's, so a second collective in one command never meets the first's
+    // marker.
     struct TeamGoes {
         uint32_t sequence;
         uint32_t goes;
+        uint32_t meets;
     };
 
 #if defined(KM_OVERLAY_PART)
@@ -2899,6 +2901,22 @@ namespace km {
         return team_goes;
     }
 #endif
+
+    // This CPU's releases and meetings in `command` (none yet as it begins).
+    inline TeamGoes& team_now(const km_command_t& command) {
+        TeamGoes& now = team_goes_now();
+        if (now.sequence != command.sequence) {
+            now = {command.sequence, 0, 0};
+        }
+        return now;
+    }
+
+    // The marker of `command`'s release or meeting `count`: its sequence, and count %
+    // 7 + 1 (two in a row differ). A word another command wrote never holds it (one
+    // 2^29 commands before excepted).
+    inline uint32_t team_marker(const km_command_t& command, uint32_t count) {
+        return command.sequence << 3 | (count % 7 + 1);
+    }
 
     inline Team team_of(const Islands& view, const km_command_t& command, uint32_t me) {
         const uint32_t here = view.here();
@@ -2950,16 +2968,57 @@ namespace km {
         );
     }
 
-    // The team meets: each rank tells the leader, the leader waits for all. False: gave
-    // up.
+    // This CPU's writes flushed (bounded). False: gave up.
     template <typename Kernel>
-    inline bool team_meet(
+    __attribute__((noinline)) bool team_wrote(
+        const Kernel& core, const km_command_t& command
+    ) {
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            core.args().wait_limit
+        );
+        return code == kGaveNone || coll_gave_up(core, command, code);
+    }
+
+    // The team meets: each rank writes the meeting's marker into its word of the
+    // leader's meeting words (Islands::meetings, word t.index), the leader waits until
+    // every word holds it. A marker, not a count: a collective given up before its
+    // leader met leaves words no later meeting's marker equals. False: gave up.
+    template <typename Kernel>
+    __attribute__((noinline)) bool team_meet(
         const Kernel& core, const km_command_t& command, const Team& t
     ) {
-        if (t.index != 0) {
-            return team_add(core, command, t.leader);
+        const uint32_t marker = team_marker(command, team_now(command).meets++);
+        if (t.size < 2) {
+            return true;
         }
-        return team_met(core, command, t.size - 1);
+        const uint32_t words = islands_at(core.args().control).meetings();
+        if (words == 0 || t.size > l1(words)[0]) {
+            return coll_gave_up(core, command, kGaveBadItem);
+        }
+        if (t.index != 0) {
+            noc_inline_dw_write(
+                core.core_noc(core.core_of(t.leader), words + 4 + 4 * t.index), marker
+            );
+            return team_wrote(core, command);
+        }
+        const volatile tt_l1_ptr uint32_t* met = l1(words + 4);
+        uint32_t k = 1;  // the ranks before it have met (a word keeps its marker)
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                while (k < t.size && met[k] == marker) {
+                    k++;
+                }
+                return k == t.size;
+            },
+            core.args().wait_limit
+        );
+        return code == kGaveNone || coll_gave_up(core, command, code);
     }
 
     // Word KM_PORT_GO of this core's KM_PORT_LEFT slot (L1, the control block).
@@ -3030,25 +3089,15 @@ namespace km {
         return code == kGaveNone || coll_gave_up(core, command, code);
     }
 
-    // The leader lets the team go: a whole island led from its first core, a marker
-    // multicast a rectangle (KM_ISLAND_GO) each rank waits for; else an atomic a rank.
+    // The leader lets the team go: the release's marker into each rank's go word, which
+    // the rank waits for; a whole island led from its first core by a multicast a
+    // rectangle (KM_ISLAND_GO), else a write a rank. A marker, not a count (team_meet).
     template <typename Kernel>
     inline bool team_go(const Kernel& core, const km_command_t& command, Team& t) {
         const Islands view = islands_at(core.args().control);
         const uint32_t layout = view.go();
-        TeamGoes& now = team_goes_now();
-        if (now.sequence != command.sequence) {
-            now = {command.sequence, 0};
-        }
-        const uint32_t goes = now.goes++ % 7 + 1;  // 1 to 7: two in a row differ
-        if (
-            (layout & KM_ISLAND_GO_ON) != 0 && t.size > 1 && t.size == view.ranks() &&
-            core.core_of(t.leader) == view.base()
-        ) {
-            const uint32_t marker = command.sequence << 3 | goes;
-            if (t.index == 0) {
-                return team_cast(core, command, layout, marker);
-            }
+        const uint32_t marker = team_marker(command, team_now(command).goes++);
+        if (t.index != 0) {
             const volatile tt_l1_ptr uint32_t* word = l1(team_go_word(core));
             const uint32_t code = core.poll_at(
                 kWhereAsk,
@@ -3060,13 +3109,18 @@ namespace km {
             );
             return code == kGaveNone || coll_gave_up(core, command, code);
         }
-        if (t.index != 0) {
-            return team_met(core, command, 1);
+        if (
+            (layout & KM_ISLAND_GO_ON) != 0 && t.size > 1 && t.size == view.ranks() &&
+            core.core_of(t.leader) == view.base()
+        ) {
+            return team_cast(core, command, layout, marker);
         }
         for (uint32_t k = 1; k < t.size; k++) {
-            team_add(core, command, t.leader + k, false);
+            noc_inline_dw_write(
+                core.core_noc(core.core_of(t.leader + k), team_go_word(core)), marker
+            );
         }
-        return coll_flushed(core, command);
+        return team_wrote(core, command);
     }
 
     // What km::all_reduce adds: 32-bit integers (modulo 2^32), float32, or two
