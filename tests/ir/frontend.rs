@@ -112,10 +112,12 @@ fn made_given(
                 let n = numbers(rest);
                 given.map.push(Mapped {
                     text_first: n[0],
-                    text_last: n[1],
-                    file: n[2],
-                    first: n[3],
-                    last: n[4],
+                    text_first_col: n[1],
+                    text_last: n[2],
+                    text_last_col: n[3],
+                    file: n[4],
+                    first: n[5],
+                    last: n[6],
                 });
             }
             "RENAME" => {
@@ -125,10 +127,18 @@ fn made_given(
             _ => panic!("a line of made.py: {line}"),
         }
     }
+    // the walk's raw text in the writer's layout, as `komorebi.dsl.ir.module` gives it
+    // (`api::origin::layout`, the binding's function); the layout is the writer's own
+    let (text, given) = origin::layout(text, &given).unwrap_or_else(|r| panic!("{r:?}"));
+    assert_eq!(
+        api::format(&text).as_ref(),
+        Ok(&text),
+        "{name}: the writer's layout"
+    );
     Made {
         folder: folder.expect("a FOLDER line"),
         printed,
-        text: text.to_string(),
+        text,
         given,
     }
 }
@@ -481,8 +491,11 @@ fn a_tile_functions_calls_keep_their_own_lines_as_todays_listing_names_them() {
     }
     // `spread` calls km.exp on a continuation line, in a call that itself spans two
     // lines, and in a helper it calls: today's listing names each call's own line
-    // (`caller_line`), and the module's origin places each call there.
+    // (`caller_line`), and the module's origin places each call there. In the writer's
+    // layout both calls are on one line of the text: placed by their columns.
     let made = made("lines", "lines_class", "Lines");
+    let line = "    return ((a + exp(b)) + exp(a)) + grown(a)";
+    assert!(made.text.lines().any(|l| l == line), "{}", made.text);
     let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
     let tensor = LoadTensor {
         pages: 768,

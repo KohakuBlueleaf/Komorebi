@@ -37,13 +37,13 @@ class Diagnostic(NamedTuple):
 
 class Origin(NamedTuple):
     """Where a frontend's text came from (docs/ir/frontends.md): its files; the lines
-    its places cover, ``(file, number, line as written)``; ranges of the text's lines,
-    each ``(text first, text last, file, first, last)``; and the renames of values and
-    parameters, ``(safe name, source name)``."""
+    its places cover, ``(file, number, line as written)``; ranges of the text, each
+    ``(first line, its column, last line, its column, file, first, last)``, columns of
+    characters from 1, both ends held; and the renames, ``(safe name, source name)``."""
 
     files: list[str]
     lines: list[tuple[int, int, str]]
-    map: list[tuple[int, int, int, int, int]]
+    map: list[tuple[int, int, int, int, int, int, int]]
     renames: list[tuple[str, str]] = []
 
 
@@ -85,6 +85,13 @@ def diagnostics(error: IrError) -> list[Diagnostic]:
 def format(source: str) -> str:
     """The canonical text of a module's text."""
     return _rs.format(source)
+
+
+def layout(source: str, origin: Origin) -> tuple[str, Origin]:
+    """A frontend's text in the canonical layout, its ``origin``'s ranges moved to the
+    lines of the text as returned; a refused origin raises."""
+    text, ranges = _rs.layout(source, _given(origin))
+    return text, Origin(*origin)._replace(map=ranges)
 
 
 def check(source: str, origin: Origin | None = None) -> list[Diagnostic]:
@@ -327,6 +334,7 @@ __all__ = [
     "emit",
     "format",
     "hashes",
+    "layout",
     "load",
     "requirements",
     "run",

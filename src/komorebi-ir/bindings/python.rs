@@ -45,24 +45,32 @@ type Row = (
 );
 
 /// What a frontend gives beside its text, as Python passes it: (files, lines, map,
-/// renames), each map range (text's first, text's last, file, first, last).
+/// renames), each map range (text's first line, its column, text's last line, its
+/// column, file, first, last).
 type GivenRow = (
     Vec<String>,
     Vec<(u32, u32, String)>,
-    Vec<(u32, u32, u32, u32, u32)>,
+    Vec<MapRow>,
     Vec<(String, String)>,
 );
+
+/// A map range as Python passes it.
+type MapRow = (u32, u32, u32, u32, u32, u32, u32);
 
 fn given((files, lines, map, renames): GivenRow) -> Given {
     let map = map
         .into_iter()
-        .map(|(text_first, text_last, file, first, last)| Mapped {
-            text_first,
-            text_last,
-            file,
-            first,
-            last,
-        })
+        .map(
+            |(text_first, text_first_col, text_last, text_last_col, file, first, last)| Mapped {
+                text_first,
+                text_first_col,
+                text_last,
+                text_last_col,
+                file,
+                first,
+                last,
+            },
+        )
         .collect();
     Given {
         files,
@@ -211,6 +219,32 @@ fn compile<'py>(
         Err(Refused::Text(rows)) => Err(error(
             py,
             "the module is refused",
+            rows.iter().map(|r| of_placed(&given, r)).collect(),
+        )),
+        Err(Refused::Origin(what)) => Err(origin_refused(py, &what)),
+    }
+}
+
+/// A frontend's text in the writer's layout, with its map carried to the lines of the
+/// text as returned (`api::origin::layout`): (text, map).
+#[pyfunction]
+fn layout(py: Python<'_>, source: &str, origin: GivenRow) -> PyResult<(String, Vec<MapRow>)> {
+    let given = given(origin);
+    match api::origin::layout(source, &given) {
+        Ok((text, laid)) => {
+            let map = laid
+                .map
+                .iter()
+                .map(|m| {
+                    let (a, b) = (m.start(), m.end());
+                    (a.0, a.1, b.0, b.1, m.file, m.first, m.last)
+                })
+                .collect();
+            Ok((text, map))
+        }
+        Err(Refused::Text(rows)) => Err(error(
+            py,
+            "the text is not a module",
             rows.iter().map(|r| of_placed(&given, r)).collect(),
         )),
         Err(Refused::Origin(what)) => Err(origin_refused(py, &what)),
@@ -635,6 +669,7 @@ fn load<'py>(
 fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("IrError", m.py().get_type::<IrError>())?;
     m.add_function(wrap_pyfunction!(format, m)?)?;
+    m.add_function(wrap_pyfunction!(layout, m)?)?;
     m.add_function(wrap_pyfunction!(check, m)?)?;
     m.add_function(wrap_pyfunction!(compile, m)?)?;
     m.add_function(wrap_pyfunction!(hashes, m)?)?;

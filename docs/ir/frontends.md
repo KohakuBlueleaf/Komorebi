@@ -21,16 +21,16 @@ link the folder into `~/.vscode/extensions/`).
 |---|---|
 | files | the frontend's source files, as it resolved them; a place names one by its index |
 | lines | the source lines its places cover: (file, line number from 1, the line as written), in (file, number) order, each once |
-| map | ranges of the text's lines, each with the place of the source it was printed for: (text's first line, text's last line, file, first line, last line) |
+| map | ranges of the text, each with the place of the source it was printed for: (text's first line, its column, text's last line, its column, file, first line, last line); columns count characters from 1, both ends held, and a range of whole lines runs from column 1 of its first to the end of its last |
 | renames | (the safe name the text writes, the source's name), for values and parameters |
 
-## From the text's lines to places
+## From the text's positions to places
 
-After the module is lowered, each anchored thing whose span starts on line L of the text takes the
-place of the **narrowest** range of the map that holds L. An anchor that no range holds has no place.
-The spans are then cleared: a frontend's module has an origin and no spans.
+After the module is lowered, each anchored thing whose span starts at line L, column C of the text
+takes the place of the **narrowest** range of the map that holds (L, C). An anchor that no range
+holds has no place. The spans are then cleared: a frontend's module has an origin and no spans.
 
-Two ranges are nested or apart. Two ranges over the same lines, or two that cross, are refused.
+Two ranges are nested or apart. Two ranges over the same text, or two that cross, are refused.
 
 A frontend therefore gives these ranges:
 - one range over a whole declaration, mapped to the declaration's line. It places the declaration,
@@ -39,13 +39,22 @@ A frontend therefore gives these ranges:
   statement's instructions.
 - for a compound statement, the range runs from its first line to its closing brace. It places the
   loop or the branch itself, and its inner statements have narrower ranges of their own.
-- for a call inside a statement that starts on a later source line than the statement, the call
-  on lines of its own, in parentheses, with a range mapped to the call's lines. It places that
-  call's instruction at the call's first line, the line today's tile trace names for the node a
-  call makes (`caller_line`: the call's frame, its first line when the call spans several).
+- for a call inside a statement that starts on a later source line than the statement, a range
+  over the call's own columns, mapped to the call's lines. It places that call's instruction at the
+  call's first line, the line today's tile trace names for the node a call makes (`caller_line`:
+  the call's frame, its first line when the call spans several), however many calls share its
+  line of the text.
 
-A diagnostic of the text is placed by the same rule, so a refusal names the source's line as well as
-the text's.
+A diagnostic of the text is placed by the same rule, at its start, so a refusal names the source's
+line as well as the text's.
+
+## The writer's layout
+
+The text a frontend hands over is in the writer's own layout, the one `komo fmt` gives.
+`komorebi_ir.layout(text, origin)` (`api::origin::layout`) lays a frontend's text out and carries
+its origin: each range starts where its first character went and ends where its last went. The
+layout moves only whitespace and commas, so the other characters are the same, in order, on both
+sides. A text where they are not is refused by name, not guessed.
 
 ## Names
 
@@ -58,9 +67,9 @@ name stays in P, which only the full hash covers.
 ## What is refused
 
 An origin is refused by what is wrong with it, before the module is used:
-- a range on line 0, or one whose first line is after its last;
+- a range at line or column 0, or one that starts after it ends;
 - a range in a file past the files;
-- two ranges over the same lines, or two that cross;
+- two ranges over the same text, or two that cross;
 - a safe name given twice, or one that names no value and no parameter;
 - whatever the module's own rules refuse of an origin (`K954` in [the byte-code program](bytecode.md)),
   such as a place on a line the lines do not hold.
@@ -73,10 +82,13 @@ first and last lines. A refused origin raises `IrError`, and its message says wh
 
 ## Komorebi's classes
 
-`komorebi.dsl.ir.module(cls, **make)` writes a class written as today's DSL writes it (a
+`komorebi.dsl.ir.built.module(cls, **make)` writes a class written as today's DSL writes it (a
 `km.Program` with `km.handler` methods) as an IR module. It reads the handlers with `ast`, as the
-class compiler does, and gives a `Made`: the text and `made.origin` for `komorebi_ir.compile`. It
-does not import `komorebi_ir`, and today's make does not call it.
+class compiler does, and gives a `Made`: the text in the writer's layout and `made.origin` for
+`komorebi_ir.compile`. The walk itself (`komorebi.dsl.ir.written`, all that `komorebi.dsl.ir`
+exports) does not import `komorebi_ir` and gives the text as it writes it; `built.module` lays it
+out with `komorebi_ir.layout`. `built` imports the walk, never the other way. Today's make calls
+neither.
 
 It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`), 2
 (`StepHandlers.sum`), 3 (`StepHandlers.add`), 4 (`Gate.gate`) and 5 (`Movement.read` and

@@ -105,16 +105,26 @@ class Text:
         return len(self.lines)
 
     def place(self, first, file, start, end):
-        """The lines from `first` to the last written: the source's `start` to `end`."""
+        """The lines from `first` to the last written, whole: the source's `start` to
+        `end`."""
+        last = len(self.lines)
+        self.span(
+            (first, 1), (last, max(len(self.lines[last - 1]), 1)), file, start, end
+        )
+
+    def span(self, at, to, file, start, end):
+        """The text from (line, column) `at` to `to`, both held: the source's `start`
+        to `end`."""
         if file not in self.files:
             self.files.append(file)
         index = self.files.index(file)
-        self.map.append((first, len(self.lines), index, start, end))
+        self.map.append((*at, *to, index, start, end))
 
 
-def module(cls, **make):
+def written(cls, **make):
     """The IR module of class `cls` made with `make` (a `km.Program`'s keywords): its
-    text and origin. Refuses, naming the line, what the IR cannot say yet."""
+    text as the walk writes it, and its origin. Refuses, naming the line, what the IR
+    cannot say yet. `komorebi.dsl.ir.built.module` gives it in the writer's layout."""
     tensors = given_tensors(cls, make)
     methods = handler_methods(cls)
     class_refusals(cls, methods)
@@ -1274,7 +1284,8 @@ def tile_function(text, function, kinds, helpers, result=None):
     """A tile function as a `func`: its one `return` of + - * / @ over its parameters
     and numbers, the tile compiler's functions of one tile and calls of helpers, typed
     by the call (`result`, else its first parameter's); a tile expression alike. A call
-    on a line after the statement's first is written on a line of its own."""
+    on a line after the statement's first is placed, by its columns, at its own lines.
+    """
     if isinstance(function, Inline):
         where, parameters = function.where, function.names
         definition = returned = function.node
@@ -1315,24 +1326,22 @@ def tile_function(text, function, kinds, helpers, result=None):
     fidelity = getattr(function, "fidelity", None)
     hint = f" @tensix.fidelity({fidelity})" if fidelity else ""
     text.line(0, f") -> {result or kinds[0]}{hint} {{")
-    line = len(text.lines) + 1
-    depth, current, opened = 1, "return ", []
+    # each call marked, its columns on the return's line placed at its own source lines
+    current, opened, calls = INDENT + "return ", [], []
     marks = f"({CALL_OPEN}[0-9]+,[0-9]+{CALL_OPEN}|{CALL_CLOSE})"
     for token in re.split(marks, written):
         if token.startswith(CALL_OPEN):
-            text.line(depth, current.rstrip())
             lo, hi = (int(n) for n in token.strip(CALL_OPEN).split(","))
-            opened.append((len(text.lines) + 1, lo, hi))
-            depth, current = 2, ""
+            opened.append((len(current) + 1, lo, hi))
         elif token == CALL_CLOSE:
-            text.line(2, current.rstrip())
-            first, lo, hi = opened.pop()
-            text.place(first, where.file, lo, hi)
-            current = ""
+            column, lo, hi = opened.pop()
+            calls.append((column, len(current), lo, hi))
         else:
             current += token
-    text.line(depth, current.rstrip())
+    line = text.line(0, current)
     text.place(line, where.file, returned.lineno, returned.end_lineno)
+    for column, end, lo, hi in calls:
+        text.span((line, column), (line, end), where.file, lo, hi)
     text.line(0, "}")
     text.place(start, where.file, definition.lineno, definition.lineno)
 
@@ -1372,12 +1381,12 @@ def expression(body, value):
 
 
 def own_line(body, value, written):
-    """A call as written, on lines of its own in parentheses when it starts after the
-    statement's first line (the call's line, as today's trace names it)."""
+    """A call as written, marked with its own lines when it starts after the statement's
+    first line (the call's line, as today's trace names it): its columns are placed."""
     if value.lineno == body.first:
         return written
     at = f"{CALL_OPEN}{value.lineno},{value.end_lineno}{CALL_OPEN}"
-    return f"({at}{written}{CALL_CLOSE})"
+    return f"{at}{written}{CALL_CLOSE}"
 
 
 def call(body, value):
@@ -1436,6 +1445,6 @@ def bare(text):
 def held_lines(text):
     """(file, number, line as written) of every source line the map covers, in (file,
     number) order, each once."""
-    wanted = sorted({(f, n) for (_, _, f, a, b) in text.map for n in range(a, b + 1)})
+    wanted = sorted({(f, n) for (*_, f, a, b) in text.map for n in range(a, b + 1)})
     sources = [Path(name).read_text().splitlines() for name in text.files]
     return [(f, n, sources[f][n - 1]) for f, n in wanted]

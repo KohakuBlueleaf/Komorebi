@@ -12,11 +12,18 @@ use komorebi_ir::types::{HandlerId, ProgramId};
 
 const T1: &str = include_str!("corpus/golden/lessons/t01_scale.kom");
 
-/// One range: the text's lines `a` to `b`, printed for the source's `first` to `last`.
-fn range(a: u32, b: u32, first: u32, last: u32) -> Mapped {
+/// One range of `text`: its whole lines `a` to `b` (column 1 of `a` to the end of
+/// `b`), printed for the source's `first` to `last`.
+fn range(text: &str, a: u32, b: u32, first: u32, last: u32) -> Mapped {
+    let end = text
+        .lines()
+        .nth(b as usize - 1)
+        .map_or(0, |l| l.chars().count());
     Mapped {
         text_first: a,
+        text_first_col: 1,
         text_last: b,
+        text_last_col: (end as u32).max(1),
         file: 0,
         first,
         last,
@@ -25,20 +32,25 @@ fn range(a: u32, b: u32, first: u32, last: u32) -> Mapped {
 
 /// T1 as the frontend prints it for the class form's script (`def run` on line 18):
 /// the handler's lines on its `def`, each statement's lines on the statement's, the
-/// loop on its lines 21 to 22 and its push on 22.
-fn t1_given() -> Given {
+/// loop on its lines 21 to 22 and its push on 22; in `text`, `shift` lines further.
+fn t1_given_in(text: &str, shift: u32) -> Given {
+    let r = |a: u32, b: u32, first, last| range(text, a + shift, b + shift, first, last);
     Given {
         files: vec!["/work/t1_class.py".into()],
         lines: (18..=22).map(|n| (0, n, format!("line {n}"))).collect(),
         map: vec![
-            range(11, 24, 18, 18),
-            range(18, 18, 19, 19),
-            range(19, 20, 20, 20),
-            range(21, 23, 21, 22),
-            range(22, 22, 22, 22),
+            r(11, 24, 18, 18),
+            r(18, 18, 19, 19),
+            r(19, 20, 20, 20),
+            r(21, 23, 21, 22),
+            r(22, 22, 22, 22),
         ],
         renames: Vec::new(),
     }
+}
+
+fn t1_given() -> Given {
+    t1_given_in(T1, 0)
 }
 
 fn handler() -> (ProgramId, HandlerId) {
@@ -75,10 +87,7 @@ fn table() -> Vec<(Anchor, u32, u32, u32)> {
 
 #[test]
 fn the_spans_give_the_places_of_the_class_form() {
-    let mut given = t1_given();
-    for m in &mut given.map {
-        (m.text_first, m.text_last) = (m.text_first + 2, m.text_last + 2);
-    }
+    let given = t1_given_in(CLASS_FORM, 2);
     let module = origin::build(CLASS_FORM, &given).expect("accepted");
     assert!(module.notes.spans.is_empty());
     let found = module.notes.origin.as_ref().expect("an origin");
@@ -171,11 +180,11 @@ fn refused(given: &Given) -> String {
 #[test]
 fn an_origin_is_refused_by_name() {
     let mut g = t1_given();
-    g.map.push(range(20, 21, 20, 20));
-    assert!(refused(&g).contains("never the same lines twice nor crossing"));
+    g.map.push(range(T1, 20, 21, 20, 20));
+    assert!(refused(&g).contains("never the same range twice nor crossing"));
     let mut g = t1_given();
-    g.map.push(range(18, 18, 19, 19));
-    assert!(refused(&g).contains("never the same lines twice nor crossing"));
+    g.map.push(range(T1, 18, 18, 19, 19));
+    assert!(refused(&g).contains("never the same range twice nor crossing"));
     let mut g = t1_given();
     g.map[1].file = 1;
     assert!(refused(&g).contains("past the files"));
@@ -197,4 +206,19 @@ fn an_origin_is_refused_by_name() {
         origin::build("module", &t1_given()),
         Err(Refused::Text(_))
     ));
+}
+
+#[test]
+fn the_writers_layout_carries_each_range_to_where_its_text_went() {
+    // T1 with its indentation doubled, laid out: T1's own text, and each anchor in the
+    // place it had before the layout
+    let spread = T1.replace("\n    ", "\n        ");
+    let given = t1_given_in(&spread, 0);
+    let (text, laid) = origin::layout(&spread, &given).expect("laid out");
+    assert_eq!(text, T1);
+    let before = origin::build(&spread, &given).expect("accepted");
+    let after = origin::build(&text, &laid).expect("accepted");
+    assert_eq!(after.notes.origin, before.notes.origin);
+    // a range starts where its first character went, past the new indentation
+    assert_eq!(laid.map[1].start(), (18, 9));
 }

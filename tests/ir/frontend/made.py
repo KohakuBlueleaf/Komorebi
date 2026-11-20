@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, ".")
 
 from komorebi.dsl import program
-from komorebi.dsl.ir import module
+from komorebi.dsl.ir.walk import written
 
 
 def made_with(script):
@@ -53,7 +53,7 @@ def main(name, class_name, *rest):
         print("BUFFER", buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
     for pair in built.pairs:
         print("PAIR", pair.mover_a, pair.mover_b)
-    made = module(cls, **given)
+    made = written(cls, **given)  # its raw text: the Rust test lays it out
     for file in made.files:
         print(f"FILE {file}")
     for file, number, text in made.lines:

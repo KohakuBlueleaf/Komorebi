@@ -96,19 +96,24 @@ def test_run_gives_the_report_of_a_script():
         ir.run(T1, "tensor x\n")
 
 
-# T1 as a frontend prints it for a class whose `def run` is on line 18: the handler on
-# its def, each statement on its line, the loop on 21 to 22 and its push on 22.
-ORIGIN = ir.Origin(
-    files=["/work/t1_class.py"],
-    lines=[(0, n, f"line {n}") for n in range(18, 23)],
-    map=[
-        (11, 24, 0, 18, 18),
-        (18, 18, 0, 19, 19),
-        (19, 20, 0, 20, 20),
-        (21, 23, 0, 21, 22),
-        (22, 22, 0, 22, 22),
-    ],
-)
+def whole(text, a, b, first, last):
+    """A range of `text`'s whole lines `a` to `b`, printed for the source's lines."""
+    return (a, 1, b, max(len(text.splitlines()[b - 1]), 1), 0, first, last)
+
+
+def t1_origin(text):
+    """T1 as a frontend prints it for a class whose `def run` is on line 18: the handler
+    on its def, each statement on its line, the loop on 21 to 22 and its push on 22."""
+    lines = [(11, 24, 18, 18), (18, 18, 19, 19), (19, 20, 20, 20)]
+    lines += [(21, 23, 21, 22), (22, 22, 22, 22)]
+    return ir.Origin(
+        files=["/work/t1_class.py"],
+        lines=[(0, n, f"line {n}") for n in range(18, 23)],
+        map=[whole(text, *row) for row in lines],
+    )
+
+
+ORIGIN = t1_origin(T1)
 
 
 def test_an_origin_changes_only_the_full_hash():
@@ -135,12 +140,22 @@ def test_a_diagnostic_is_placed_in_the_frontends_source():
 
 
 def test_an_origin_is_refused_by_what_is_wrong():
-    crossing = ORIGIN._replace(map=[*ORIGIN.map, (20, 21, 0, 20, 20)])
+    crossing = ORIGIN._replace(map=[*ORIGIN.map, whole(T1, 20, 21, 20, 20)])
     with pytest.raises(ir.IrError, match="the origin is refused: .*crossing"):
         ir.compile(T1, crossing)
     unknown = ORIGIN._replace(renames=[("nothing", "x")])
     with pytest.raises(ir.IrError, match="`nothing` names no value"):
         ir.check(T1, unknown)
+
+
+def test_layout_gives_the_writers_text_and_the_origin_where_its_text_went():
+    spread = T1.replace("\n    ", "\n        ")
+    origin = t1_origin(spread)
+    text, laid = ir.layout(spread, origin)
+    assert text == T1 == ir.format(spread)
+    assert laid._replace(map=origin.map) == origin
+    assert laid.map[1][:2] == (18, 9)  # past the indentation, where its text went
+    assert ir.hashes(ir.compile(text, laid)) == ir.hashes(ir.compile(spread, origin))
 
 
 def test_emit_gives_the_tensix_output_as_data():

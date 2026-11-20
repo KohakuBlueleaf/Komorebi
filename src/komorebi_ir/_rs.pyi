@@ -4,11 +4,13 @@
 Row = tuple[
     str, str, int | None, int | None, str, int | None, tuple[str, int, int] | None
 ]
+# A map range: first line, its column, last line, its column, file, first, last.
+Range = tuple[int, int, int, int, int, int, int]
 # A frontend's origin: files, lines, map, renames.
 Given = tuple[
     list[str],
     list[tuple[int, int, str]],
-    list[tuple[int, int, int, int, int]],
+    list[Range],
     list[tuple[str, str]],
 ]
 
@@ -16,6 +18,7 @@ class IrError(Exception):
     diagnostics: list[Row]
 
 def format(source: str) -> str: ...
+def layout(source: str, origin: Given) -> tuple[str, list[Range]]: ...
 def check(source: str, origin: Given | None = None) -> list[Row]: ...
 def compile(source: str, origin: Given | None = None) -> bytes: ...
 def hashes(program: str | bytes) -> tuple[str, str, str]: ...

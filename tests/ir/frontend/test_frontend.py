@@ -1,5 +1,5 @@
 """The DSL's frontend on a user's path: a class written as today's DSL writes it, made
-into an IR module (`komorebi.dsl.ir.module`) and compiled with its origin by the
+into an IR module (`komorebi.dsl.ir.built.module`) and compiled with its origin by the
 komorebi-ir wheel; what the IR cannot say yet refused by name, with the class's line.
 """
 
@@ -16,8 +16,8 @@ import komorebi_ir as ir
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compile.records import Refused
-from komorebi.dsl.ir import module
-from komorebi.dsl.ir.built import Entry, program
+from komorebi.dsl.ir import written
+from komorebi.dsl.ir.built import Entry, module, program
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND = (ROOT / "tests" / "ir" / "tensix" / "t1_class.kom").read_text()
@@ -252,7 +252,7 @@ def test_the_class_is_the_hand_written_module_with_its_origin():
     assert (ours.semantic, ours.build) == (hand.semantic, hand.build)
     assert m.files == [str(Path(__file__).resolve())]
     run = line_of(Scale, "def run")
-    assert any(row[3:] == (run, run) for row in m.map)
+    assert any(row[5:] == (run, run) for row in m.map)
     script = (
         "tensor x bf16 32 32 fill tile+1\ntensor y bf16 32 32\n"
         "invoke Scale.run x y 0:u32 1:u32 2.0:f32 on 0 1\nread y\n"
@@ -644,7 +644,7 @@ def test_program_7s_handlers_built_through_the_ir_are_todays(tmp_path, monkeypat
     for name in ("h", "g", "out"):
         assert f"var {name}: tile<f32>[WIDTH] = zeros" in m.text
         assert (name, f"self.{name}") in m.renames
-    assert "func gate(\n    h: tile<f32>,\n    g: tile<f32>,\n) -> tile<f32>" in m.text
+    assert "func gate(h: tile<f32>, g: tile<f32>) -> tile<f32>" in m.text
     assert "for xb, w1b, w3b in zip(" in m.text
     assert "<- gate(h, g)" in m.text
     assert "block = [CHUNK, WIDTH]" in m.text
@@ -706,3 +706,62 @@ def test_program_7s_name_that_is_an_ir_word_is_refused_by_name(
     p7 = swiglu_script(tmp_path, monkeypatch, source)
     with pytest.raises(Refused, match=why):
         module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+
+
+# Each program the frontend takes end to end (T1, programs 1 to 7) and the class whose
+# tile function calls keep their own lines: (script in tests/ir/tensix, class)
+PROGRAMS = [
+    ("t1_class", "Scale"),
+    ("scalars_line", "Scalars"),
+    ("steps_sum", "StepHandlers"),
+    ("steps_add", "StepHandlers"),
+    ("gate_class", "Gate"),
+    ("movement_class", "Movement"),
+    ("small_class", "Small"),
+    ("swiglu_class", "SwiGLU"),
+    ("lines_class", "Lines"),
+]
+
+
+def kept(text):
+    """A text's characters the writer's layout keeps: all but whitespace and commas."""
+    return "".join(c for c in text if not c.isspace() and c != ",")
+
+
+def held(text, row):
+    """The text a map range holds, from its first (line, column) to its last."""
+    lines = text.splitlines()
+    first, first_col, last, last_col = row[:4]
+    if first == last:
+        return lines[first - 1][first_col - 1 : last_col]
+    inner = lines[first : last - 1]
+    return "\n".join(
+        [lines[first - 1][first_col - 1 :], *inner, lines[last - 1][:last_col]]
+    )
+
+
+@pytest.mark.parametrize("script, name", PROGRAMS)
+def test_the_text_is_in_the_writers_layout_its_origin_on_the_same_text(
+    monkeypatch, script, name
+):
+    # module() lays the walk's text out through the wheel: its own layout, each range
+    # holding the same text as before (whitespace and commas aside), same source place
+    folder = ROOT / "tests" / "ir" / "tensix"
+    monkeypatch.syspath_prepend(str(folder))
+    spec = importlib.util.spec_from_file_location(script, folder / f"{script}.py")
+    loaded = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, script, loaded)
+    spec.loader.exec_module(loaded)
+    given = (
+        loaded.made_with()
+        if hasattr(loaded, "made_with")
+        else {"l1": 1 << 20, "x": loaded.tensor(), "y": loaded.tensor()}
+    )
+    cls = getattr(loaded, name)
+    raw, laid = written(cls, **given), module(cls, **given)
+    assert ir.format(laid.text) == laid.text
+    assert len(raw.map) == len(laid.map)
+    for before, after in zip(raw.map, laid.map):
+        assert before[4:] == after[4:]
+        was, now = held(raw.text, before), held(laid.text, after)
+        assert kept(was) == kept(now), (before, was, after, now)

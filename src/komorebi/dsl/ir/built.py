@@ -1,10 +1,10 @@
 """A class's program built through the Komorebi IR, beside today's make (unchanged):
 its module compiled, emitted on Tensix and loaded with the make's tensors, its files
 in today's folder, a `km_program.Program` of the output (docs/ir/frontends.md). It
-imports the komorebi-ir wheel; `komorebi.dsl.ir` does not import it."""
+imports the komorebi-ir wheel; the walk (`komorebi.dsl.ir.walk`) does not import it."""
 
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import komorebi_ir
@@ -12,11 +12,20 @@ from komorebi import abi
 from komorebi.dsl.compile.source import file_of
 from komorebi.dsl.files import put, text_key
 from komorebi.dsl.front.front import word_of
-from komorebi.dsl.ir.walk import given_tensors, module
+from komorebi.dsl.ir.walk import Made, given_tensors, written
 from komorebi.dsl.program import BUILD
 from komorebi.errors import ProgramError
 from komorebi.program import description as km_program
 from komorebi.program.movement import Pattern
+
+
+def module(cls, **make) -> Made:
+    """The IR module of class `cls` made with `make`: the walk's text in the writer's
+    layout (`komorebi_ir.layout`), its origin's ranges where their text went."""
+    made = written(cls, **make)
+    text, laid = komorebi_ir.layout(made.text, komorebi_ir.Origin(*made.origin))
+    return replace(made, text=text, map=list(laid.map))
+
 
 # an end of a range's operations and their signs, as the handler writes them
 SIGNS = {"add": "+", "sub": "-", "mul": "*", "div": "/", "rem": "%"}

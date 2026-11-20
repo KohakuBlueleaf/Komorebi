@@ -1,8 +1,8 @@
 """The DSL as a frontend of the Komorebi IR: a class's handlers as an IR module's text,
-its origin beside it (docs/ir/frontends.md), for `komorebi_ir.compile`, which it does
-not import (`built.program` does: the class's Program through the IR). Today's make
-calls neither: the class compiler's path to C++ is unchanged."""
+its origin beside it (docs/ir/frontends.md). The walk does not import `komorebi_ir`;
+`built.module` lays its text out and `built.program` compiles it. Today's make calls
+neither: the class compiler's path to C++ is unchanged."""
 
-from komorebi.dsl.ir.walk import Made, module
+from komorebi.dsl.ir.walk import Made, written
 
-__all__ = ["Made", "module"]
+__all__ = ["Made", "written"]
