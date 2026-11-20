@@ -161,6 +161,9 @@ pub struct Node {
     pub args: Vec<NodeId>,
     /// The fields.
     pub attrs: Vec<(String, Attr)>,
+    /// Where the function wrote it (`file:line`, as today's `caller_line`), when the
+    /// module says.
+    pub line: Option<String>,
 }
 
 /// `view` = `value`.
@@ -241,6 +244,7 @@ impl KernelIR {
             kind: kind.to_string(),
             args,
             attrs: attrs.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            line: None,
         });
         NodeId(self.arena.len() - 1)
     }
@@ -374,15 +378,16 @@ enum Traced {
     Value(String),
 }
 
-/// Today's name of the format of a tile the tile level reads, or why not.
+/// Today's name of the format of a tile the tile level reads, or why not. On Tensix a
+/// block format is the `_b` family (the A family would be a hint's, not built).
 fn dtype(format: Format) -> Result<&'static str, String> {
     match format {
         Format::F32 => Ok("float32"),
         Format::Bf16 => Ok("bfloat16"),
         Format::F16 => Ok("float16"),
-        Format::Bfp8 | Format::Bfp4 | Format::Bfp2 => Err(format!(
-            "a tile of {format:?}: today's tile level has two families of it (`_b`, read into an fp32 Dst, and the A family, into a 16-bit one) and the module names neither"
-        )),
+        Format::Bfp8 => Ok("bfp8_b"),
+        Format::Bfp4 => Ok("bfp4_b"),
+        Format::Bfp2 => Ok("bfp2_b"),
         other => Err(format!("a tile of {other:?}")),
     }
 }
@@ -393,13 +398,23 @@ struct Tracer<'m> {
     module: &'m Module,
     ir: KernelIR,
     calls: Vec<FuncId>,
+    /// The place of the instruction being traced: the line of the nodes it makes.
+    line: Option<String>,
 }
 
 impl Tracer<'_> {
     /// A node of `value`: a block's own node, or a new node of a scalar.
+    /// A node made at the instruction being traced.
+    fn made(&mut self, id: NodeId) -> NodeId {
+        if let Some(node) = self.ir.arena.get_mut(id.0) {
+            node.line = self.line.clone();
+        }
+        id
+    }
+
     fn node(&mut self, value: &Traced) -> NodeId {
-        match value {
-            Traced::Tile(n) => *n,
+        let made = match value {
+            Traced::Tile(n) => return *n,
             Traced::Const(x) => self
                 .ir
                 .node("const", vec![], vec![("value", Attr::Float(*x))]),
@@ -407,13 +422,15 @@ impl Tracer<'_> {
                 self.ir
                     .node("param", vec![], vec![("value", Attr::Value(name.clone()))])
             }
-        }
+        };
+        self.made(made)
     }
 
     /// `kind` of `args`, each made a node in order.
     fn op(&mut self, kind: &str, args: &[Traced], attrs: Vec<(&str, Attr)>) -> Traced {
         let nodes = args.iter().map(|a| self.node(a)).collect();
-        Traced::Tile(self.ir.node(kind, nodes, attrs))
+        let id = self.ir.node(kind, nodes, attrs);
+        Traced::Tile(self.made(id))
     }
 
     /// `where(a cmp b, x, y)`, as today's comparison operators make it: the block on
@@ -460,6 +477,7 @@ impl Tracer<'_> {
             _ => Err(refused(i, "a function of one tile on a scalar".into())),
         };
         for (i, inst) in body.insts.iter().enumerate() {
+            self.line = place(self.module, f, i);
             let made = match &inst.op {
                 Op::Arg(k) => args
                     .get(*k as usize)
@@ -576,6 +594,17 @@ impl Tracer<'_> {
     }
 }
 
+/// `file:line` of instruction `i` of function `f`, from the module's origin (its file's
+/// last component and the statement's first line), or none.
+fn place(module: &Module, f: FuncId, i: usize) -> Option<String> {
+    let origin = module.notes.origin.as_ref()?;
+    let at = Anchor::Inst(BodyRef::Func(f), InstId(i as u32));
+    let &(_, file, first, _) = origin.places.iter().find(|p| p.0 == at)?;
+    let path = origin.files.get(file as usize)?;
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    Some(format!("{base}:{first}"))
+}
+
 /// Each value `defs` defines set to `made`.
 fn values_set(values: &mut [Option<Traced>], defs: &[ValueId], made: Traced) {
     for d in defs {
@@ -652,6 +681,7 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
         module,
         ir: KernelIR::new(name, tensors, values),
         calls: vec![f],
+        line: None,
     };
     tracer.ir.grid = Some(Grid {
         count: Int::Size {

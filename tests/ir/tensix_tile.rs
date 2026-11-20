@@ -2,14 +2,16 @@
 //! today's `tests/ir/tensix/tile_units.py` runs on a corpus of tile functions and
 //! writes each one's KernelIR, and its unit program as data and as today's listing.
 //! The port must trace the same functions written in the IR (`tile_units.kom`) into
-//! the same KernelIR, print the same listing from the data byte for byte, costs
-//! included, and encode every word of the operation table as today does.
+//! the same KernelIR and the same vector-unit function (its SFPI code included), print
+//! the same listing from the data byte for byte, costs included, and encode every word
+//! of the operation table as today does.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
-use komorebi_ir::backend::tensix::tile::ir::kernel_ir;
+use komorebi_ir::backend::tensix::tile::chain::{stream_chain, Chain, Source};
+use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
     Sync, UnitProgram, CPUS, OPS,
@@ -216,14 +218,20 @@ fn first_difference(a: &str, b: &str) -> String {
 fn each_unit_programs_listing_and_costs_are_todays() {
     let Some(folder) = today() else { return };
     let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
-    assert_eq!(refused, "", "today refuses none of the corpus");
+    // `five` reads five tiles: its chain runs as two stages, its unit is refused;
+    // `by5`'s chain is refused (each_functions_chain_is_todays)
+    let refused: Vec<(&str, &str)> = refused.lines().filter_map(|l| l.split_once('\t')).collect();
+    let names: Vec<&str> = refused.iter().map(|r| r.0).collect();
+    assert_eq!(names, ["five", "by5"], "{refused:?}");
+    let five = "komorebi.dsl.tile: five: the unit program reads at most 4 operand tiles";
+    assert!(refused[0].1.starts_with(five), "{}", refused[0].1);
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&folder)
         .expect("the folder")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 26, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 27, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -344,17 +352,14 @@ fn each_function_traces_to_todays_kernel_ir() {
 
 #[test]
 fn what_the_trace_would_not_make_is_refused_by_name() {
-    let text = "module refused\n\ntile [32, 32]\nformat f32, bfp8\n\n\
-        func blocky(a: tile<bfp8>) -> tile<bfp8> {\n    return a\n}\n\n\
+    let text = "module refused\n\ntile [32, 32]\nformat f32, i32\n\n\
+        func blocky(a: tile<i32>) -> tile<i32> {\n    return a\n}\n\n\
         func scalars(a: tile<f32>, k: f32) -> tile<f32> {\n    return a * (k * 2.0)\n}\n\n\
         func spread(a: tile<f32>) -> tile<f32> {\n    return a.T\n}\n\n\
         func none(k: f32) -> tile<f32> {\n    return zeros\n}\n";
     let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
     for (f, what) in [
-        (
-            "blocky",
-            "a tile of Bfp8: today's tile level has two families",
-        ),
+        ("blocky", "a tile of I32"),
         ("scalars", "arithmetic on two scalars"),
         ("spread", "the operation Transpose"),
         ("none", "a function of no tile"),
@@ -363,4 +368,108 @@ fn what_the_trace_would_not_make_is_refused_by_name() {
         assert_eq!(refusal.code, "K964", "{f}");
         assert!(refusal.what.contains(what), "{f}: {}", refusal.what);
     }
+}
+
+/// A chain as tile_units.py prints it, its earlier stages first.
+fn chain_lines(ir: &KernelIR, chain: &Chain, lines: &mut Vec<String>) {
+    if let Some(prev) = &chain.prev {
+        chain_lines(ir, prev, lines);
+    }
+    let func = &chain.func;
+    let pairs = if chain.pairs { "True" } else { "False" };
+    lines.push(format!(
+        "CHAIN {} out={} pairs={pairs}",
+        func.name, chain.out
+    ));
+    for (k, leaf) in chain.operands.iter().enumerate() {
+        let what = match leaf.source {
+            Source::Prev => "var".to_string(),
+            Source::Node(n) => {
+                let node = &ir.arena[n.0];
+                match node.attrs.first() {
+                    Some((_, Attr::View(v))) if node.kind == "load" => format!("load {}", v.text()),
+                    _ => node.kind.clone(),
+                }
+            }
+        };
+        lines.push(format!("operand {k} {what} {} None", leaf.kind));
+    }
+    for (k, s) in chain.values.iter().enumerate() {
+        lines.push(format!("value {k} {}", s.key()));
+    }
+    let ops: Vec<String> = chain.ops.iter().map(|(k, n)| format!("{k}={n}")).collect();
+    lines.push(format!("ops {}", ops.join(" ")));
+    let fp32 = if func.fp32 { "True" } else { "False" };
+    lines.push(format!(
+        "fn operands={} scalars={} init={} fp32={fp32}",
+        func.operands, func.scalars, func.init
+    ));
+    lines.extend(func.headers.iter().map(|h| format!("header {h}")));
+    lines.extend(func.along.iter().map(|k| format!("along {k} None")));
+    lines.extend(func.code.split('\n').map(str::to_string));
+}
+
+/// `(line <place>)` of a template's record as `(line ?)`: today's names the Python line
+/// that traced the function, the port the IR's place of it (none for IR text).
+fn placeless(text: &str) -> String {
+    text.lines()
+        .map(|l| {
+            match (
+                l.strip_prefix("template "),
+                l.find(" (line "),
+                l.find("): "),
+            ) {
+                (Some(_), Some(open), Some(close)) if open < close => {
+                    format!("{} (line ?{}", &l[..open], &l[close..])
+                }
+                _ => l.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn each_functions_chain_is_todays() {
+    let Some(folder) = today() else { return };
+    let module = corpus();
+    let pairs = module
+        .funcs
+        .iter()
+        .filter_map(|f| Some((f.name.clone(), f.name.strip_prefix("t_")?.to_string())))
+        .chain([("smooth_let".to_string(), "smooth".to_string())]);
+    let mut compared = 0;
+    for (f, case) in pairs {
+        let ir = kernel_ir(&module, func(&module, &f), &case)
+            .unwrap_or_else(|r| panic!("{f}: {}", r.what));
+        let Ok(want) = std::fs::read_to_string(folder.join(format!("{case}.chain"))) else {
+            // refused today: the same text, but for the place it names
+            let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
+            let today = refused
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{case}\t")))
+                .unwrap_or_else(|| panic!("{case}: no chain and no refusal"));
+            let error = stream_chain(&ir).expect_err(&f).text();
+            assert_eq!(error, today.split(" (at ").next().unwrap_or(today), "{f}");
+            compared += 1;
+            continue;
+        };
+        let chain = stream_chain(&ir).unwrap_or_else(|e| panic!("{f}: {}", e.text()));
+        let mut lines = Vec::new();
+        chain_lines(&ir, &chain, &mut lines);
+        lines.extend(
+            chain
+                .templates
+                .iter()
+                .map(|(k, v)| format!("template {k}: {v}")),
+        );
+        let (want, got) = (placeless(&want), placeless(&(lines.join("\n") + "\n")));
+        assert!(
+            got == want,
+            "{f} differs, {}",
+            first_difference(&want, &got)
+        );
+        compared += 1;
+    }
+    assert_eq!(compared, 30);
 }

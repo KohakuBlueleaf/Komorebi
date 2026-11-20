@@ -1,6 +1,6 @@
 """Today's tile compiler on a corpus of tile functions: the reference for the port
-(backend/tensix/tile/; tile_units.kom has the functions in the IR's text). Writes each
-KernelIR (`<case>.ir`), unit as data (`.unit`) and as today's listing (`.txt`), every
+(backend/tensix/tile/; tile_units.kom has them in the IR's text). Writes each KernelIR
+(`<case>.ir`), chain (`.chain`), unit as data (`.unit`) and listing (`.txt`), every
 word's encoding (`encode.txt`), the refusals (`refused.txt`). Usage: <this> <folder>."""
 
 import inspect
@@ -13,6 +13,7 @@ import komorebi as km
 from komorebi.dsl.compile.tiles.functions import SCALAR, TILE_FORMATS, tile_dest
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
+from komorebi.dsl.tile.lower import stream_chain
 from komorebi.dsl.tile.unit import (
     CPUS,
     OPS,
@@ -43,6 +44,7 @@ CASES = [
     ("times", lambda a, k: a * k, [BF, SCALAR], {}),
     ("plus", lambda a, b: a + b, [BF, BF], {}),
     ("plus_band", lambda a, b: a + b, [F, F], {"rows": True}),
+    ("plus_bfp8", lambda a, b: a + b, ["bfp8_b", "bfp8_b"], {}),
     ("gate", lambda a, b: km.silu(a) * b, [F, F], {}),
     ("silu_gate_bf16", lambda a, b: km.silu(a) * b, [BF, BF], {}),
     ("clamp01", lambda a: km.minimum(km.maximum(a, 0.0), 1.0), [F], {}),
@@ -65,6 +67,8 @@ CASES = [
     ("divide", lambda a, b: a / b, [F, F], {}),
     ("floor", lambda a: km.floor(a), [F], {}),
     ("twice_k", lambda a, k: a * k + k * a, [F, SCALAR], {}),
+    ("five", lambda a, b, c, d, e: a * b + (c - d) * e, [F] * 5, {}),
+    ("by5", lambda a, j, k, m, n, p: a * j * k * m * n * p, [F, *[SCALAR] * 5], {}),
     (
         "called",
         lambda a, b: half(a) + half(km.where(operator.lt(0.0, b), b, a)),
@@ -163,6 +167,34 @@ def unit_lines(unit):
     return lines
 
 
+def chain_lines(chain, lines):
+    """A chain as text, its earlier stages first: operands, scalars, the operations
+    counted, the function's facts and its SFPI code; then the templates chosen."""
+    if chain.prev is not None:
+        chain_lines(chain.prev, lines)
+    fn = chain.fn
+    lines.append(f"CHAIN {fn.name} out={chain.out} pairs={chain.pairs}")
+    for k, leaf in enumerate(chain.operands):
+        source = leaf.source
+        if isinstance(source, str):
+            what = source
+        elif source.kind == "load":
+            what = f"load {source.attrs['view'].text()}"
+        else:
+            what = source.kind
+        offset = None if leaf.offset is None else leaf.offset.text()
+        lines.append(f"operand {k} {what} {leaf.kind} {offset}")
+    lines += [f"value {k} {s.key()}" for k, s in enumerate(chain.values)]
+    lines.append("ops " + " ".join(f"{k}={n}" for k, n in chain.ops.items()))
+    lines.append(
+        f"fn operands={fn.operands} scalars={fn.scalars} init={fn.init} fp32={fn.fp32}"
+    )
+    lines += [f"header {h}" for h in fn.headers]
+    lines += [f"along {k} {v}" for k, v in fn.along.items()]
+    lines += fn.code.split("\n")
+    return lines
+
+
 def encodings():
     """For each operation, words of chosen and random fields, each `name fields word
     decoded`; then a field one bit too wide, with today's refusal."""
@@ -203,15 +235,19 @@ def main(folder):
     folder.mkdir(parents=True, exist_ok=True)
     refused = []
     for case, function, formats, options in CASES:
+        ir = traced(case, function, formats)
+        (folder / f"{case}.ir").write_text(ir.dump() + "\n")
         try:
-            ir = traced(case, function, formats)
+            chain = stream_chain(ir)
+            made = chain_lines(chain, [])
+            made += [f"template {k}: {v}" for k, v in chain.templates.items()]
+            (folder / f"{case}.chain").write_text("\n".join(made) + "\n")
             unit = unit_program(ir, tile_dest(formats), load_macro=True, **options)
             text = unit.dump()
         except (PlanError, UnitError) as error:
             refused.append(f"{case}\t{error}")
             continue
         (folder / f"{case}.unit").write_text("\n".join(unit_lines(unit)) + "\n")
-        (folder / f"{case}.ir").write_text(ir.dump() + "\n")
         (folder / f"{case}.txt").write_text(text + "\n")
     (folder / "encode.txt").write_text("\n".join(encodings()) + "\n")
     (folder / "refused.txt").write_text("".join(f"{r}\n" for r in refused))

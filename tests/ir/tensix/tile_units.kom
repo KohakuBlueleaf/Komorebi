@@ -1,7 +1,7 @@
 module tile_units
 
 tile [32, 32]
-format f32, bf16
+format f32, bf16, bfp8
 
 // The functions of tile_units.py's corpus, each under its case's name with `t_`
 // before it; `smooth_let` and `twice_k` write a scalar once and use it twice.
@@ -15,6 +15,10 @@ func t_plus(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> {
 }
 
 func t_plus_band(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a + b
+}
+
+func t_plus_bfp8(a: tile<bfp8>, b: tile<bfp8>) -> tile<bfp8> {
     return a + b
 }
 
@@ -109,6 +113,14 @@ func t_floor(a: tile<f32>) -> tile<f32> {
 
 func t_twice_k(a: tile<f32>, k: f32) -> tile<f32> {
     return a * k + k * a
+}
+
+func t_five(a: tile<f32>, b: tile<f32>, c: tile<f32>, d: tile<f32>, e: tile<f32>) -> tile<f32> {
+    return a * b + (c - d) * e
+}
+
+func t_by5(a: tile<f32>, j: f32, k: f32, m: f32, n: f32, p: f32) -> tile<f32> {
+    return a * j * k * m * n * p
 }
 
 func half(a: tile<f32>) -> tile<f32> {
