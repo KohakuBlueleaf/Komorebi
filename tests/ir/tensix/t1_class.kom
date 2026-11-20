@@ -1,0 +1,27 @@
+// The first lesson's module as the class DSL's frontend gives it for t1_class.py: the
+// class's one partition (y[src]) is the lesson's second, equal partition in the IR.
+module scale
+
+tile [32, 32]  // this module's block: 32 by 32 elements
+format bf16
+
+func times(a: tile<bf16>, k: f32) -> tile<bf16> {
+    return a * k
+}
+
+program Scale {
+    handler run(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        first: u32,
+        tiles: u32,
+        k: f32,
+    ) @on(group) {
+        let src = partition(x.tiles(first, tiles), worker.rank, group.size)
+        let dst = partition(y.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(dst, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(times(xb, k))
+        }
+    }
+}

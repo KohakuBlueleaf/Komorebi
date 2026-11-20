@@ -18,6 +18,7 @@
 
 pub mod cpu;
 pub mod emit;
+pub mod tensix;
 
 use std::collections::BTreeSet;
 

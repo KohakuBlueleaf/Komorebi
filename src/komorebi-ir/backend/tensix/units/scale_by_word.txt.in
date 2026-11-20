@@ -1,0 +1,89 @@
+unit program @FN@ (fp32 Dst)
+  unpack per tile:
+    sync unpack <- reader: cb_wait_front(in, 1)  ; the input tiles
+    call copy_tile(in0, 0, dst + 0)  ; the tile into Dst (fp32, unpacked to Dst)
+    call cb_pop_front(in, 1)  ; frees the input tiles
+  math setup:
+    SFPCONFIG imm16_math=0 config_dest=15 instr_mod1=1  ; lane configuration
+    call ckernel::addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 0}}.set(ADDR_MOD_7)  ; address mode 7: no increments (3 SETC16)
+    SETRWC clear_ab_vld=0 rwc_cr=0 rwc_d=0 rwc_b=0 rwc_a=0 BitMask=15  ; reset the counters
+    call ckernel::addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, .dest = {.incr = 2}}.set(ADDR_MOD_6)  ; address mode 6: Dst + 2 after the row's store (3 SETC16)
+  math per tile:
+    sync math <- pack: tile_regs_acquire()  ; a free Dst half
+    call copy_tile(in0, 0, dst + 0)  ; the math part of the copy (none to Dst)
+    call ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(dst)  ; Dst base of tile dst (RISC-V writes)
+    STALLWAIT stall_res=256 wait_res=16  ; SFPU waits for the matrix unit
+    SFPLOADI lreg_ind=0 instr_mod0=2 imm16=0  ; @K@, the call's word
+    SFPLOADI lreg_ind=0 instr_mod0=8 imm16=0  ; @K@, the call's word
+    loop face < 4:
+      REPLAY start_idx=0 len=3 execute_while_loading=1 load_mode=1  ; record 3 while they run
+      SFPLOAD lreg_ind=1 instr_mod0=0 sfpu_addr_mode=7 dest_reg_addr=0  ; operand 0
+      SFPMUL lreg_src_a=0 lreg_src_b=1 lreg_src_c=9 lreg_dest=1 instr_mod1=0
+      SFPSTORE lreg_ind=1 instr_mod0=0 sfpu_addr_mode=6 dest_reg_addr=0  ; the result to Dst, then Dst + 2
+      loop row < 7, unrolled:
+        REPLAY start_idx=0 len=3 execute_while_loading=0 load_mode=0  ; replay 3
+      SETRWC clear_ab_vld=0 rwc_cr=4 rwc_d=8 rwc_b=0 rwc_a=0 BitMask=4  ; Dst + 8 rows
+      SETRWC clear_ab_vld=0 rwc_cr=4 rwc_d=8 rwc_b=0 rwc_a=0 BitMask=4  ; Dst + 8 rows
+    SETRWC clear_ab_vld=0 rwc_cr=0 rwc_d=0 rwc_b=0 rwc_a=0 BitMask=4  ; Dst counter back to 0
+    sync math <- pack: tile_regs_commit()  ; hands Dst to the pack CPU
+  pack per tile:
+    sync pack <- math: tile_regs_wait()  ; Dst from the math CPU
+    call pack_tile(dst, out)  ; Dst tile dst to the output buffer
+    sync pack <- math: tile_regs_release()  ; frees the Dst half
+    sync pack <- writer: cb_push_back(out, 1)  ; an output tile
+  pass algebra templates: nothing
+  pass algebra fold_negation: nothing
+  pass algebra fuse_mad: nothing
+  pass algebra negated_zero: nothing
+  pass layout constant_registers: nothing
+  pass schedule hoist: nothing
+  pass layout resident_constants: nothing
+  pass layout allocate: 2 of 8 work registers
+  pass schedule load_macro: refused: SFPMUL reads LReg [0, 9]: a template's other registers are constants or a plain load of the same row
+  pass schedule store_step: the INCRWC into the last store (Dst + 2)
+  pass schedule replay: 3 of 3 instructions of each row recorded once
+  check resident (a register held across rows is written by no row instruction): ok: LReg [0]
+  check mad-reader (SFPNOP between a MAD and a reader not held back): ok
+  check config-nop (SFPNOP after an SFPCONFIG of LReg 11 to 14): ok
+  check constants (constant registers set before use, LReg 11 restored to -1.0): ok: LReg [] set by the setup and declared clobbered; LReg 11 not written
+  check predication (lane predication restored (every lane on) at the end of the code): ok
+  check dst-load (matrix-unit writes to Dst finished before the first SFPLOAD): ok: STALLWAIT(SFPU on MATH) first
+  check immediates (every immediate and register field inside its width): ok: every word encoded; 2 immediate(s) of run-time scalars built on the core (TT_SFPLOADI of a 16-bit half)
+  check dst-window (Dst accesses inside a call's tiles): 1 of 1
+  check macro-templates (each macro's template stored, kept): ok: no load macro
+  check back-door (a VD of 12 or more only in a template store): ok: a VD of 12 or more only in the init's 0 template store(s)
+  check one-producer (one pushing CPU or kernel a buffer): ok: in by reader, out by pack
+  check no-float (no float in compute code): ok: none in the text
+  not checked interleave: two independent MAD chains interleaved (a speed rule)
+  not checked load-macro: SFPLOADMACRO delays counted in instructions, drained by SFPNOPs
+  not checked exp-range: the biased exp argument kept inside its range
+  not checked indirect: indirect register forms
+  not checked stop-word: the stop word polled in every wait and unit loop (the caller's)
+  not checked dst-tiles: Dst tiles per acquire (the caller's index)
+  not checked placement: code placement and the kernel buffer's size
+  not checked src-banks: an unpack of more faces than Src has banks (2) waits for a release
+  cost unpack: 0 instructions, 0 cycles a tile, and the calls not priced
+    sync cb_wait_front(in, 1): 1 x, - cycles (sync, not priced)
+    copy_tile(in0, 0, dst + 0): 1 x, - cycles (library call, not priced)
+    cb_pop_front(in, 1): 1 x, - cycles (library call, not priced)
+  cost math: 112 instructions, 120.3 cycles a tile, and the calls not priced
+    sync tile_regs_acquire(): 1 x, - cycles (sync, not priced)
+    copy_tile(in0, 0, dst + 0): 1 x, - cycles (library call, not priced)
+    ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(dst): 1 x, - cycles (library call, not priced)
+    STALLWAIT: 1 x, 1.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    SFPLOADI: 2 x, 2.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    loop pass: 4 x, 8.0 cycles (a pass of a loop the core runs: N + 2 cycles (probe 12))
+    REPLAY: 4 x, 4.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    SFPLOAD: 4 x, 4.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    SFPMUL: 4 x, 4.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    SFPSTORE: 4 x, 4.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    SFPLOAD replayed: 28 x, 28.1 cycles (a replayed word: 1.004 cycles (probe 8))
+    SFPMUL replayed: 28 x, 28.1 cycles (a replayed word: 1.004 cycles (probe 8))
+    SFPSTORE replayed: 28 x, 28.1 cycles (a replayed word: 1.004 cycles (probe 8))
+    SETRWC: 9 x, 9.0 cycles (a ready word pushed: 1 cycle (probe 8: 1.128 in a loop of 16))
+    sync tile_regs_commit(): 1 x, - cycles (sync, not priced)
+  cost pack: 0 instructions, 0 cycles a tile, and the calls not priced
+    sync tile_regs_wait(): 1 x, - cycles (sync, not priced)
+    pack_tile(dst, out): 1 x, - cycles (library call, not priced)
+    sync tile_regs_release(): 1 x, - cycles (sync, not priced)
+    sync cb_push_back(out, 1): 1 x, - cycles (sync, not priced)
