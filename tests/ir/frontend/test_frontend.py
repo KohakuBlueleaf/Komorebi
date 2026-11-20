@@ -316,16 +316,51 @@ def test_a_constant_other_than_an_int_is_refused_by_name():
         made(Floated)
 
 
-def gate_script(folder, monkeypatch, name="gate_class"):
+def gate_script(folder, monkeypatch, name="gate_class", folder_copy=True):
     """Program 4's script (or tests/ir/tensix/<name>.py), copied into `folder` (today's
-    make writes beside it)."""
+    make writes beside it); `folder_copy` False: the script already written there."""
     script = folder / f"{name}.py"
-    shutil.copy(ROOT / "tests" / "ir" / "tensix" / f"{name}.py", script)
+    if folder_copy:
+        shutil.copy(ROOT / "tests" / "ir" / "tensix" / f"{name}.py", script)
     spec = importlib.util.spec_from_file_location(name, script)
     gate = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, gate)
     spec.loader.exec_module(gate)
     return gate
+
+
+@pytest.mark.parametrize("operands", [2, 3])
+def test_a_call_batched_only_when_more_than_one_fits_the_dst_half_is_todays(
+    tmp_path, monkeypatch, operands
+):
+    # a call of `operands` tiles takes that many Dst tiles: the Dst half's 4 hold two
+    # of 2, one of 3; batched only when more than one fits (`functions.py`, slots > 1)
+    names = ["x", "g", "h"][:operands]
+    source = (ROOT / "tests" / "ir" / "tensix" / "gate_class.py").read_text()
+    returned = {2: "km.silu(x) * g", 3: "x * g + h"}[operands]
+    streams = [
+        f"            km.Stream({t}.pages(first, tiles), block=self.BLOCK, "
+        "pattern=pattern),\n"
+        for t in ["a", "b", "a"]
+    ]
+    pairs = [
+        ("def silu_gate(a, b):", f"def silu_gate({', '.join(names)}):"),
+        ("    return km.silu(a) * b", f"    return {returned}"),
+        ("        for x, g in zip(\n", f"        for {', '.join(names)} in zip(\n"),
+        ("".join(streams[:2]), "".join(streams[:operands])),
+        ("silu_gate(x, g)", f"silu_gate({', '.join(names)})"),
+    ]
+    for old, new in pairs:
+        assert old in source, old
+        source = source.replace(old, new)
+    (tmp_path / "gate_class.py").write_text(source)
+    gate = gate_script(tmp_path, monkeypatch, folder_copy=False)
+    given = gate.made_with()
+    today = gate.Gate(log=lambda line: None, **given)
+    ours = program(gate.Gate, log=lambda line: None, **given)
+    assert ours.sources() == today.sources()
+    compute = ours.sources()["compute"].read_text()
+    assert ("km_batch0" in compute) == (operands == 2)
 
 
 def test_a_class_constant_is_a_module_parameter_the_make_sets(tmp_path, monkeypatch):

@@ -2302,7 +2302,8 @@ fn compute_sum(out: &mut Vec<String>, plan: &Plan, sum: &Sum, lines: &Lines) {
 /// A mapped case's compute: the loop over the read streams' blocks (zipped: each
 /// waited for and freed in turn), its tiles a batch an acquire, the call on each and
 /// the packs. A call takes the Dst tiles its unit states (`Unit::dst_tiles`): a batch
-/// is the Dst half's tiles over that (`functions.py`, `DST_HALF // count`).
+/// is the Dst half's tiles over that (`functions.py`, `DST_HALF // count`), and a
+/// batch of one is written as one call an acquire, as today's.
 fn compute_mapped(
     out: &mut Vec<String>,
     plan: &Plan,
@@ -2341,7 +2342,15 @@ fn compute_mapped(
     };
     let f = &call.name;
     let dst = unit.dst_tiles() as u64;
+    // `slots` calls an acquire when more than one fits the Dst half; else one, its
+    // tiles copied and packed from the call's own (`functions.py`, `slots > 1`)
     let slots = DST_HALF / dst;
+    let batched = slots > 1;
+    let step = if batched {
+        format!("km_tile0 += {slots}")
+    } else {
+        "km_tile0++".to_string()
+    };
     let words: String = call
         .scalars
         .iter()
@@ -2377,7 +2386,7 @@ fn compute_mapped(
             "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
              const uint32_t km_out0 = km::block_half(kWrite0, {out_pattern}, km_block0);\n\
              const bool km_room0 = compute.reserve_back(km_out0, kWrite0Block);\n\
-             for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; km_tile0 += {slots}) {{"
+             for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; {step}) {{"
         ),
     );
     comment(out, 6, lines.comment(Anchor::Inst(body, call.inst), None));
@@ -2394,15 +2403,37 @@ fn compute_mapped(
                 .flatten()
                 .map(move |d| (i, d))
         })
-        .map(|(i, d)| {
-            format!("{INDENT}copy_tile(km_half{i}, km_tile0 + km_slot0, {dst} * km_slot0 + {d});\n")
+        .map(|(i, d)| match batched {
+            true => format!(
+                "{INDENT}copy_tile(km_half{i}, km_tile0 + km_slot0, {dst} * km_slot0 + {d});\n"
+            ),
+            false => format!("copy_tile(km_half{i}, km_tile0, {d});\n"),
         })
         .collect();
     let result = match layout.result[0] {
         0 => String::new(),
         r => format!(" + {r}"),
     };
-    indented(
+    if !batched {
+        let r = layout.result[0];
+        indented(
+            out,
+            6,
+            &format!(
+                "tile_regs_acquire();\n\
+                 {copies}\
+                 MATH((km_tile::{f}(0{words})));\n\
+                 tile_regs_commit();\n\
+                 tile_regs_wait();\n\
+                 if (km_room0) {{\n\
+                 {INDENT}KM_PACK_FORMAT(km_out0);\n\
+                 {INDENT}pack_tile<true>({r}, km_out0, km_tile0);\n\
+                 }}\n\
+                 tile_regs_release();"
+            ),
+        );
+    } else {
+        indented(
         out,
         6,
         &format!(
@@ -2423,6 +2454,7 @@ fn compute_mapped(
              tile_regs_release();"
         ),
     );
+    }
     indented(out, 5, "}");
     indented(
         out,
