@@ -8,12 +8,13 @@
 
 use std::collections::HashMap;
 
-use crate::backend::{Refusal, NOT_BUILT};
+use crate::backend::{Refusal, NOT_BUILT, OVER_LIMIT};
 use crate::program::body::{Body, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, HintArg, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
 use crate::types::{
-    BinOp, Combiner, ConstValue, Count, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type,
+    Axis, BinOp, Combiner, ConstValue, Count, Format, FuncId, HandlerId, On, ProgramId, ScalarType,
+    Type,
 };
 
 /// How a command word is read.
@@ -157,6 +158,9 @@ pub struct Moved {
     pub range: Range,
     /// The word of its `@tensix.pattern`; none: the role's pattern.
     pub pattern: Option<usize>,
+    /// Its `@tensix.passes(n)`: a row read in passes, n tiles a move; none: its
+    /// block moved whole.
+    pub passes: Option<u64>,
 }
 
 /// The loop's body: `out.push(f(x, y, k))`, the loop's tiles in order, then `f32` words.
@@ -172,6 +176,23 @@ pub struct Call {
     pub scalars: Vec<usize>,
     /// The call's instruction.
     pub inst: InstId,
+    /// The row it is called on, when the function is on blocks and reduces along a
+    /// row (today's row form, `row=` of the stream); none: element by element.
+    pub row: Option<Row>,
+}
+
+/// A call on a row: what the row form's emitter needs of the call (the contract
+/// between the plan and `unit()`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    /// The row's tiles: the stream's block.
+    pub width: u64,
+    /// The operands held whole rather than streamed (a field's row), by parameter
+    /// position; none until fields are planned.
+    pub resident: Vec<usize>,
+    /// The stored format of each tile operand, in parameter order: the tensor's a
+    /// stream reads (a block parameter agrees with its argument by shape alone).
+    pub formats: Vec<Format>,
 }
 
 /// What a handler's loop makes of its read stream's tiles.
@@ -425,6 +446,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
     }
     let body = BodyRef::Handler(p, h);
     let patterns = patterns(module, body, &mut words)?;
+    let passes = passes(module, body)?;
     let found = Walk::new(module, &handler.body, body, &words).run()?;
     let Found {
         locals,
@@ -462,6 +484,19 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
             write.pattern = Some(*word);
         }
     }
+    // a row's stream read in passes (the row form's emitter selects `row_passes`)
+    for (inst, n) in passes {
+        let on_row = matches!(&shape, Shape::Mapped { call: Some(c), .. } if c.row.is_some());
+        match reads.iter_mut().find(|r| r.inst == inst) {
+            Some(read) if on_row => read.passes = Some(n),
+            _ => {
+                return Err(not_built(
+                    "a `@tensix.passes` on other than a loop over a row",
+                    Anchor::Inst(body, inst),
+                ))
+            }
+        }
+    }
     Ok(Plan {
         program: p,
         handler: h,
@@ -473,6 +508,32 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         shape,
         repeat,
     })
+}
+
+/// The `@tensix.passes(n)` hints of a handler's body, (the instruction, n): n a
+/// number of tiles above 0. Any other `@tensix.passes` is refused by name.
+fn passes(module: &Module, body: BodyRef) -> Result<Vec<(InstId, u64)>, Refusal> {
+    let mut out = Vec::new();
+    for hint in &module.notes.hints {
+        let Anchor::Inst(at, inst) = hint.anchor else {
+            continue;
+        };
+        if at != body || hint.path != ["tensix", "passes"] {
+            continue;
+        }
+        let n = match hint.args.as_slice() {
+            [HintArg::Number(n)] => n.parse::<u64>().ok().filter(|n| *n > 0),
+            _ => None,
+        };
+        let Some(n) = n else {
+            return Err(not_built(
+                "a `@tensix.passes` other than of a number of tiles",
+                hint.anchor,
+            ));
+        };
+        out.push((inst, n));
+    }
+    Ok(out)
 }
 
 /// The `@tensix.pattern(p)` hints of a handler's body, (the instruction, p's word):
@@ -728,6 +789,7 @@ impl<'m> Walk<'m> {
             tiles,
             scalars: Vec::new(),
             inst: id,
+            row: None,
         };
         if self.looped && !self.ended {
             let tiles: Option<Vec<usize>> = args
@@ -844,6 +906,26 @@ impl<'m> Walk<'m> {
             ));
         }
         let call = self.call.take();
+        if let Some(call) = call
+            .as_ref()
+            .filter(|c| c.row.is_some() && !c.scalars.is_empty())
+        {
+            // today's `functions.py` refuses it at the call, by its words' names
+            let words: Vec<&str> = call
+                .scalars
+                .iter()
+                .map(|&w| self.words[w].name.as_str())
+                .collect();
+            return Err(Refusal {
+                code: OVER_LIMIT,
+                what: format!(
+                    "{}: a run-time scalar of a tile function called on a row: the row \
+                     form's numbers are immediates; call it on a stream's tiles, one tile a side",
+                    words.join(", ")
+                ),
+                at: Some(Anchor::Inst(self.at, call.inst)),
+            });
+        }
         let (Some((_, write, wover)), Some(push), true) = (
             self.sink.take(),
             call.as_ref().map(|c| c.inst).or(self.copied),
@@ -958,6 +1040,32 @@ impl<'m> Walk<'m> {
             shape: Shape::Dropped,
             repeat: self.repeat.clone(),
         })
+    }
+
+    /// The row a call of `func` is on: some when `func` is on blocks and its body
+    /// reduces along a row, its width the walked streams' block.
+    fn row_of(&self, func: &crate::program::Func) -> Result<Option<Row>, String> {
+        let along_row = func
+            .body
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| matches!(i.op, Op::Reduce(_, _, Axis::Row)));
+        if !func.on_blocks() || !along_row {
+            return Ok(None);
+        }
+        let walked: Vec<&Moved> = self.walked.iter().map(|&i| &self.streams[i].1).collect();
+        let formats: Option<Vec<Format>> = walked
+            .iter()
+            .map(|m| self.words.get(m.tensor).and_then(|w| w.format))
+            .collect();
+        let (Some(first), Some(formats)) = (walked.first(), formats) else {
+            return Err("a call on a row of other than streams of tensors".into());
+        };
+        Ok(Some(Row {
+            width: first.block,
+            resident: Vec::new(),
+            formats,
+        }))
     }
 
     /// The loop at `id` over `streams` (values of read streams, in order): each read
@@ -1459,6 +1567,7 @@ impl<'m> Walk<'m> {
                     inst: id,
                     range: Range::Rect(rect),
                     pattern: None,
+                    passes: None,
                 };
                 self.blocks.store = Some((moved, stored));
                 None
@@ -1532,6 +1641,7 @@ impl<'m> Walk<'m> {
                     inst: id,
                     range: Range::Tiles { first, n },
                     pattern: None,
+                    passes: None,
                 });
                 self.sum.closed = true;
                 None
@@ -1554,6 +1664,7 @@ impl<'m> Walk<'m> {
                     inst: id,
                     range: Range::Tiles { first, n },
                     pattern: None,
+                    passes: None,
                 });
                 None
             }
@@ -1706,6 +1817,7 @@ impl<'m> Walk<'m> {
                     inst: id,
                     range: Range::Part(0),
                     pattern: None,
+                    passes: None,
                 };
                 if matches!(op, Op::Stream(..)) {
                     if self.streams.len() == 3 {
@@ -1777,12 +1889,14 @@ impl<'m> Walk<'m> {
                             .into(),
                     );
                 };
+                let row = self.row_of(func)?;
                 self.call = Some(Call {
                     func: *f,
                     name: func.name.clone(),
                     tiles,
                     scalars,
                     inst: id,
+                    row,
                 });
                 Some(Val::Called)
             }

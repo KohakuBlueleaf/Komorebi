@@ -110,6 +110,10 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
   `for i in range(r) { for _ in stream(pages, block = BLOCK) { } }` (the counter renamed when the
   class uses `i`). Only a loop over one stream whose body is `pass` is repeated. A repeat of a loop
   with a body, or of two streams zipped, is refused by name;
+- a read stream's `row=W`: the stream is in blocks of the row, `block = W`, and a `block=` of
+  another number is the hint `@tensix.passes(b)` on its loop (the row moved b tiles at a time).
+  The function it is called with reduces along the row (`km.reduce_sum`, `reduce_max` or
+  `reduce_min`); one that does not is refused by name, since today calls it in the row form;
 - a loop whose body is `pass`, written with an empty body (its blocks moved and dropped);
   `km.Stream(...).drain()` is that loop, on the call's lines, as today makes it;
 - a loop over two read streams zipped (`for x, y in zip(km.Stream(...), km.Stream(...)):`),

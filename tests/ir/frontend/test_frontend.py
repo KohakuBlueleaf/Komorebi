@@ -373,6 +373,36 @@ def test_the_groups_size_is_a_word(tmp_path, monkeypatch):
     assert ours.sources() == today.sources()
 
 
+@km.tile_function
+def lane_sum(row):
+    return row * 0.0 + km.reduce_sum(row, exact=True).col()
+
+
+class Lanes(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor):
+        results = km.Stream(y.pages(0, 32), write=True, block=16)
+        for row in km.Stream(x.pages(0, 32), block=8, row=16):
+            results.push(lane_sum(row))
+
+
+class Scaled(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, k: float):
+        results = km.Stream(y.pages(0, 32), write=True, block=16)
+        for row in km.Stream(x.pages(0, 32), row=16):
+            results.push(times(row, k))
+
+
+def test_a_streams_row_is_taken_and_its_function_must_reduce_along_it():
+    # the stream's row= is no longer refused: the lane sum meets its function's body
+    with pytest.raises(Refused, match="lane_sum.tile function, line .*: a call the IR"):
+        made(Lanes)
+    # a function with no reduction along the row: today's row form has no IR text
+    with pytest.raises(Refused, match="times on a row with no reduction along it"):
+        made(Scaled)
+
+
 class InRow(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, r: int, k: float):

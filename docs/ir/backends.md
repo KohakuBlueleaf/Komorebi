@@ -248,6 +248,13 @@ hints after its head, as a `combine` and an `extern func` do, and only hints: an
 attribute there is `K006`.
 A function on blocks that reduces along a row is traced as today's row form traces it, each
 reduction read as today's exact one; the order in which Tensix sums a row is the backend's own.
+A loop's call of such a function is a call on a row: the plan gives it the row's width (the
+stream's block), its operands held whole (none until fields are planned) and each tile operand's
+stored format, in parameter order. Its emission is the row form's own; until that is built the
+call is refused by name (`K964`), and a run-time scalar of it with today's text (`K962`). A loop
+over a row takes the hint `@tensix.passes(n)`: the movers carry the row n tiles at a time, today's
+row read in passes. It changes no result, only how many tiles move at once; with none, the row
+moves whole, and on a loop that is not over a row it is refused by name (`K964`).
 
 The tests `tests/ir/tensix.rs` and `tests/ir/frontend.rs` run today's emitter on the scripts (`python3`, else
 `KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails

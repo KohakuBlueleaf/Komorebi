@@ -259,6 +259,23 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     let mut units: Vec<Unit> = Vec::new();
     for plan in &plans {
         let func = match &plan.shape {
+            // a call on a row: the row form's emitter takes it (its own file, by the
+            // contract `plan::Row`); until it is there, refused by name
+            Shape::Mapped {
+                call: Some(call), ..
+            } if call.row.is_some() => {
+                let body = BodyRef::Handler(plan.program, plan.handler);
+                refusals.push(Refusal {
+                    code: NOT_BUILT,
+                    what: format!(
+                        "the Tensix backend does not emit a call of {} on a row (the row \
+                         form) yet",
+                        call.name
+                    ),
+                    at: Some(Anchor::Inst(body, call.inst)),
+                });
+                continue;
+            }
             Shape::Mapped {
                 call: Some(call), ..
             } => call.func,
@@ -3355,6 +3372,7 @@ mod tests {
             inst: InstId(0),
             range: Range::Part(0),
             pattern: None,
+            passes: None,
         };
         let plan = Plan {
             program: ProgramId(0),
@@ -3372,6 +3390,7 @@ mod tests {
                     tiles: 1,
                     scalars: vec![0],
                     inst: InstId(0),
+                    row: None,
                 }),
                 push: InstId(0),
             },

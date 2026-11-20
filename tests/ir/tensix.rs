@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
-use komorebi_ir::backend::tensix::{self, chip, Tensix};
+use komorebi_ir::backend::tensix::{self, chip, plan, Tensix};
 use komorebi_ir::backend::{
     ArgWord, Backend, Bound, Build, CacheKey, CompileArg, Expr, Processor, Reads, Setting, Target,
 };
@@ -20,7 +20,7 @@ use komorebi_ir::bytecode::{decode, encode};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::notes::{Anchor, Origin, Owner};
 use komorebi_ir::program::{BodyRef, Module};
-use komorebi_ir::types::{HandlerId, ProgramId};
+use komorebi_ir::types::{Format, HandlerId, ProgramId};
 
 fn here() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix")
@@ -1341,4 +1341,106 @@ fn a_rectangles_movement_is_the_loads_for_its_tensors_width() {
             .contains("a rectangle whose rows or columns the compile does not know"),
         "{r:?}"
     );
+}
+
+#[test]
+fn a_call_on_a_row_is_refused_by_name_and_its_run_time_scalar_by_todays_text() {
+    let module = |args: &str, params: &str| {
+        let source = format!(
+            "module lanes\n\ntile [32, 32]\nformat f32\n\n\
+             func lane_sum(x: tile<f32>[2]{params}) -> tile<f32>[2] {{\n    \
+             return x * 0.0 + reduce_sum(x, axis = row).col()\n}}\n\n\
+             program Lanes {{\n    handler lanes(x: tensor<f32>, y: tensor<f32>, k: f32) \
+             @on(group) {{\n        let out = sink(y.tiles(0, 4), block = 2)\n        \
+             for row in stream(x.tiles(0, 4), block = 2) {{\n            \
+             out.push(lane_sum(row{args}))\n        }}\n    }}\n}}\n"
+        );
+        komorebi_ir::api::build(&source).unwrap_or_else(|d| panic!("{d:?}"))
+    };
+    // the row form's emitter is not there yet: the call, by name (`unit()` is not asked)
+    let refused = tensix::sources(&module("", "")).expect_err("refused");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].code, "K964");
+    assert_eq!(
+        refused[0].what,
+        "the Tensix backend does not emit a call of lane_sum on a row (the row form) yet"
+    );
+    // a run-time scalar on a row: today's `functions.py` text, by its words' names
+    let refused = tensix::sources(&module(", k", ", s: f32")).expect_err("refused");
+    assert_eq!(refused[0].code, "K962", "{refused:?}");
+    assert_eq!(
+        refused[0].what,
+        "k: a run-time scalar of a tile function called on a row: the row form's numbers \
+         are immediates; call it on a stream's tiles, one tile a side"
+    );
+}
+
+#[test]
+fn a_row_read_in_passes_is_a_hint_on_its_loop_and_on_another_loop_refused() {
+    let module = |body: &str| {
+        let source = format!(
+            "module lanes\n\ntile [32, 32]\nformat f32\n\n\
+             func f(x: tile<f32>[4]) -> tile<f32>[4] {{\n    return {body}\n}}\n\n\
+             program Lanes {{\n    handler lanes(x: tensor<f32>, y: tensor<f32>) \
+             @on(group) {{\n        let out = sink(y.tiles(0, 8), block = 4)\n        \
+             for row in stream(x.tiles(0, 8), block = 4) @tensix.passes(2) {{\n            \
+             out.push(f(row))\n        }}\n    }}\n}}\n"
+        );
+        komorebi_ir::api::build(&source).unwrap_or_else(|d| panic!("{d:?}"))
+    };
+    let whats = |body: &str| {
+        let refused = tensix::sources(&module(body)).expect_err("refused");
+        assert!(refused.iter().all(|r| r.code == "K964"), "{refused:?}");
+        refused.into_iter().map(|r| r.what).collect::<Vec<_>>()
+    };
+    // on a row: taken; the call is the row form's emitter's
+    assert_eq!(
+        whats("x - reduce_max(x, axis = row).col()"),
+        ["the Tensix backend does not emit a call of f on a row (the row form) yet"]
+    );
+    // on a loop whose call is element by element
+    assert_eq!(
+        whats("x * 2.0"),
+        ["the Tensix backend does not emit a `@tensix.passes` on other than a loop over a row yet"]
+    );
+}
+
+/// A module of one handler that pushes `f(row)` of a stream of `x` in blocks of 2, `f`
+/// of `body`; its plan's call.
+fn call_of(params: &str, body: &str) -> plan::Call {
+    let source = format!(
+        "module lanes\n\ntile [32, 32]\nformat f32, bf16\n\n\
+         func f({params}) -> tile<f32>[2] {{\n    return {body}\n}}\n\n\
+         program Lanes {{\n    handler lanes(x: tensor<bf16>, y: tensor<f32>, tiles: u32) \
+         @on(group) {{\n        let out = sink(y.tiles(0, tiles), block = 2)\n        \
+         for row in stream(x.tiles(0, tiles), block = 2) {{\n            \
+         out.push(f(row))\n        }}\n    }}\n}}\n"
+    );
+    let module = komorebi_ir::api::build(&source).unwrap_or_else(|d| panic!("{d:?}"));
+    let plan = plan::plan(&module, ProgramId(0), HandlerId(0)).unwrap_or_else(|r| panic!("{r:?}"));
+    match plan.shape {
+        plan::Shape::Mapped {
+            call: Some(call), ..
+        } => call,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_call_that_reduces_along_a_row_carries_its_row() {
+    let row = call_of(
+        "x: tile<bf16>[2]",
+        "x * 0.0 + reduce_sum(x, axis = row).col()",
+    )
+    .row;
+    assert_eq!(
+        row,
+        Some(plan::Row {
+            width: 2,
+            resident: Vec::new(),
+            formats: vec![Format::Bf16],
+        })
+    );
+    // element by element: no row (along a column the checker refuses, K010)
+    assert_eq!(call_of("x: tile<bf16>[2]", "x * 2.0").row, None);
 }

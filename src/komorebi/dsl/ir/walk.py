@@ -72,6 +72,7 @@ class Value:
     rows: int = 1  # a block's rows of tiles: a stream of a column's in [n, 1]
     cols: str = ""  # a block's columns as the text writes them, when not a number
     field: bool = False  # a field of the class, the handler's var (R48)
+    row: bool = False  # a block of a stream of rows (`row=`): its call is the row form
 
 
 @dataclass
@@ -773,7 +774,7 @@ class Handler:
         keywords = {k.arg: k.value for k in call.keywords}
         # `pattern=` and `repeat=` by the keyword, as page_streams reads them
         allowed = {spelling("block"), "pattern"}
-        allowed |= {spelling("write_stream")} if write else {"repeat"}
+        allowed |= {spelling("write_stream")} if write else {"repeat", spelling("row")}
         for key in keywords:
             if key not in allowed:
                 self.refuse(
@@ -877,13 +878,16 @@ class Handler:
         apart."""
         return one_apart(*self.rectangle_of(view)[1])
 
-    def block_of(self, node, call):
+    def block_of(self, node, call, key="block"):
         """A stream's block as the text writes it and its tiles: a number (1 when not
         given, as today's `stream_options`, row=1), a module's int as its number (as
         `int_text` writes one), or `self.<constant>` of the class, the module parameter
-        of its name."""
+        of its name. A stream of rows (`row=W`) is in blocks of the row (`key`)."""
         keywords = {k.arg: k.value for k in call.keywords}
-        block = keywords.get(spelling("block"), ast.Constant(1))
+        if key == "block" and spelling("row") in keywords:
+            key = "row"
+        key = "block" if key == "block_moved" else key
+        block = keywords.get(spelling(key), ast.Constant(1))
         if isinstance(block, ast.Constant) and type(block.value) is int:
             return str(block.value), block.value
         if isinstance(block, ast.Name) and block.id not in self.scope:
@@ -929,6 +933,18 @@ class Handler:
             )
         return f" @tensix.pattern({self.name(names[0])})"
 
+    def passes_of(self, node, calls):
+        """The hint of a stream of rows whose `block=` is another number than its row:
+        `@tensix.passes(b)`, the row moved b tiles at a time (the IR's block is the
+        row); none when it moves the row whole."""
+        call = calls[0]
+        keywords = {k.arg for k in call.keywords}
+        if len(calls) != 1 or not {spelling("row"), spelling("block")} <= keywords:
+            return ""
+        _, row = self.block_of(node, call, "row")
+        _, block = self.block_of(node, call, "block_moved")
+        return "" if block == row else f" @tensix.passes({block})"
+
     def loop(self, node):
         """`for b in km.Stream(t[p], block=n):`, or `for x, y in zip(km.Stream(...),
         km.Stream(...)):` (two streams or more), over its lines."""
@@ -968,7 +984,8 @@ class Handler:
             # `repeat=r` is a counted loop around the stream's loop (reading R46)
             counter = quoted(self.invent("i"))
             lines.append(f"for {counter} in range({repeat}) {{")
-        lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
+        hints = self.pattern_of(node, calls) + self.passes_of(node, calls)
+        lines.append(f"for {held} in {walked}{hints} {{")
         for name, call in zip(names, calls):
             text, block = self.block_of(node, call)
             shaped = self.block_text(node, call)
@@ -977,6 +994,7 @@ class Handler:
                 format=self.scope_format(call),
                 tiles=block,
                 block="" if text == str(block) else text,
+                row=spelling("row") in {k.arg for k in call.keywords},
             )
             if shaped.endswith(", 1]"):  # a column's: n rows of one tile
                 value.tiles, value.rows = 1, block
@@ -1107,6 +1125,14 @@ class Handler:
                 tiles = f"[{value.block or value.rows}, {value.cols or value.tiles}]"
             kinds.append(
                 f"tile<{value.format}>{tiles}" if value.kind == "block" else "f32"
+            )
+        rows = [n for n in names if self.scope[n].kind == "block" and self.scope[n].row]
+        if rows and not along_row(function):
+            self.refuse(
+                node,
+                f"{function.name} on a row with no reduction along it: today calls it "
+                "in the row form, which the IR writes by the function's reduction",
+                "stream its tiles without row=, or reduce along the row in it",
             )
         if "tile<" not in "".join(kinds[:1]):
             self.refuse(
@@ -1469,6 +1495,23 @@ class Body:
     first: int
     names: dict
     helpers: dict
+
+
+def along_row(function):
+    """Whether a tile function's own body reduces along a row (`km.reduce_sum`,
+    `reduce_max` or `reduce_min`): the IR's row form, on a block of the row."""
+    if not isinstance(function, front.TileFunction):
+        return False
+    definition = source_of(function.function)[0]
+    reduces = {
+        spelling(f"math_{k}") for k in ("reduce_sum", "reduce_max", "reduce_min")
+    }
+    return any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr in reduces
+        for n in ast.walk(definition)
+    )
 
 
 def tile_function(text, function, kinds, helpers, result=None):
