@@ -926,6 +926,12 @@ known: the mechanism inside the core. No stall of a processor that only follows 
 mechanism, their wait for the load (`overlay_follow`) has the predictor off too, from
 before the follower parks until 33 instructions after the go or the give-up.
 
+Once, with the reader as it was, a run of that example ended with one wrong result and
+no give-up: one command's values on the broadcast's sender, in a process where cores had
+been given up and recovered before. It was not seen again in 262 further completed runs
+of that reader made to find it (the results of the given-up commands checked too), nor
+in 160 runs of the reader as it is now. It is not explained.
+
 **The rule.** A reader on Blackhole loads an overlay with the predictor off:
 `load_tile` sets `cfg0.DisBp` (CSR `0x7c0`, bit 1) before its first fetch and clears it
 33 instructions after the load, on every way out. The library does this in one
