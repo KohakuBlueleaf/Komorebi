@@ -247,14 +247,15 @@ class EventsMixin:
         group = self.group(event.handle)
         count = self._local(group)[1] if group and group[0] is not None else 0
         read = self.backend.inspect(count)
+        tag = getattr(getattr(self.backend, "port", None), "tag", None)
         if read["given_up"] == self._given_up_seen:
-            block = device_state.inspect(read["block"], self.h)
+            block = device_state.inspect(read["block"], self.h, tag)
             failed = block["reset_failed"] if block["kind"] == "timeout" else 0
             self._reset_failed = (failed & 0xFFFF) - 1, failed >> 16
             self._timeout_cores = block["cores"] if block["kind"] == "timeout" else []
             return False
         self._given_up_seen += 1
-        block = device_state.inspect(read["block"], self.h)
+        block = device_state.inspect(read["block"], self.h, tag)
         ours = (
             block["complete"]
             and block["kind"] == "timeout"

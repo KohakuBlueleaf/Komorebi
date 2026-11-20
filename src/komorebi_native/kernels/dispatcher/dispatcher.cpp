@@ -365,6 +365,7 @@ void kernel_main() {
     td::Inspect inspect;
     inspect.block = block;
     inspect.control = control;
+    inspect.tag = tag;
     uint32_t give_seen = 0;
     const uint64_t leave_limit = (20000 * ticks_us) >> 16;  // the X280's 20 ms
     td::Resets resets;  // the kept lists (load(recover=True)), in DRAM

@@ -218,7 +218,7 @@ def test_a_mock_run_s_inspect_is_the_card_s_decode_of_each_core():
     words = np.zeros((1, h["kStateWords"]), np.uint32)
     keys = set(device_state.core_state(words, 0, h)) | {"read", "live", "trace"}
     for core in cores:  # each read, with the card's live words and no trace entries
-        assert set(core) == keys | {"reset"}
+        assert set(core) == keys | {"reset", "not_there"}
         assert core["read"] and core["trace"] == [] and not core["reset"]
         assert set(core["live"]) == set(device_state.live(np.zeros(64), abi.headers()))
     assert len(run.inspect()) == 120 and run.cores == 120
