@@ -121,3 +121,13 @@ The result, `Emitted`, holds:
 
 A backend's refusal raises `IrError` with each refusal's code, and so does a backend name that
 is not one of these two.
+
+`komorebi_ir.load(program, tensors, chip=None)` gives what a load on Tensix makes. Its
+`tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words and its page
+in DRAM. The result holds:
+- the thread header, its name and text;
+- the kernels, each tensor's layout among the compile arguments;
+- the buffers, each format by the name today's loader gives it (`bfloat16`).
+
+A named chip must be `blackhole` or `wormhole_b0`. A missing tensor, a tensor named twice and a
+name the program does not take are each refused by name.

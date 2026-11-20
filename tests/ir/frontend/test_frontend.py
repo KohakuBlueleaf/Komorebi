@@ -3,7 +3,10 @@ into an IR module (`komorebi.dsl.ir.module`) and compiled with its origin by the
 komorebi-ir wheel; what the IR cannot say yet refused by name, with the class's line.
 """
 
+import importlib.util
 import inspect
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ import komorebi_ir as ir
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.ir import module
+from komorebi.dsl.ir.built import program
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND = (ROOT / "tests" / "ir" / "tensix" / "t1_class.kom").read_text()
@@ -131,3 +135,29 @@ def test_what_the_make_states_beyond_the_module_is_refused_by_name():
         made(Scale, x=paged)
     with pytest.raises(Refused, match="the make's rect="):
         made(Scale, rect=(0, 0, 1, 1))
+
+
+def halves(pairs):
+    return [(p.mover_a, p.mover_b, p.format, p.page_bytes, p.counts()) for p in pairs]
+
+
+def test_the_program_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    # The first lesson's script copied out of the tree: both builds write beside it.
+    script = tmp_path / "t1_class.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "t1_class.py", script)
+    spec = importlib.util.spec_from_file_location("t1_class", script)
+    t1 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "t1_class", t1)  # inspect finds its source
+    spec.loader.exec_module(t1)
+    given = {"l1": 1 << 20, "x": t1.tensor(), "y": t1.tensor()}
+    today = t1.Scale(log=lambda line: None, **given)
+    ours = program(t1.Scale, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "scale.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    for kernel in ("reader", "writer", "compute"):
+        assert ours.kernel_compile_args(kernel) == today.kernel_compile_args(kernel)
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    assert ours.args is None and today.args is None

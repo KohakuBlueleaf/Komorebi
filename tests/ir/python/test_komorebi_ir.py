@@ -199,3 +199,30 @@ def test_emit_refuses_by_name():
     assert [d.code for d in ir.diagnostics(refused.value)] == ["K964"]
     with pytest.raises(ir.IrError, match="K964: .*grid"):
         ir.emit(T6)
+
+
+def test_load_fills_the_layouts_and_names_the_formats_as_the_loader_does():
+    x, y = ir.LoadTensor(2048, [2, 2048]), ir.LoadTensor(2048, [2, 2048])
+    loaded = ir.load(T1, {"y": y, "x": x}, chip="blackhole")
+    assert loaded.thread_name == "scale_thread.h"
+    assert "#define SCALE_X_PAGES 2048u" in loaded.thread
+    assert [(k.processor, k.args) for k in loaded.kernels] == [
+        ("reader", [2, 2048, 2, 2048]),
+        ("writer", [2, 2048, 2, 2048]),
+        ("compute", []),
+    ]
+    assert loaded.kernels[2].options == ir.emit(T1).kernels[2].options
+    assert {b.dtype for b in loaded.buffers} == {"bfloat16"}
+    assert [b.pair for b in loaded.buffers] == [b.pair for b in ir.emit(T1).buffers]
+
+
+def test_load_refuses_by_name():
+    x = ir.LoadTensor(2048, [2, 2048])
+    for tensors, why in [
+        ({"x": x}, "no tensor given for `y`"),
+        ({"x": x, "y": x, "z": x}, "a tensor `z`"),
+    ]:
+        with pytest.raises(ir.IrError, match=why):
+            ir.load(T1, tensors)
+    with pytest.raises(ir.IrError, match="blackhole or wormhole_b0, not `tensix`"):
+        ir.load(T1, {"x": x, "y": x}, chip="tensix")

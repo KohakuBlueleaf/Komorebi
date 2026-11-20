@@ -13,6 +13,7 @@ use pyo3::types::{PyBytes, PyList};
 
 use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
+use crate::backend::tensix::load::LoadTensor;
 use crate::backend::{
     ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Processor, Setting,
 };
@@ -385,11 +386,7 @@ fn kernel<'py>(py: Python<'py>, k: &Kernel) -> PyResult<KernelRow<'py>> {
         .collect();
     let mut options = Vec::new();
     for (name, value) in &k.options {
-        let value = match value {
-            Setting::Bool(b) => b.into_pyobject(py)?.to_owned().into_any(),
-            Setting::Text(t) => t.into_pyobject(py)?.into_any(),
-        };
-        options.push((name.clone(), value));
+        options.push((name.clone(), setting(py, value)?));
     }
     Ok((
         k.source.clone(),
@@ -479,6 +476,84 @@ fn emit<'py>(
     Ok(row.into_pyobject(py)?.into_any())
 }
 
+/// An option's value as Python's: a bool or a str.
+fn setting<'py>(py: Python<'py>, value: &Setting) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match value {
+        Setting::Bool(b) => b.into_pyobject(py)?.to_owned().into_any(),
+        Setting::Text(t) => t.into_pyobject(py)?.into_any(),
+    })
+}
+
+/// A tensor a load is given: (pages, layout words, DRAM page bytes or None).
+type TensorRow = (u64, Vec<u64>, Option<u64>);
+
+/// A load on Tensix (`api::load`) of a module given its tensors by parameter name, on
+/// `chip` when one is named: (thread header's name, its text, kernels, buffers); a
+/// kernel (source, processor, defines, compile arguments, options), a buffer (index,
+/// the loader's format name, page bytes, pages, the pair's other half).
+#[pyfunction]
+#[pyo3(signature = (program, tensors, chip=None))]
+fn load<'py>(
+    py: Python<'py>,
+    program: &Bound<'py, PyAny>,
+    tensors: Vec<(String, TensorRow)>,
+    chip: Option<&str>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let m = module(py, program)?;
+    let given: Vec<(String, LoadTensor)> = tensors
+        .into_iter()
+        .map(|(name, (pages, layout, dram_page))| {
+            let tensor = LoadTensor {
+                pages,
+                layout,
+                dram_page,
+            };
+            (name, tensor)
+        })
+        .collect();
+    let loaded = match api::load::load(&m, &given, chip) {
+        Ok(loaded) => loaded,
+        Err(refusals) => {
+            let rows = refusals
+                .iter()
+                .map(|r| {
+                    let at = r.at.map(|a| format!(" (at {a:?})")).unwrap_or_default();
+                    let message = format!("{}{at}", r.what);
+                    (r.code.to_string(), message, None, None, "error", None, None)
+                })
+                .collect();
+            return Err(error(py, "the load is refused", rows));
+        }
+    };
+    let mut kernels = Vec::new();
+    for k in &loaded.kernels {
+        let processor = match k.processor {
+            Processor::Reader => "reader",
+            Processor::Writer => "writer",
+            Processor::Compute => "compute",
+        };
+        let mut options = Vec::new();
+        for (name, value) in &k.options {
+            options.push((name.clone(), setting(py, value)?));
+        }
+        let row = (
+            k.source.clone(),
+            processor,
+            k.defines.clone(),
+            k.args.clone(),
+            options,
+        );
+        kernels.push(row.into_pyobject(py)?.into_any());
+    }
+    let buffers: Vec<(u32, &str, u64, u64, Option<u32>)> = loaded
+        .buffers
+        .iter()
+        .map(|b| (b.index, b.dtype, b.page_bytes, b.pages, b.pair))
+        .collect();
+    let (name, text) = loaded.thread;
+    Ok((name, text, kernels, buffers).into_pyobject(py)?.into_any())
+}
+
 /// The extension module.
 #[pymodule]
 fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -490,5 +565,6 @@ fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(requirements, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     m.add_function(wrap_pyfunction!(emit, m)?)?;
+    m.add_function(wrap_pyfunction!(load, m)?)?;
     Ok(())
 }

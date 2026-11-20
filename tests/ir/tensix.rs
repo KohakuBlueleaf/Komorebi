@@ -508,3 +508,39 @@ fn the_version_covers_every_framework_header_on_the_disk() {
     listed.sort();
     assert_eq!(listed, on_disk, "the headers the version hashes");
 }
+
+#[test]
+fn a_load_takes_its_tensors_by_name_and_names_formats_as_the_loader_does() {
+    use komorebi_ir::api::load::load;
+    let module = edited("module scale", "module scale");
+    let t = LoadTensor {
+        pages: 2048,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let given = |names: &[&str]| -> Vec<(String, LoadTensor)> {
+        names.iter().map(|n| (n.to_string(), t.clone())).collect()
+    };
+    let loaded = load(&module, &given(&["y", "x"]), Some("wormhole_b0")).expect("loads");
+    assert_eq!(loaded.thread.0, "scale_thread.h");
+    let ordered = [t.clone(), t.clone()];
+    assert_eq!(
+        loaded.thread.1,
+        thread_header(&module, &ordered).expect("the header")
+    );
+    assert!(loaded.buffers.iter().all(|b| b.dtype == "bfloat16"));
+    assert_eq!(loaded.kernels[0].args, [2, 2048, 2, 2048]);
+    let refused = |names: &[&str], chip| load(&module, &given(names), chip).expect_err("refused");
+    assert!(refused(&["x"], None)[0]
+        .what
+        .contains("no tensor given for `y`"));
+    assert!(refused(&["x", "y", "x"], None)[0]
+        .what
+        .contains("given twice"));
+    assert!(refused(&["x", "y", "z"], None)[0]
+        .what
+        .contains("a tensor `z`"));
+    assert!(refused(&["x", "y"], Some("grayskull"))[0]
+        .what
+        .contains("not `grayskull`"));
+}

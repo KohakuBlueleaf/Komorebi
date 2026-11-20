@@ -31,3 +31,13 @@ def emit(
     list[tuple[int, str, int, int, int | None]],
     list[tuple[str, list[str]]],
 ]: ...
+def load(
+    program: str | bytes,
+    tensors: list[tuple[str, tuple[int, list[int], int | None]]],
+    chip: str | None = None,
+) -> tuple[
+    str,
+    str,
+    list[tuple],
+    list[tuple[int, str, int, int, int | None]],
+]: ...

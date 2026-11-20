@@ -189,6 +189,65 @@ def emit(
     )
 
 
+class LoadTensor(NamedTuple):
+    """A tensor a load is given for a tensor parameter: its pages, its layout as the
+    kernels' compile arguments take it (tensors of one layout share a kind), and the
+    bytes of a page in DRAM when a thread may fetch and store it."""
+
+    pages: int
+    layout: list[int]
+    dram_page: int | None = None
+
+
+class LoadedKernel(NamedTuple):
+    """A kernel as a load hands it to the runtime: its compile arguments are words,
+    each tensor's layout in its place."""
+
+    source: str
+    processor: str
+    defines: list[tuple[str, str]]
+    args: list[int]
+    options: list[tuple[str, bool | str]]
+
+
+class LoadBuffer(NamedTuple):
+    """A buffer as a load makes it: its format by the loader's name (``bfloat16``)."""
+
+    index: int
+    dtype: str
+    page_bytes: int
+    pages: int
+    pair: int | None
+
+
+class Loaded(NamedTuple):
+    """What a load on Tensix makes from its tensors: the thread header (its name and
+    text), the kernels and the buffers."""
+
+    thread_name: str
+    thread: str
+    kernels: list[LoadedKernel]
+    buffers: list[LoadBuffer]
+
+
+def load(
+    program: str | bytes, tensors: dict[str, LoadTensor], chip: str | None = None
+) -> Loaded:
+    """A load of a module on Tensix given a tensor for each tensor parameter, by name;
+    ``chip`` (``blackhole``, ``wormhole_b0``) checked when named. Nothing is written
+    or run."""
+    rows = [
+        (name, (t.pages, list(t.layout), t.dram_page)) for name, t in tensors.items()
+    ]
+    name, text, kernels, buffers = _rs.load(program, rows, chip)
+    return Loaded(
+        name,
+        text,
+        [LoadedKernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
+        [LoadBuffer(*b) for b in buffers],
+    )
+
+
 __all__ = [
     "Buffer",
     "Diagnostic",
@@ -197,6 +256,10 @@ __all__ = [
     "Hashes",
     "IrError",
     "Kernel",
+    "LoadBuffer",
+    "LoadTensor",
+    "Loaded",
+    "LoadedKernel",
     "Origin",
     "Place",
     "Requirement",
@@ -207,6 +270,7 @@ __all__ = [
     "emit",
     "format",
     "hashes",
+    "load",
     "requirements",
     "run",
 ]

@@ -58,6 +58,13 @@ fn argument(name: &str) -> String {
     }
 }
 
+/// The names of `module`'s tensor parameters in the order a load takes its tensors:
+/// as the handlers take them, each once.
+pub fn tensor_names(module: &Module) -> Result<Vec<String>, Vec<Refusal>> {
+    let (plans, _) = super::planned(module)?;
+    Ok(super::tensors(&plans))
+}
+
 /// The thread header of `module` for a load given `tensors`, one for each tensor
 /// parameter in the order the handlers take them; or every refusal of the module.
 pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, Vec<Refusal>> {
