@@ -115,9 +115,20 @@ namespace td {
         return block + (cluster <= 1 ? kTbBytes : kTbFar + (cluster - 2) * kTaBytes);
     }
 
+    // The argument `offset` (kTdTail*) after the island table: 3 words an island of
+    // the session, none without a link.
+    inline uint32_t tail_arg(uint32_t offset) {
+        const uint32_t islands = (get_arg_val<uint32_t>(kTdLinkIsland) >> 16) & 0x7FFFu;
+        return kTdLinkEntries + 3 * islands + offset;
+    }
+
     // The argument of cluster c's thread tile (its work area's: the next one).
     inline uint32_t thread_tile_arg(uint32_t cluster) {
-        return cluster <= 1 ? kTdThreadTile : kTdFarThread + 2 * (cluster - 2);
+        return (
+            cluster <= 1
+                ? kTdThreadTile
+                : tail_arg(kTdTailFarThread + 2 * (cluster - 2))
+        );
     }
 
     static_assert(kTdThreadTile + 1 == kTdThreadWork, "a tile, then its work area");

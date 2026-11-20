@@ -10,9 +10,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from komorebi.islands.parts.link_plan import X280_FLAT, LinkPlanMixin
+from komorebi.errors import KomorebiError
+from komorebi.islands.parts.link_plan import (
+    X280_FLAT,
+    X280_WAVE_ISLANDS_MAX,
+    LinkPlanMixin,
+)
+from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.run import IslandRun
 from komorebi.program.description import Dynamic
+from komorebi.session import dispatch
 
 ROOT = Path(__file__).resolve().parents[3]
 NATIVE = ROOT / "src" / "komorebi_native"
@@ -100,6 +107,26 @@ def test_x280_ranks_over_islands_of_too_many_ranks_are_refused():
     made, _ = example_program()
     with pytest.raises(ValueError, match=f"at most {X280_FLAT - 1} ranks"):
         plan(ranks=X280_FLAT)._linked([made, made])
+
+
+def test_more_islands_than_the_x280_dispatcher_s_wave_queue_are_refused_by_name():
+    """The X280 dispatcher's wave (waves.h) needs a queue place an island in one turn,
+    of 16: at most 17 islands; the Tensix dispatcher sends its wave over turns."""
+
+    def owner(count, kind):
+        islands = SimpleNamespace(islands=list(range(count)))
+        return SimpleNamespace(graph=islands, dispatcher=kind)
+
+    most = X280_WAVE_ISLANDS_MAX
+    assert most == 17
+    assert LoadMixin._islands_bound(owner(most, dispatch.X280)) == {
+        "KM_ISLANDS_MAX": most
+    }
+    with pytest.raises(KomorebiError, match="wave queue holds 16: at most 17 islands"):
+        LoadMixin._islands_bound(owner(most + 1, dispatch.X280))
+    assert LoadMixin._islands_bound(owner(31, dispatch.TENSIX)) == {
+        "KM_ISLANDS_MAX": 31
+    }
 
 
 def island_run(made):

@@ -81,6 +81,9 @@ class Built:
 
         return types.SimpleNamespace(build=build)
 
+    def release_l1(self):
+        """The attempt's L1 tensors given back (none here)."""
+
 
 def build_levels(monkeypatch, backend, kept=0, arch="wormhole_b0"):
     """_build_levels of a program on `arch`, the level kept for it `kept`: (the levels
@@ -93,7 +96,7 @@ def build_levels(monkeypatch, backend, kept=0, arch="wormhole_b0"):
         lambda program, arch, level: saved.setdefault("level", level),
     )
     session = types.SimpleNamespace(arch=arch, log=lines.append, _dispatcher=None)
-    program = types.SimpleNamespace(name="p")
+    program = types.SimpleNamespace(name="p", defines={})  # one card: no near build
     load.LoadMixin._build_levels(session, backend, program, None, (program,))
     return backend.levels, saved.get("level"), lines
 
@@ -109,9 +112,15 @@ def test_the_level_kept_is_the_first_one_built(monkeypatch):
     assert levels == [2] and kept == 2
 
 
-def test_over_at_the_highest_level_or_another_error_is_the_build_s(monkeypatch):
-    with pytest.raises(ProgramError, match="overflows region:0"):
+def test_over_at_the_highest_level_is_refused_by_name_another_error_is_the_build_s(
+    monkeypatch,
+):
+    with pytest.raises(ProgramError) as refused:
         build_levels(monkeypatch, Built(fits=5))
+    assert str(refused.value) == (
+        "p: the writer (movement) is 17,992 B of NCRISC's 16,384 B code region at "
+        "writer level 4, the highest: 1,608 B over"
+    )
     with pytest.raises(ProgramError, match="not declared"):
         build_levels(monkeypatch, Built(fits=1, error="'x' was not declared"))
 
@@ -134,6 +143,23 @@ def test_a_level_is_kept_by_program_and_chip(tmp_path, monkeypatch):
     assert remembered.writer_level(program, "blackhole") == 0
     source.write_text("// another writer\n")  # other code: no level kept for it
     assert remembered.writer_level(program, "wormhole_b0") == 0
+
+
+def test_a_near_build_is_kept_with_its_level_and_read_back(tmp_path, monkeypatch):
+    # its next load (the next island's) builds near at first: no far build again
+    monkeypatch.setattr(remembered, "_path", lambda: tmp_path / "kernel_buffer.json")
+    source = tmp_path / "writer.cpp"
+    source.write_text("// a writer\n")
+    program = types.SimpleNamespace(
+        name="p", sources=lambda: {"writer": source}, defines={}, compile_args=None
+    )
+    assert remembered.writer_near(program, "wormhole_b0") is None
+    remembered.keep_writer_near(program, "wormhole_b0", (26552, 16384))
+    remembered.keep_writer_level(program, "wormhole_b0", 2)  # rewrites the file
+    assert remembered.writer_near(program, "wormhole_b0") == (26552, 16384)
+    assert remembered.writer_level(program, "wormhole_b0") == 2
+    remembered.keep_writer_near(program, "wormhole_b0", None)  # built far again
+    assert remembered.writer_near(program, "wormhole_b0") is None
 
 
 def test_a_wormhole_writer_part_is_at_o2_below_level_4_at_the_writers_own_from_it():

@@ -3,18 +3,22 @@
 import copy
 import dataclasses
 import secrets
+import time
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
 from komorebi import abi
+from komorebi.device import chips, mock
 from komorebi.errors import (
     KomorebiError,
+    _CoresNotFree,
 )
 from komorebi.islands import records as island_records
 from komorebi.program import description as program_module
 from komorebi.program import several as programs_module
+from komorebi.program.checks import far_collectives
 from komorebi.program.description import Program
 from komorebi.session import sizes
 from komorebi.session import state as device_state
@@ -25,6 +29,9 @@ LINK_ARGS = 14
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 ISLANDS_MAX = 16  # km_abi.h's KM_ISLANDS_MAX: a load of more islands defines its own
 ROUND_ISLANDS_MAX = 64  # a dispatcher's round answers, a bit an island (waves.h)
+# The X280 dispatcher's wave (waves.h): a packet to every other island in one turn, into
+# link core 0's queue of 16 (KMD_LINK_OUT); the Tensix dispatcher's goes over turns
+X280_WAVE_ISLANDS_MAX = 17
 
 
 def link_tail(count):
@@ -71,6 +78,151 @@ def _with_link(program, words, services=1):
     if services > 1:
         linked.defines["KM_MESSAGE_SERVICES"] = services
     return linked
+
+
+def _address(landing):
+    """A landing's DRAM address as the link words take it: 0 when there is none."""
+    return 0 if landing is None else landing.address
+
+
+def _held(programs):
+    """The Programs of a load of `programs` (programs, or plans of the runtime's
+    form: their programs)."""
+    return [
+        each
+        for one in programs
+        for each in (one.programs if isinstance(one, programs_module.Plan) else [one])
+    ]
+
+
+def _buffer_bytes(one, free):
+    """The L1 the buffers of `one` take on a core: a Program's buffers; a plan's (the
+    runtime's form) largest group's joint buffers, and on a plan whose groups switch
+    its largest program's too (the room every group keeps). `free`: the bytes a core
+    leaves for buffers (joint_buffers' refusal)."""
+    if not isinstance(one, programs_module.Plan):
+        return sum(b.page_bytes * b.pages for b in one.buffers)
+    held = [[one.programs[index] for index in group.programs] for group in one.groups]
+    if one.switch:
+        held += [[program] for program in one.programs]
+    return max(
+        (
+            sum(b.page_bytes * b.pages for b in programs_module.joint_buffers(h, free))
+            for h in held
+        ),
+        default=0,
+    )
+
+
+# The collectives' landing (km_ask.hpp land_run): its slots a port, and the most bytes
+# a slot holds (whole pages)
+LANDING_SLOTS = 2
+LANDING_CHUNK = 32768
+
+
+def quiet_faults(read, h, n, rooms, far):
+    """What one READ of the clear (_quiet_read's) says is still on its way, as lines
+    naming the island and link core, or the rank; [] when every count of lines sent
+    equals its count taken, answered, confirmed or credited back and none is pending
+    (hazards.md, the links before the raise); `n`, `far`, `rooms` as _quiet_page's."""
+    tail = h["KM_PUT_TAIL"]
+    put, ask = h["KM_QUIET_PUT"] // 4, h["KM_QUIET_ASK"] // 4
+    pending = h["KM_QUIET_QUEUE"] // 4 + h["KM_QUEUE_PENDING_COUNT"]
+    ring = h["KM_QUIET_RING"] // 4
+    places = h["KM_QUIET_FAR"] // 4
+    forward = (h["KM_QUIET_FAR"] + far) // 4
+    links, faults = read["links"], []
+    for (island, core), (there, across, first, words) in sorted(links.items()):
+        name = f"island {island}'s link core {core} (toward island {there})"
+        cpus = int(words[put + (h["KM_PUT_CPUS"] - tail) // 4]) or 1
+        taken = [
+            int(words[put + (h["KM_PUT_TAKEN"] - tail) // 4 + j]) for j in range(cpus)
+        ]
+        served = [
+            int(words[ask + (h["KM_ASK_SERVED"] - h["KM_ASK_TAIL"]) // 4 + j])
+            for j in range(cpus)
+        ]
+        if core == first and any(t != int(words[put]) for t in taken):
+            faults.append(
+                f"{name}: put queue lines numbered {int(words[put])}, taken by its "
+                f"page CPUs {taken}"
+            )
+        gets = int(words[ask + (h["KM_ASK_TAKEN"] - h["KM_ASK_TAIL"]) // 4])
+        if any(s != gets for s in served):
+            faults.append(f"{name}: gets sent across {gets}, served back {served}")
+        far_words = links.get((there, across))
+        sent = int(words[put + (h["KM_PUT_DONE"] - tail) // 4])
+        if far_words is not None:
+            took = int(far_words[-1][put + (h["KM_PUT_CONFIRMED"] - tail) // 4])
+            if sent != took:
+                faults.append(
+                    f"{name}: put lines sent across {sent}, taken across {took}"
+                )
+        if int(words[pending]):
+            faults.append(f"{name}: {int(words[pending])} lines taken, not yet done")
+        for cpu in range(2):
+            written = int(words[ring + 4 * cpu + h["KM_PUT_RING_TAIL"] // 4])
+            gone = int(words[ring + 4 * cpu + h["KM_PUT_RING_SENT"] // 4])
+            if written != gone:
+                faults.append(
+                    f"{name}: CPU {cpu}'s ring words written {written}, sent {gone}"
+                )
+        if far:
+            sent = words[places : places + n].astype(np.int64)
+            back = words[places + n : places + 2 * n].astype(np.int64)
+            faults.extend(
+                f"{name}: far put lines to island {int(holder)} sent "
+                f"{int(sent[holder])}, done there {int(back[holder])}"
+                for holder in np.flatnonzero(sent != back)
+            )
+            counted = words[places + 3 * n : places + 3 * n + h["KM_FAR_LINES"] * n]
+            if np.any(counted):
+                faults.append(
+                    f"{name}: far places hold {int(np.count_nonzero(counted))} lines "
+                    "with pages counted, not yet done"
+                )
+        for room in range(rooms):
+            landed = int(words[forward + 4 * room])
+            back = int(words[forward + 4 * rooms + 4 * room])
+            taken_here = int(words[forward + 8 * rooms + room])
+            sent = int(words[forward + 8 * rooms + rooms + room])
+            if sent != back:
+                faults.append(
+                    f"{name}: forward room {room}'s packets sent on {sent}, taken "
+                    f"there {back}"
+                )
+            if landed != taken_here:
+                faults.append(
+                    f"{name}: forward room {room}'s packets landed {landed}, passed on "
+                    f"{taken_here}"
+                )
+    number, confirmed = (
+        (h[at] - h["KM_OWN_PUT_SENT"]) // 4
+        for at in ("KM_OWN_PUT_NUMBER", "KM_OWN_PUT_CONFIRMED")
+    )
+    for (island, core), words in sorted(read["ranks"].items()):
+        for cpu in range(2):
+            own = words[16 * cpu : 16 * cpu + 16]
+            for parity in range(2):
+                lines = int(own[number + parity])
+                done = int(own[confirmed + parity]) & ~h["KM_OWN_REFUSED"]
+                if lines != done:
+                    faults.append(
+                        f"island {island}'s core {core}: CPU {cpu}'s put lines "
+                        f"(parity {parity}) numbered {lines:#x}, confirmed {done:#x}"
+                    )
+    return faults
+
+
+def _same(before, now):
+    """Two READs of the clear read the same words everywhere."""
+    was = {("link", *k): v[-1] for k, v in before["links"].items()}
+    was |= {("rank", *k): v for k, v in before["ranks"].items()}
+    new = {("link", *k): v[-1] for k, v in now["links"].items()}
+    new |= {("rank", *k): v for k, v in now["ranks"].items()}
+    return was.keys() == new.keys() and all(
+        np.array_equal(words, new[at]) for at, words in was.items()
+    )
 
 
 class LinkPlanMixin:
@@ -212,13 +364,17 @@ class LinkPlanMixin:
         return self.graph.next_link(here, there)
 
     def _landings(self, h):
-        """Each island's landing of km::put_bytes' batches, in DRAM: a page a holder,
-        source island and put line owner, then a holder and far place (a split card:
-        island 0's for every island). Three or more cards: at one address on each."""
+        """Each island's landing of km::put_bytes' batches, in DRAM: what is put to it,
+        a page a source island and put line owner, then a far place (a split card:
+        island 0's, every holder's). Three or more cards: at one address on each. None
+        on a chip whose links write no far DRAM: its batches are refused, none lands."""
         size = h["KM_PUT_BATCH_BYTES"]
         n = len(self.sessions)
-        pages = n * n * h["KM_QUEUE_LINES"] + (
-            n * n * h["KM_FAR_LINES"] if n > 2 else 0
+        if not chips.chip(self.arch).link_far_dram:  # km_ask.hpp: KM_LINK_NO_FAR_DRAM
+            return [None] * n
+        holders = n if self.split > 1 else 1  # km_pages.hpp's landing_holders
+        pages = holders * n * h["KM_QUEUE_LINES"] + (
+            holders * n * h["KM_FAR_LINES"] if n > 2 else 0
         )
         landings = []
         for island, session in enumerate(self.sessions):
@@ -397,6 +553,8 @@ class LinkPlanMixin:
         self._areas = []  # per island: the link area's address
         self._counts = []
         self._counts_puts = []  # the same with each put block (crossings(puts=True))
+        self._quiet_links = []  # the clear's rows of the words that count lines (QUIET)
+        self._quiet_ranks = {}  # and each card's rows of its ranks' own put words
         # the page CPUs (links 1 on when a pair has more): every link when no message
         # service holds link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
@@ -409,6 +567,7 @@ class LinkPlanMixin:
             )
         landings = self._landings(h)
         self._coll_gen = {}  # a card's collectives' generation pages (session: tensor)
+        self._tree_landing = self._tree_landing_of(programs)
         for island, session in enumerate(self.sessions):
             far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
@@ -427,14 +586,15 @@ class LinkPlanMixin:
                 else:
                     words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
                     words[:, h["KM_PUT_CPUS"] // 4] = cpus
-                    words[:, h["KM_PUT_LANDING"] // 4] = landings[far].address
-                    words[:, h["KM_PUT_LANDED"] // 4] = landings[island].address
+                    words[:, h["KM_PUT_LANDING"] // 4] = _address(landings[far])
+                    words[:, h["KM_PUT_LANDED"] // 4] = _address(landings[island])
                     tensor = session.tensor(words, "uint32", shard_grid=(columns, rows))
                     area = tensor.address
                     held |= {"link area": [tensor]}
                 self._held.append(held)
                 self._link_areas += [t for each in held.values() for t in each]
-                self._link_areas.append(landings[island])
+                if landings[island] is not None:
+                    self._link_areas.append(landings[island])
             if area != (self._areas or [area])[0]:
                 raise KomorebiError(
                     f"island {island}: the link area is at {area:#x}, island 0's at "
@@ -459,17 +619,35 @@ class LinkPlanMixin:
                         (self.per * len(self.link_cores[island]), page // 4), "uint32"
                     )
                 )
+            # the clear's (quiet): zeros, the words a core without them never writes
+            quiet = self.per * len(self.link_cores[island]), self._quiet_page()[0] // 4
+            self._quiet_links.append(
+                session.tensor(np.zeros(quiet, np.uint32), "uint32")
+            )
+            if self.split == 1 or not island:  # a card's ranks: a page a core
+                columns, rows = session.grid
+                self._quiet_ranks[island] = session.tensor(
+                    np.zeros((columns * rows, h["KM_QUIET_RANK_PAGE"] // 4), np.uint32),
+                    "uint32",
+                )
             core = self.link_cores[island][0]
             plans.append(island_records.LinkPlan(self.graph, island, far, core, area))
             plans[-1].own = own.address
             plans[-1].table = self._held[-1 if self.split == 1 else 0]["island table"]
             plans[-1].table = plans[-1].table[0].address
+            if self._tree_landing and plans[-1].table != plans[0].table:
+                raise KomorebiError(  # a sender writes its neighbour's slots by its own
+                    f"island {island}: the island table (the collectives' landing) is "
+                    f"at {plans[-1].table:#x}, island 0's at {plans[0].table:#x}: the "
+                    "islands' L1 differs (an L1 tensor made on one island alone); make "
+                    "every L1 tensor on the session (shard_grid=)"
+                )
             plans[-1].ports = self._port_words(island)
             if apart:
                 words = np.zeros(bytes_ // 4, np.uint32)
                 words[h["KM_PUT_CPUS"] // 4] = cpus
-                words[h["KM_PUT_LANDING"] // 4] = landings[far].address
-                words[h["KM_PUT_LANDED"] // 4] = landings[island].address
+                words[h["KM_PUT_LANDING"] // 4] = _address(landings[far])
+                words[h["KM_PUT_LANDED"] // 4] = _address(landings[island])
                 plans[-1].apart = (
                     [(c % columns, c // columns) for c in self.link_cores[island]],
                     words.tolist(),
@@ -515,19 +693,65 @@ class LinkPlanMixin:
                 )
         return words.reshape(-1)
 
+    def _tree_landing_of(self, programs):
+        """(slots a port, bytes a slot) of the collectives' landing (land_run) where
+        links may not target a far DRAM and the load's movers call a collective, else
+        None: whole pages up to LANDING_CHUNK a slot, from half the L1 the buffers leave
+        at most; two slots of one page the floor, refused by name below."""
+        if chips.chip(self.arch).link_far_dram or not programs:
+            return None
+        if not far_collectives.wanted(_held(programs)):
+            return None
+        session = self.sessions[0]
+        page = max(session.largest_page, 16)
+        free = session.l1()[1]
+        left = free - max(  # its buffers (the load's budget, the rest)
+            _buffer_bytes(one, free) for one in programs
+        )
+        slots, ports = LANDING_SLOTS, abi.headers()["KM_ISLAND_PORTS_MAX"]
+        credits = 32 * ports * slots
+
+        row = abi.headers()["KM_COLL_GEN_ALIGN"] + abi.headers()["KM_COLL_GEN_BYTES"]
+
+        def core(chunk):  # room to align, the generation row, the credits, a staging
+            return row + credits + (1 + ports * slots) * (32 + chunk)  # slot, the slots
+
+        fit = (left // 2 - row - credits) // (1 + ports * slots) - 32
+        chunk = min(fit, max(LANDING_CHUNK // page, 1) * page) // page * page
+        if chunk < page:
+            raise KomorebiError(
+                f"the collectives' landing (km::all_reduce and the others on "
+                f"{self.arch}: their pages land in the far leader's L1) needs "
+                f"{core(page)} B of L1 on every core at least, {slots} slots of one "
+                f"{page} B page a port, at most half of what the load leaves "
+                f"({max(left, 0)} B): fewer or smaller buffers"
+            )
+        named = "the floor: " if chunk == page else ""
+        self.log(
+            f"collectives' landing: {slots} slots a port of {chunk} B ({named}"
+            f"{chunk // page} pages of {page} B), {core(chunk)} B a core"
+        )
+        return slots, chunk
+
     def _table_of(self, session):
-        """The island table in the L1 of every core of `session`'s card, each core its
-        own island's (graph.table): KM_ISLAND_TABLE. After the meeting words (a rank
-        each) come the collectives' generation pages' DRAM address and page bytes,
-        then at the next KM_COLL_GEN_ALIGN bytes the core's generation row."""
+        """The island table on every core of `session`'s card (graph.table,
+        KM_ISLAND_TABLE), then the meeting words (a rank each), the generation pages'
+        address and page bytes (`_coll_gen`), the landing's slots and bytes (else 0), at
+        KM_COLL_GEN_ALIGN bytes the row, the landing."""
         columns, rows = session.grid
         count = len(self.graph.islands)
         ranks = max(self.graph.count(island) for island in range(count))
         h = abi.headers()
-        # entries (2 words an island), far tiles (2), counts, children, the meeting
-        # words (their number, a rank each), the generation words, room for its row
+        # entries (2 words an island), far tiles, counts, children, meeting words (their
+        # number, a rank each), generation's 2 words, landing's 2, room for the row
         meet = 6 * count + 1 + ranks
-        size = meet + 2 + h["KM_COLL_GEN_ALIGN"] // 4 + h["KM_COLL_GEN_BYTES"] // 4
+        size = meet + 4 + h["KM_COLL_GEN_ALIGN"] // 4 + h["KM_COLL_GEN_BYTES"] // 4
+        landing = getattr(self, "_tree_landing", None)
+        if landing:  # only a load with a converted collective reads these words
+            slots, chunk = landing
+            ports = h["KM_ISLAND_PORTS_MAX"]
+            size += 8 * ports * slots  # the credits, after the row
+            size += (1 + ports * slots) * (8 + chunk // 4)
         # 64 B a page, its first 32 B the words: a live transfer moves whole 64 B
         gen = np.zeros((columns * rows, 16), np.uint32)
         gen[:, h["KM_COLL_GEN_NOW"]] = 1
@@ -536,6 +760,8 @@ class LinkPlanMixin:
         words = np.zeros((columns * rows, -(-size // 16) * 16), np.uint32)
         words[:, 6 * count] = ranks
         words[:, meet : meet + 2] = [gen.address, gen.aligned_page_bytes]
+        if landing:
+            words[:, meet + 2 : meet + 4] = landing
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)
@@ -564,6 +790,17 @@ class LinkPlanMixin:
                     islands |= dict.fromkeys(each.cores, island)
             words = session.read(tensor)[0].view(np.uint32)
             out.append((session, tensor, islands, words.reshape(columns * rows, -1)))
+        return out
+
+    def landing_drops(self):
+        """The slots of an earlier generation (a collective given up before) the
+        collectives' landing dropped since the load: {(island, core): count}, every
+        core that dropped one."""
+        drop, out = abi.headers()["KM_COLL_GEN_DROPS"], {}
+        for _session, _tensor, islands, words in self._gen_words():
+            drops = words[:, drop]
+            for core in np.flatnonzero(drops):
+                out[(islands[int(core)], int(core))] = int(drops[core])
         return out
 
     def coll_marked(self):
@@ -603,8 +840,141 @@ class LinkPlanMixin:
             generation = int(words[0, now])
             session.write(tensor, words.view(np.uint8))
         if generation is not None:
-            self.log(f"collectives: generation {generation}")
+            drops = self.landing_drops()
+            self.log(
+                f"collectives: generation {generation}"
+                + (
+                    f", {sum(drops.values())} slots of before dropped so far"
+                    if drops
+                    else ""
+                )
+            )
         return generation
+
+    def _quiet_page(self):
+        """(bytes of a link CPU's QUIET row, the islands of its far words, the forward
+        rooms, the far words' bytes), as the load's KM_FAR_PUTS and KM_FORWARD built
+        the link cores (km_pages.hpp pages_quiet)."""
+        h = abi.headers()
+        defines = self._forward
+        count = len(self.graph.islands)
+        n = count if count > ISLANDS_MAX else h["KM_ISLANDS_MAX"]
+        far = 0
+        if defines.get("KM_FAR_PUTS"):
+            far = -(-(12 + 4 * h["KM_FAR_LINES"]) * n // 64) * 64
+        rooms = 0
+        if defines.get("KM_FORWARD"):
+            rooms = (
+                defines["KM_FORWARD_CORES"]
+                * defines["KM_FORWARD_CPUS"]
+                * defines["KM_FORWARD_LEVELS"]
+            )
+        forward = -(-(40 * rooms + 4) // 64) * 64 if rooms else 0
+        return h["KM_QUIET_FAR"] + far + forward, n, rooms, far
+
+    def _quiet_read(self, timeout=10.0):
+        """One READ of run.clear_collectives, every command done: a QUIET command to
+        each link core and an ENTRY (KM_ENTRY_QUIET) to each rank, waited for. {"links":
+        {(island, link core): (island faced, link core across, first toward it, words)},
+        "ranks": {(island, core): words}}."""
+        h = abi.headers()
+        page = self._quiet_page()[0]
+        waits = []
+        for island in range(len(self.graph.islands)):
+            words = [0] * 10
+            words[h["KM_PAGES_TO"]] = self._quiet_links[island].address
+            words[h["KM_PAGES_PAGE"]] = page
+            words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_QUIET"] << 24
+            part = self.run.island(island)
+            handle = part._queue_command(
+                h["KM_HANDLER_PAGES"],
+                self.graph.link_group(island),
+                words,
+                budget=timeout,
+            )
+            part.own_commands[handle] = "the links' line counts for clear_collectives"
+            waits.append((island, handle))
+        self.wait_together(waits, timeout)
+        to = [
+            self._quiet_ranks[0 if self.split > 1 else island].address
+            for island in range(len(self.graph.islands))
+        ]
+        read = [[h["KM_ENTRY_QUIET"], h["KM_QUIET_READ"], at] for at in to]
+        self.run._served(h["KM_HANDLER_ENTRY"], read, timeout)
+        links = {}
+        for island in range(len(self.graph.islands)):
+            (raw,) = self.sessions[island].read(self._quiet_links[island])
+            rows = raw.view("<u4")
+            per = self.graph.per
+            for at in range(per * len(self.link_cores[island])):
+                there, first, _ = self.pair(island, at // per)
+                if at - per * first >= self.graph.between(island, there).count:
+                    continue  # no link of this CPU: no row
+                if (island, at // per) not in links:  # a core's words: its first row
+                    across = self.graph.link_cores_toward(there, island)[0]
+                    links[(island, at // per)] = (
+                        there,
+                        across + at // per - first,
+                        first,
+                        rows[at].copy(),
+                    )
+        ranks = {}
+        for index, tensor in self._quiet_ranks.items():
+            session = self.sessions[index]
+            columns, rows = session.grid
+            islands = dict.fromkeys(range(columns * rows), index)
+            if self.split > 1:  # one card: each core its island's
+                for island, each in enumerate(self.graph.islands):
+                    islands |= dict.fromkeys(each.cores, island)
+            words = session.read(tensor)[0].view("<u4").reshape(columns * rows, -1)
+            for core in range(columns * rows):
+                ranks[(islands[core], core)] = words[core].copy()
+        return {"links": links, "ranks": ranks}
+
+    def _quiet(self, timeout=10.0, named=None):
+        """run.clear_collectives' proof that no line is anywhere: READ until two passes
+        in a row read the same balanced words (quiet_faults) within `timeout`, then
+        SETTLE on every rank; else KomorebiError by name, as while a core still settles
+        (the run goes on). `named`: the clear's limit as its errors say it."""
+        if mock.active():  # a mock run moves no line and serves no command
+            return
+        h = abi.headers()
+        _page, n, rooms, far = self._quiet_page()
+        until = time.monotonic() + timeout
+        named = timeout if named is None else named
+        before, faults = None, ["no READ finished"]
+        while True:
+            left = max(until - time.monotonic(), 0.1)
+            try:
+                now = self._quiet_read(left)
+            except _CoresNotFree as error:  # a core still settles a given-up command
+                raise KomorebiError(
+                    f"clear_collectives: a core still waits for a line of the "
+                    f"given-up command after {named:.3g} s, so no rank was settled and "
+                    "the generation was not raised; the run goes on: call it again "
+                    "once the line passes (a core waits up to the load's wait limit "
+                    f"for its own lines): {error}"
+                ) from None
+            faults = quiet_faults(now, h, n, rooms, far)
+            if not faults and before is not None and _same(before, now):
+                break
+            if time.monotonic() >= until:
+                if not faults:
+                    faults = ["two READs in a row never read the same words"]
+                raise KomorebiError(
+                    "clear_collectives: the links were not quiet within "
+                    f"{named:.3g} s, so no rank was settled and the generation was "
+                    "not raised: "
+                    + "; ".join(faults[:8])
+                    + (f"; and {len(faults) - 8} more" if len(faults) > 8 else "")
+                    + "; a line of a given-up command is still on its way or lost: "
+                    "this load cannot be made safe: load it again"
+                )
+            before = now
+        words = [h["KM_ENTRY_QUIET"], h["KM_QUIET_SETTLE"]]
+        self.run._served(
+            h["KM_HANDLER_ENTRY"], [words] * len(self.graph.islands), timeout
+        )
 
     def message_services(self):
         """The message services an island runs: between two cards with

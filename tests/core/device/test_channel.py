@@ -147,7 +147,7 @@ def test_a_read_goes_through_the_run_the_kernel_or_the_device():
     session = Session(channel=0)
     session._module = object()
     tensor = SimpleNamespace(in_dram=True, aligned_page_bytes=16, page_bytes=16)
-    tensor.kept = None
+    tensor.kept, tensor.dtype = None, "float32"  # write() checks a block format
     tensor.pages = 4
     with pytest.raises(ChannelError, match="host channel"):
         session.write(tensor, np.zeros((2, 16), np.uint8))

@@ -154,6 +154,7 @@ alone (1568) is 139.0 cycles: the two products' estimate.
 | "a product after vector code: the left operand of `@` is a silu, computed on the vector unit" (or a product, its result in `Dst`) | the matrix unit reads its operands unpacked from a buffer into SrcA and SrcB: the value has to be packed and given to a second body |
 | "the unpack feeds a product one 32 x 32 tile a side (x.tiles[t]); the left operand of `@` is a row block" | one unpack call feeds one tile a side; a K loop over a row is not lowered |
 | "N products: Dst holds 4 operand tiles of a body" | each product's result stays in its own `Dst` tile for the vector code |
+| "f has a matrix product (`@`) and copies x, c into DST beside it" (a class's call) | the product's unpack setup replaces the copy's, and the core hangs ([hazards](hazards.md#a-tile-function-with-a-product-and-an-operand-copied-beside-it)): the product and the element-wise rest are two handlers |
 
 ## What a tile function may contain
 
@@ -210,7 +211,9 @@ stored values):
 | `floor(-0.0)`; `floor` of a negative subnormal (float32) | +0; 0 (the unit reads the subnormal as 0) | -0; -1 |
 The two families are not mixed in one function. Operands of different formats of one
 family are taken: the call sets SrcA's format again before each unpack into it (a
-product's W, each copied operand) when those are not of one format. Constants become `SFPLOADI` immediates, or one of the constant registers
+product's W, each copied operand) when those are not of one format, and before
+each copied operand its own `copy_init` when float32 operands (unpacked to Dst) are
+copied beside 16-bit ones (one setup for both hung the core). Constants become `SFPLOADI` immediates, or one of the constant registers
 when that saves words: the three programmable ones (LReg 12 to 14), then LReg 11, which
 the unit sets after its setup and restores to -1.0 at its end.
 
@@ -621,6 +624,21 @@ The unit writes Wormhole's forms of some of these words: a Blackhole build of th
 same header runs the same words. A product in Wormhole's image writes Blackhole's
 output word for word, at each fidelity and operand format a class product takes
 ([tile functions on Wormhole](../../experiments/language/tile_wormhole/README.md#products)).
+
+A per-column operand (`.row()`) of a 16-bit B-family format (bfloat16, bfp8_b,
+bfp4_b), which goes through SrcB, into an fp32 Dst: the library's `unary_bcast<ROW>`
+moves it with `MOVB2D`, which on Wormhole writes whole 32-bit Dst words only under a
+32-bit SrcA format, and the library sets tf32 there for UInt16 alone; the moves wrote
+16-bit rows and the call read the Dst tile as it was (`x * w.row()`, w bfloat16: rows
+0 to 15 the earlier tile's words, 16 to 31 others). `core/km_bcast.hpp`, included by
+`km_worker.hpp`, specializes `unary_bcast<ROW>` for an fp32 Dst on Wormhole: SrcA's
+format tf32 around the moves of such a tile, and Float32 with the override off after
+(the library's own state after its 32-bit broadcast). The tile compiler's text is the
+same on both chips, and Blackhole builds the library's own. Measured on a Wormhole chip
+(one tile, one core, x bfloat16, after a float32 tile in the same Dst tile): `x *
+w.row()` with w bfloat16, bfp8_b or bfp4_b exact, 1,024 of 1,024 lanes equal to numpy
+on the stored values, as `.col()`; float32 and float16 (A family, a 16-bit Dst)
+unchanged.
 
 ## Checks
 

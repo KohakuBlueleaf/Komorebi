@@ -81,7 +81,7 @@ class IslandRunPart:
         self.island_first, self.island_ranks, self.cores = first, 118, 120
         self._flag_part, self.queued, self.handed = 1 << 3, [], 0
 
-    def _queue_command(self, handler, group, words, exclusive, flags):
+    def _queue_command(self, handler, group, words, exclusive, flags, budget=None):
         self.queued.append((handler, group, words, flags))
         return len(self.queued) - 1
 

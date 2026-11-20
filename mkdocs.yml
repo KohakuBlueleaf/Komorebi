@@ -115,6 +115,7 @@ nav:
       - reference/threads.md
       - reference/overlays.md
       - reference/islands.md
+      - reference/wormhole.md
       - reference/chain.md
       - reference/tile.md
       - reference/formats.md

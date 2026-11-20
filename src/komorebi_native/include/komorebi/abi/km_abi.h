@@ -70,8 +70,16 @@
 #define KM_ENTRY_HANDLER 0x100u
 #define KM_ENTRY_MESSAGE 0x200u /* the dynamic handler of that number is its part */
 #define KM_ENTRY_TABLE 0x400u   /* a tensor's table row: a1 its word, a2 the row */
-#define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
-#define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
+/* clear_collectives on each rank (km::quiet_rank): a1 the form; READ: a2's page r takes
+   both CPUs' put words (64 B each, KM_OWN_PUT_SENT); SETTLE: ports reset */
+#define KM_ENTRY_QUIET 0x800u
+#define KM_QUIET_FORM 1u
+#define KM_QUIET_TO 2u
+#define KM_QUIET_READ 0u
+#define KM_QUIET_SETTLE 1u
+#define KM_QUIET_RANK_PAGE 128u
+#define KM_ENTRY_ADDRESS 1u /* a1 to a5: each part's DRAM address in every bank */
+#define KM_ENTRY_BYTES 6u   /* a6 to a8: each part's bytes / 64, two parts a word */
 /* host, served by the service overlay: every rank calls km::all_gather, all_reduce,
  * broadcast_from or reduce_to (km_ask.hpp) on pages of a copy tensor, these words */
 #define KM_HANDLER_GATHER 243u
@@ -142,6 +150,9 @@
 /* each CPU of the link cores named: its row of what crossed (KM_LINK_CROSS) into page
  * 2 k + c of the DRAM tensor at KM_PAGES_TO (k its link core, c the CPU) */
 #define KM_PAGES_COUNTS 6u
+/* as COUNTS, each CPU's row of the words that count lines (run.clear_collectives,
+ * KM_QUIET_*): page 2 k + c of KM_QUIET_ROW_BYTES or more */
+#define KM_PAGES_QUIET 7u
 /* the largest packet payload the routers take (Blackhole): the bound of an island's
  * packet word (KM_ISLAND_PACKET) */
 #define KM_PACKET_LARGEST 15232u
@@ -334,6 +345,14 @@
 #define KM_COUNTS_PUT_PAGE 128u
 #define KM_COUNTS_PUT 64u
 #define KM_COUNTS_QUEUE 112u
+/* A QUIET row (clear_collectives): put block 48 B, queue 16, ask 64, rings 32; at
+   KM_QUIET_FAR far places' 4 words x n islands; at the next 64 B forward rooms' */
+#define KM_QUIET_PUT 0u
+#define KM_QUIET_QUEUE 48u
+#define KM_QUIET_ASK 64u
+#define KM_QUIET_RING 128u
+#define KM_QUIET_FAR 192u
+#define KM_QUIET_ROW_BYTES KM_QUIET_FAR
 #define KM_PUT_RING_LATE 0u    /* ready (the CPU served something else) */
 #define KM_PUT_RING_FILLING 4u /* reserved, its room shown, not yet written */
 #define KM_PUT_RING_TURNS 8u   /* (not cycles) the turns that sent */
@@ -689,7 +708,7 @@ KM_STATIC_ASSERT(
    link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids */
 #define KM_ISLAND_ENTRY_BYTES 8u
 /* after them the meeting words (their number m, then m words), the generation pages'
-   address and page bytes, then at the next KM_COLL_GEN_ALIGN bytes the core's row */
+   address, page bytes, the landing's slots and bytes; the row (KM_COLL_GEN_ALIGN) */
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
 #endif
@@ -717,10 +736,11 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_PORT_BYTES 8u
 #define KM_ISLAND_NO_CORE 0xFFu
 /* a collective's generation row (km_ask.hpp coll_guard): the first 32 B of a core's
-   64 B DRAM page, read and written by the host; words by number, 3 not used */
+   64 B DRAM page, read and written by the host; words by number */
 #define KM_COLL_GEN_NOW 0u      /* the generation; the host raises it after a give-up */
 #define KM_COLL_GEN_MARK 1u     /* the core's give-up mark */
 #define KM_COLL_GEN_LAST 2u     /* the generation it last led under (0: none) */
+#define KM_COLL_GEN_DROPS 3u    /* slots of another generation the landing dropped */
 #define KM_COLL_GEN_GAVE 4u     /* its give-up word: code | where << 8 | slot << 16 */
 #define KM_COLL_GEN_SEQUENCE 5u /* the given-up command's sequence */
 #define KM_COLL_GEN_STAGE 6u    /* the stage it had reached (kCs*) */
@@ -878,6 +898,9 @@ KM_STATIC_ASSERT(
         KM_PUT_RING_IDLE + 32u <= KM_PUT_HEADERS &&
         KM_COUNTS_PUT >= KM_CROSS_ROW + 32u && KM_COUNTS_QUEUE >= KM_COUNTS_PUT + 48u &&
         KM_COUNTS_QUEUE + 16u <= KM_COUNTS_PUT_PAGE && KM_COUNTS_PUT_PAGE % 64u == 0 &&
+        KM_QUIET_ASK >= KM_QUIET_QUEUE + 16u && KM_QUIET_RING >= KM_QUIET_ASK + 64u &&
+        KM_QUIET_FAR >= KM_QUIET_RING + 32u && KM_QUIET_FAR % 64u == 0 &&
+        KM_ASK_TAIL % 64u == 0 && KM_PUT_RING_WORDS % 32u == 0 &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
     "the link area word after the island table; the ask lines whole lines; the rings"
 );

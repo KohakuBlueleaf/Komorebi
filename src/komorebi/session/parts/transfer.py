@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from komorebi import abi
+from komorebi import abi, formats
 from komorebi.device import channel as channel_module
 from komorebi.device import dram, mock, native
 from komorebi.device import tensor as tensor_module
@@ -147,9 +147,14 @@ class TransferMixin:
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
         first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
-        (also while a run is loaded); without it only a whole tensor, before a load."""
+        (also while a run is loaded); without it only a whole tensor, before a load.
+        Block-float pages with a negative zero code are refused (formats.bfp_check)."""
         given = pages
         pages = dram.page_rows(tensor, pages)
+        if tensor.dtype in formats.BLOCK:  # a negative zero code reads -inf on the card
+            formats.bfp_check(
+                pages, formats.BLOCK[tensor.dtype], f"pages written to {tensor}"
+            )
         start, count = dram.page_range(first, len(pages), tensor.pages)
         if tensor.kept is not None:  # the array given, for a reopened card
             tensor.kept.append(("pages", given, first))

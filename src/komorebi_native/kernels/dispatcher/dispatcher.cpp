@@ -75,7 +75,7 @@ void kernel_main() {
     OutState& state = *new (reinterpret_cast<void*>(block + kTbOut)) OutState;
     // A thread on TRISC 1 (td_thread.hpp) or on X280 cluster c: source c, its ring
     // and events in its area
-    const uint32_t threads = arg(kTdThreads);  // bit c: a thread on cluster c
+    const uint32_t threads = arg(td::tail_arg(kTdTailThreads));  // bit c: cluster c's
     const uint32_t thread_area = block + kTbBytes;
     for (uint32_t c = 1; c <= td::kClusters; c++) {
         for (uint32_t i = kTaRing / 4; (threads >> c & 1u) && i < kTaState / 4; i++) {
@@ -207,7 +207,7 @@ void kernel_main() {
     };
     // a dynamic run's X280 ranks (td_ranks.hpp): its run line in L1, their thread's
     td::Ranks& x280 = *reinterpret_cast<td::Ranks*>(block + kTbRanks);
-    x280.init(arg(kTdX280Ranks));
+    x280.init(arg(td::tail_arg(kTdTailX280Ranks)));
     const td::ThreadArea& x280_work = works[x280.index];
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t turn = 0, pending_source = td::kSourceHost;
@@ -735,13 +735,38 @@ void kernel_main() {
         );
         noc_async_write_barrier();
     };
-    // A wave packet of `kind` with `command` to every other island of the run.
-    auto wave_out = [&](uint32_t kind, const uint32_t* command) {
-        for (uint32_t island = link->waves.low; island <= link->waves.high; island++) {
-            if (island != link->island) {
-                link->queue(island, command, kind, 0, 0, 0);
+    // The wave in hand (kind, 0: none, words 10-11) to each other island from its
+    // cursor, as many packets as link core 0's queue takes; true once all have it.
+    auto wave_on = [&]() -> bool {
+        td::Waves& w = link->waves;
+        uint32_t* command = link->scratch;
+        while (w.wave_kind != 0) {
+            w.wave_next += w.wave_next == link->island ? 1u : 0u;
+            if (w.wave_next > w.high) {
+                w.wave_kind = 0;
+                break;
             }
+            if (link->out_room() == 0) {
+                break;
+            }
+            for (uint32_t i = 0; i < 16; i++) {
+                command[i] = 0;
+            }
+            command[10] = w.wave_words[0];
+            command[11] = w.wave_words[1];
+            link->queue(w.wave_next, command, w.wave_kind, 0, 0, 0);
+            w.wave_next++;
         }
+        return w.wave_kind == 0;
+    };
+    // A wave of `kind` (words 10-11) to every other island, from the lowest on.
+    auto wave_out = [&](uint32_t kind, uint32_t word10, uint32_t word11) {
+        td::Waves& w = link->waves;
+        w.wave_kind = kind;
+        w.wave_next = w.low;
+        w.wave_words[0] = word10;
+        w.wave_words[1] = word11;
+        return wave_on();
     };
     const uint64_t wave_ticks = (10 * ticks_us) >> 16;  // between two rounds, 10 us
     // The waves, a step a pass, true once ended: the leader gives the run its id, then
@@ -749,25 +774,22 @@ void kernel_main() {
     auto waves_turn = [&](uint64_t now) __attribute__((always_inline)) {
         td::Waves& w = link->waves;
         volatile tt_l1_ptr uint32_t* words = km::l1(link_base + kTlTold);
-        const uint32_t others = w.high - w.low;
+        words[kTlWaited] = link->waited() + 1u;  // in names it at the RUN's deadline
+        if (!wave_on()) {
+            return false;  // a wave half sent: the rest of it first (the END too)
+        }
+        if (w.ended) {
+            return true;
+        }
         uint32_t* command = link->scratch;
         for (uint32_t w = 0; w < 16; w++) {
             command[w] = 0;
         }
-        words[kTlWaited] = link->waited() + 1u;  // in names it at the RUN's deadline
-        if (w.ended) {
-            return true;
-        }
         if (w.id == 0) {
             if (w.leader) {
-                if (link->out_room() < others) {
-                    return false;
-                }
                 w.id = w.sequence << 8 | link->island;
                 w.id = w.id != 0 ? w.id : 0x100u;
-                command[10] = w.id;
-                command[11] = w.group;
-                wave_out(KMD_CROSS_START, command);
+                wave_out(KMD_CROSS_START, w.id, w.group);
             } else if (w.told_id != 0 && w.told_group == w.group) {
                 w.id = w.told_id;
                 w.told_id = 0;
@@ -775,6 +797,9 @@ void kernel_main() {
                 return false;
             }
             run_entry(w.id);
+            if (w.wave_kind != 0) {
+                return false;  // the START half sent: no ROUND before it
+            }
         }
         const uint32_t samples = words[kTlSamples];
         if (!w.leader) {  // a ROUND answered with a sample taken after it
@@ -799,20 +824,15 @@ void kernel_main() {
                 w.quiet && w.have_last && w.sent == w.last_sent &&
                 w.consumed == w.last_consumed && w.sent == w.consumed
             ) {
-                if (link->out_room() < others) {
-                    return false;
-                }
-                command[10] = w.id;
-                wave_out(KMD_CROSS_END, command);
-                w.ended = 1;
-                return true;
+                w.ended = 1;  // true once its last packet is queued
+                return wave_out(KMD_CROSS_END, w.id, 0);
             }
             w.have_last = w.quiet;
             w.last_sent = w.sent;
             w.last_consumed = w.consumed;
             w.round = 0;
         }
-        if (now < w.next_round || link->out_room() < others || samples == w.used) {
+        if (now < w.next_round || samples == w.used) {
             return false;
         }
         w.used = samples;
@@ -826,9 +846,7 @@ void kernel_main() {
         w.round = w.round_number = w.round_number + 1u;
         w.answered = 0;
         w.next_round = now + wave_ticks;
-        command[10] = w.id;
-        command[11] = w.round;
-        wave_out(KMD_CROSS_ROUND, command);
+        wave_out(KMD_CROSS_ROUND, w.id, w.round);
         return false;
     };
     // in's end: its last pass, then its final words (out waits for them).
@@ -1547,6 +1565,7 @@ void kernel_main() {
                             w.group = line_group;
                             w.sequence = run_sequence;
                             w.id = w.ended = w.round = w.round_number = w.have_last = 0;
+                            w.wave_kind = 0;  // a wave left half sent by a run before
                             w.next_round = 0;
                             w.used = km::l1(link_base + kTlTold)[kTlSamples];
                         }

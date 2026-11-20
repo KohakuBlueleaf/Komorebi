@@ -95,8 +95,14 @@ def main():
             want = want.astype(np.int32)
         zeros = np.zeros_like(partials[0])
         tensor = session.tensor(zeros, args.dtype, "tile", copy=True)
+        # the most neighbours of an island, a partial a child; one at least (one
+        # island has none, and its all_reduce returns at once)
+        ports = max(
+            [len(session.graph.neighbours(i)) for i in range(len(session.sessions))]
+            + [1]
+        )
         scratch = session.tensor(
-            np.concatenate([zeros, zeros]), args.dtype, "tile", copy=True
+            np.concatenate([zeros] * ports), args.dtype, "tile", copy=True
         )
         report["bytes"] = tensor.pages * tensor.page_bytes
         run = session.load(program(), wait=args.wait)

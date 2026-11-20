@@ -442,8 +442,9 @@ The far link core needs nothing.
   flat ranks ([islands](../reference/islands.md#the-run)); an island's X280 ports
   serve its own ranks, and a thread of one island fetches and stores tensors the other
   holds.
-- **More than two cards.** The mesh opens as 1 x n, so the fabric reports a line; two
-  were tried.
+- **More than two cards.** Every chip tt-metal sees opens, islands only on the cards
+  asked, each pair the machine joins between them taken; tried on a mock of a 32-chip
+  Galaxy.
 - **Islands on Wormhole.** The session opens islands of cards there under the Tensix
   dispatcher (the reference's [Tensix dispatcher](../reference/islands.md#under-the-tensix-dispatcher)),
   and example 32 and the link checks run exact on two and four chips, but:
@@ -451,7 +452,8 @@ The far link core needs nothing.
     the 16 KiB of code that Wormhole's second data-movement CPU holds;
   - pages into another island's DRAM are refused there, by the host (`send_pages`
     into a tensor, `cross()`) and by the cores (a put into a far tensor, an ask
-    answered into DRAM), until a far core relays them
+    answered into DRAM), until a far core relays them; the collectives' pages land
+    in the far leader's L1, which writes its own DRAM
     ([hazards](../reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
 - **A link core reset by its dispatcher.** The dispatcher resets only ranks; a link core
   that hangs is named by its dispatcher and reset by the host (`run.reset_link`), as

@@ -54,11 +54,13 @@ CHILD = "import sys, komorebi.builder.prebuild as p; sys.exit(p.main())"
 
 def run(script, args=(), cards=(0,), cluster=None, arch="blackhole"):
     """Runs `script` with `args` in a new process against a mock of `cards` on chips
-    of `arch` (cluster: another descriptor); its loads build and stop. Returns the
+    of `arch` (cluster: another descriptor, a machine's: its chips visible as the
+    environment says, as on that machine); its loads build and stop. Returns the
     process's exit code."""
     env = dict(os.environ, **{ACTIVE: "1"})
     env[MOCK] = str(cluster or descriptor(cards, arch))
-    env["TT_VISIBLE_DEVICES"] = ",".join(str(card) for card in cards)
+    if cluster is None:  # the shipped mock of `cards`: only they are visible
+        env["TT_VISIBLE_DEVICES"] = ",".join(str(card) for card in cards)
     env.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
     command = [sys.executable, "-c", CHILD, str(script), *args]
     with tempfile.TemporaryDirectory() as folder:

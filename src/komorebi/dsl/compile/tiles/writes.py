@@ -317,6 +317,7 @@ def write(frame, node, call):
     frame.compiled.includes.add("pack")
     compute = []
     converted = False
+    followed = None  # a buffer compute pops: mover B's read pointer follows it
     if value.kind == "tile":
         dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
         handler_buffers.tile_packed(frame, node, pages.tensor)
@@ -411,7 +412,10 @@ def write(frame, node, call):
                 )
             )
             converted = True
-    return write_moved(frame, node, pages, value, buffer, width, converted, compute)
+            followed = source.name
+    return write_moved(
+        frame, node, pages, value, buffer, width, converted, compute, followed
+    )
 
 
 def write_field(frame, node, call, field_):
@@ -882,9 +886,20 @@ def write_function_of_sums(frame, node, pages, call):
     ]
 
 
-def write_moved(frame, node, pages, value, buffer, width, converted=False, compute=()):
+def write_moved(
+    frame,
+    node,
+    pages,
+    value,
+    buffer,
+    width,
+    converted=False,
+    compute=(),
+    followed=None,
+):
     """Mover B's page write of `value`'s `width` pages from `buffer`, and
-    `compute`'s lines with it."""
+    `compute`'s lines with it; `followed`, a buffer compute popped `width` pages
+    of: mover B's read pointer of it moved past them (km::passed_front)."""
     # A page write: mover B waits for compute's page, writes it, frees it once
     # sent (as a hand writer does); the runtime settles writes before it reports.
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
@@ -905,6 +920,8 @@ def write_moved(frame, node, pages, value, buffer, width, converted=False, compu
             + f" ||\n    !{written}) {{"
         )
     text = f"{opening}\n    return false;\n}}\n" + freed(buffer, width)
+    if followed is not None:
+        text += f"\nkm::passed_front({followed}, {width});  // compute popped the sum"
     movement = [Line(text, range_uses(pages, frame), mover="B")]
     if value.cxx not in frame.carried:  # a running total stays live
         value.waited = value.popped = True

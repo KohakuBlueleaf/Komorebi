@@ -50,17 +50,18 @@ constexpr uint32_t kTdLinkCore = 68;   // link core 0: its index in the cores
 constexpr uint32_t kTdLinkArea = 69;   // and its link area
 constexpr uint32_t kTdLinkBase = 70;   // the link block below, one address everywhere
 constexpr uint32_t kTdLinkSlots = 71;  // an inbox part's packets
-// 3 words an island: its ranks, its threads (first | count << 16), its dispatcher's
-// tile
+// 3 words an island of the session (none without a link): its ranks, its threads
+// (first | count << 16), its dispatcher's tile; more islands are refused by name
 constexpr uint32_t kTdLinkEntries = 72;
-constexpr uint32_t kTdLinkIslandsMax = 8;
+constexpr uint32_t kTdLinkIslandsMax = 32;
+// The words after the table, by their offset from its end (td::tail_arg).
 // Threads on X280 clusters 2 and 3: tile and work area as kTdThread*, two words each
-constexpr uint32_t kTdFarThread = 96;
-constexpr uint32_t kTdThreads = 100;  // bit c: a thread on cluster c (sources 1 to 3)
+constexpr uint32_t kTdTailFarThread = 0;
+constexpr uint32_t kTdTailThreads = 4;  // bit c: a thread on cluster c (sources 1 to 3)
 // A dynamic run's X280 ranks (KMD_X280_RANKS >> 32): cluster | count << 4, a part's
 // counter tiles << 8 (0: none)
-constexpr uint32_t kTdX280Ranks = 101;
-constexpr uint32_t kTdArgs = 102;
+constexpr uint32_t kTdTailX280Ranks = 5;
+constexpr uint32_t kTdTailArgs = 6;  // the arguments: kTdLinkEntries + 3 an island + 6
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -252,9 +253,9 @@ static_assert(kTeTable % 64 == 0 && kTeState % 64 == 0 && kTeUpload % 64 == 0);
 static_assert(kTeUpload + kTeUploadBytes == kTeBytes, "the upload region ends it");
 static_assert(kTlRing + 64 * kTlDepth == kTlEvents, "the link ring");
 static_assert(kTlEvents + 16 * kTlEventDepth == kTlTold && kTlTold + 64 == kTlCount);
-static_assert(kTdLinkEntries + 3 * kTdLinkIslandsMax == kTdFarThread, "the link's");
-static_assert(kTdFarThread + 4 == kTdThreads && kTdThreads + 1 == kTdX280Ranks);
-static_assert(kTdX280Ranks + 1 == kTdArgs, "the X280 ranks' word");
+static_assert(kTdTailFarThread + 4 == kTdTailThreads, "two clusters' two words");
+static_assert(kTdTailThreads + 1 == kTdTailX280Ranks, "the threads' word");
+static_assert(kTdTailX280Ranks + 1 == kTdTailArgs, "the X280 ranks' word");
 static_assert(kTbBytes + kTaBytes + kTeBytes == kTbFar, "clusters 2 and 3's areas");
 static_assert(kTbFar + 2 * kTaBytes == kTbRanks, "the X280 ranks' line");
 

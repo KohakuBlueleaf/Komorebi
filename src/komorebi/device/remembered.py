@@ -93,8 +93,9 @@ _unread = []  # the file was found unreadable once (logged once)
 
 def read(log=None):
     """{"programs": {key: bytes}, "scripts": {key: bytes}, "prebuilt": [keys a prebuild
-    seeded]}, and "writer_levels" {key: level} when the file has one: no entry when the
-    file is missing, corrupt or half written."""
+    seeded]}, and "writer_levels" {key: level} and "writer_near" {key: [writer bytes,
+    region bytes]} when the file has them: no entry when the file is missing, corrupt
+    or half written."""
     try:
         made = json.loads(_path().read_text())
         made = made if isinstance(made, dict) else {}
@@ -110,8 +111,9 @@ def read(log=None):
         "scripts": made.get("scripts", {}),
         "prebuilt": made.get("prebuilt", []),
     }
-    if "writer_levels" in made:
-        out["writer_levels"] = made["writer_levels"]
+    for kept in ("writer_levels", "writer_near"):
+        if kept in made:
+            out[kept] = made[kept]
     return out
 
 
@@ -204,6 +206,32 @@ def keep_writer_level(program, arch, level):
         levels = memory.setdefault("writer_levels", {})
         if levels.get(key, 0) != level:
             levels[key] = level
+            write(memory)
+
+
+def writer_near(program, arch):
+    """The far build's (writer bytes, region bytes) when the last build of `program` on
+    a chip of `arch` was without the far paths (the near build), else None: its next
+    load builds near at first (a far build over at every level is not built again)."""
+    key = program_key(program, f"writer {arch}")
+    found = read().get("writer_near", {}).get(key) if key is not None else None
+    return tuple(found) if found else None
+
+
+def keep_writer_near(program, arch, far):
+    """`far`, the far build's (writer bytes, region bytes) of a near build of
+    `program`, or None (built with the far paths), kept for its next load."""
+    key = program_key(program, f"writer {arch}")
+    if key is None:
+        return
+    with locked():
+        memory = read()
+        near = memory.setdefault("writer_near", {})
+        if near.get(key) != (list(far) if far else None):
+            if far:
+                near[key] = list(far)
+            else:
+                near.pop(key, None)
             write(memory)
 
 

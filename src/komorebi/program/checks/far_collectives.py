@@ -1,11 +1,14 @@
-"""The collectives over islands in a mover's source (km::all_reduce, km::reduce_to,
-km::all_gather, km::broadcast_from): whether a load's movers call one, its source lines
-looked at (comments and strings aside, quoted includes beside it too)."""
+"""The collectives over islands (km::all_reduce, reduce_to, all_gather, broadcast_from)
+in a mover's source (comments and strings aside, quoted includes too): whether a load's
+movers call one, for the refusal after a give-up and, on KM_LINK_NO_FAR_DRAM chips, the
+far leader's L1 landing (km_ask.hpp land_run) or a host collective's refusal."""
 
 import re
 
 from komorebi.program.checks import page_calls
 
+HAZARD = "docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram"
+RULE = "On Wormhole no link packet targets a DRAM address of the far chip"
 NAMES = re.compile(r"\bkm::(all_reduce|reduce_to|all_gather|broadcast_from)\s*\(")
 
 
@@ -34,9 +37,27 @@ def scan(source, names=NAMES):
     return out
 
 
+def refusal(what):
+    """The refusal of `what`, a collective over islands on such a chip."""
+    return (
+        f"{what} writes a copy's pages into the other islands' DRAM: {RULE} ({HAZARD})"
+    )
+
+
 def calls(programs):
     """Whether a mover of `programs` calls a collective, on any chip (per load: the
     host does not know which handler does)."""
     return any(
         scan(source) for program in programs for source in page_calls.sources(program)
+    )
+
+
+def wanted(programs):
+    """Whether a mover of `programs` (an island build with KM_LINK_NO_FAR_DRAM) calls a
+    collective: the load then makes the collectives' landing."""
+    return any(
+        scan(source)
+        for program in programs
+        if "KM_LINK_NO_FAR_DRAM" in program.defines
+        for source in page_calls.sources(program)
     )

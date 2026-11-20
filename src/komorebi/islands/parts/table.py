@@ -175,7 +175,9 @@ class TableMixin:
                 words = (h["KM_ENTRY_TABLE"], word, address)
                 group = (run.island_first, run.island_ranks)
                 handles.append(
-                    run._queue_command(h["KM_HANDLER_ENTRY"], group, words, False, part)
+                    run._queue_command(
+                        h["KM_HANDLER_ENTRY"], group, words, False, part, budget=timeout
+                    )
                 )
             for run in self.run.runs:
                 run._hand()

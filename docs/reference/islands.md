@@ -239,12 +239,20 @@ own `Session` as `session.island(0)`, the graph `islands.one`, every page of eve
 tensor on the card, and each load the card's run as it is without islands. A program
 written for islands runs on one card unchanged.
 
-- **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
-  mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
-  opens once over the mesh, then each island gets a `Session` given its device
-  (`session.island(i)`; `session.sessions` is every island's, in island order, the
-  same `Session` n times on a card split into n islands). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
-  set to them) and must not be held by another process.
+- **Open.** In this order: every chip tt-metal sees opens as one fabric mesh (each
+  chip a 1 x 1 submesh with its own command queue) under tt-metal's one-hop fabric
+  form that joins every pair the machine itself joins between them (its cluster
+  descriptor's Ethernet connections). `FABRIC_1D_RING` is tried first when those
+  connections hold a cycle, else `FABRIC_1D` (two cards: the plain form, as before);
+  when the first does not join them all the other is tried, the one that joins more
+  is kept and the log names the pairs it leaves out, by card id. That second open in
+  one process was tried on a mock only, not on chips. The X280 runtime opens once over
+  the mesh, then island i gets a `Session` on card i's device (`session.island(i)`;
+  `session.sessions` is every island's, in island order, the same `Session` n times on
+  a card split into n islands). The chips not asked hold tt-metal's routers on their
+  Ethernet cores and nothing else, and are held by the process. When
+  `TT_VISIBLE_DEVICES` is set, only those chips open and the cards must be among them;
+  no chip that opens may be held by another process.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
   ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
@@ -384,7 +392,9 @@ the island header, `KM_ISLAND_TABLE`), so no constant of the cards bounds the is
 `Graph` takes up to 256 (an island is a byte), and a load of more than 16 islands builds
 with `KM_ISLANDS_MAX` set to its count (the link services' per-island arrays); a load
 of more than 64 is refused by name (a dispatcher's round keeps an island's answer in a
-bit of 64). The
+bit of 64); under the Tensix dispatcher, more than 32 (its link tables); under the X280
+dispatcher, more than 17 (its waves put a packet for every other island into its queue
+to link core 0, of 16, in one turn; the Tensix dispatcher's go over turns). The
 island area keeps the port table instead (`KM_ISLAND_PORTS`): for each port (neighbour
 p) and each of its links, the link core, its CPU, the far island, the port's links and
 the far link core's tile.
@@ -1168,7 +1178,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::Tensor<offset>` | a tensor's accessor arguments, from the compile arguments the host's `tensor.tensor_args()` gives (`accessor_args()`), and its reference word (`tensor.address`); `next_compile_time_args_offset()` for the next one |
 | `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` .. `first + pages - 1` into L1 `to` on, page k at `to` + k aligned pages; on the reader or the writer (`core`: its `km::Reader` or `km::Writer`); each run of pages another island holds asked for and waited for, counted at the CPU's page port (`KM_PORT_PAGES` the reader's, + 1 the writer's, past the ports a kernel names). An L1 tensor (`shard_grid=`) has no entry in the tensor table: its pages are this island's rows alone, and under `KM_GUARD` a page past them gives up (`bad_item` in `pagerange`), as `km::write_pages` does. False: gave up |
 | `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port; this island's pages are plain NoC writes, not waited for, so `from` is free once the caller's `noc_async_write_barrier` has returned. False: gave up |
-| `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto its landing page in that island's DRAM (a page for each holder, source island and put line owner: `n * n * 512` pages of 2 KiB, n² MiB on each island of n islands, one copy on a split card; a session whose DRAM cannot hold it is refused by name, "the put batches' landing"), and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command that puts MUST end with `km::put_wait` (or `km::write_bytes`). Under `KM_GUARD` a body that returns with its batch unsent gives up by name (`bad_transfer` in `putunsent` with its handler), and a batch an earlier command left unsent any other way is found at the next command's first put, which gives up by name (`putunsent`, handler 0); its records are dropped. With `KM_GUARD` 0 such a batch is dropped silently. Across, the range ends below 1 MiB of its page (else `bad_item` at `ask`). A batch refused at its send gives up by its cause, the holder's island in the word: `putroute` (no route: more than one link away without far puts), `putcore`, `putpacket` (a packet under 2,048 bytes), `putrings` (no rings at the link core), `putlanding` (no landing pages); all `bad_item`, at the flush (a full batch or `km::put_wait`), not at the `km::put_bytes` that made the record. A record the holder refuses ends its batch there (the records before it written, the rest not), and the confirmation says so: the CPU's next `km::put_wait` or batch send gives up (`bad_item` in `putrefused`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
+| `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto its landing page in that island's DRAM (a page for each source island and put line owner of what is put to that island: `n * 512` pages of 2 KiB, n MiB on each island of n islands, and 8 pages a source for puts past the next island; a split card's one DRAM holds every holder's, `n * n * 512`; none on Wormhole, whose batches to another island are refused (`fardram`); a session whose DRAM cannot hold it is refused by name, "the put batches' landing"), and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command that puts MUST end with `km::put_wait` (or `km::write_bytes`). Under `KM_GUARD` a body that returns with its batch unsent gives up by name (`bad_transfer` in `putunsent` with its handler), and a batch an earlier command left unsent any other way is found at the next command's first put, which gives up by name (`putunsent`, handler 0); its records are dropped. With `KM_GUARD` 0 such a batch is dropped silently. Across, the range ends below 1 MiB of its page (else `bad_item` at `ask`). A batch refused at its send gives up by its cause, the holder's island in the word: `putroute` (no route: more than one link away without far puts), `putcore`, `putpacket` (a packet under 2,048 bytes), `putrings` (no rings at the link core), `putlanding` (no landing pages); all `bad_item`, at the flush (a full batch or `km::put_wait`), not at the `km::put_bytes` that made the record. A record the holder refuses ends its batch there (the records before it written, the rest not), and the confirmation says so: the CPU's next `km::put_wait` or batch send gives up (`bad_item` in `putrefused`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
 | `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there); a confirmation that says refused (a bad record, or a posted `km::add_word` the holder refused) gives up (`bad_item` in `putrefused`). False: gave up |
 | `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, any number of links away (the get line forwarded by the link cores of each island between, the range sent back by the holder's page CPU the same way), a page of any size: a range longer than the packet less 64 bytes goes as several get lines of that much (in 64s, so each keeps the 64-byte phase). A line the holder refuses (its own checks: the range, its slots' room) is answered with a refusal on the CPU's page port, and the call gives up by name (`bad_item` in `askrefused`, the holder's island in the word) instead of waiting out its limit. False: gave up |
@@ -1272,11 +1282,16 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   runs its own part, stages each other island's line on link core 0 and sends it with a
   PAGES LINE command into that island's inbox in its dispatcher's L1 (source 5 there),
   whose DONE comes back the same way; one event once every part is back, or a TIMEOUT
-  naming the lowest island not back. At most 8 islands and 8 crossings in flight.
+  naming the lowest island not back. At most 32 islands (more are refused by name:
+  the island table is in the dispatcher's arguments, 3 words an island, the words
+  after it placed by the session's count) and 8 crossings in flight.
 - A dynamic run across islands whose messages cross as deliveries ends as on the X280
   (waves.h): the leader, the island of its first rank, gives the run its id and opens
   each island's run entry, then asks rounds of every island's counts; two rounds in a
-  row all quiet with equal sums end it on every island. Given up at its deadline, the
+  row all quiet with equal sums end it on every island. A wave (the id, a round, the
+  end) goes to the other islands over as many passes as the queue to link core 0 (16
+  packets) needs, so no count of islands meets that queue; one left half sent by a run
+  that ended otherwise is dropped at the next run's start. Given up at its deadline, the
   RUN's TIMEOUT names the island its waves wait for (`KM_EVENT_ISLAND` + it), or,
   when the leader's deadline comes with no round out, the slot, as the X280 does; a
   name for the island whose last count was not quiet is for later.
@@ -1322,10 +1337,22 @@ NOPs from island 0's own run to each island's ranks, to every rank and to two is
 parts, each done, over one to three hops; example 05 (forwards across islands) exact on
 two and four chips; example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
 lines each way and 4 MiB asked, all exact; `km::write_l1` 200 calls each way on two
-chips and 500 over one to three links on four, all exact. Example 27 (an all-gather
-into every island's DRAM copy) gives up at its deadline, named at the wait: its shares
-go into another island's DRAM, which waits for a relay
-([hazards](hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
+chips and 500 over one to three links on four, all exact. The collectives' pages
+for another island land in the L1 of its leader, which writes them into its own DRAM
+([hazards](hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)). Measured on the
+Galaxy (2026-11-20, AICLK 1000 MHz, links=1, 5 rounds, each from a kernel and from the
+host, on the card, the median):
+
+| example | islands | data | from a kernel | from the host |
+|---|---|---|---|---|
+| 27, all-gather | 2 | 1 MiB float32 | 1,275.6 µs | 1,276.5 µs |
+| 27, all-gather | 31 | 1 MiB float32 | 5,503.9 µs | 5,230.3 µs |
+| 28, all-reduce | 2 | 320 KiB bfloat16 | 823.1 µs | 826.2 µs |
+| 28, all-reduce | 31 | 320 KiB bfloat16 | 15,411.5 µs | 15,383.1 µs |
+| 28, all-reduce | 31 | 1 MiB float32 | 17,191.4 µs | 17,256.0 µs |
+
+Every run was exact on every island. Example 29's chain does not load on Wormhole:
+its writer is 18,336 B at the highest writer level, the same without the landing.
 
 ## The graph
 
@@ -1338,7 +1365,8 @@ back, and a script's flag "0-1,1-2" becomes one by `islands.parse_pairs`.
 - **Cards** take the graph the fabric reports at the open: each pair of cards it
   joins directly, as many links as it found (at most 4, and `links`). `graph=` takes
   a part of it, each pair checked against what the fabric has (refused by name past
-  it). The mesh opens as 1 x n, so the fabric reports a line.
+  it). Only pairs between the cards asked are taken: a path through a chip not asked
+  is not used.
 - **A split card** (below) joins every pair once by default (`links` wires each);
   `graph=` joins the pairs given. `links` and `graph` are not given together.
 - **Refused by name** only what cannot be wired (`check_wired`, and the graph itself):
@@ -1563,9 +1591,12 @@ pages)` between two calls is a record of its own, its leaders the same as these
 
 A collective given up mid-way leaves its tensors not whole (half summed, or copied on
 some islands only), and its leaders refuse every later collective by name until the
-host has written the tensors again and called `run.clear_collectives()`, which raises
-each core's generation (a DRAM page a core the island table names); a leader's first
-collective under it starts its counts at 0. The clear restores no data
+host has written the tensors again and called `run.clear_collectives()`. The clear
+waits for every command, reads every link core's and rank's line counts until no line
+is anywhere in the graph, sets back every rank's page ports, then raises each core's
+generation (a DRAM page a core the island table names); a leader's first collective
+under it starts its counts at 0. A line that does not arrive within the clear's
+`timeout` fails it by name and the generation is not raised. The clear restores no data
 ([hazards](hazards.md#a-collective-given-up-mid-way)). Once the host has seen a command
 given up at its deadline on a load whose movers call a collective, the host's own
 collectives (`run.all_reduce()` and the others) are refused at the call, before
@@ -1937,8 +1968,9 @@ The refusals that remain are under [the limits](#the-limits). Beside them:
   `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is
   built with its kernel's defines and compile arguments, so its `km::Tensor` crosses
   (examples 12 and 18, `--far`).
-- More than two cards: the mesh opens 1 x n, so the fabric reports a line (a 2-D
-  mesh shape is not built); tried with two.
+- More than two cards: every chip opens, so a session holds the whole machine while
+  it is open; tried on a mock of a 32-chip Galaxy (all 32, 31, a line of 3, an L of
+  5: each the machine's pairs between its cards).
 - A split card: a copy across more than one link; X280 threads (not supported, by
   decision: a split card is for developing and checking island programs).
 - A split card's five limits, in the order a project meets them, with what each costs

@@ -66,7 +66,8 @@ and level (`writer code: 12,748 of 16,384 B, margin 3,636 B, writer level 0`). A
 writer over it is built again at the next writer level
 ([overlays](overlays.md#transfers-to-and-from-the-host)); at the highest, under 1,024 B
 of margin (`load.WRITER_MARGIN`), the load warns (`UserWarning`): a little more writer
-code no longer builds there. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
+code no longer builds there. An island load still over at the highest level may be
+built without the far paths (the near build, same section), and its line says so. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
 `kernel_build`'s result (config bytes, buffer, text per thread, the runtime's message). The only limit a program meets is a core's L1; inside it the buffer is
 **adaptive by default and configurable on request**:
 
@@ -1162,7 +1163,8 @@ numbers, so it is not disassembled again.
 runs the script in a new process against a mock device: one P150 (`--arch wormhole_b0`:
 one Wormhole chip), or with
 `--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
-ship in the package; `--cluster` names another). `--cards 1` is the two cards'
+ship in the package; `--cluster` names another, a machine's, whose chips are visible
+as `TT_VISIBLE_DEVICES` says, as on that machine). `--cards 1` is the two cards'
 cluster with card 1 alone visible, as on the machine. A one-card session on a mock
 opens with only the mock cluster's ids of `TT_VISIBLE_DEVICES` (none: unset), the
 variable put back after, so `TT_VISIBLE_DEVICES=0,1` set for two cards does not

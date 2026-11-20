@@ -33,8 +33,8 @@ INTERNAL = {
     },
     Run: {
         "arch", "batch", "dram", "far_cores", "grid", "half_added", "island_cores",
-        "island_first", "island_ranks", "island_span", "link_events", "links_named",
-        "named_cores", "own_commands", "port", "ranks", "thread_first",
+        "island_first", "island_number", "island_ranks", "island_span", "link_events",
+        "links_named", "named_cores", "own_commands", "port", "ranks", "thread_first",
         "thread_program", "transfer",
     },
     Tensor: {"kept", "loaded", "sent"},

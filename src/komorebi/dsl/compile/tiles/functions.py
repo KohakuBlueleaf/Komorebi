@@ -46,10 +46,20 @@ from komorebi.formats import tile_bytes
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
-# A release that keeps DST's contents (held fields), and the stream's end: an empty
-# cycle a half, each release clearing the half it frees.
-HELD_RELEASE = (
-    "PACK((_llk_pack_dest_section_done_<DST_SYNC_MODE, DST_ACCUM_MODE, false>()));"
+# A release that keeps DST (held fields) and the stream's end (an empty cycle a half);
+# on Wormhole, whose LLK has no clear_dest, Blackhole's clear_dest = false steps.
+HELD_RELEASE = "\n".join(
+    [
+        "#if defined(ARCH_WORMHOLE)",
+        "PACK((_llk_packer_set_math_semaphore_<p_stall::PACK>()));",
+        "PACK(if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {",
+        "    flip_packer_dest_offset_id();",
+        "    select_packer_dest_registers<DST_SYNC_MODE>();",
+        "})",
+        "#else",
+        "PACK((_llk_pack_dest_section_done_<DST_SYNC_MODE, DST_ACCUM_MODE, false>()));",
+        "#endif",
+    ]
 )
 DST_CLEARED = "\n".join(
     ["tile_regs_acquire();", "tile_regs_commit();", "tile_regs_wait();"]
@@ -783,6 +793,18 @@ def tile_call(frame, node, call, name, pushed=False):
         (operands[parameters.index(p.a)][0], operands[parameters.index(p.w)][0])
         for p in unit.products
     ]
+    beside = [operand for operand in unit.operands if operand is not None]
+    if products and beside:  # the products' unpack setup is the copies' undoing
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} has a matrix product (`@`) and copies "
+            f"{', '.join(beside)} into DST beside it: the product's unpack setup "
+            "replaces the copy's, so each copy runs the product's unpack and its "
+            "math waits for a SrcB never marked ready (the core hangs)",
+            "push the product (y = a @ w) into a tensor of its own, and make "
+            f"{function.name}'s element-wise rest a second handler that reads it",
+        )
     for (a, w), p in zip(products, unit.products):
         why = product_refusal(a.buffer.dtype, w.buffer.dtype)
         if why is not None:
@@ -1403,6 +1425,8 @@ class SrcaSwitch:
     def __init__(self, products, copied):
         read = [w.buffer.dtype for _, w in products] + [c.buffer.dtype for c in copied]
         self.on = len(set(read)) > 1
+        # float32 copies are unpacked to Dst, others through SrcA: each its own setup
+        self.inits = len({c.buffer.dtype == "float32" for c in copied}) > 1
 
     def product(self, a, w):
         if not self.on:
@@ -1412,7 +1436,10 @@ class SrcaSwitch:
     def copy(self, item):
         if not self.on:
             return []
-        return [f"KM_UNPACK_FORMAT_A({item.buffer.name}.mover_a);"]
+        lines = [f"KM_UNPACK_FORMAT_A({item.buffer.name}.mover_a);"]
+        if self.inits:  # the setup's unpack and move programs are one kind's
+            lines.append(f"copy_init({item.buffer.name}.mover_a);")
+        return lines
 
 
 def tile_dest(formats):
@@ -1521,7 +1548,7 @@ def values_release(width, held, at):
         return ["tile_regs_release();"]
     return [
         f"if ({at} + 2 < {width // 2}) {{",
-        f"    {HELD_RELEASE}",
+        *(f"    {line}" for line in HELD_RELEASE.split("\n")),
         "} else {",
         "    tile_regs_release();",
         "}",

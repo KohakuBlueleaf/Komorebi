@@ -24,6 +24,7 @@ from komorebi.program import thread as thread_module
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.checks import instructions as insn_check
+from komorebi.program.checks import near as near_module
 from komorebi.program.description import (
     Program,
     guard_says,
@@ -262,19 +263,41 @@ class LoadMixin:
 
     def _build_levels(self, backend, program, placed, described):
         """(descriptor, ELFs, build, built_at) of backend.describe(*described) at the
-        lowest writer level, from the one kept for `program`, at which the writer fits
-        the chip's code memory (chips.Chip.writer_levels); the level found is kept.
-        built_at is time.time() taken right before the build, for built_files."""
+        lowest writer level at which the writer fits (kept); over it at the highest, a
+        load the host can keep near is built near (kept; a failed build is never asked
+        again). built_at: time.time() right before the build, for built_files."""
         most = chips.chip(self.arch).writer_levels
         level = min(remembered.writer_level(program, self.arch), most) if most else 0
+        held = placed.programs if placed is not None else (program,)
+        # the near build's: (writer bytes, region bytes) of the far build
+        far = remembered.writer_near(program, self.arch) if most else None
+        why = near_module.refusal(held) if far is not None else None
+        if why is not None and near_module.applies(held):  # kept near, not near now
+            raise ProgramError(
+                f"{program.name}: the writer is {far[0]:,} B of {far[1]:,} B at the "
+                "highest writer level (its last build's); it is not built without "
+                f"the far paths: {why}"
+            )
+        if why is not None:  # one card: its own builds, from the level kept
+            far = None
         while True:
-            for each in placed.programs if placed is not None else (program,):
+            for each in held:
                 each.writer_level = level
+                each.near = far
+            key = kernel_module.over_key(self.arch, held, level, far)
             descriptor = backend.describe(*described)
             started, built_at = time.perf_counter(), time.time()  # right before it
             try:
+                refused = kernel_module.already_over(key)  # its ELF would hang it
+                if refused is not None:
+                    raise refused
                 elves, *build = descriptor.build()
             except Exception as error:
+                kernel_module.remember_over(key, error)
+                if most and kernel_module.writer_over(error):
+                    # L1 given back before the next describe, else control blocks
+                    # alternate between two addresses (_check_links)
+                    backend.release_l1()
                 if level < most and kernel_module.writer_over(error):
                     level += 1
                     moved = ", ".join(kernel_module.WRITER_LEVELS[level])
@@ -284,6 +307,26 @@ class LoadMixin:
                         f"writer level {level}, from L1: {moved}"
                     )
                     continue
+                over = kernel_module.writer_over_refusal(error, program.name, level)
+                if over is not None and isinstance(error, kernel_module.AlreadyOver):
+                    over = ProgramError(f"already refused in this process: {over}")
+                if most and over is not None and far is None:
+                    why = near_module.refusal(held)
+                    if why is None:
+                        far = kernel_module.writer_over_bytes(error)
+                        self.log(
+                            f"{program.name}: the writer is over the chip's code "
+                            "memory at the highest writer level: built again "
+                            f"{near_module.line(*far)}, from writer level 0"
+                        )
+                        level = 0
+                        continue
+                    if near_module.applies(held):
+                        raise ProgramError(
+                            f"{over}; it is not built without the far paths: {why}"
+                        ) from error
+                if most and over is not None:
+                    raise over from error
                 refused = (  # a thread call a Tensix dispatcher does not serve
                     tensix_module.thread_build_refusal(str(error))
                     if self._dispatcher == dispatch_module.TENSIX
@@ -294,6 +337,7 @@ class LoadMixin:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             if most:
                 remembered.keep_writer_level(program, self.arch, level)
+                remembered.keep_writer_near(program, self.arch, far)
             return descriptor, elves, build, built_at
 
     def _check_stack(self, program, elves):
@@ -325,7 +369,9 @@ class LoadMixin:
         if limit is not None and used is not None:
             level = kernel_module.writer_level(program)
             line = f"writer code: {used:,} of {limit:,} B, margin {limit - used:,} B"
-            self.log(f"{line}, writer level {level}")
+            far = getattr(program, "near", None)
+            near = f", built {near_module.line(*far)}" if far else ""
+            self.log(f"{line}, writer level {level}{near}")
             if level == chip.writer_levels and limit - used < WRITER_MARGIN:
                 warnings.warn(
                     f"{program.name}: {line}, under {WRITER_MARGIN:,} B: a little more "
@@ -634,6 +680,7 @@ class LoadMixin:
                 backend.read_back(stop_grid=True)  # the kernel never stopped it
             raise
         run = self._made_run(backend, dispatch, program, batch, placed, owner)
+        run._deadline_s = deadline  # a runtime command's time to find cores free
         self.run = run
         self._starting = None
         if state != abi.headers()["KMD_STATE_READY"]:
@@ -1003,6 +1050,8 @@ class LoadMixin:
                     backend.read_back(stop_grid=True)
             raise
         runs = self._island_runs(backends, graph, rows, program, batch)
+        for run in runs:
+            run._deadline_s = deadline  # a runtime command's time to find cores free
         self.run, self.island = runs[0], (graph, 0)
         self._starting = None
         for run, state in zip(runs, ready):

@@ -266,6 +266,12 @@ def block_buffer(card):
     return block, block - at + constants()["kTbBytes"]
 
 
+def table_end(link):
+    """The first argument after the island table (td::tail_arg): 3 words an island of
+    the session's link (link_words), none without one."""
+    return constants()["kTdLinkEntries"] + 3 * (link["islands"] if link else 0)
+
+
 def link_words(line):
     """The host's link line (link_area.line) as the kernel's link arguments: this
     island, the islands, link core 0, its link area, an inbox part's packets, 3 words an
@@ -539,8 +545,8 @@ class TensixDispatch:
             "kTdMessages": options["messages"],
             "kTdIsland": options["island"] & abi.M32,
             "kTdIslandBase": options["island"] >> 32,
-            "kTdX280Ranks": options["x280_ranks"],
         }
+        tail = {"kTdTailX280Ranks": options["x280_ranks"]}  # after the island table
         if link is not None:
             values |= {
                 "kTdLinkIsland": (
@@ -555,14 +561,15 @@ class TensixDispatch:
             values["kTdThreadScale"] = round(
                 thread_module.TIMER_HZ * 2**32 / (mhz * 1e6)
             )
-            values["kTdThreads"] = sum(1 << cluster for cluster in self.clusters)
-        args = [0] * c["kTdArgs"]
+            tail["kTdTailThreads"] = sum(1 << cluster for cluster in self.clusters)
+        after = table_end(link)
+        args = [0] * (after + c["kTdTailArgs"])
         for cluster in self.clusters if self.x280 is not None else ():
             info = self.x280.work_info(cluster)  # in and out copy its words there
             at = (
                 c["kTdThreadTile"]
                 if cluster == 1
-                else c["kTdFarThread"] + 2 * cluster - 4
+                else after + c["kTdTailFarThread"] + 2 * cluster - 4
             )
             args[at] = (
                 info["virtual_x"] | info["virtual_y"] << 16
@@ -570,6 +577,8 @@ class TensixDispatch:
             args[at + 1] = info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
         for name, value in values.items():
             args[c[name]] = int(value) & abi.M32
+        for name, value in tail.items():
+            args[after + c[name]] = int(value) & abi.M32
         for r, rect in enumerate(rects):
             args[c["kTdRect"] + 3 * r : c["kTdRect"] + 3 * r + 3] = rect
         words = held_words(options["programs"])

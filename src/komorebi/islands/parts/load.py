@@ -13,6 +13,7 @@ from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
     L1BudgetError,
+    ProgramError,
 )
 from komorebi.islands import records as island_records
 from komorebi.islands import run as island_run
@@ -21,11 +22,14 @@ from komorebi.islands.parts.link_plan import (
     ISLANDS_MAX,
     KERNEL_BYTES_SERVICES,
     ROUND_ISLANDS_MAX,
+    X280_WAVE_ISLANDS_MAX,
 )
 from komorebi.program import several as programs_module
+from komorebi.program.checks import far_collectives
 from komorebi.program.description import Program
 from komorebi.session import dispatch as dispatch_module
 from komorebi.session import sizes
+from komorebi.session.dispatch import tensix as tensix_module
 from komorebi.session.parts import load as card_load
 
 # Session.load's options in their order, for options given by position
@@ -81,6 +85,21 @@ def check_link_queues(places):
         )
 
 
+def second_link_refusal(error, name, links):
+    """A ProgramError for an island's build that failed (`error`) because its writer,
+    with the sender of its link cores' second links (KM_LINK_THIN_SECOND), does not fit
+    NCRISC's code region: both sizes, the links a pair and the way out; else None."""
+    found = tensix_module.SPLIT_WRITER.search(str(error))
+    if found is None:
+        return None
+    wanted, most = int(found[1], 16), int(found[2], 16)
+    return ProgramError(
+        f"{name}: the writer is {wanted:,} B of NCRISC's {most:,} B code region with "
+        f"{links} links a pair (a link core's second link puts its sender on the "
+        "writer): links=1 leaves that sender out"
+    )
+
+
 class LoadMixin:
     """The island session's load: one program over its islands (a split card, cards)."""
 
@@ -100,6 +119,9 @@ class LoadMixin:
     links: int  # MeshMixin
     run: Any  # MeshMixin
     seconds: tuple  # MeshMixin
+    _seconds: dict  # MeshMixin
+    _columns: tuple  # MeshMixin
+    _visible: list | None  # MeshMixin
     sessions: tuple  # MeshMixin
     split: int  # MeshMixin
     _counts: list  # LinkPlanMixin
@@ -120,7 +142,10 @@ class LoadMixin:
             words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_COUNTS"] << 24
             part = self.run.island(island)
             handle = part._queue_command(
-                h["KM_HANDLER_PAGES"], self.graph.link_group(island), words
+                h["KM_HANDLER_PAGES"],
+                self.graph.link_group(island),
+                words,
+                budget=timeout,
             )
             part.own_commands[handle] = "the links' counts for crossing_line"
             waits.append((island, handle))
@@ -318,10 +343,17 @@ class LoadMixin:
 
     def _islands_bound(self):
         """KM_ISLANDS_MAX for more than ISLANDS_MAX islands: the per-island arrays'
-        length on the cores. More than ROUND_ISLANDS_MAX islands are refused."""
+        length on the cores. More than ROUND_ISLANDS_MAX islands are refused, and
+        more than X280_WAVE_ISLANDS_MAX under the X280 dispatcher."""
         count = len(self.graph.islands) if self.graph is not None else 1
         if abi.headers()["KM_ISLANDS_MAX"] != ISLANDS_MAX:
             raise KomorebiError("ISLANDS_MAX differs from km_abi.h's")
+        if count > X280_WAVE_ISLANDS_MAX and self.dispatcher == dispatch_module.X280:
+            raise KomorebiError(
+                f"a load over {count} islands: the X280 dispatcher's wave queue holds "
+                f"{X280_WAVE_ISLANDS_MAX - 1}: at most {X280_WAVE_ISLANDS_MAX} "
+                "islands; the Tensix dispatcher has no such limit"
+            )
         if count > ROUND_ISLANDS_MAX:
             raise KomorebiError(
                 f"a load over {count} islands: a dispatcher's round of a run takes "
@@ -329,6 +361,16 @@ class LoadMixin:
                 f"use at most {ROUND_ISLANDS_MAX} islands"
             )
         return {"KM_ISLANDS_MAX": count} if count > ISLANDS_MAX else {}
+
+    def _coll_quiet(self, programs):
+        """KM_COLL_QUIET when a mover of `programs` calls a collective on a load with
+        links: run.clear_collectives' READ and SETTLE (the link cores' QUIET PAGES, the
+        ranks' ENTRY QUIET) are built then only; a load calling none pays nothing."""
+        return (
+            {"KM_COLL_QUIET": 1}
+            if self.links and far_collectives.calls(programs)
+            else {}
+        )
 
     def _load_split(self, program, options):
         """load() on a card split into islands: one launch, the links wires (NoC
@@ -357,6 +399,7 @@ class LoadMixin:
                     **self._forward,
                     **asks,
                     **table,
+                    **self._coll_quiet([program]),
                 }
                 plans = self._links()
             tables = [0] if self.card_dram else self._tables_for_load()
@@ -409,7 +452,7 @@ class LoadMixin:
             )
 
     def _follow(self, error):
-        """Raises kernel_buffer.Resize when two cards follow their kernels (no
+        """Raises kernel_buffer.Resize when cards follow their kernels (no
         kernel_bytes given) and an island's are over the buffer, and the cards can be
         opened again under the session's tensors (_not_reopened); else says why not."""
         total = getattr(getattr(error, "sizes", None), "total", 0)
@@ -471,13 +514,12 @@ class LoadMixin:
         self.kernel_bytes = size
         self._worker_l1 = sizes.worker_l1_size(size, self.arch)
         module = native.load_module(self.tree)
-        with mock.cluster_visible(self.cards):  # the same cards as the first open
-            self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
+        self._open_fabric(module, self._visible)  # the chips and form of the first
         if not mock.active():  # a mock has no X280
             self.mesh.open_x280()
         made = written = 0
         for island, session in enumerate(self.sessions):
-            session.device = self.mesh.device(island)
+            session.device = self.mesh.device(self._columns[island])
             session._kept.remake(session)
             tensors = session._kept.live()
             made += len(tensors)
@@ -603,9 +645,10 @@ class LoadMixin:
         threads = [t for one in owned for t in getattr(one, "threads", {}).values()]
         thread_defines = [t.defines for t in threads]
         runs = []
+        quiet = self._coll_quiet(owned)
         try:
             for one, own in zip(owned, defines):
-                one.defines = {**own, **self._island_defines()}
+                one.defines = {**own, **self._island_defines(), **quiet}
             for thread, own in zip(threads, thread_defines):
                 thread.defines = {**own, **self._table_bound()}
             beside = bool(threads) and options.get("thread", "card") == "card"
@@ -630,6 +673,20 @@ class LoadMixin:
                         )
                     )
                 except KomorebiError as error:
+                    if "KM_LINK_THIN_SECOND" in self._island_defines():
+                        links = max(  # the most links of a pair, seconds too
+                            link.count
+                            + self._seconds.get(
+                                (min(link.a, link.b), max(link.a, link.b)), 0
+                            )
+                            for link in self.graph.links
+                        )
+                        name = (  # a plan (the runtime's form): its programs
+                            ", ".join(p.name for p in one.programs)
+                            if isinstance(one, programs_module.Plan)
+                            else one.name
+                        )
+                        error = second_link_refusal(error, name, links) or error
                     raise island_run._named(error, island) from None
             check_link_queues(
                 [getattr(run.backend, "link_queue_at", None) for run in runs]

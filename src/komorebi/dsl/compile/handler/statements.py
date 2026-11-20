@@ -513,6 +513,7 @@ def range_loop(frame, node, call):
     movement = [Block(head, "}", body_m, uses)] if body_m else []
     compute = [Block(head_c, "}", body_c, uses | {"km_ok"})] if body_c else []
     compute += loop.pop("after", [])  # a sum held across the loop, freed
+    movement += loop.pop("after_moved", [])  # mover B's pointer past it
     for broadcast in loop["casts"]:
         m, c = broadcasts.broadcast_end(frame, broadcast, end, uses)
         movement += m

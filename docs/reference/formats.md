@@ -117,6 +117,14 @@ bits), `BFP_WIDTH` (the magnitude bits of each: 7, 3, 1), `bfp_unpack_codes(raw,
 (the exponents `[N, 64]` and datum codes `[N, 1024]` of `[N, tile bytes]` tiles) and
 `bfp_pack_codes(exponents, codes, bits)` (its inverse).
 
+A datum of sign 1 and magnitude 0 (a negative zero code: bfp8 `0x80`, bfp4 `0x8`, bfp2
+`0x2`) is not a zero on the card: the unpacker reads it as -inf in the B family and
+-65536 in the A family, at any row exponent (measured on Wormhole through a copy and a
+product, as the Wormhole ISA documentation's BFP table states); `bfp_decode` reads it
+the same, the host encode never writes it, `formats.bfp_canonical(raw, bits)` makes
+each one a plain zero, and `session.write` refuses block pages that hold one
+(`formats.bfp_check`; [the hazard](hazards.md#a-block-float-page-packed-by-hand-with-a-negative-zero)).
+
 `formats.bfp_encode` is tt-metal's `pack_as_bfp_tiles`, bit for bit (checked against the
 bound function on a mock device): each row of 16 datums shares its largest exponent,
 each magnitude is rounded once to the width, half to even, and a zero has no sign. The

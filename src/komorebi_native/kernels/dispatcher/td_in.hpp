@@ -101,7 +101,7 @@ namespace td {
             engines.base = block + kTbBytes + kTaBytes + kTeWork;
             engines.event_depth = kTeEventDepth;
             link = arg(kTdLinkIsland) != 0 ? arg(kTdLinkBase) : 0;
-            x280 = (arg(kTdX280Ranks) >> 4) & 0xFu;
+            x280 = (arg(tail_arg(kTdTailX280Ranks)) >> 4) & 0xFu;
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 

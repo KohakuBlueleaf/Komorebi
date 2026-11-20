@@ -255,6 +255,7 @@ class EventsMixin:
             self._timeout_cores = block["cores"] if block["kind"] == "timeout" else []
             return False
         self._given_up_seen += 1
+        self._settling()  # a core may still settle it: no runtime command yet
         block = device_state.inspect(read["block"], self.h, tag)
         ours = (
             block["complete"]

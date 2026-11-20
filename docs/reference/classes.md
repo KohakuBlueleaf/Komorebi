@@ -2053,7 +2053,11 @@ rank, and so does `whole = km.reduce(self.part, form="tree", group=S)` of a fiel
 sums: mover A takes each arrival into a slot of the field's tiles, compute copies it
 into DST and packs it onto the field with the packer's L1 accumulation, then hands the
 field on, to mover B, which sends a sender's field to its receiver (`km::reduce_emit`),
-or to the leader's write. The reduce's size rule: of a sum in DST, its n tiles and one
+or to the leader's write. Written in another format than float32, the leader's sum is
+copied into DST and packed again by compute, which frees its float32 pages; mover B then
+moves its own read pointer of that buffer past them (`km::passed_front`), as it does
+after a held sum's free, so that its next read there (a later handler's write, a
+sender's emit) finds the page packed for it, not one a slot off. The reduce's size rule: of a sum in DST, its n tiles and one
 for the arrivals, at most 8 (n at most 7); of a field, the field and its slots in L1, a
 slot of the field's n float32 tiles for each round by tree (the bits of S - 1, 7 when
 the group is the command's) or for each other core of the group by owner (which takes

@@ -187,3 +187,25 @@ def test_the_loads_said_are_the_last_words_and_the_error_line_is_cut():
     assert card_check.first_error("a\nkmr prebuild: the script stopped\nb") == (
         "kmr prebuild: the script stopped"
     )
+
+
+def test_a_shipped_mock_shows_only_the_cards_a_machine_s_cluster_its_environment(
+    monkeypatch, tmp_path
+):
+    """The child's TT_VISIBLE_DEVICES: the cards on a shipped mock; a machine's
+    cluster (`cluster`) leaves the caller's environment, as on that machine."""
+    seen = []
+
+    def child(command, env, check):
+        seen.append(env.get("TT_VISIBLE_DEVICES"))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(prebuild.subprocess, "run", child)
+    monkeypatch.setattr(prebuild, "converge", lambda one_pass, memory: one_pass())
+    monkeypatch.setattr(prebuild.remembered, "seed", lambda path: None)
+    monkeypatch.delenv("TT_VISIBLE_DEVICES", raising=False)
+    prebuild.run(tmp_path / "a.py", cards=(0, 1))
+    prebuild.run(tmp_path / "a.py", cards=(0, 1), cluster=tmp_path / "machine.yaml")
+    monkeypatch.setenv("TT_VISIBLE_DEVICES", "4,5")
+    prebuild.run(tmp_path / "a.py", cards=(4,), cluster=tmp_path / "machine.yaml")
+    assert seen == ["0,1", None, "4,5"]

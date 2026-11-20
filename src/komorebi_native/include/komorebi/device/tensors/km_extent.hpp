@@ -208,6 +208,22 @@ namespace km {
         return false;
     }
 
+#if defined(KM_ISLAND_NEAR)
+    // A near build's page of a tensor not whole on this island (kNearNotHere): its
+    // command given up, named so; the host's submit check refuses it first.
+    template <typename Kernel>
+    __attribute__((noinline)) bool near_not_whole(const Kernel& core) {
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            core.running_slot() | kNearNotWhole << 8,
+            core.running_sequence()
+        );
+        return false;
+    }
+#endif
+
     // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word` (no
     // pages always do); else recorded for the command the kernel runs and false.
     template <typename Kernel>
@@ -218,6 +234,11 @@ namespace km {
         uint32_t pages,
         uint32_t bytes
     ) {
+#if defined(KM_ISLAND_NEAR)
+        if (word == kNearNotHere && pages != 0) {
+            return near_not_whole(core);
+        }
+#endif
 #if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
         uint64_t bank = 0;
         const uint64_t extent = extent_bytes(word, bank);

@@ -277,6 +277,19 @@ def over(total):
     )
 
 
+def test_cards_follow_their_kernels_at_any_count_and_a_given_size_is_a_pin(
+    blackhole_card,
+):
+    """Two cards and more open at the remembered size and follow their kernels (three
+    or more once kept the runtime's buffer and raised KernelSizeError); kernel_bytes=
+    pins it."""
+    for cards in ([0, 1], [0, 1, 2], list(range(32))):
+        made = IslandSession(cards)
+        assert made._kernel_followed and made.kernel_bytes is not None
+    pinned = IslandSession([0, 1, 2, 3], kernel_bytes=163840)
+    assert not pinned._kernel_followed and pinned.kernel_bytes == 163840
+
+
 def test_two_cards_whose_kernels_need_more_open_the_cards_again(monkeypatch):
     made, module = cards_session(lowest=0x17FF00)  # an L1 tensor at the top
     monkeypatch.setattr(native, "load_module", lambda tree=None: module)
@@ -319,10 +332,11 @@ def test_two_cards_opened_again_map_their_channels_again(monkeypatch):
     for island in islands:
         island._map_channel()  # the first transfer: mapped (the mock's, for it)
         assert island._mock_mapped()
-    mesh = SimpleNamespace(close=lambda: None, device=lambda island: Device())
-    module = SimpleNamespace(Islands=lambda count, worker_l1, packet: mesh)
-    monkeypatch.setattr(native, "load_module", lambda tree=None: module)
+    mesh = SimpleNamespace(close=lambda: None, device=lambda column: Device())
+    monkeypatch.setattr(native, "load_module", lambda tree=None: object())
     made = IslandSession.__new__(IslandSession)
+    made._open_fabric = lambda module, visible: setattr(made, "mesh", mesh)
+    made._visible, made._columns = None, (0, 1)
     made.arch = "blackhole"
     made.sessions, made.cards, made.tree, made.links = tuple(islands), (0, 1), None, 0
     made.mesh, made.packet, made.kernel_bytes, made.said = mesh, 8192, 163840, []

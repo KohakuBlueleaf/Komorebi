@@ -62,7 +62,7 @@ class Load(LoadMixin):
         session = SimpleNamespace(read=self.read)
         self.sessions = (session, session)
 
-    def queue(self, handler, group, words):
+    def queue(self, handler, group, words, budget=None):
         self.commands.append(list(words))
         return len(self.commands)
 

@@ -37,6 +37,29 @@ namespace km {
 #endif
     }
 
+#if defined(KM_ISLAND_NEAR)
+    // A near build's word of no pages of this island's (here_address): the page bounds
+    // refuse it (km_extent.hpp page_range_ok); no bank address is this word.
+    constexpr uint32_t kNearNotHere = 0xFFFFFFFFu;
+
+    // A near build's bank address of word `tensor`'s pages here: a bank address as is,
+    // an entry's part here if it holds every page (copy, or whole), else kNearNotHere.
+    inline uint32_t here_address(uint32_t tensor) {
+        const Islands view(island_area());
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        if (entry == nullptr) {
+            return tensor;
+        }
+        const volatile uint32_t*
+            part = (entry + KM_TENSOR_HEADER_BYTES / 4 + view.here() * kPartWords);
+        const uint32_t placement = entry[3] & 3u;
+        const bool whole = (
+            placement == 1u || (placement == 0u && part[1] == 0 && part[2] == entry[1])
+        );
+        return whole ? part[0] : kNearNotHere;
+    }
+#endif
+
     // Where page `page` of tensor `tensor` (its reference word) lives; a word naming
     // no entry is a bank address here: {this island, word, page}; a copy: this island.
     inline PageAt page_at(uint32_t tensor, uint32_t page) {

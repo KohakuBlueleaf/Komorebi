@@ -1388,7 +1388,17 @@ namespace km {
     bool chain_gather_shares(
         const Writer& writer, const km_command_t& command, const Islands& view
     ) {
-#if defined(KM_TENSOR_TABLE)
+#if defined(KM_ISLAND_NEAR)
+        static_cast<void>(view);
+        writer.gave_up(
+            kStWriter,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | kNearNoIsland << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths (the load refuses the call)
+#elif defined(KM_TENSOR_TABLE)
         const uint32_t* now = chain_now.now;
         const uint32_t n = view.count(), here = view.here(), counts = view.counts();
         if (counts == 0) {

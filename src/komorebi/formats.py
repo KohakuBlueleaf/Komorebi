@@ -197,7 +197,8 @@ def bfp_unpack_codes(raw, bits):
 
 def bfp_decode(raw, bits, family_a=False):
     """[N, tile bytes] uint8 block tiles as [N, 1024] float32 (face order): each
-    datum's magnitude times 2 ** (its row's exponent - bias - width + 1)."""
+    datum's magnitude times 2 ** (its row's exponent - bias - width + 1); a negative
+    zero code as the card's unpacker reads it (BFP_NEGATIVE_ZERO)."""
     exponents, codes = bfp_unpack_codes(raw, bits)
     width = BFP_WIDTH[bits]
     sign = codes.astype(np.int64) >> width
@@ -205,7 +206,64 @@ def bfp_decode(raw, bits, family_a=False):
     bias = 15 if family_a else 127
     exp = np.repeat(exponents.astype(np.int64), FACE, axis=1) - bias - (width - 1)
     values = np.ldexp(man.astype(np.float64), exp) * np.where(sign == 1, -1.0, 1.0)
+    values[codes == 1 << width] = BFP_NEGATIVE_ZERO["a" if family_a else "b"]
     return values.astype(np.float32)
+
+
+# The card's value for a negative zero code (bfp8 0x80, bfp4 0x8, bfp2 0x2) at any
+# exponent: -inf (B family), -65536 (A, Wormhole, measured); the host never writes it.
+BFP_NEGATIVE_ZERO = {"b": -np.inf, "a": -65536.0}
+
+
+# Each datum's top bit (its sign) in a 64-bit word of `bits`-bit codes.
+BFP_SIGNS = {
+    bits: int.from_bytes(bytes([{8: 0x80, 4: 0x88, 2: 0xAA}[bits]]) * 8, "little")
+    for bits in BFP_WIDTH
+}
+
+
+def bfp_negative_zeros(raw, bits):
+    """[N, tile bytes / 8] uint64 of block tiles `raw` (whole tiles, any shape): the
+    sign bit of each datum that is a negative zero code (sign 1, magnitude 0), all
+    other bits 0."""
+    tiles = np.ascontiguousarray(raw, np.uint8)
+    size = bfp_tile_bytes(bits)
+    if tiles.size % size:
+        raise ValueError(
+            f"{tiles.size:,} bytes are not whole {bits}-bit block tiles of {size} bytes"
+        )
+    words = tiles.reshape(-1, size)[:, BFP_EXPONENTS:].view(np.uint64)
+    signs = np.uint64(BFP_SIGNS[bits])
+    rest = ~signs
+    flipped = words ^ signs  # a negative zero's field is now all zeros
+    return ~(((flipped & rest) + rest) | flipped | rest)  # a zero field's top bit
+
+
+def bfp_canonical(raw, bits):
+    """A copy of block tiles `raw` (whole tiles, any shape) with each negative zero
+    code made a plain zero, the exponents and every other code unchanged: bytes the
+    card reads as the host encode means them."""
+    out = np.array(raw, np.uint8, copy=True)
+    tiles = out.reshape(-1, bfp_tile_bytes(bits))
+    words = tiles[:, BFP_EXPONENTS:].view(np.uint64)
+    words &= ~bfp_negative_zeros(out, bits)
+    return out
+
+
+def bfp_check(raw, bits, what="block tiles"):
+    """Refuses block tiles `raw` (whole tiles, any shape) that hold a negative zero
+    code, which the card reads as BFP_NEGATIVE_ZERO, not 0; returns `raw`."""
+    found = bfp_negative_zeros(raw, bits)
+    if found.any():
+        tiles = np.flatnonzero(found.any(axis=1))
+        raise ValueError(
+            f"{what}: {len(tiles):,} of {len(found):,} {bits}-bit block tiles (the "
+            f"first tile {tiles[0]}) hold a negative zero code (sign 1, magnitude 0), "
+            "which the card reads as minus its family's largest value (-inf for the "
+            "B family, -65536 for the A family), not 0: make them canonical with "
+            "formats.bfp_canonical(raw, bits)"
+        )
+    return raw
 
 
 def tilize(array):

@@ -215,8 +215,8 @@ def test_prepare_takes_an_islands_word_into_the_kernels_arguments():
     c = tensix.constants()
     assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdLinkIsland"]
     assert c["kTdIsland"] > c["kTdThreadScale"]
-    assert c["kTdLinkEntries"] + 3 * c["kTdLinkIslandsMax"] == c["kTdFarThread"]
-    assert c["kTdX280Ranks"] + 1 == c["kTdArgs"]
+    assert c["kTdLinkIsland"] < c["kTdLinkEntries"]
+    assert c["kTdTailX280Ranks"] + 1 == c["kTdTailArgs"]
 
 
 def link_line(islands, island=1):
@@ -246,6 +246,19 @@ def test_prepare_takes_the_link_line_into_the_links_arguments():
     assert link["entries"][2::3] == [7 | 9 << 16] * 2
     part = h["KMD_LINK_COUNT_BYTES"] + link["slots"] * h["KM_LINK_PACKET_BYTES"]
     assert link["bytes"] == tensix.constants()["kTlInbox"] + part
+
+
+def test_the_island_table_holds_the_sessions_islands_and_the_words_after_follow():
+    """32 islands are served: 3 words each in the table, the X280 ranks and threads
+    words after its end (td::tail_arg); none without a link."""
+    c = tensix.constants()
+    assert c["kTdLinkIslandsMax"] == 32
+    _, line = link_line(32)
+    link = tensix.link_words(line)
+    assert link["islands"] == 32 and len(link["entries"]) == 96
+    assert tensix.table_end(link) == c["kTdLinkEntries"] + 96
+    assert tensix.table_end(None) == c["kTdLinkEntries"]
+    assert c["kTdLinkEntries"] + 96 + c["kTdTailArgs"] <= 341  # tt-metal's floor
 
 
 def test_more_islands_than_the_links_arguments_hold_are_refused():
@@ -651,7 +664,7 @@ def test_x280_threads_on_clusters_1_to_3_are_sources_1_to_3(tmp_path):
         tensix.refuse_load(shared, None, shared, {}, trisc=False)
     c = tensix.constants()  # clusters 2 and 3's areas, after the engines'
     assert c["kTbBytes"] + c["kTaBytes"] + c["kTeBytes"] == c["kTbFar"]
-    assert c["kTdFarThread"] + 4 == c["kTdThreads"] < c["kTdArgs"]  # tile, work each
+    assert c["kTdTailFarThread"] + 4 == c["kTdTailThreads"] < c["kTdTailArgs"]
 
 
 def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(

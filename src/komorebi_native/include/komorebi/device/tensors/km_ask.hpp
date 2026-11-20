@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "../core/km_bits.hpp"
 #include "km_extent.hpp"
 #include "../links/km_pages.hpp"
 #include "km_placement.hpp"
@@ -77,9 +78,9 @@ namespace km {
     struct Tensor {
         static constexpr auto kArgs = TensorAccessorArgs<Base>();
         using Accessor = decltype(TensorAccessor(kArgs, 0u));
-        // Built for one island (no tensor table): the word is this island's bank
-        // address and every page is here.
-#if defined(KM_TENSOR_TABLE)
+        // One island (no table) or no far paths (KM_ISLAND_NEAR, here_address): every
+        // page here, the word its bank address (the host refuses a tensor not whole).
+#if defined(KM_TENSOR_TABLE) && !defined(KM_ISLAND_NEAR)
         static constexpr bool kLocal = false;
 #else
         static constexpr bool kLocal = true;
@@ -88,9 +89,19 @@ namespace km {
         Accessor accessor;
         uint32_t word;
 
+#if defined(KM_ISLAND_NEAR)
+        explicit Tensor(uint32_t word) : Tensor(here_address(word), 0u) {
+        }
+
+        // At bank address `here` (the second word unused: here_address's form).
+        Tensor(uint32_t here, uint32_t) :
+            accessor(TensorAccessor(kArgs, here)), word(here) {
+        }
+#else
         explicit Tensor(uint32_t word) :
             accessor(TensorAccessor(kArgs, word)), word(word) {
         }
+#endif
 
         static constexpr uint32_t next_compile_time_args_offset() {
             return kArgs.next_compile_time_args_offset();
@@ -208,6 +219,10 @@ namespace km {
         const uint32_t mine = view.own_words();
         const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(word, kGaveRefused, kWhereNear, named, sequence);
+        return false;  // built without the far paths: no line leaves the island
+#endif
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
 #endif
@@ -445,6 +460,10 @@ namespace km {
         uint32_t holder
     ) {
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(word, kGaveRefused, kWhereNear, slot | holder << 8, sequence);
+        return false;  // built without the far paths: nothing was asked or put
+#endif
         if (!port_known(port)) {
             core.gave_up(word, kGaveBadItem, kWhereAsk, slot | holder << 8, sequence);
             return false;
@@ -549,6 +568,16 @@ namespace km {
         uint32_t pages,
         PutRun& run
     ) {
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | holder << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths: no put leaves the island
+#endif
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
         put_run_clear(run);
@@ -629,6 +658,16 @@ namespace km {
         uint32_t from,
         uint32_t count
     ) {
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | run.holder << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths: no put leaves the island
+#endif
         if (run.rings.slots == 0) {  // no rings: its own line, waited for
             const uint32_t first = run.first + run.done;
             if (!ask_line(
@@ -952,6 +991,10 @@ namespace km {
         const uint32_t mine = view.own_words();
         const AskQueue queue = ask_gets(core.role());
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(word, kGaveRefused, kWhereNear, slot | holder << 8, sequence);
+        return false;  // built without the far paths: no line leaves the island
+#endif
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
 #endif
@@ -1342,6 +1385,10 @@ namespace km {
         };
         const uint32_t me = core.args().me - view.base();
         const uint32_t hops = view.hops(holder);
+#if defined(KM_ISLAND_NEAR)
+        core.gave_up(word, kGaveRefused, kWhereNear, slot | holder << 8, sequence);
+        return false;  // built without the far paths: no batch leaves the island
+#endif
 #if defined(KM_LINK_NO_FAR_DRAM)
         core.gave_up(word, kGaveRefused, kWhereFarDram, slot | holder << 8, sequence);
         return false;  // a batch's records are pages of a far tensor (its DRAM)
@@ -3422,16 +3469,16 @@ namespace km {
         return partition(pages, c, n);
     }
 
-    // A leader's state is tied to the host's clear by a generation (KM_COLL_GEN_*): a
-    // leader that gave up refuses by name until run.clear_collectives() raises it.
+    // The generation (KM_COLL_GEN_*, a DRAM page a core, raised by clear_collectives)
+    // ties a leader to the clear: marked after a give-up, it refuses until raised.
     struct CollGen {
         uint32_t row;   // the core's generation row in L1 (0: the load made none)
         uint32_t dram;  // the generation pages' DRAM address
         uint32_t page;  // their page bytes
     };
 
-    // After the island table's meeting words: the pages' address and page bytes, then
-    // at the next KM_COLL_GEN_ALIGN bytes the row (km_abi.h says why 64).
+    // After the meeting words: the pages' address and page bytes, the landing's two
+    // words (land_run), then at the next KM_COLL_GEN_ALIGN bytes the row (km_abi.h).
     inline CollGen coll_gen_of(const Islands& view) {
         const uint32_t meets = view.meetings();
         if (meets == 0) {
@@ -3443,7 +3490,7 @@ namespace km {
             return {0, 0, 0};
         }
         const uint32_t row = (
-            (at + 4 * 2 + KM_COLL_GEN_ALIGN - 1) / KM_COLL_GEN_ALIGN * KM_COLL_GEN_ALIGN
+            (at + 4 * 4 + KM_COLL_GEN_ALIGN - 1) / KM_COLL_GEN_ALIGN * KM_COLL_GEN_ALIGN
         );
         return {row, words[0], words[1]};
     }
@@ -3463,8 +3510,8 @@ namespace km {
     }
 #endif
 
-    // The row from this core's DRAM page, or into it (`write`): a wait the abort does
-    // not end, so a mark made after a give-up lands. Its kGave* code.
+    // The row from this core's DRAM page, or into it (`write`), done at return: a wait
+    // the abort does not end, so a mark made after a give-up lands. Its kGave* code.
     template <typename Kernel>
     inline uint32_t coll_gen_io(const Kernel& core, const CollGen& g, bool write) {
         const Islands view = islands_at(core.args().control);
@@ -3509,8 +3556,8 @@ namespace km {
         return false;
     }
 
-    // A leader's collective: it marks itself with its generation if it does not end;
-    // the first mark keeps what it gave up in (word, sequence, stage) for the host.
+    // A leader's collective marks itself with its generation if it does not end; the
+    // first mark keeps what it gave up in (word or 0, sequence, stage) for the host.
     template <typename Kernel>
     struct CollMark {
         const Kernel& core;
@@ -3581,6 +3628,447 @@ namespace km {
         return true;
     }
 
+#if defined(KM_COLL_QUIET)  // a load with links whose movers call a collective
+    // ENTRY's QUIET on a rank (clear_collectives): READ writes both CPUs' put words to
+    // page r of a2's tensor; SETTLE resets ports as settle_pages does. kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t
+    quiet_rank(const Kernel& core, const km_command_t& command) {
+        const uint32_t control = core.args().control;
+        const Islands view = islands_at(control);
+        const uint32_t mine = view.own_words();
+        if (command.a1 == KM_QUIET_READ) {
+            if (mine == 0) {
+                return kGaveNone;  // no own words: the host's zeros
+            }
+            const InterleavedAddrGen<true> to = {
+                .bank_base_address = command.a2, .page_size = KM_QUIET_RANK_PAGE
+            };
+            const uint64_t row = to.get_noc_addr(core.me() - view.offset());
+            for (uint32_t cpu = 0; cpu < 2; cpu++) {
+                noc_async_write(
+                    mine + cpu * KM_OWN_CPU_BYTES + KM_OWN_PUT_SENT, row + 64 * cpu, 64
+                );
+            }
+            return core.poll_at(
+                kWhereClear,
+                [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                },
+                core.args().wait_limit
+            );
+        }
+        if (command.a1 != KM_QUIET_SETTLE) {
+            return kGaveBadTransfer;
+        }
+        for (uint32_t cpu = 0; cpu < 2; cpu++) {
+            volatile tt_l1_ptr uint32_t* port = (
+                l1(control + KM_CONTROL_PORT + (KM_PORT_PAGES + cpu) * KM_PORT_STRIDE)
+            );
+            port[KM_PORT_COUNT] = 0;
+            port[KM_PORT_WANT] = 0;
+            port[KM_PORT_FLIGHT] = 0;
+            if (mine != 0) {
+                volatile tt_l1_ptr uint32_t* own = l1(mine + cpu * KM_OWN_CPU_BYTES);
+                volatile tt_l1_ptr uint32_t* puts = own + KM_OWN_PUTS / 4;
+                puts[KM_PORT_COUNT] = 0;
+                puts[KM_PORT_WANT] = 0;
+                puts[KM_PORT_FLIGHT] = 0;
+            }
+        }
+        return kGaveNone;
+    }
+#endif
+
+#if defined(KM_LINK_NO_FAR_DRAM)
+    // Another island's pages land in its leader's L1 (hazards.md, far Wormhole DRAM);
+    // a slot: header (1 + share | gen << 8, tensor, first, pages | sender << 16), pages
+    constexpr uint32_t kLandHead = 32;
+    // A slot or credit of another generation is dropped (KM_COLL_GEN_DROPS); a header
+    // holds the generation's low 24 bits, a credit its whole row.
+    constexpr uint32_t kLandGenBits = 0xFFFFFFu;
+    constexpr uint32_t kLandStride = 32;  // a credit's bytes
+
+    struct Landing {
+        uint32_t slots;  // a port's (0: the load made no landing)
+        uint32_t chunk;  // a slot's bytes after its header
+        uint32_t base;   // the credits' L1 address
+        CollGen gen;     // the core's generation row and its DRAM page
+    };
+
+    inline Landing landing_of(const Islands& view) {
+        const CollGen g = coll_gen_of(view);
+        if (g.row == 0) {
+            return {0, 0, 0, g};
+        }
+        const uint32_t meets = view.meetings();
+        const volatile tt_l1_ptr uint32_t* words = l1(meets + 4 * (1 + l1(meets)[0]));
+        return {words[2], words[3], g.row + KM_COLL_GEN_BYTES, g};
+    }
+
+    template <typename Kernel>
+    inline uint32_t land_role(const Kernel& core) {
+        return core.role() == kRoleWriter ? 1u : 0u;
+    }
+
+    inline uint32_t land_credit(const Landing& l, uint32_t port, uint32_t s) {
+        return l.base + kLandStride * (port * l.slots + s);
+    }
+
+    inline uint32_t land_staging(const Landing& l) {
+        return land_credit(l, KM_ISLAND_PORTS_MAX, 0);
+    }
+
+    inline uint32_t land_slot(const Landing& l, uint32_t port, uint32_t s) {
+        return land_staging(l) + (1 + port * l.slots + s) * (kLandHead + l.chunk);
+    }
+
+    // A wait of the landing given up (or a bad slot), named: what (kLand*), the port,
+    // the island. False.
+    template <typename Kernel>
+    __attribute__((noinline)) bool land_gave_up(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t code,
+        uint32_t what,
+        uint32_t port,
+        uint32_t island
+    ) {
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            code,
+            kWhereLand,
+            (what << 4 | (port & 0xFu)) | island << 8,
+            command.sequence
+        );
+        return false;
+    }
+
+    // This CPU's collective: its slots in flight (a bit a slot, a port each; all free
+    // as it begins; an overlay part's own, as team_goes_now's).
+    struct LandNow {
+        uint32_t busy[KM_ISLAND_PORTS_MAX];
+    };
+
+#if defined(KM_OVERLAY_PART)
+    inline LandNow& land_now() {
+        static LandNow own = {};
+        return own;
+    }
+#else
+    inline LandNow land_state = {};
+
+    inline LandNow& land_now() {
+        return land_state;
+    }
+#endif
+
+    inline uint32_t* land_busy() {
+        return land_now().busy;
+    }
+
+    // The slots of `port` credited since in this generation: free again (their credit
+    // words cleared); a credit of another generation is never taken.
+    inline void land_credited(const Landing& l, uint32_t port) {
+        uint32_t& busy = land_busy()[port];
+        invalidate_l1_cache();
+        for (uint32_t s = 0; busy != 0 && s < l.slots; s++) {
+            volatile tt_l1_ptr uint32_t* credit = l1(land_credit(l, port, s));
+            if ((busy >> s & 1u) != 0 && credit[0] == coll_gen_now()) {
+                credit[0] = 0;
+                busy &= ~(1u << s);
+            }
+        }
+    }
+
+    // The leader: every full slot's pages into its DRAM, the slot cleared, its sender
+    // credited, the pages counted for their share. False: gave up (recorded).
+    template <typename Kernel>
+    __attribute__((noinline)) bool land_serve(
+        const Kernel& core, const km_command_t& command
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const Landing l = landing_of(view);
+        const uint32_t here = view.here(), counts = view.counts(), n = view.count();
+        for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
+            if (view.port_link(port, 0, 0) >> 24 == 0) {
+                continue;  // no neighbour on this port
+            }
+            for (uint32_t s = 0; s < l.slots; s++) {
+                const uint32_t at = land_slot(l, port, s);
+                volatile tt_l1_ptr uint32_t* head = l1(at);
+                invalidate_l1_cache();
+                const uint32_t word = head[0];
+                if (word == 0) {
+                    continue;
+                }
+                const uint32_t from = tree_far(view, port);
+                // another generation's: dropped
+                if (word >> 8 != (coll_gen_now() & kLandGenBits)) {
+                    if (head[0] == word) {  // not a new header landed meanwhile
+                        head[0] = 0;
+                    }
+                    l1(l.gen.row)[KM_COLL_GEN_DROPS] += 1;  // for the host
+                    const uint32_t code = coll_gen_io(core, l.gen, true);
+                    if (code != kGaveNone) {
+                        return land_gave_up(core, command, code, kLandGen, port, from);
+                    }
+                    continue;
+                }
+                const uint32_t c = (word & 0xFFu) - 1, target = head[1], q = head[2];
+                const uint32_t pages = head[3] & 0xFFFFu, sender = head[3] >> 16;
+                const volatile uint32_t* entry = tensor_entry(view, target);
+                const uint32_t bytes = entry != nullptr ? entry[0] : 0;
+                if (c >= n || bytes == 0 || pages * bytes > l.chunk) {
+                    return (
+                        land_gave_up(
+                            core, command, kGaveBadItem, kLandHeader, port, from
+                        )
+                    );
+                }
+                for (uint32_t k = 0; k < pages;) {
+                    const PageAt to = gather_place(target, q + k, here);
+                    if (to.address == 0) {
+                        return (
+                            land_gave_up(
+                                core, command, kGaveBadItem, kLandHeader, port, from
+                            )
+                        );
+                    }
+                    const uint32_t run = page_run(target, q + k, pages - k, to);
+                    const InterleavedAddrGen<true> place = {
+                        .bank_base_address = to.address, .page_size = bytes
+                    };
+                    for (uint32_t m = 0; m < run; m++) {
+                        noc_async_write(
+                            at + kLandHead + (k + m) * bytes,
+                            place.get_noc_addr(to.index + m),
+                            bytes
+                        );
+                    }
+                    k += run;
+                }
+                const uint32_t code = core.poll_at(
+                    kWhereAsk,
+                    [] {
+                        return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                    },
+                    core.args().wait_limit
+                );
+                if (code != kGaveNone) {  // its pages still in the slot: kept
+                    return land_gave_up(core, command, code, kLandWrite, port, from);
+                }
+                head[0] = 0;  // after its pages left the slot: then credit, count
+                const uint32_t back = view.port_link(port, 0, 1) >> 24;
+                const void* gen = reinterpret_cast<const void*>(l.gen.row);
+                if (!write_l1(  // the generation, whole: a credit of this one only
+                    core, command, sender, land_credit(l, back, s), gen, kLandStride
+                )) {
+                    return false;
+                }
+                noc_semaphore_inc(get_noc_addr(counts + 4 * c), pages);
+                if (!coll_flushed(core, command)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // A free slot of `port` (waits, serving this core's landings); l.slots: gave up.
+    template <typename Kernel>
+    inline uint32_t land_take(
+        const Kernel& core,
+        const km_command_t& command,
+        const Islands& view,
+        const Landing& l,
+        uint32_t port
+    ) {
+        uint32_t s = l.slots;
+        bool bad = false;
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                land_credited(l, port);
+                for (uint32_t k = 0; k < l.slots && s == l.slots; k++) {
+                    s = (land_busy()[port] >> k & 1u) == 0 ? k : s;
+                }
+                bad = s == l.slots && !land_serve(core, command);
+                return s != l.slots || bad;
+            },
+            core.args().wait_limit
+        );
+        if (bad) {
+            return l.slots;
+        }
+        if (code != kGaveNone) {
+            land_gave_up(core, command, code, kLandSlot, port, tree_far(view, port));
+            return l.slots;
+        }
+        l1(land_credit(l, port, s))[0] = 0;  // no credit of an earlier filling
+        return s;
+    }
+
+    // gather_run where links may not target far DRAM: each run of pages into slots of
+    // the far leader's landing (keeper: its flat rank, port KM_PORT_SLOTS + c).
+    template <typename Kernel>
+    __attribute__((noinline)) bool land_run(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to,
+        Gather& gather,
+        uint32_t keeper,
+        uint32_t into,
+        uint32_t into_first
+    ) {
+        if (pages == 0) {
+            return true;
+        }
+        const uint32_t target = into != 0 ? into : tensor;
+        const Islands view = islands_at(core.args().control);
+        const uint32_t here = view.here();
+        const Landing l = landing_of(view);
+        const volatile uint32_t* entry = tensor_entry(view, tensor);
+        const volatile uint32_t* other = tensor_entry(view, target);
+        const uint32_t rank = (keeper & ((1u << kKeeperRanksShift) - 1)) - 1;
+        const uint32_t c = (keeper >> kKeeperPortShift) - KM_PORT_SLOTS;
+        uint32_t port = KM_ISLAND_PORTS_MAX;
+        for (uint32_t p = 0; p < KM_ISLAND_PORTS_MAX; p++) {
+            const bool linked = view.port_link(p, 0, 0) >> 24 != 0;
+            port = linked && tree_far(view, p) == to ? p : port;
+        }
+        if (
+            l.slots == 0 || entry == nullptr || other == nullptr ||
+            other[0] != entry[0] || entry[0] > l.chunk || keeper == ~0u ||
+            port == KM_ISLAND_PORTS_MAX || c >= view.count()
+        ) {
+            return coll_gave_up(core, command, kGaveBadItem);
+        }
+#if KM_GUARD
+        if (
+            !page_range_ok(core, tensor, first, pages, entry[0]) ||
+            !page_range_ok(core, target, into_first, pages, entry[0])
+        ) {
+            return false;
+        }
+#endif
+        const uint32_t bytes = entry[0], most = l.chunk / bytes;
+        const uint32_t there = view.port_link(port, 0, 1) >> 24;  // its port to here
+        const uint32_t staging = land_staging(l);
+        volatile tt_l1_ptr uint32_t* head = l1(staging);
+        for (uint32_t k = 0; k < pages;) {
+            const uint32_t p = first + k, q = into_first + k;
+            const PageAt from = gather_place(tensor, p, here);
+            if (from.address == 0 || gather_place(target, q, to).address == 0) {
+                return coll_gave_up(core, command, kGaveBadItem);
+            }
+            uint32_t run = page_run(tensor, p, pages - k, from);
+            run = run < most ? run : most;
+            const uint32_t s = land_take(core, command, view, l, port);
+            if (s == l.slots) {
+                return false;
+            }
+            const InterleavedAddrGen<true> place = {
+                .bank_base_address = from.address, .page_size = bytes
+            };
+            for (uint32_t m = 0; m < run; m++) {
+                noc_async_read(
+                    place.get_noc_addr(from.index + m),
+                    staging + kLandHead + m * bytes,
+                    bytes
+                );
+            }
+            const uint32_t code = core.poll_at(
+                kWhereAsk,
+                [] {
+                    return ncrisc_noc_reads_flushed(noc_index);
+                },
+                core.args().wait_limit
+            );
+            if (code != kGaveNone) {
+                return land_gave_up(core, command, code, kLandSlot, port, to);
+            }
+            const uint32_t slot_at = land_slot(l, there, s);
+            const void* pages_at = reinterpret_cast<const void*>(staging + kLandHead);
+            if (!write_l1(
+                core, command, rank, slot_at + kLandHead, pages_at, run * bytes
+            )) {
+                return false;
+            }
+            head[0] = (c + 1) | (coll_gen_now() & kLandGenBits) << 8;
+            head[1] = target, head[2] = q, head[3] = run | core.me() << 16;
+            if (!write_l1(
+                core,
+                command,
+                rank,
+                slot_at,
+                reinterpret_cast<const void*>(staging),
+                kLandHead
+            )) {
+                return false;
+            }
+            land_busy()[port] |= 1u << s;
+            gather.pages += run;
+            gather.island = to;
+            k += run;
+        }
+        return true;
+    }
+
+    // gather_wait of a tree: every slot this CPU filled credited (serving meanwhile).
+    template <typename Kernel>
+    inline bool land_drained(const Kernel& core, const km_command_t& command) {
+        const Islands view = islands_at(core.args().control);
+        const Landing l = landing_of(view);
+        bool bad = false;
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                uint32_t left = 0;
+                for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
+                    land_credited(l, port);
+                    left |= land_busy()[port];
+                }
+                bad = left != 0 && !land_serve(core, command);
+                return left == 0 || bad;
+            },
+            core.args().wait_limit
+        );
+        if (bad || code == kGaveNone) {
+            return !bad;
+        }
+        uint32_t port = 0;  // the first port still waited on
+        while (port + 1 < KM_ISLAND_PORTS_MAX && land_busy()[port] == 0) {
+            port++;
+        }
+        return (
+            land_gave_up(core, command, code, kLandCredits, port, tree_far(view, port))
+        );
+    }
+
+    // A leader begins a collective (its generation read by coll_guard): its slots free;
+    // a load without the landing gives up by name. False: gave up.
+    template <typename Kernel>
+    __attribute__((noinline)) bool land_begin(
+        const Kernel& core, const km_command_t& command
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const Landing l = landing_of(view);
+        for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
+            land_busy()[port] = 0;
+        }
+        if (l.slots == 0) {
+            return (
+                land_gave_up(core, command, kGaveBadItem, kLandNone, 0xFu, view.here())
+            );
+        }
+        return true;
+    }
+#endif
+
     // The leader waits (bounded) until word `c` of its counts table counted `pages`
     // pages, then takes them off. False: gave up.
     template <typename Kernel>
@@ -3591,7 +4079,35 @@ namespace km {
         if (counts == 0) {
             return coll_gave_up(core, command, kGaveBadItem);
         }
+#if defined(KM_LINK_NO_FAR_DRAM)
+        if (pages == 0) {
+            return true;
+        }
+        volatile tt_l1_ptr uint32_t* word = l1(counts + 4 * c);
+        bool bad = false;
+        const uint32_t code = core.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                if (static_cast<int32_t>(*word - pages) >= 0) {
+                    return true;
+                }
+                bad = !land_serve(core, command);  // the counts come from its landings
+                return bad;
+            },
+            core.args().wait_limit
+        );
+        if (bad) {
+            return false;
+        }
+        if (code != kGaveNone) {
+            return land_gave_up(core, command, code, kLandShare, 0xFu, c);
+        }
+        noc_semaphore_inc(get_noc_addr(counts + 4 * c), 0u - pages);
+        return coll_flushed(core, command);
+#else
         return pages == 0 || taken_off(core, command, l1(counts + 4 * c), pages);
+#endif
     }
 
     // The leader's down sweep: each share, nearest root first, from its parent (counted
@@ -3633,25 +4149,29 @@ namespace km {
                     }
                     kids &= ~(1u << port);
                     const uint32_t to = tree_far(view, port);
-                    if (!gather_run(
-                        core,
-                        command,
-                        tensor,
-                        first + part.start,
-                        part.len,
-                        to,
-                        posted,
-                        keeper(
-                            view.entry_first(to) + team_leader(view, command, to),
-                            KM_PORT_SLOTS + c
-                        ),
-                        0,
-                        first + part.start
-                    )) {
-                        return false;
+#if defined(KM_LINK_NO_FAR_DRAM)
+                    if (!land_run(
+#else
+                        if (!gather_run(
+#endif
+                            core,
+                            command,
+                            tensor,
+                            first + part.start,
+                            part.len,
+                            to,
+                            posted,
+                            keeper(
+                                view.entry_first(to) + team_leader(view, command, to),
+                                KM_PORT_SLOTS + c
+                            ),
+                            0,
+                            first + part.start
+                        )) {
+                            return false;
+                        }
                     }
-                }
-            }
+                    }
         }
         if (done < n) {  // an island past every hop: a broken island table
             return coll_gave_up(core, command, kGaveBadItem);
@@ -3696,7 +4216,7 @@ namespace km {
                     return coll_gave_up(core, command, kGaveBadItem);
                 }
                 if (kids != 0) {
-                    const uint32_t partials = __builtin_popcount(kids) * part.len;
+                    const uint32_t partials = popcount(kids) * part.len;
                     if (
                         (lead && !tree_counted(core, command, c, partials)) ||
                         !team_go(core, command, t)
@@ -3733,26 +4253,30 @@ namespace km {
                     continue;
                 }
                 const TreeUp up = at.up;
-                if (!gather_run(
-                    core,
-                    command,
-                    tensor,
-                    first + part.start,
-                    part.len,
-                    up.parent,
-                    posted,
-                    keeper(
-                        view.entry_first(up.parent) +
-                            team_leader(view, command, up.parent),
-                        KM_PORT_SLOTS + c
-                    ),
-                    scratch,
-                    up.back * pages + part.start
-                )) {
-                    return false;
+#if defined(KM_LINK_NO_FAR_DRAM)
+                if (!land_run(
+#else
+                    if (!gather_run(
+#endif
+                        core,
+                        command,
+                        tensor,
+                        first + part.start,
+                        part.len,
+                        up.parent,
+                        posted,
+                        keeper(
+                            view.entry_first(up.parent) +
+                                team_leader(view, command, up.parent),
+                            KM_PORT_SLOTS + c
+                        ),
+                        scratch,
+                        up.back * pages + part.start
+                    )) {
+                        return false;
+                    }
                 }
-            }
-        }
+                }
         return true;
     }
 
@@ -3763,11 +4287,17 @@ namespace km {
     ) {
         if (t.index == 0) {
             coll_stamp(kCsArrived);
+#if defined(KM_LINK_NO_FAR_DRAM)
+            static_cast<void>(posted);
+            if (!land_drained(core, command)) {
+#else
             if (!gather_wait(core, command, posted)) {
+#endif
                 return false;
             }
             coll_stamp(kCsConfirmed);
         }
+
         if (!team_go(core, command, t)) {
             return false;
         }
@@ -3787,7 +4317,17 @@ namespace km {
         uint32_t pages,
         Tree tree = km::tree()
     ) {
-#if defined(KM_TENSOR_TABLE)
+#if defined(KM_ISLAND_NEAR)
+        static_cast<void>(tree);
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | kNearNoIsland << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths (the load refuses the call)
+#elif defined(KM_TENSOR_TABLE)
         const Islands view = islands_at(core.args().control);
         if (view.count() < 2) {
             return true;
@@ -3809,6 +4349,11 @@ namespace km {
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }
+#if defined(KM_LINK_NO_FAR_DRAM)
+        if (t.index == 0 && !land_begin(core, command)) {
+            return false;
+        }
+#endif
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -3821,9 +4366,9 @@ namespace km {
         }
         return marked.done(tree_end(core, command, t, posted));
 #else
-        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
-        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(tree);
-        return true;  // one island: it holds the whole tensor
+    static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+    static_cast<void>(first), static_cast<void>(pages), static_cast<void>(tree);
+    return true;  // one island: it holds the whole tensor
 #endif
     }
 
@@ -3859,6 +4404,11 @@ namespace km {
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }
+#if defined(KM_LINK_NO_FAR_DRAM)
+        if (t.index == 0 && !land_begin(core, command)) {
+            return false;
+        }
+#endif
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -3902,7 +4452,17 @@ namespace km {
         uint32_t room,
         Tree tree = km::tree()
     ) {
-#if defined(KM_TENSOR_TABLE)
+#if defined(KM_ISLAND_NEAR)
+        static_cast<void>(tree);
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | kNearNoIsland << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths (the load refuses the call)
+#elif defined(KM_TENSOR_TABLE)
         const uint32_t n = islands_at(core.args().control).count();
         return (
             n < 2 ||
@@ -3922,11 +4482,11 @@ namespace km {
             )
         );
 #else
-        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
-        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
-        static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
-        static_cast<void>(tree);
-        return true;  // one island: its partial is the sum
+    static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+    static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
+    static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
+    static_cast<void>(tree);
+    return true;  // one island: its partial is the sum
 #endif
     }
 
@@ -3946,7 +4506,17 @@ namespace km {
         uint32_t root,
         Tree tree = km::tree()
     ) {
-#if defined(KM_TENSOR_TABLE)
+#if defined(KM_ISLAND_NEAR)
+        static_cast<void>(tree);
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | kNearNoIsland << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths (the load refuses the call)
+#elif defined(KM_TENSOR_TABLE)
         const Islands view = islands_at(core.args().control);
         if (view.count() < 2) {
             return true;
@@ -3971,11 +4541,11 @@ namespace km {
             )
         );
 #else
-        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
-        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
-        static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
-        static_cast<void>(root), static_cast<void>(tree);
-        return true;  // one island: its copy is the sum
+    static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+    static_cast<void>(first), static_cast<void>(pages), static_cast<void>(scratch);
+    static_cast<void>(kind), static_cast<void>(buffer), static_cast<void>(room);
+    static_cast<void>(root), static_cast<void>(tree);
+    return true;  // one island: its copy is the sum
 #endif
     }
 
@@ -3991,7 +4561,17 @@ namespace km {
         uint32_t root,
         Tree tree = km::tree()
     ) {
-#if defined(KM_TENSOR_TABLE)
+#if defined(KM_ISLAND_NEAR)
+        static_cast<void>(tree);
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveRefused,
+            kWhereNear,
+            slot(command) | kNearNoIsland << 8,
+            command.sequence
+        );
+        return false;  // built without the far paths (the load refuses the call)
+#elif defined(KM_TENSOR_TABLE)
         const Islands view = islands_at(core.args().control);
         if (view.count() < 2) {
             return true;
@@ -4006,6 +4586,11 @@ namespace km {
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }
+#if defined(KM_LINK_NO_FAR_DRAM)
+        if (t.index == 0 && !land_begin(core, command)) {
+            return false;
+        }
+#endif
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -4018,10 +4603,10 @@ namespace km {
         }
         return marked.done(tree_end(core, command, t, posted));
 #else
-        static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
-        static_cast<void>(first), static_cast<void>(pages), static_cast<void>(root);
-        static_cast<void>(tree);
-        return true;  // one island: its copy is the root's
+    static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
+    static_cast<void>(first), static_cast<void>(pages), static_cast<void>(root);
+    static_cast<void>(tree);
+    return true;  // one island: its copy is the root's
 #endif
     }
 

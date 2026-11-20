@@ -7,6 +7,7 @@
 #include "core/km_core.hpp"
 #include "links/km_links_a_core.hpp"
 #include "core/km_command.hpp"
+#include "core/km_bcast.hpp"  // Wormhole: a 16-bit row broadcast into an fp32 Dst
 
 namespace km {
 

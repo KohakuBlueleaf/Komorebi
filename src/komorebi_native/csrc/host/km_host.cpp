@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -943,12 +944,48 @@ namespace {
         std::shared_ptr<IslandRuntime> x280_;
     };
 
-    // Several chips as a 1 x count fabric mesh (slow dispatch), each an island with its
-    // own queue; `packet`: router payload bytes (0: default).
+    // The machine's Ethernet connections (cluster descriptor) between chips `among`
+    // (empty: all): (a, b, links) once a pair, a < b by chip id. Opens no device.
+    std::vector<std::tuple<int, int, uint32_t>> machine_links(
+        const std::unordered_set<int>& among
+    ) {
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        std::unordered_set<int> chips = among;
+        if (chips.empty()) {
+            for (const auto id : cluster.user_exposed_chip_ids()) {
+                chips.insert(static_cast<int>(id));
+            }
+        }
+        std::map<std::pair<int, int>, uint32_t> counted;
+        for (const auto& [a, channels] : cluster.get_ethernet_connections()) {
+            for (const auto& [channel, far] : channels) {
+                const int b = std::get<0>(far);
+                if (a < b && chips.contains(a) && chips.contains(b)) {
+                    counted[{a, b}]++;
+                }
+            }
+        }
+        std::vector<std::tuple<int, int, uint32_t>> out;
+        for (const auto& [pair, links] : counted) {
+            out.emplace_back(pair.first, pair.second, links);
+        }
+        return out;
+    }
+
+    // Several chips as a 1 x count fabric mesh (slow dispatch), a queue each; `count`
+    // 0: all; `packet`: router payload bytes (0: default); `ring`: the 1D ring form.
     class Islands {
     public:
-        Islands(uint32_t count, std::optional<size_t> worker_l1_size, uint32_t packet) {
+        Islands(
+            uint32_t count,
+            std::optional<size_t> worker_l1_size,
+            uint32_t packet,
+            bool ring
+        ) {
             namespace distributed = tt::tt_metal::distributed;
+            if (count == 0) {
+                count = static_cast<uint32_t>(tt::tt_metal::GetNumAvailableDevices());
+            }
             if (count < 2) {
                 throw std::invalid_argument(
                     "islands: at least 2 (the fabric's minimum)"
@@ -965,7 +1002,9 @@ namespace {
                 router.max_packet_payload_size_bytes = packet;
             }
             tt::tt_fabric::SetFabricConfig(
-                tt::tt_fabric::FabricConfig::FABRIC_1D,
+                ring
+                    ? tt::tt_fabric::FabricConfig::FABRIC_1D_RING
+                    : tt::tt_fabric::FabricConfig::FABRIC_1D,
                 tt::tt_fabric::FabricReliabilityMode::STRICT_SYSTEM_HEALTH_SETUP_MODE,
                 std::nullopt,
                 tt::tt_fabric::FabricTensixConfig::DISABLED,
@@ -1108,6 +1147,19 @@ namespace {
             );
         }
 
+        // The machine's own Ethernet connections between the open chips
+        // (machine_links).
+        std::vector<std::tuple<int, int, uint32_t>> physical() const {
+            if (!mesh_) {
+                throw std::runtime_error("physical: the islands are closed");
+            }
+            std::unordered_set<int> open;
+            for (const auto& island : islands_) {
+                open.insert(chip(*island)->id());
+            }
+            return machine_links(open);
+        }
+
         // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
         // Tensix core connects through, the Ethernet core's NoC x and y on `from`).
         std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> link(
@@ -1166,7 +1218,7 @@ namespace {
         std::shared_ptr<MeshDevice> mesh_;
         std::vector<std::shared_ptr<MeshDevice>> islands_;
         std::shared_ptr<IslandRuntime> x280_;
-        bool fabric_set_ = false;  // FABRIC_1D set by this open, not yet turned off
+        bool fabric_set_ = false;  // the fabric set by this open, not yet turned off
     };
 
     using MeshBuffer = tt::tt_metal::distributed::MeshBuffer;
@@ -3453,12 +3505,14 @@ NB_MODULE(_km_host, m) {
         });
     nb::class_<Islands>(m, "Islands")
         .def(
-            nb::init<uint32_t, std::optional<size_t>, uint32_t>(),
+            nb::init<uint32_t, std::optional<size_t>, uint32_t, bool>(),
             nb::arg("count"),
             nb::arg("worker_l1_size") = nb::none(),
-            nb::arg("packet") = 0
+            nb::arg("packet") = 0,
+            nb::arg("ring") = false
         ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
         .def("chips", &Islands::chips)
+        .def("physical", &Islands::physical)
         .def("device", &Islands::device, nb::arg("island"))
         .def("adjacent", &Islands::adjacent, nb::arg("source"), nb::arg("target"))
         .def(
@@ -3551,6 +3605,9 @@ NB_MODULE(_km_host, m) {
             nb::arg("ready_mask") = 0,
             nb::arg("ready_value") = 0
         );
+    m.def("machine_links", []() {
+        return machine_links({});
+    });
     m.def(
         "format_tables",
         &format_tables,

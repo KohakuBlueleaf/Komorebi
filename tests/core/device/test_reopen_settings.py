@@ -3,8 +3,6 @@ with but the kernel buffer's size: the card, the clock, the time-outs, the log, 
 channel, the slow code; an island session's cards opened again as at the first open
 (no card: the close and the open stood in for)."""
 
-from contextlib import contextmanager
-
 from komorebi.device import kernel_buffer
 from komorebi.islands.parts import load as island_load
 from komorebi.session import session
@@ -48,30 +46,26 @@ def test_a_larger_reopen_keeps_the_constructor_settings(monkeypatch):
 def test_an_island_reopen_opens_the_same_cards_as_the_first(monkeypatch):
     seen = []
 
-    @contextmanager
-    def visible(cards=None):
-        seen.append(("visible", cards))
-        yield
-
-    class Module:
-        def Islands(self, count, worker_l1, packet):
-            seen.append(("open", count, worker_l1, packet))
-            return type("Mesh", (), {"device": lambda self, island: None})()
-
     class Mesh:
         def close(self):
             seen.append(("close",))
 
-    monkeypatch.setattr(island_load.mock, "cluster_visible", visible)
+        def device(self, column):
+            seen.append(("device", column))
+
+    def fabric(module, visible):
+        seen.append(("fabric", visible))
+        opened.mesh = Mesh()
+
     monkeypatch.setattr(island_load.mock, "active", lambda: True)
-    monkeypatch.setattr(island_load.native, "load_module", lambda tree: Module())
+    monkeypatch.setattr(island_load.native, "load_module", lambda tree: object())
     opened = type("Opened", (), {})()
     opened.log, opened.kernel_bytes, opened.cards = (lambda line: None), 70656, [0, 1]
     opened.tree, opened.packet, opened.sessions, opened.links = None, 4096, (), ()
-    opened.mesh = Mesh()
+    opened.mesh, opened._open_fabric = Mesh(), fabric
+    opened._visible, opened._columns = [3, 0, 1], (1, 2)
     opened.arch = "blackhole"
     resize = type("Resize", (), {"size": 93248, "why": "the kernels take 92,224 B"})
     island_load.LoadMixin._cards_reopen(opened, resize)
-    assert seen[0] == ("close",) and seen[1] == ("visible", [0, 1])
-    assert seen[2][1:] == (2, opened._worker_l1, 4096)
+    assert seen == [("close",), ("fabric", [3, 0, 1])]  # the first open's chips
     assert opened.cards == [0, 1] and opened.packet == 4096

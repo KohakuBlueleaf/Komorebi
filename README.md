@@ -10,8 +10,9 @@ A programming model for a network of independently programmable processors, in w
 thread reads what it needs or goes to where it is. It comes from the Tensix
 architecture of Tenstorrent's Wormhole and Blackhole chips: a grid of cores, each with
 its own memory and processors, on a network where any core reaches any other. Today it
-runs on Blackhole, on its Tensix grid and its X280 cores. On `main`, a first part of it
-runs on one Wormhole chip.
+runs on Blackhole, on its Tensix grid and its X280 cores. On `main` it runs on Wormhole
+too: one chip, and the chips of a Galaxy as islands
+([what Wormhole supports](docs/reference/wormhole.md)).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
@@ -708,7 +709,7 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 | The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented, on one island or over several, for the handlers of one program, those that cast to a row or a column among them; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | The dispatcher on one Tensix core (`km.Session(dispatcher="tensix")`): the host's commands handed to the cores, their events returned | implemented (0.4.0): the job queue, dynamic handlers, recovery, the trace, streams and graphs (host-fed, and the resident engines on its core's TRISC 0), islands and links, and on Blackhole X280 threads, X280 ports and X280 ranks; not shared regions; on Wormhole one thread, on its own core, and no X280 ports ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md) | [01_mapcollect](examples/01_mapcollect/) with `KMR_DISPATCHER=tensix` |
-| Wormhole: a session on one chip, its facts read from the device; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part (0.4.0) ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/) |
+| Wormhole: a session on one chip, its facts read from the device; the chips of a Galaxy as islands, up to 31; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part (0.4.0); islands over a Galaxy on main ([below](#the-two-dispatchers-and-wormhole)) | [Wormhole](docs/reference/wormhole.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/), [28_islands_reduce](examples/28_islands_reduce/) |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
 | X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_fetch_clean` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
@@ -749,21 +750,39 @@ card and 22 on two.
 | The watch on the dispatcher's loop (`run.stalls`) | yes | yes: it reports a stall; the X280's also sends its loop back in |
 | The trace (`load(trace=...)`, `run.trace()`) | yes | yes (not the X280's slot trace of `KMD_TRACE` test builds) |
 
-**On one Wormhole chip**, with the dispatcher on a Tensix core (run on single chips of a
-Galaxy Wormhole box, tt-metal at the pinned version):
+**What Wormhole supports**, with the dispatcher on a Tensix core: one chip as a session
+of 79 cores, and the chips of a Galaxy Wormhole box as islands, up to 31 of its 32. A
+row says supported only for what ran there (the one-chip census of 159 lines, the runs
+over 2 to 31 chips, this tree's own check); the limits, the refusals' words and the
+runs are in [the Wormhole reference](docs/reference/wormhole.md).
 
-| Runs | Does not run yet |
+| Feature | On Wormhole |
 |---|---|
-| A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands, in part. The link cores carry pages, asks, L1 writes and command lines between chips exactly, two links a core: the services and the first link on the reader, the second link on the writer as a thin sender of page pushes (11,372 of its 16,384 bytes; pages from DRAM 8.79 to 8.97 GB/s at 7,616 bytes, 13.58 against 9.62 without the read), within the 16 KiB below ([between Wormhole chips](docs/concepts/islands.md#between-wormhole-chips)). Islands of cards under the Tensix dispatcher, its core no island's, commands across islands and a dynamic run's deliveries as on the X280: example 32 and the link checks exact on two and four chips; the card list's two-card lines all exact on Blackhole, 22 of 22, an engine's graph across islands among them ([the table](docs/reference/islands.md#under-the-tensix-dispatcher)). A rank's writer with page links is over the 16 KiB, and pages into another island's DRAM wait for a relay |
-| Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | |
-| Overlays, parts and classes added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
-| Dst words from a pack thread (`km::dst`): the unpacker and the packer in place of Blackhole's Dst window, whole tiles, every 32-bit word as it went in ([measured](experiments/core/dst_words/README.md#measured)) | |
-| A chain written by hand. Programs whose writer was over the 16 KiB of code the second data-movement CPU holds there: the writer's paths after a command's work (its completion, its finish, a missed page bound) run from the service overlay's writer part in L1, at the lowest writer level that fits ([overlays](docs/reference/overlays.md#transfers-to-and-from-the-host)); the chain step classes, the dense classes and the swiglu classes build, and a load states its writer's margin and level | A writer still over the 16 KiB with those paths moved: it does not build (`swiglu_direct.py`: its wide direct writer by 968 B at level 4, the highest) |
-| Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, rows recorded for more than Wormhole's 32 replay entries, a negated operand (a load macro's template's too), a shift, Blackhole's integer casts and comparisons in Wormhole's words: the same results as on Blackhole, word for word. The reciprocal (and sigmoid, silu, division) from Wormhole's own estimate: within 1.2e-7 of float64, as on Blackhole; tanh within its stated 3e-7 | A comparison with no register free for its Wormhole form, a load macro's template negating an operand another word reads: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)). A hand-written kernel's Blackhole vector word Wormhole computes otherwise (a MAD word's negate bit, `SFPGT`, `SFPARECIP`): refused at the load, naming the word and its source line |
-| A thread's C on the dispatcher's own core (TRISC 1): its arguments, its result, its commands to the cores and the host's commands to it (`kmx_program`) ([hello_thread](tutorial/32_hello_thread/), [thread_submits](tutorial/33_thread_submits/), [commands_to_a_thread](tutorial/42_commands_to_a_thread/)) | X280 threads beyond that: the chip has no X280. On the dispatcher's core no `kmx_load`, regions, ports or many-core calls yet: each refused by name at the build |
-| The attention project (`projects/attention`), its hand-written vector steps in Wormhole's forms: `run.py --shape t3` on 79 cores writes Blackhole's output, word for word; its class form (`attention_chain.py`) within the project's bounds. At `causal64` a few words in a million differ from Blackhole's by one bf16 unit (1 of 524,288; the class's 28 of 16,777,216): the reciprocal's first estimate is Wormhole's own | |
-| The raster project's fill (`projects/raster`), its comparisons in Wormhole's words and its frame read out of Dst by `km::dst`: `run.py --scene tiny` on 79 cores writes Blackhole's frame, word for word | The raster project's arithmetic handler and its `--spread` option (they write Dst in part tiles): refused by name. Its stages on the cores (Blackhole's reciprocal and 24-bit multiply words) |
-| | The ray-tracing project: its pack-thread code reads and writes Dst through Blackhole's RISC-V window and uses Blackhole's 24-bit multiply and reciprocal words. Its vector-extension copies are not the obstacle: the compute option `enable_trisc2_rvv` is asked as `"if_present"`, only where the chip's table says the pack core has the extension, and each such place has a scalar form |
+| A session whose facts come from the device; kernels built with no chip (`kmr prebuild --arch wormhole_b0`) | supported |
+| Plain commands, result words, the job queue; kernels in C++ and as Python classes; tensors through the host channel | supported |
+| Channels, reduces by owner and by tree, broadcasts, movement on both movers | supported |
+| Overlays, add-ons, several programs in one run, program switches | supported, limit: an overlay fetch hung in 4 of 725 runs, and one script left a chip's cores busy in 2 of 38 ([hazards](docs/reference/hazards.md#a-wormhole-chip-whose-cores-stay-busy-after-a-run-open)) |
+| A writer over NCRISC's 16 KiB of code | supported, limit: built again at the lowest writer level that fits; over at level 4, refused by name |
+| Routed messages, dynamic handlers, a handler as an overlay | supported |
+| Micro-op streams and graphs, the trace | supported |
+| The chain from the host, the chain step classes | supported, limit: a chain whose writer is over at level 4 is refused by name |
+| A command given up at its deadline, `run.inspect`, a core's reset and reload | supported, limit: one stop's grid timeout in 42 runs of one tutorial |
+| A thread's C on the dispatcher's own core (TRISC 1), commands to and from it | supported |
+| X280 threads beyond that one, X280 ports, X280 ranks, shared regions, the X280 dispatcher | refused by name (no X280 on the chip) |
+| Tile functions and tile products in Wormhole's own words; the reciprocal and its kin from Wormhole's estimate | supported, limit: within 1.2e-7 of float64 (tanh 3e-7) |
+| A comparison with no free register, a template negating an operand another word reads, a Blackhole vector word in a hand-written kernel | refused by name |
+| `km::dst` from a pack thread; a held field's release | supported |
+| Dst through Blackhole's RISC-V window (`ckernel_dest.h`): the ray tracer, the raster stages | fails: the build stops (no such file); the raster's arithmetic handler is refused by name |
+| The dense and attention projects; the raster project's fill | supported |
+| Chips as islands: the machine's pairs, the one-dimensional fabric forms | supported, limit: up to 31 islands at one link a pair; two links ran in the link checks on four chips; a writer over its code with second links is refused by name |
+| Commands across islands, a dynamic run's deliveries, the Tensix dispatcher's waves over more than 17 islands | supported |
+| `km::write_l1`, `km::add_word`, pages and asks into another island's L1 | supported |
+| Puts and pages into another island's DRAM (`put_bytes` batches, `send_pages` into a tensor, `cross()`) | refused by name ([hazards](docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)) |
+| The collectives over islands, from a kernel and from the host | supported, limit: through the far leader's L1, about 0.4 GB/s; all-gather and all-reduce ran on 2 and 31 islands, broadcast and reduce-to alone did not |
+| A collective given up, then `run.clear_collectives()` | supported, limit: exact on 2 islands; not run on 31 since the meetings became markers |
+| `km.all_gather` in a chain, example 29's chain over islands | refused by name |
+| The near build: an island program over the 16 KiB that never needs the far paths | supported (2 and 31 islands, bit-identical to one card) |
+| A card split into islands | refused by name (its writer is over the 16 KiB) |
 
 `kmr prebuild --arch wormhole_b0 <script>` builds a script's kernels for Wormhole on a
 machine with no Wormhole chip.
@@ -824,8 +843,8 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
   split card
 - Wormhole: a thread's `kmx_load`, regions, ports and many-core calls; a card split
   into islands and the other writers whose resident code is over the second
-  data-movement CPU's 16 KiB; pages into another island's DRAM; the raster stages and
-  the ray tracer
+  data-movement CPU's 16 KiB; pages into another island's DRAM but the collectives';
+  the raster stages and the ray tracer
 - The Komorebi IR: finishing the language and its interpreter; then a frontend and
   backends on it
 

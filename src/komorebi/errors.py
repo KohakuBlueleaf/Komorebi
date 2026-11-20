@@ -17,6 +17,11 @@ class KomorebiError(RuntimeError):
     """Base of every error a session or run raises."""
 
 
+class _CoresNotFree(KomorebiError):
+    """A runtime command refused before it was sent: a core it addresses may still
+    be settling a given-up command (Run._free_for); the run goes on."""
+
+
 class ProgramError(KomorebiError):
     """The program could not be launched (a kernel failed to compile, a bad argument).
 
@@ -471,6 +476,21 @@ def _core_parts(core):
                     "(docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-"
                     "dram); asks into L1 cross"
                 )
+            elif gave["where"] == "near":
+                island = gave.get("island")
+                named = (
+                    "a tensor that is not whole on this island"
+                    if gave.get("not_whole")
+                    else (
+                        "a collective or a chain's gather"
+                        if island is None
+                        else f"a page of island {island}, or a put or ask line to it"
+                    )
+                )
+                parts[-1] += (
+                    f": {named}, in a program built without the far paths (the near "
+                    "build): the host's submit check should have refused it"
+                )
             elif gave["where"] == "coll":
                 island = gave.get("island")
                 said = {
@@ -480,6 +500,22 @@ def _core_parts(core):
                     "none": f"island {island}: this load made no generation page",
                 }.get(gave.get("waited"), f"{gave.get('waited')} of island {island}")
                 parts[-1] += f": a collective: {said}"
+            elif gave["where"] == "land":
+                island, port = gave.get("island"), gave.get("port")
+                said = {
+                    "slot": f"a free slot in island {island}'s leader's landing",
+                    "credits": f"the last credits from island {island}'s leader",
+                    "share": f"the pages of island {island}'s share",
+                    "header": f"a slot from island {island} whose header names no "
+                    "page here",
+                    "write": f"a slot from island {island} written into DRAM",
+                    "none": f"island {island}: this load made no landing for it",
+                    "gen": f"island {island}'s generation words in its DRAM, written "
+                    "(the slots it dropped)",
+                }.get(gave.get("waited"), f"{gave.get('waited')} of island {island}")
+                parts[-1] += f": a collective's landing: {said}" + (
+                    f" (port {port})" if port is not None else ""
+                )
             elif gave["where"] == "gathertree":
                 parts[-1] += (
                     ": km::all_gather takes no tree (each share comes from its own "

@@ -6,11 +6,12 @@ import re
 from pathlib import Path
 
 from komorebi import _env, abi
-from komorebi.device import chips
+from komorebi.device import chips, remembered
 from komorebi.errors import ProgramError, SlowCodeError, StartError
 from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program.addon import program as added_program
+from komorebi.program.checks import near as near_module
 from komorebi.program.description import KernelSizes, unguarded
 from komorebi.session import sizes
 
@@ -82,6 +83,7 @@ LINK_DEFINES = (
     "KM_LINKS_A_CORE",
     "KM_LINK_NO_FAR_DRAM",
     "KM_LINK_THIN_SECOND",
+    "KM_COLL_QUIET",
 )
 
 
@@ -157,6 +159,10 @@ def kernel_build(program, kernel, defines, arch):
     level (level_build: the program's, else the chip's for its writer), and its NoC
     when the program sets them."""
     level = program.kernel_opt(kernel)
+    if getattr(program, "near", None) and kernel in ("reader", "writer"):
+        # built without the far paths: the link cores keep the page links' defines
+        kept = [define for define in defines if define[0] not in near_module.DROPPED]
+        defines = [*kept, (near_module.DEFINE, "1")]
     build = chip_build(defines, level, kernel, arch, writer_level(program))
     if program.noc and kernel != "compute":
         build["noc"] = program.kernel_noc(kernel)
@@ -201,6 +207,78 @@ def writer_over(error):
     its code memory, the error a higher writer level answers."""
     text = str(error)
     return "overflows region:0" in text and "/ncrisc/" in text
+
+
+# The runtime's refusal of a writer (NCRISC) ELF over its code memory: the kernel's
+# directory, the ELF's bytes and the region's
+WRITER_OVER = re.compile(
+    r"kernels/([^/\s]+)/\d+/+ncrisc/ncrisc\.elf: segment\[\d+\] "
+    r"\[0x[0-9a-f]+,\+0x([0-9a-f]+)\) overflows region:\d+ limit of 0x([0-9a-f]+) bytes"
+)
+
+
+def writer_over_refusal(error, name, level):
+    """A ProgramError for a build of program `name` whose writer is over its code memory
+    (`error`, the runtime's) at writer level `level`, the chip's highest: the kernel,
+    both sizes and the level; else None."""
+    found = WRITER_OVER.search(str(error))
+    if found is None:
+        return None
+    wanted, most = int(found[2], 16), int(found[3], 16)
+    return ProgramError(
+        f"{name}: the writer ({found[1]}) is {wanted:,} B of NCRISC's {most:,} B code "
+        f"region at writer level {level}, the highest: {wanted - most:,} B over"
+    )
+
+
+# The runtime's refusal of any ELF over a region of its CPU's memory (tt_elffile)
+ELF_OVER = re.compile(
+    r"\S+\.elf: segment\[\d+\] \[0x[0-9a-f]+,\+0x[0-9a-f]+\) overflows region:\d+ "
+    r"limit of 0x[0-9a-f]+ bytes"
+)
+
+# Each build this process's runtime refused as an ELF over its region (key: sentence):
+# its ELF cache keeps an empty slot, and a later load waits forever (hazards.md)
+_elf_over = {}
+
+
+class AlreadyOver(RuntimeError):
+    """A build the runtime refused in this process as an ELF over its region, asked
+    for again: refused before the runtime (its message: the first refusal's)."""
+
+
+def over_key(arch, programs, level, near):
+    """The key of a build of `programs` (one load's) on `arch` at writer level `level`,
+    `near` or not: what the ELFs it hands the runtime depend on (None: a program the
+    remembered key does not name, which this guard cannot follow)."""
+    keys = tuple(remembered.program_key(each, f"build {arch}") for each in programs)
+    return None if None in keys else (arch, keys, level, near is not None)
+
+
+def remember_over(key, error):
+    """Keeps `error`'s sentence for build `key` when it is the runtime's refusal of an
+    ELF over its region (ELF_OVER), the first one kept."""
+    found = ELF_OVER.search(str(error))
+    if key is not None and found is not None and not isinstance(error, AlreadyOver):
+        _elf_over.setdefault(key, found[0])
+
+
+def already_over(key):
+    """An AlreadyOver for build `key` when the runtime refused it in this process
+    (remember_over), else None."""
+    said = _elf_over.get(key) if key is not None else None
+    return (
+        None
+        if said is None
+        else AlreadyOver(f"already refused in this process: {said}")
+    )
+
+
+def writer_over_bytes(error):
+    """(the writer's bytes, its region's) of a build's `error`, the runtime's refusal
+    of a writer over its code memory (WRITER_OVER)."""
+    found = WRITER_OVER.search(str(error))
+    return int(found[2], 16), int(found[3], 16)
 
 
 def compute_defines(arch):

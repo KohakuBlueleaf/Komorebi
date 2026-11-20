@@ -6,6 +6,7 @@
 
 #include <type_traits>
 
+#include "../core/km_bits.hpp"
 #include "../core/km_core.hpp"
 #include "../km_worker.hpp"
 
@@ -89,9 +90,7 @@ namespace km {
         const uint32_t all = (1u << pattern.length) - 1u;
         const uint32_t mine = owner != 0 ? pattern.owners : ~pattern.owners & all;
         const uint32_t part = mine & ((1u << (block % pattern.length)) - 1u);
-        return (
-            block / pattern.length * __builtin_popcount(mine) + __builtin_popcount(part)
-        );
+        return (block / pattern.length * popcount(mine) + popcount(part));
     }
 
 }  // namespace km
@@ -116,6 +115,21 @@ namespace km {
     // half to the tensor.
     constexpr uint32_t kMoveRead = 0;
     constexpr uint32_t kMoveWrite = 1;
+
+    // This mover's own read pointer of `cb` past `pages` pages that compute popped (no
+    // ack: compute's pop gave it); a padded ring skips its padding as compute did.
+    inline void passed_front(uint32_t cb, uint32_t pages) {
+        LocalCBInterface& ring = get_local_cb_interface(cb);
+#if defined(KM_RING_PADDED)
+        const uint32_t pad = ring_pad(cb, ring.fifo_rd_ptr, pages);
+#else
+        constexpr uint32_t pad = 0;
+#endif
+        ring.fifo_rd_ptr += (pad + pages) * ring.fifo_page_size;
+        if (ring.fifo_rd_ptr >= ring.fifo_limit) {
+            ring.fifo_rd_ptr -= ring.fifo_size;
+        }
+    }
 
     // The blocks of a stream, a two-level strided walk: block b starts at tensor page
     // first_page + b * block_step and holds `rows` rows of `columns` pages.

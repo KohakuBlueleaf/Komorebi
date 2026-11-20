@@ -211,6 +211,17 @@ class NoForm(km.Program):
         y.tiles[0:1, 0:1].write(biased(self.bias, acc))
 
 
+class Held(km.Program):
+    bias: km.L1[km.fp32, 1, 32, 32]
+
+    @km.handler
+    def go(self, w: km.Tensor, x: km.Tensor, b: km.Tensor, y: km.Tensor):
+        self.bias.fill(km.Stream(b.pages(0, 1)))
+        out = km.Stream(y.tiles[0:1, 0:4], write=True, block=1)
+        for xb in km.Stream(x.tiles[0:1, 0:4], block=1):
+            out.push(by_column(xb, self.bias))
+
+
 def compute(cls, bias="float32"):
     compiled = compile_class(cls, {}, tensors(bias))
     return compiled, "\n".join(render(prune(compiled.compute["go"]), 0))
@@ -287,3 +298,21 @@ def test_a_write_of_a_tile_function_of_no_form_names_the_forms():
         message
     )
     assert "f(acc, self.s[r]), a step; f(acc, self.b), self.b a field" in message
+
+
+def test_a_held_fields_release_is_wormholes_own_steps_blackholes_call_unchanged():
+    # Wormhole's _llk_pack_dest_section_done_: two template arguments, no clear_dest
+    _, text = compute(Held)
+    lines = [line.strip() for line in text.split("\n")]
+    at = lines.index("PACK((_llk_packer_set_math_semaphore_<p_stall::PACK>()));")
+    assert lines[at - 1 : at + 8] == [
+        "#if defined(ARCH_WORMHOLE)",
+        "PACK((_llk_packer_set_math_semaphore_<p_stall::PACK>()));",
+        "PACK(if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {",
+        "flip_packer_dest_offset_id();",
+        "select_packer_dest_registers<DST_SYNC_MODE>();",
+        "})",
+        "#else",
+        "PACK((_llk_pack_dest_section_done_<DST_SYNC_MODE, DST_ACCUM_MODE, false>()));",
+        "#endif",
+    ]

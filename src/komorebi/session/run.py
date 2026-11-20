@@ -21,9 +21,14 @@ from komorebi.dsl.front.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
+    CommandTimeout,
     KomorebiError,
     ProgramError,
+    WaitTimeout,
+    _CoresNotFree,
+    describe_core,
 )
+from komorebi.islands import local as island_local
 from komorebi.merge import lifted, merged_holds
 from komorebi.program import overlay
 from komorebi.program.addon import code as added
@@ -59,6 +64,22 @@ from komorebi.session.parts.run_stop import (  # noqa: F401 (kept importable fro
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
+# Seconds a guarded command waits past its time for its last probe's event (its
+# give-up comes at the load's deadline), so that none is filed after the refusal
+PROBE_LATE = 30.0
+PROBE_NAMED = 4  # the cores a refused command names
+IDLE_WAITS = ("next", "writer")  # a reader's and a writer's wait between commands
+
+
+def _still_waiting(core):
+    """Whether an inspected core's reader or writer waits anywhere but between
+    commands (a probe's NOP not taken: it still settles a given-up command)."""
+    live = core.get("live") or {}
+    return any(
+        isinstance(words, dict) and words.get("where") not in (None, *IDLE_WAITS)
+        for kernel, words in live.items()
+        if kernel in ("reader", "writer")
+    )
 
 
 def _rectangle_here(rectangle, base):
@@ -134,6 +155,19 @@ def _serves(run, name, where):
         tensix_module.refuse(name, where)
 
 
+def _runtime_name(handler):
+    """A runtime handler's command as a refusal names it: "the PUSH command"."""
+    names = {
+        value: name[len("KM_HANDLER_") :]
+        for name, value in abi.headers().constants.items()
+        if name.startswith("KM_HANDLER_")
+        and isinstance(value, int)
+        and not name.endswith(("_FIRST", "_LAST", "_MAX"))
+    }
+    number = handler & 0xFF
+    return f"the {names.get(number, f'handler {number}')} command"
+
+
 class Run(EventsMixin, StopMixin):
     """Submits commands to a loaded program and collects their events.
 
@@ -196,6 +230,8 @@ class Run(EventsMixin, StopMixin):
         # an island's run: () -> its own cores a give-up already named left (on any
         # island's run: IslandRun._named_cores); None on one card
         self.named_cores = None
+        # an island's run: its island of the load's graph (IslandRun); None on one card
+        self.island_number = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -243,6 +279,15 @@ class Run(EventsMixin, StopMixin):
         self._rejected = {}
         self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
         self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
+        # After a give-up seen, a core may still settle it: no runtime command reaches
+        # cores not known free (_free_for); the groups a probe found free since
+        self._unsure, self._known_free = False, set()
+        self._probing, self._probe_given_up = False, 0  # the probes' own give-ups
+        self._on_given_up = None  # IslandRun: one island's give-up marks every island
+        self._name_cores = None  # IslandRun: a probe's cores by flat rank
+        self._deadline_s = None  # the load's deadline: a guarded command's default time
+        self._budget_cap = None  # a caller's cap on the guard's time (a refusal's read)
+        self._budget_given = None  # a callers end: its time left, the guards (a clear)
         self.drain_given_up = 0  # of the commands the last drain() waited for, given up
         self.stalls = []  # the watcher's KMD_EVENT_STALL events: stage, req, ticks
         self.link_events = []  # KMD_EVENT_LINK: a give-up on a link core (_links)
@@ -470,6 +515,15 @@ class Run(EventsMixin, StopMixin):
                 raise ValueError("a queued command cannot be exclusive")
             group = self._group((0, group))
             self._check_holds(program_field, handler, 0, self.cores, "queued")
+            if method is not None:  # whole on this island: its tensors checked
+                island_local.check_near(
+                    self.programs[program_field], method, given, self.island_number
+                )
+            elif handler != self._nop:  # words alone: no tensor to check
+                island_local.near_words(
+                    self.programs[program_field : program_field + 1],
+                    "a queued command given as words",
+                )
         elif cluster is None:
             group = self._group(group)
             self._check_holds(program_field, handler, *group)
@@ -478,8 +532,21 @@ class Run(EventsMixin, StopMixin):
                 self._check_rectangle(method, program_field, group)
                 args = self._check_given_rectangle(method, args, group, program_field)
                 self._check_reduce_groups(method, program_field, group)
+                island_local.check_near(
+                    self.programs[program_field],
+                    method,
+                    given,
+                    self.island_number,
+                    group,
+                    (self.island_first, self.island_first + self.island_ranks),
+                )
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
+                )
+            elif handler != self._nop:  # words alone: no tensor to check
+                island_local.near_words(
+                    self.programs[program_field : program_field + 1],
+                    "a command given as words",
                 )
         if cluster is None:
             self._check_stamps_out(program_field, handler, args, group)
@@ -963,7 +1030,13 @@ class Run(EventsMixin, StopMixin):
         field: the field its cores hold), waited for; returns its Event."""
         first, count, program_field = group
         handle = self._queue_command(
-            handler, self._group((first, count)), args, False, 0, program_field
+            handler,
+            self._group((first, count)),
+            args,
+            False,
+            0,
+            program_field,
+            budget=timeout,
         )
         return self.wait(handle, timeout)
 
@@ -1213,6 +1286,7 @@ class Run(EventsMixin, StopMixin):
         added.refuse_half_added(
             self.half_added, list(np.ravel(np.asarray(named, object)))
         )
+        island_local.near_words(self.programs, "submit_many")
         handlers, first, count, args, shape, program_field = self._many_words(
             handler, firsts, counts, args, exclusive
         )
@@ -1346,9 +1420,28 @@ class Run(EventsMixin, StopMixin):
         return (first, count)
 
     def _queue_command(
-        self, handler, group, args=(), exclusive=False, flags=0, program_field=0
+        self,
+        handler,
+        group,
+        args=(),
+        exclusive=False,
+        flags=0,
+        program_field=0,
+        budget=None,
     ):
+        """Queues one command (handed at the next _hand). A runtime handler's command
+        to cores waits first, after a give-up seen, until those cores are known free
+        (_free_for, within `budget` s: the caller's timeout, default the load's
+        deadline)."""
         self._check_alive()
+        # After a give-up seen a core may still settle and take no command: a runtime
+        # command (not the dispatcher's own, not a program's) waits for its cores first
+        if (
+            self._unsure
+            and self._user_max < (handler & 0xFF) < self.h["KM_HANDLER_DEADLINE"]
+            and not flags & (self._flag_dispatcher | self._flag_queue)
+        ):
+            self._free_for(handler, group, flags & self._flag_part, budget)
         first, count = group if group else (0, 0)
         flags |= self._flag_exclusive if exclusive else 0  # the kernel orders it
         words = [0] * 16
@@ -1363,6 +1456,127 @@ class Run(EventsMixin, StopMixin):
         handle = self._next
         self._next += 1
         return handle
+
+    def _settling(self):
+        """A give-up at its deadline seen (not a probe's): from now a core may still
+        be settling it (waiting for its own lines, up to its wait limit), so no
+        runtime command reaches a core before a probe finds it free."""
+        if self._probing:
+            self._probe_given_up += 1
+            return
+        self._unsure, self._known_free = True, set()  # every group known free dropped
+        if self._on_given_up is not None:
+            self._on_given_up()
+
+    def _free_for(self, handler, group, part, budget):
+        """Before a runtime command to `group` after a give-up seen: a NOP to its cores,
+        again while given up, until one completes within `budget` s (default the
+        deadline, or _budget_given); then known free. Probe give-ups counted apart;
+        KomorebiError naming the cores not free in time, the run going on."""
+        if not group or int(group[1]) == 0 or int(group[0]) >= self._cluster_base:
+            return  # no core addressed (the dispatcher's own, or a thread's)
+        key = (int(group[0]), int(group[1]), part)
+        if key in self._known_free:
+            return
+        budget = budget if budget is not None else (self._deadline_s or 1.0)
+        if self._budget_given is not None:  # a caller's limit, given to its commands
+            budget = max(self._budget_given - time.monotonic(), 0.0)
+        if self._budget_cap is not None:
+            budget = min(budget, self._budget_cap)
+        deadline = time.monotonic() + budget
+        self._probing = True
+        try:
+            while True:
+                handle = self._queue_command(self._nop, group, (), False, part)
+                try:
+                    try:
+                        self.wait(handle, max(deadline - time.monotonic(), 0.0))
+                    except WaitTimeout:  # its event comes at its deadline at the latest
+                        self.wait(handle, PROBE_LATE)
+                    break
+                except CommandTimeout as error:
+                    if not error.given_up:  # late: a core ended at its own limit
+                        raise self._probe_ended(handler, error, late=True) from None
+                    self.forget([handle])  # the host's own probe: not the user's
+                    if error.recovered:
+                        self._probe_recovered(handler, error)
+                    if self._ended(error):  # never free: no wait helps
+                        raise self._probe_ended(handler, error, late=False) from None
+                    if time.monotonic() >= deadline:
+                        cores = error.cores
+                        if self._name_cores is not None:
+                            cores = self._name_cores(cores)
+                        cores = [core for core in cores if not core.get("far")]
+                        cores = [c for c in cores if _still_waiting(c)] or cores
+                        shown = "; ".join(
+                            describe_core(core) for core in cores[:PROBE_NAMED]
+                        )
+                        more = len(cores) - PROBE_NAMED
+                        raise _CoresNotFree(
+                            f"{_runtime_name(handler)}: refused before it was "
+                            f"sent: a core still waits for a line of a given-up "
+                            f"command after {budget:.3g} s, and a runtime command it "
+                            f"cannot take ends the run at its deadline; the run goes "
+                            f"on: {shown or 'no core named'}"
+                            + (f" and {more} more" if more > 0 else "")
+                        ) from None
+        finally:
+            self._probing = False
+        self._known_free.add(key)
+
+    def _named_cores(self, cores):
+        """An error's cores, this island's, named as the run names them."""
+        cores = cores if self._name_cores is None else self._name_cores(cores)
+        return [core for core in cores if not core.get("far")]
+
+    def _probe_recovered(self, handler, error):
+        """A probe's give-up reset and loaded again cores whose own wait had ended
+        (load(recover=True)): said in the log, since each core's own state started
+        again; kept in `recoveries` as any give-up's."""
+        reset = set(error.recovered)
+        named = [c for c in self._named_cores(error.cores) if c["core"] in reset]
+        said = "; ".join(describe_core(core) for core in named) or ", ".join(
+            f"core {core}" for core in sorted(reset)
+        )
+        self._log(  # the session's log (StopMixin._log)
+            f"{_runtime_name(handler)}: before it, cores still in a given-up "
+            f"command whose own wait ended were reset and loaded again: {said}"
+        )
+
+    def _ended(self, error):
+        """The cores of a probe's give-up that ended at their own wait limit (gave up
+        "limit": the core stopped) and were not reset and loaded again: such a core
+        takes no command again, so no wait makes it free."""
+        reset = set(error.recovered)
+        return [
+            core
+            for core in self._named_cores(error.cores)
+            if core["core"] not in reset
+            and any(
+                (core.get(kernel) or {}).get("code") == "limit"
+                for kernel in ("reader", "writer", "compute")
+            )
+        ]
+
+    def _probe_ended(self, handler, error, late):
+        """The error when a core of the probe's group ended at its own wait limit and
+        was not reset: `late`, the dispatcher's reset failed (a link core keeps no reset
+        list) and the run ended; else nothing resets it (no reset list:
+        recovery_refused)."""
+        ended = self._ended(error)
+        said = "; ".join(describe_core(core) for core in ended[:PROBE_NAMED])
+        why = (
+            "the dispatcher could not reset it; the run has ended by that core's rule"
+            if late
+            else f"nothing resets it (no reset list: {self.recovery_refused}); it "
+            "takes no command again, so the run cannot go on with it"
+        )
+        return KomorebiError(
+            f"{_runtime_name(handler)}: not sent: "
+            + (f"{said}: ended at its own wait limit" if said else "a core ended")
+            + f" while it settled a given-up command, and {why}: load it again; the "
+            f"dispatcher's report: {error}"
+        )
 
     def _hand(self):
         """Gives the commands submitted one by one to the port, as one block."""

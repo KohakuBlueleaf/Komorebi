@@ -2,12 +2,14 @@
 the host, events joined, links' calls served."""
 
 import contextlib
+import functools
 import time
 
 import numpy as np
 
 from komorebi import abi
 from komorebi.chain import calls as chain_module
+from komorebi.device import chips
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
@@ -16,6 +18,7 @@ from komorebi.errors import (
     KomorebiError,
     MessagesGaveUp,
     WaitTimeout,
+    _CoresNotFree,
     coll_not_cleared,
 )
 from komorebi.islands import local as island_local
@@ -45,6 +48,19 @@ def _left(deadline):
     return max(deadline - time.monotonic(), 0.0)
 
 
+# The newest tickets a refusal looks at to name a marked leader's command by its ticket
+TICKETS_NAMED = 4096
+
+
+def _islands_named(islands):
+    """Islands as a refusal names them: "an island" when none is known."""
+    if not islands:
+        return "an island"
+    if len(islands) == 1:
+        return f"island {islands[0]}"
+    return "islands " + ", ".join(str(i) for i in islands[:-1]) + f" and {islands[-1]}"
+
+
 def _handler_label(handler):
     """A handler as a line names it: program.method, the method, or its number."""
     method = getattr(handler, "method", handler)
@@ -71,6 +87,9 @@ class IslandRun(TreeCalls, RunCalls):
         self._links_reset = {}  # (island, k) -> its run's link events at its reset
         self.cores = graph.ranks
         self.program = self.runs[0].program
+        for island, run in enumerate(self.runs):  # a give-up's settle may cross islands
+            run._on_given_up = self._settling
+            run._name_cores = functools.partial(self._ranked, island)
         self._next = 1  # the next ticket
         self._queued = [[] for _ in self.runs]  # each island's queued part handles
         self.queued_on = {}  # a queued ticket's island (_submit_queued)
@@ -97,6 +116,7 @@ class IslandRun(TreeCalls, RunCalls):
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
             run.named_cores = lambda island=island: self._named_cores(island)
+            run.island_number = island
 
     def _check_local(self, handler, group):
         """check_local over this run's islands."""
@@ -127,6 +147,19 @@ class IslandRun(TreeCalls, RunCalls):
                     island_local.check_direct(
                         self.graph, call.method, call.cores or group, call.values
                     )
+                    number = self.runs[0]._handler(call.method)[1]
+                    for island, _, _ in self.graph.split(call.cores or group):
+                        low = self.graph.first(island)
+                        island_local.check_near(
+                            self.runs[0].programs[number],
+                            call.method,
+                            call.values,
+                            island,
+                            call.cores or group,
+                            (low, low + self.graph.count(island)),
+                        )
+            if len(starts) > 1 and any(isinstance(c, front.GatherCall) for c in calls):
+                self._far_dram("km.all_gather in a chain", landed=False)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group, starts)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
@@ -574,6 +607,7 @@ class IslandRun(TreeCalls, RunCalls):
         rows = () if args is None else args  # a class's words: their constants' handler
         named = handler if isinstance(handler, list | tuple) else [handler]
         self._check_half_added(list(np.ravel(np.asarray(named, object))))
+        island_local.near_words(self.runs[0].programs, "submit_many")
         lows, manys = np.broadcast_arrays(np.ravel(firsts), np.ravel(counts))
         for row in range(lows.size):  # a local=True reduce's groups on one island
             self._check_local(named[row % len(named)], (lows[row], manys[row]))
@@ -939,8 +973,11 @@ class IslandRun(TreeCalls, RunCalls):
     def _far_cores(self, island, group):
         """At a time-out of island `island`'s run: every other island's part of flat
         `group` as its dispatcher's inspect of the deadline read it (a complete timeout
-        of that part's cores), its cores ranked and marked `far`; [] where none is."""
+        of that part's cores), its cores ranked and marked `far`; [] where none is,
+        and for a group of link cores (never cut by island: KM_GROUP_LINK_BASE on)."""
         out = []
+        if int(group[0]) >= abi.headers()["KM_GROUP_LINK_BASE"]:
+            return out
         for other, _first, _count in self.graph.split(tuple(group)):
             run = self.runs[other]
             local = run._local(group)
@@ -1086,7 +1123,8 @@ class IslandRun(TreeCalls, RunCalls):
                 waited += run.drain(_left(deadline))
             except KomorebiError as error:
                 raise self._raised(error, island, deadline) from None
-        self._crossed(list(self._measured))  # every command done: its events by event()
+        with self._capped(lambda run: _left(deadline)):  # its probes in the drain's
+            self._crossed(list(self._measured))  # every command done: its events
         return waited
 
     def _raised(self, error, island, deadline):
@@ -1218,46 +1256,103 @@ class IslandRun(TreeCalls, RunCalls):
             return island_records.Crossings({})
         return self._counts(puts=puts) if puts else self._counts()
 
+    def landing_drops(self):
+        """The collectives' landing's slots of an earlier generation dropped since
+        the load, {(island, core): count} (LinkPlanMixin.landing_drops)."""
+        return self.session.landing_drops()
+
     def clear_collectives(self, timeout=10.0):
-        """After a collective given up: every command waited for, then every core's
-        generation raised, so the cores that gave up lead collectives again and each
-        leader's counts start at 0. The data is not restored: write the tensors it
-        was reducing again first. Returns the new generation."""
-        with contextlib.suppress(KomorebiError):  # given up again: its cores marked
-            self.drain(timeout)
-        generation = self.session.raise_generation()
+        """After a collective given up: every command waited for, then (links, movers
+        calling one) no line anywhere and every rank settled (session._quiet), then the
+        generation raised; KomorebiError by name, nothing raised, past `timeout`. Write
+        its tensors again first. Returns the new generation."""
+        started = time.monotonic()
+        with self._given(started + timeout):  # its limit, to each command
+            try:
+                self.drain(timeout)
+            except KomorebiError:  # given up again: cores marked; a run ended: said
+                if any(getattr(r, "_failure", None) is not None for r in self.runs):
+                    raise
+            if self._coll_movers is None:
+                self._coll_movers = far_collectives.calls(self.runs[0].programs)
+            if self._counts is not None and self._coll_movers:  # links, collectives:
+                # no line anywhere, then every rank settled (only then: KM_COLL_QUIET)
+                self.session._quiet(_left(started + timeout), named=timeout)
+            generation = self.session.raise_generation()
         self._coll_clear_at = self._given_ups()
         return generation
 
+    @contextlib.contextmanager
+    def _given(self, until):
+        """Within it, each island's guard (Run._free_for) takes the time left until
+        `until` (time.monotonic()) to find its cores free, in place of a command's own:
+        a caller's limit given to every command it sends (run.clear_collectives)."""
+        for run in self.runs:
+            run._budget_given = until
+        try:
+            yield
+        finally:
+            for run in self.runs:
+                run._budget_given = None
+
+    @contextlib.contextmanager
+    def _capped(self, seconds):
+        """Within it, each island's guard (Run._free_for) takes at most
+        `seconds(run)` s to find its cores free (None: no cap)."""
+        for run in self.runs:
+            run._budget_cap = seconds(run)
+        try:
+            yield
+        finally:
+            for run in self.runs:
+                run._budget_cap = None
+
+    def _settling(self):
+        """One island's give-up seen: every island's cores not known free (its puts
+        and gets settle on the islands they cross to)."""
+        for run in self.runs:
+            run._unsure, run._known_free = True, set()
+
     def _given_ups(self):
         """The give-ups at a deadline the host has seen on every island since the
-        load (each Run's count of the dispatcher's, as last read)."""
-        return sum(getattr(run, "_given_up_seen", 0) for run in self.runs)
+        load (each Run's count of the dispatcher's, as last read), less the guard's
+        probes' (Run._free_for)."""
+        return sum(
+            getattr(run, "_given_up_seen", 0) - getattr(run, "_probe_given_up", 0)
+            for run in self.runs
+        )
 
     def _coll_cleared(self, what):
-        """Refuses `what`, a host collective, before anything is queued, once the host
-        has seen a command given up at its deadline on a load whose movers call a
-        collective and has not cleared since: queued, it would end the run (hazards.md,
-        a collective given up mid-way). The rows name the leaders marked, if any."""
+        """Refuses `what`, a host collective, before anything is queued, after a give-up
+        the host has seen on a load whose movers call a collective and no clear since:
+        it would end the run (hazards.md, a collective given up mid-way). Names the
+        leaders marked, earliest stage first (not read while a core settles)."""
         if self._given_ups() == self._coll_clear_at:
             return
         if self._coll_movers is None:
             self._coll_movers = far_collectives.calls(self.runs[0].programs)
         if not self._coll_movers:
             return
-        marked = self.session.coll_marked() if self.session is not None else []
-        islands = sorted({island for island, *_ in marked})
-        where = (
-            "an island"
-            if not islands
-            else (
-                f"island {islands[0]}"
-                if len(islands) == 1
-                else "islands "
-                + ", ".join(str(i) for i in islands[:-1])
-                + f" and {islands[-1]}"
+        try:  # its rows read only from cores known free, within one deadline
+            with self._capped(lambda run: getattr(run, "_deadline_s", None)):
+                marked = self.session.coll_marked() if self.session is not None else []
+        except _CoresNotFree:
+            marked = None
+        if marked is None:  # a core still settles: the leaders not read
+            seen = [
+                island
+                for island, run in enumerate(self.runs)
+                if getattr(run, "_given_up_seen", 0)
+                > getattr(run, "_probe_given_up", 0)
+            ]
+            raise KomorebiError(
+                f"{what}: refused before anything was queued: "
+                f"{coll_not_cleared(_islands_named(seen))}; the host saw a command "
+                "given up at its deadline on this load, whose movers call a "
+                "collective; the leaders were not read: a core is still settling"
             )
-        )
+        islands = sorted({island for island, *_ in marked})
+        where = _islands_named(islands)
         named = [
             f"island {island}'s leader (core {core}) gave up at "
             f"{device_state.COLL_STAGES.get(stage, f'stage {stage}')} "
@@ -1266,7 +1361,7 @@ class IslandRun(TreeCalls, RunCalls):
                 if gave is not None
                 else "(no give-up recorded)"
             )
-            + f" in the command of sequence {sequence}"
+            + self._command_named(island, sequence)
             for island, core, gave, sequence, stage in marked
         ]
         said = (
@@ -1280,6 +1375,21 @@ class IslandRun(TreeCalls, RunCalls):
             "the host saw a command given up at its deadline on this load, whose "
             f"movers call a collective{said}"
         )
+
+    def _command_named(self, island, sequence):
+        """The command island `island`'s leader marked itself in (its dispatcher's
+        `sequence`): the host's ticket when one of the newest TICKETS_NAMED tickets has
+        that sequence on that island, else that island's own number, said so."""
+        run, handles = self.runs[island], self._parts[island]
+        last = min(self._next, len(handles)) - 1
+        for ticket in range(last, max(last - TICKETS_NAMED, 0), -1):
+            handle = int(handles[ticket])
+            if handle == 0:
+                continue
+            with contextlib.suppress(KomorebiError):
+                if run.sequence(handle) == sequence:
+                    return f" in ticket {ticket}"
+        return f" in its island's command {sequence} (that island's own count)"
 
     def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
         """All-gather of pages first .. first + pages - 1 (default to the end) of the
@@ -1332,8 +1442,8 @@ class IslandRun(TreeCalls, RunCalls):
 
     def _collective(self, tensor, first, pages, what="a collective"):
         """(first, pages) of a collective (`what`) on `tensor`, checked: a copy, the
-        pages in it, the islands joined (the link services), no give-up seen since the
-        last clear (_coll_cleared)."""
+        pages in it, the islands joined (the link services), a chip whose links reach
+        a far chip's DRAM, no give-up seen since the last clear (_coll_cleared)."""
         pages = tensor.pages - first if pages is None else pages
         if not getattr(tensor.placement, "copy", False):
             raise KomorebiError("a collective's tensor is a copy (copy=True)")
@@ -1344,8 +1454,28 @@ class IslandRun(TreeCalls, RunCalls):
         if len(self.runs) > 1 and self._counts is None:
             raise KomorebiError("a collective crosses links: the session has none")
         if len(self.runs) > 1:
+            island_local.near_collective(self.runs[0].programs, what)
+            self._far_dram(what)
             self._coll_cleared(what)
         return first, pages
+
+    def _far_dram(self, what, landed=True):
+        """Refuses `what` before anything is queued on a chip whose link packets may not
+        target a far chip's DRAM, when the load made no landing for the collectives, or
+        always when it does not land in L1 (`landed` false: a chain's gather): its cores
+        would give up."""
+        arch = getattr(self.session, "arch", None)
+        if arch is None or chips.chip(arch).link_far_dram:
+            return
+        if not landed:
+            raise KomorebiError(far_collectives.refusal(what))
+        if not getattr(self.session, "_tree_landing", None):
+            raise KomorebiError(
+                f"{what}: on {arch} a collective's pages land in the far leader's L1, "
+                "and this load made no landing (no mover of its programs calls a "
+                f"collective; {far_collectives.HAZARD}): load a program whose mover "
+                "calls one"
+            )
 
     def _served(self, handler, words, timeout):
         """A command of the runtime's service overlay on every rank, a part on each
@@ -1358,7 +1488,12 @@ class IslandRun(TreeCalls, RunCalls):
             run = self.runs[island]
             try:
                 handle = run._queue_command(
-                    handler, run._group(group), words[island], False, run._flag_part
+                    handler,
+                    run._group(group),
+                    words[island],
+                    False,
+                    run._flag_part,
+                    budget=timeout,
                 )
             except KomorebiError as error:
                 raise self._error(error, island) from None

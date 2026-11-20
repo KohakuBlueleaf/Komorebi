@@ -23,6 +23,67 @@ LINK_CHUNK = 64 * 1024
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 
 
+def graph_line(chips, graph):
+    """The log's line of a session's islands: each island's chip, in island order, the
+    pairs the graph joins (a pair once) and its diameter."""
+    joined = [(link.a, link.b) for link in graph.links]
+    return (
+        f"the islands' chips, in island order: {list(chips)}; {len(joined)} pairs "
+        f"{joined}, diameter {graph.diameter()}"
+    )
+
+
+# tt-metal's one-hop fabric forms an open tries (in try_order): the first whose pairs
+# are all the machine's own (Islands.physical) is kept, else the one with the most
+FORMS = (("FABRIC_1D_RING", True), ("FABRIC_1D", False))
+
+
+def has_cycle(pairs):
+    """Whether the pairs (a, b) hold a cycle: a pair whose chips another path joins."""
+    root = {}
+
+    def find(chip):
+        while root.setdefault(chip, chip) != chip:
+            chip = root[chip]
+        return chip
+
+    for a, b in pairs:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return True
+        root[ra] = rb
+    return False
+
+
+def try_order(machine):
+    """FORMS in the order an open tries them: the ring form first when the machine's
+    own pairs between the visible chips (`machine`, (a, b, links) each) hold a cycle,
+    else the plain form first (the order costs time only, never the form kept)."""
+    ring_first = has_cycle((a, b) for a, b, _ in machine)
+    return sorted(FORMS, key=lambda form: form[1] != ring_first)
+
+
+def visible_ids(chips, visible):
+    """The open mesh's `chips` as the driver's card ids: tt-metal numbers the
+    TT_VISIBLE_DEVICES cards (`visible`, a list or None) from 0 on Wormhole."""
+    if visible and sorted(chips) == list(range(len(visible))) != sorted(visible):
+        return [visible[chip] for chip in chips]
+    return list(chips)
+
+
+def form_pairs(mesh, count):
+    """The pairs of mesh columns a < b the open fabric joins."""
+    return {
+        (a, b) for a in range(count) for b in range(a + 1, count) if mesh.adjacent(a, b)
+    }
+
+
+def unusable(physical, joined):
+    """The machine's pairs (`physical`, {(a, b): links} by card id) the fabric's
+    `joined` (a set of card id pairs) does not join, sorted."""
+    return sorted(pair for pair in physical if pair not in joined)
+
+
 def cards_graph(grids, pairs, per=2, dispatcher_cores=0):
     """Cards as islands joined as `pairs` (islands.links_of): each island's last cores
     its link cores, ceil(links / per) a neighbour (`per` links a core); a Tensix
@@ -159,6 +220,9 @@ class MeshMixin:
         # per island: each link core's second link's channel (a thin second sender)
         self.seconds = ()
         self._seconds = {}  # (a, b): the pair's second links
+        self._columns = ()  # per island: its chip's column in the open mesh (cards)
+        self._ring = None  # the fabric form kept at the open (FORMS), for a reopen
+        self._visible = None  # TT_VISIBLE_DEVICES' cards at the open, else None
         self.records = None  # chain records at one address on every island (cards)
 
     def _fabric_pairs(self):
@@ -166,11 +230,11 @@ class MeshMixin:
         as its links (at most LINKS_MAX, and `links` or the chip's default_links);
         graph= takes a part of them."""
         asked = self._links_asked or chips.chip(self.arch).default_links
-        fabric = {}
+        fabric, at = {}, self._columns
         for a in range(len(self.chips)):
             for b in range(a + 1, len(self.chips)):
-                if self.mesh.adjacent(a, b):
-                    found = int(self.mesh.link(a, b, 0)[0])
+                if self.mesh.adjacent(at[a], at[b]):
+                    found = int(self.mesh.link(at[a], at[b], 0)[0])
                     fabric[a, b] = min(found, self.LINKS_MAX, asked or found)
         self.log(f"the fabric's links: {fabric}")
         if self.pairs is None:
@@ -199,13 +263,13 @@ class MeshMixin:
     def _open_links(self, module):
         """The Ethernet channel of each link toward the other island, and the check
         that a page's DRAM bank sits at the same NoC place on every island."""
-        channels = []
+        channels, at = [], self._columns
         for island in range(len(self.sessions)):
             for there in self.graph.neighbours(island):
                 asked = self.graph.between(island, there).count + self._seconds.get(
                     (min(island, there), max(island, there)), 0
                 )
-                found = int(self.mesh.link(island, there, 0)[0])
+                found = int(self.mesh.link(at[island], at[there], 0)[0])
                 if found < asked:
                     raise KomorebiError(
                         f"island {island}: {found} links found to island {there}, "
@@ -216,7 +280,7 @@ class MeshMixin:
                     self.graph,
                     island,
                     lambda there, k, island=island: int(
-                        self.mesh.link(island, there, k)[1]
+                        self.mesh.link(at[island], at[there], k)[1]
                     ),
                 )
             )
@@ -228,7 +292,7 @@ class MeshMixin:
                     island,
                     self._seconds,
                     lambda there, k, island=island: int(
-                        self.mesh.link(island, there, k)[1]
+                        self.mesh.link(at[island], at[there], k)[1]
                     ),
                 )
                 for island in range(len(self.sessions))
@@ -246,16 +310,83 @@ class MeshMixin:
         if self.seconds:
             self.log(f"second links (the link cores' writers): channels {self.seconds}")
 
-    def _open_mesh(self, listed):
-        """open() over two or more cards, TT_VISIBLE_DEVICES set: the mesh, the X280
-        runtime and a Session on each island's device."""
+    def _open_form(self, module, ring, visible):
+        """The mesh of every chip tt-metal sees under one of FORMS (`ring`), its chips
+        as card ids, the card pairs it joins and the machine's own ({pair: links})."""
+        with mock.cluster_visible(self.cards):  # a prebuild: the mock, not the cards
+            mesh = module.Islands(0, self._worker_l1, self.packet, ring)
+        try:
+            raw = list(mesh.chips())
+            ids = visible_ids(raw, visible)
+            card = dict(zip(raw, ids))
+            physical = {
+                (min(card[a], card[b]), max(card[a], card[b])): int(links)
+                for a, b, links in mesh.physical()
+            }
+            joined = {
+                (min(ids[a], ids[b]), max(ids[a], ids[b]))
+                for a, b in form_pairs(mesh, len(ids))
+            }
+        except BaseException:
+            mesh.close()
+            raise
+        return mesh, ids, joined, physical
+
+    def _open_fabric(self, module, visible):
+        """Opens every chip tt-metal sees as one mesh under the first of FORMS
+        (try_order) joining every machine pair (Islands.physical), else the one joining
+        most (opened again); the form kept for a reopen (_ring). Each asked card's mesh
+        column; the log names the pairs the form leaves out."""
+        tried = []  # (pairs joined, index in forms)
+        forms = try_order(module.machine_links())
+        forms = [form for form in forms if self._ring in (None, form[1])]
+        for index, (name, ring) in enumerate(forms):
+            mesh, ids, joined, physical = self._open_form(module, ring, visible)
+            left = unusable(physical, joined)
+            self.log(
+                f"{name}: {len(joined)} of the machine's {len(physical)} pairs between "
+                f"chips {sorted(ids)}"
+            )
+            tried.append((len(joined), index))
+            if not left or index == len(forms) - 1:
+                break
+            mesh.close()
+        best = max(tried, key=lambda one: one[0])[1]  # the first on a tie
+        if best != tried[-1][1]:  # the open one is not the best: the best again
+            mesh.close()
+            name, ring = forms[best]
+            mesh, ids, joined, physical = self._open_form(module, ring, visible)
+            left = unusable(physical, joined)
+        self.mesh, self._ring = mesh, ring
+        if left:
+            self.log(f"{name} kept: the machine's pairs it leaves out: {left}")
+        else:
+            self.log(f"{name} kept: every pair of the machine between the open chips")
+        missing = [card for card in self.cards if card not in ids]
+        if missing:
+            raise KomorebiError(
+                f"cards {missing} are not among the chips the mesh opened {sorted(ids)}"
+            )
+        self._columns = tuple(ids.index(card) for card in self.cards)
+        return ids
+
+    def _open_mesh(self, listed, visible):
+        """open() over two or more cards: every chip tt-metal sees opened as one
+        fabric mesh (_open_fabric), the X280 runtime, a Session on each asked card's
+        device (island i: card i); the chips not asked hold only tt-metal's routers."""
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
         if process.exit_timeout(os.environ, self.log) == 0:
             self.log(
                 f"{process.OP_TIMEOUT}=0: an exit after a grid that did not "
                 "return hangs"
             )
-        for card in self.cards:
+        if visible is not None:
+            held = visible
+        elif mock.active() or os.environ.get(mock.MOCK):
+            held = list(self.cards)  # a stand-in: no card is held
+        else:
+            held = process.card_entries()
+        for card in held:
             holder = process.chip_holder(card)
             if holder is not None:
                 raise CardBusy(
@@ -264,7 +395,8 @@ class MeshMixin:
                     "that process exits",
                     pid=holder,
                 )
-        process.card_ready(self.cards)  # driver files: CardNotReady before tt-metal
+        # driver files: CardNotReady before tt-metal, every card asked among them
+        process.card_ready(sorted(set(held) | set(self.cards)))
         process.refuse_reopen("mesh", self.cards)
         mock.choose_cluster(self.cards)  # set before the native module loads
         module = native.load_module(self.tree)
@@ -275,21 +407,16 @@ class MeshMixin:
         self._dispatcher_kind = kind
         if kind == dispatch.X280 and not mock.active():
             native.require_dispatcher(module, f"islands on cards {listed}")
-        self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
+        self.log(
+            f"opening every chip tt-metal sees as one fabric mesh (cards {listed})"
+        )
         self.log(f"routers told: packets of {self.packet} bytes")
-        with mock.cluster_visible(self.cards):  # a prebuild: the mock, not the cards
-            self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
         process._hook_exit(self.log)
         process._LIVE.add(self)
+        self._visible = visible  # for a reopen (_open_fabric)
         try:
-            self.chips = list(self.mesh.chips())
-            if sorted(self.chips) == list(range(len(self.cards))) != sorted(self.cards):
-                # tt-metal numbered the visible cards from 0 (Wormhole's)
-                self.chips = [self.cards[chip] for chip in self.chips]
-            if sorted(self.chips) != sorted(self.cards):
-                raise KomorebiError(
-                    f"the mesh's chips {self.chips} are not the cards {listed}"
-                )
+            self._open_fabric(module, visible)
+            self.chips = list(self.cards)
             if kind == dispatch.X280:
                 if not mock.active():  # a mock has no X280
                     self.mesh.open_x280()
@@ -299,7 +426,7 @@ class MeshMixin:
             self.sessions = tuple(
                 session_module.Session(
                     card=chip,
-                    device=self.mesh.device(island),
+                    device=self.mesh.device(self._columns[island]),
                     log=self._island_log(island),
                     dispatcher=kind,
                     **self._options,
@@ -323,6 +450,7 @@ class MeshMixin:
                 dispatch.DISPATCHER_CORES[kind],
             )
             check_wired(self.graph, 1)
+            self.log(graph_line(self.chips, self.graph))
             if pairs:  # the page CPUs a pair: the fewest links of any pair
                 self.links = min(link.count for link in self.graph.links)
             self.link_cores = self.graph.link_cores
@@ -458,15 +586,14 @@ class MeshMixin:
             return
         listed = ",".join(str(card) for card in self.cards)
         visible = os.environ.get("TT_VISIBLE_DEVICES")
-        if visible is not None and visible != listed:
-            raise ValueError(f"cards {listed} are not the visible ones ({visible})")
-        os.environ["TT_VISIBLE_DEVICES"] = listed
-        try:
-            self._open_mesh(listed)
-        except BaseException:
-            if visible is None:  # set by this open: unset again when it fails
-                os.environ.pop("TT_VISIBLE_DEVICES", None)
-            raise
+        if visible is not None:
+            visible = [int(one) for one in visible.split(",") if one.strip()]
+            if not set(self.cards) <= set(visible):
+                listed_visible = ",".join(str(card) for card in visible)
+                raise ValueError(
+                    f"cards {listed} are not all visible ({listed_visible})"
+                )
+        self._open_mesh(listed, visible)
 
     @property
     def ranks(self):

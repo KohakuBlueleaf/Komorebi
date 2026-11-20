@@ -388,6 +388,7 @@ def make(
         handlers=built.folder / header_name(compiled),
         broadcast_wait=broadcast_wait,
         guard=guard,
+        port_handlers=self.port_handlers,  # the init would set it back to none
     )
     self.built = built
     self.log = log

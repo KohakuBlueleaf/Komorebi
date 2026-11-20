@@ -68,7 +68,9 @@ WHERES = (
     "PutRefused",
     "MoveBuffer",
     "FarDram",
+    "Near",
     "Coll",
+    "Land",
 )
 # kColl*: why a collective's guard gave up
 COLLS = ("Stale", "Gen", "None")
@@ -81,6 +83,8 @@ COLL_STAGES = {
     4: "its posts confirmed, its team not yet let go",
     5: "its team let go",
 }
+# kLand*: what a collective's landing waited for, or why it gave up
+LANDS = ("Slot", "Credits", "Share", "Header", "Write", "None", "Gen")
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
@@ -211,9 +215,14 @@ def gave_up(word, sequence, abi_headers=None):
         return None
     wheres = {abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES}
     gaves = {abi_headers[f"kGave{kind}"]: name for kind, name in GAVES.items()}
+    where = (word >> 8) & 0xFF  # a runtime code (kWherePages...) by its own name
     out = {
         "code": gaves.get(code, code),
-        "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
+        "where": (
+            wheres[where]
+            if where in wheres
+            else where_names(abi_headers).get(where, where)
+        ),
         "slot": (word >> 16) & 0xFF,
         "sequence": int(sequence),
     }
@@ -221,15 +230,25 @@ def gave_up(word, sequence, abi_headers=None):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
     if out["where"] == "port" and out["slot"] == GATHER_SLOT:
         out["gather"] = gather_wait(int(sequence))
-    if out["where"] in ("ask", "askrefused", "fardram") or (
+    if out["where"] in ("ask", "askrefused", "fardram", "near") or (
         str(out["where"]) in PUT_REFUSALS
     ):
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
+    if out["where"] == "near" and out["island"] == abi_headers["kNearNotWhole"]:
+        out["island"], out["not_whole"] = None, True  # a tensor not whole here
+    if out["where"] == "near" and out["island"] == abi_headers["kNearNoIsland"]:
+        out["island"] = None  # a collective's or a chain's gather: no island named
     if out["where"] == "far":
         out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
     if out["where"] == "coll":  # a collective's guard: why, the island
         names = {abi_headers[f"kColl{k}"]: k.lower() for k in COLLS}
         out["waited"] = names.get(out["slot"] >> 4, out["slot"] >> 4)
+        out["island"] = word >> 24
+    if out["where"] == "land":  # a collective's landing: what, its port, the island
+        names = {abi_headers[f"kLand{k}"]: k.lower() for k in LANDS}
+        what = out["slot"]
+        out["waited"] = names.get(what >> 4, what >> 4)
+        out["port"] = None if what & 0xF == 0xF else what & 0xF
         out["island"] = word >> 24
     if out["where"] == "putunsent":
         out["handler"] = word >> 24  # the command's handler (km_worker.hpp puts_sent)

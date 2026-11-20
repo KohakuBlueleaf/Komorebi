@@ -273,6 +273,33 @@ def test_a_put_into_a_far_dram_refused_on_the_card_names_its_island_and_hazard()
     assert "hazards.md#a-link-packet-for-a-far-wormhole-chips-dram" in row
 
 
+def test_a_far_call_of_a_near_build_names_its_island_or_none():
+    word = CONSTANTS["kGaveRefused"] | CONSTANTS["kWhereNear"] << 8 | (2 | 1 << 8) << 16
+    gave = device_state.gave_up(word, 5)
+    assert (gave["code"], gave["where"], gave["island"]) == ("refused", "near", 1)
+    row = describe_core({"core": 3, "island": 0, "rank": 4, "reader": gave})
+    assert "reader gave up (refused) in near: a page of island 1, or a put" in row
+    assert "the host's submit check should have refused it" in row
+    none = CONSTANTS["kNearNoIsland"]
+    word = (
+        CONSTANTS["kGaveRefused"] | CONSTANTS["kWhereNear"] << 8 | (2 | none << 8) << 16
+    )
+    gave = device_state.gave_up(word, 5)
+    assert gave["island"] is None
+    row = describe_core({"core": 3, "island": 0, "rank": 4, "writer": gave})
+    assert "in near: a collective or a chain's gather, in a program built" in row
+    whole = CONSTANTS["kNearNotWhole"]
+    word = (
+        CONSTANTS["kGaveRefused"]
+        | CONSTANTS["kWhereNear"] << 8
+        | (2 | whole << 8) << 16
+    )
+    gave = device_state.gave_up(word, 5)
+    assert gave["island"] is None and gave["not_whole"]
+    row = describe_core({"core": 3, "island": 0, "rank": 4, "writer": gave})
+    assert "in near: a tensor that is not whole on this island, in a program" in row
+
+
 def test_a_collective_given_up_before_names_its_island_and_says_not_whole():
     stale = CONSTANTS["kCollStale"] << 4 | 0xF
     word = (

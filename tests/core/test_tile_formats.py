@@ -2,11 +2,13 @@
 per-datum model, and a tensor's bytes by its tiles."""
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from komorebi import formats
+from komorebi.session.parts.transfer import TransferMixin
 
 
 def plain_bfp(values, bits, family_a):
@@ -89,3 +91,82 @@ def test_a_block_format_has_no_rows_and_no_element_size():
         formats.itemsize("bfp2_b")
     assert formats.family("bfp8") == "a" and formats.family("bfp8_b") == "b"
     assert formats.family("float32") is None and formats.family("int32") is None
+
+
+def negative_zero_tile(bits, family_a):
+    """One block tile: every datum the top magnitude code, and in each 16-datum row
+    datum 3 the negative zero code (sign 1, magnitude 0) and datum 5 a plain zero;
+    row r's exponent bias - 2 + r % 4."""
+    width = formats.BFP_WIDTH[bits]
+    bias = 15 if family_a else 127
+    codes = np.full((1, 64, 16), 1 << (width - 1), np.int64)
+    codes[..., 3] = 1 << width
+    codes[..., 5] = 0
+    exponents = (bias - 2 + np.arange(64) % 4).reshape(1, 64)
+    return formats.bfp_pack_codes(exponents, codes.reshape(1, 1024), bits)
+
+
+@pytest.mark.parametrize("bits", [8, 4, 2])
+@pytest.mark.parametrize("family_a", [False, True])
+def test_a_negative_zero_code_decodes_as_the_card_reads_it(bits, family_a):
+    raw = negative_zero_tile(bits, family_a)
+    back = formats.bfp_decode(raw, bits, family_a)[0].reshape(64, 16)
+    want = -65536.0 if family_a else -np.inf  # Wormhole: unpack, copy and product
+    assert np.all(back[:, 3] == want)
+    assert np.all(back[:, 5] == 0)
+    assert np.array_equal(back[:, 0], 2.0 ** (np.arange(64) % 4 - 2.0))
+
+
+@pytest.mark.parametrize("bits", [8, 4, 2])
+@pytest.mark.parametrize("family_a", [False, True])
+def test_canonical_clears_only_the_negative_zero_codes(bits, family_a):
+    raw = negative_zero_tile(bits, family_a)
+    with pytest.raises(ValueError, match="negative zero code.*bfp_canonical"):
+        formats.bfp_check(raw, bits)
+    clean = formats.bfp_canonical(raw, bits)
+    assert clean.shape == raw.shape and clean is not raw
+    assert formats.bfp_check(clean, bits) is clean
+    exponents, codes = formats.bfp_unpack_codes(raw, bits)
+    clean_exponents, clean_codes = formats.bfp_unpack_codes(clean, bits)
+    assert np.array_equal(clean_exponents, exponents)
+    negative_zero = codes == 1 << formats.BFP_WIDTH[bits]
+    assert negative_zero.sum() == 64
+    assert np.array_equal(clean_codes, np.where(negative_zero, 0, codes))
+    back = formats.bfp_decode(clean, bits, family_a)[0].reshape(64, 16)
+    assert np.all(back[:, 3] == 0) and np.all(back[:, 0] > 0)
+
+
+@pytest.mark.parametrize("bits", [8, 4, 2])
+def test_canonical_and_check_agree_with_each_code_on_random_bytes(bits):
+    raw = np.random.default_rng(bits).integers(
+        0, 256, (3, 2, formats.bfp_tile_bytes(bits)), dtype=np.uint8
+    )
+    exponents, codes = formats.bfp_unpack_codes(raw, bits)
+    negative_zero = codes == 1 << formats.BFP_WIDTH[bits]
+    clean = formats.bfp_canonical(raw, bits)
+    assert clean.shape == raw.shape
+    clean_exponents, clean_codes = formats.bfp_unpack_codes(clean, bits)
+    assert np.array_equal(clean_exponents, exponents)
+    assert np.array_equal(clean_codes, np.where(negative_zero, 0, codes))
+    with pytest.raises(ValueError, match=r"6 of 6 .*the first tile 0"):
+        formats.bfp_check(raw, bits)
+    with pytest.raises(ValueError, match="not whole"):
+        formats.bfp_check(raw.reshape(-1)[:-1], bits)
+
+
+@pytest.mark.parametrize("dtype", sorted(formats.BLOCK))
+def test_the_host_encode_writes_canonical_tiles(dtype):
+    data = np.random.default_rng(5).standard_normal((64, 96)).astype(np.float32)
+    data[0, :40] = -0.0
+    data[1, ::3] = -1e-30  # under the row's step: rounds to a zero
+    raw, _ = formats.to_bytes(data, dtype, "tile")
+    bits = formats.BLOCK[dtype]
+    assert formats.bfp_check(raw, bits) is raw
+    assert np.array_equal(formats.bfp_canonical(raw, bits), raw)
+
+
+def test_a_session_write_refuses_block_pages_with_a_negative_zero():
+    raw = negative_zero_tile(4, False)
+    tensor = SimpleNamespace(dtype="bfp4_b", page_bytes=raw.shape[1], pages=1)
+    with pytest.raises(ValueError, match="pages written to .*negative zero code"):
+        TransferMixin.write(None, tensor, raw)

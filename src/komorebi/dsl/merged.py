@@ -646,6 +646,7 @@ def build(self):
         handlers=built.folder / made.header_name(compiled),
         broadcast_wait=wait,
         guard=guard,
+        port_handlers=self.port_handlers,  # the init would set it back to none
     )
     self.built_defines = dict(self.defines)  # the build's own (fits_kernels)
     self.built = built

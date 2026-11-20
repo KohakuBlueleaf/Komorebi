@@ -6,17 +6,22 @@ from types import SimpleNamespace
 
 import pytest
 
+from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands import graph as islands
 from komorebi.islands.parts.calls import CallsMixin
 from komorebi.islands.parts.link_plan import link_tail
-from komorebi.islands.parts.load import LoadMixin
+from komorebi.islands.parts.load import LoadMixin, second_link_refusal
 from komorebi.islands.parts.mesh import (
+    MeshMixin,
     _split_graph,
     cards_graph,
     check_wired,
+    graph_line,
     link_slots,
     second_links,
     second_slots,
+    try_order,
+    visible_ids,
 )
 from komorebi.islands.session import IslandSession
 from komorebi.session import kernels
@@ -215,7 +220,7 @@ def test_links_none_takes_the_chips_default_links(arch, asked, count):
     Blackhole."""
     owner = SimpleNamespace(
         arch=arch, chips=(0, 1), mesh=_FourLinks(), LINKS_MAX=4, pairs=None,
-        _links_asked=asked, log=lambda message: None,
+        _links_asked=asked, log=lambda message: None, _columns=(0, 1),
     )  # fmt: skip
     assert IslandSession._fabric_pairs(owner) == [(0, 1)] * count
 
@@ -306,3 +311,136 @@ def test_a_tensix_dispatchers_core_is_no_islands_and_the_ranks_add_up():
         assert kernels._island((graph, island), (8, 10), 1) == (graph, island)
         with pytest.raises(ValueError, match="not the 80 cores"):
             kernels._island((graph, island), (8, 10))
+
+
+def test_the_log_names_each_islands_chip_the_pairs_and_the_diameter():
+    """Islands in tt-metal's order need not be the cards' order: the line says which
+    chip each island is, then the pairs (a pair once, whatever its links) and the
+    diameter."""
+    graph = cards_graph([(8, 10)] * 4, islands.ring_pairs(4, links=2), per=1)
+    assert graph_line((5, 4, 0, 1), graph) == (
+        "the islands' chips, in island order: [5, 4, 0, 1]; 4 pairs "
+        "[(0, 1), (0, 3), (1, 2), (2, 3)], diameter 2"
+    )
+
+
+def test_a_writer_over_ncrisc_with_second_links_names_its_size_and_links_1():
+    """An island's writer over NCRISC's code region while its link cores hold second
+    links (KM_LINK_THIN_SECOND): the build's error names both sizes, the links a pair
+    and links=1; another build's error is left as it is."""
+    text = (
+        "forward: build failed: TT_THROW @ tt_elffile.cpp:405: tt::exception\ninfo:\n"
+        "/cache/kernels/writer/13895347754378637234//ncrisc/ncrisc.elf: segment[0] "
+        "[0xffc00000,+0x4758) overflows region:0 limit of 0x4000 bytes, reduce the "
+        "size of code"
+    )
+    refusal = second_link_refusal(ProgramError(text), "forward", 2)
+    assert isinstance(refusal, ProgramError)
+    assert str(refusal) == (
+        "forward: the writer is 18,264 B of NCRISC's 16,384 B code region with 2 "
+        "links a pair (a link core's second link puts its sender on the writer): "
+        "links=1 leaves that sender out"
+    )
+    other = text.replace("kernels/writer/", "kernels/reader/")
+    assert second_link_refusal(ProgramError(other), "forward", 2) is None
+
+
+class _Machine:
+    """A stand-in for the native module: chips joined by the machine as `physical`
+    ({(a, b): links}); each fabric form (ring True or False) joins `forms[ring]`."""
+
+    def __init__(self, chips, physical, forms):
+        self.chips, self.physical, self.forms, self.opened = chips, physical, forms, []
+
+    def machine_links(self):
+        return [(a, b, n) for (a, b), n in self.physical.items()]
+
+    def Islands(self, count, worker_l1, packet, ring):
+        assert count == 0  # every chip tt-metal sees
+        self.opened.append(ring)
+        machine = self
+
+        class Mesh:
+            closed = False
+
+            def chips(self):
+                return list(machine.chips)
+
+            def physical(self):
+                return [(a, b, n) for (a, b), n in machine.physical.items()]
+
+            def adjacent(self, a, b):
+                pair = tuple(sorted((machine.chips[a], machine.chips[b])))
+                return pair in machine.forms[ring]
+
+            def close(self):
+                self.closed = True
+
+        return Mesh()
+
+
+def _opener(cards, ring=None):
+    lines = []
+    owner = SimpleNamespace(
+        cards=tuple(cards), _worker_l1=None, packet=4096, _ring=ring, log=lines.append,
+    )  # fmt: skip
+    owner._open_form = lambda *args: MeshMixin._open_form(owner, *args)
+    return owner, lines
+
+
+SQUARE = {(0, 1): 4, (1, 2): 4, (2, 3): 4, (0, 3): 4}
+
+
+def test_an_open_keeps_the_first_form_that_joins_every_pair_of_the_machine():
+    machine = _Machine([0, 1, 2, 3], SQUARE, {True: set(SQUARE), False: set()})
+    owner, lines = _opener([2, 0])
+    assert MeshMixin._open_fabric(owner, machine, None) == [0, 1, 2, 3]
+    assert machine.opened == [True] and owner._ring is True
+    assert owner._columns == (2, 0)  # island i: card i, at its chip's column
+    kept = "FABRIC_1D_RING kept: every pair of the machine between the open chips"
+    assert lines[-1] == kept
+
+
+def test_an_open_keeps_the_form_that_joins_more_and_names_the_pairs_left_out():
+    line = set(SQUARE) - {(0, 3)}
+    machine = _Machine([0, 1, 2, 3], SQUARE, {True: {(0, 1)}, False: line})
+    owner, lines = _opener([0, 1, 2, 3])
+    MeshMixin._open_fabric(owner, machine, None)
+    assert machine.opened == [True, False] and owner._ring is False
+    assert lines[-1] == "FABRIC_1D kept: the machine's pairs it leaves out: [(0, 3)]"
+    # the first joins more: opened again; a reopen tries the form kept alone
+    machine = _Machine([0, 1, 2, 3], SQUARE, {True: line, False: {(0, 1)}})
+    owner, lines = _opener([0, 1, 2, 3])
+    MeshMixin._open_fabric(owner, machine, None)
+    assert machine.opened == [True, False, True] and owner._ring is True
+    MeshMixin._open_fabric(owner, machine, None)
+    assert machine.opened[3:] == [True]
+
+
+def test_an_open_refuses_a_card_the_mesh_did_not_open_and_maps_visible_ids():
+    machine = _Machine([0, 1, 2], {(0, 1): 2, (1, 2): 2}, {True: set(), False: set()})
+    owner, _ = _opener([0, 5])
+    with pytest.raises(KomorebiError, match=r"cards \[5\] are not among the chips"):
+        MeshMixin._open_fabric(owner, machine, None)
+    # tt-metal numbers TT_VISIBLE_DEVICES' cards from 0 (Wormhole): card ids again
+    assert visible_ids([1, 0, 2], [4, 9, 7]) == [9, 4, 7]
+    assert visible_ids([4, 9], [4, 9]) == [4, 9]
+    machine = _Machine([0, 1], {(0, 1): 4}, {True: {(4, 9)}, False: set()})
+    owner, _ = _opener([9, 4])
+    assert MeshMixin._open_fabric(owner, machine, [4, 9]) == [4, 9]
+    assert owner._columns == (1, 0)
+
+
+def test_the_ring_form_is_tried_first_only_where_the_machine_s_pairs_hold_a_cycle():
+    """Two cards (no cycle): the plain form first, which joins their pair: one open,
+    kept (a Blackhole two-card session as before); a cycle: the ring form first."""
+    assert [name for name, _ in try_order([(0, 1, 4)])] == [
+        "FABRIC_1D",
+        "FABRIC_1D_RING",
+    ]
+    square = [(a, b, n) for (a, b), n in SQUARE.items()]
+    assert [name for name, _ in try_order(square)] == ["FABRIC_1D_RING", "FABRIC_1D"]
+    machine = _Machine([0, 1], {(0, 1): 2}, {True: {(0, 1)}, False: {(0, 1)}})
+    owner, lines = _opener([0, 1])
+    MeshMixin._open_fabric(owner, machine, None)
+    assert machine.opened == [False] and owner._ring is False

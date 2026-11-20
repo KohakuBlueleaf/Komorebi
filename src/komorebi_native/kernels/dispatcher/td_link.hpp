@@ -57,6 +57,9 @@ namespace td {
         uint32_t asked, asked_id, asked_at;  // a ROUND to answer, its sample count
         uint32_t round, round_number, answered, quiet, have_last, used;
         uint64_t sent, consumed, last_sent, last_consumed, next_round;
+        // a wave half sent (the queue to link core 0 full): its kind (0: none), the
+        // next island to tell, its words 10-11
+        uint32_t wave_kind, wave_next, wave_words[2];
     };
 
     // Out's link state, in the link block (kTlState); out alone reads and writes it.
@@ -91,13 +94,13 @@ namespace td {
             island = word & 0xFFFFu;
             islands = (word >> 16) & 0x7FFFu;
             deliver = word >> 31;
-            waves.on = waves.id = waves.told_id = waves.asked = 0;
+            waves.on = waves.id = waves.told_id = waves.asked = waves.wave_kind = 0;
             core = get_arg_val<uint32_t>(kTdLinkCore);
             area = get_arg_val<uint32_t>(kTdLinkArea);
             base = block;
             slots = get_arg_val<uint32_t>(kTdLinkSlots);
             part_bytes = KMD_LINK_COUNT_BYTES + slots * KM_LINK_PACKET_BYTES;
-            for (uint32_t i = 0; i < 3 * kTdLinkIslandsMax; i++) {
+            for (uint32_t i = 0; i < 3 * islands; i++) {  // the session's table
                 entries[i] = get_arg_val<uint32_t>(kTdLinkEntries + i);
             }
             for (uint32_t i = 0; i < kTdLinkIslandsMax; i++) {

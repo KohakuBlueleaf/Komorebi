@@ -1,5 +1,5 @@
-// The runtime's service overlay, its reader part: PUSH, PULL, COPY, GATHER, REDUCE or
-// ENTRY; a failed bound or a timed-out wait gives up (its where code).
+// The runtime's service overlay, reader part: PUSH, PULL, COPY, GATHER, REDUCE or ENTRY
+// (KM_ENTRY_QUIET: the clear's READ or SETTLE); a failed bound or wait gives up.
 #include <stdint.h>
 
 #include "komorebi/device/tensors/km_ask.hpp"
@@ -59,6 +59,21 @@ static void write_entry(km::Reader& reader, const km_command_t& command) {
 
 void km_overlay(km::Reader& reader, const km_command_t& command) {
     const uint32_t handler = km::handler(command);
+#if defined(KM_COLL_QUIET)  // a load whose movers call a collective
+    if (handler == KM_HANDLER_ENTRY && (command.a0 & KM_ENTRY_QUIET) != 0) {
+        const uint32_t code = km::quiet_rank(reader, command);  // READ or SETTLE
+        if (code != km::kGaveNone) {
+            reader.gave_up(
+                km::kStReader,
+                code,
+                km::kWhereClear,
+                km::slot(command),
+                command.sequence
+            );
+        }
+        return;
+    }
+#endif
 #if defined(KM_TENSOR_TABLE)  // a tensor made after an island load (km_table.hpp)
     if (handler == KM_HANDLER_ENTRY && (command.a0 & KM_ENTRY_TABLE) != 0) {
         return km::write_table_row(reader, command);

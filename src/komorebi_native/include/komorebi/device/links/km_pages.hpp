@@ -1306,6 +1306,68 @@ namespace km {
         );
     }
 
+    // A QUIET row's far words (sent, credit, taken, count) and forward rooms' words.
+#if defined(KM_FAR_PUTS)
+    constexpr uint32_t kQuietFar = KM_FAR_LINE(KM_ISLANDS_MAX);
+#else
+    constexpr uint32_t kQuietFar = 0;
+#endif
+    constexpr uint32_t kQuietForward = (
+        kForwardBytes != 0
+            ? (KM_FORWARD_STATE + 4 * (2 * KM_FORWARD_ROOMS + 1) + 63) / 64 * 64
+            : 0
+    );
+
+    // QUIET: CPU `cpu` of link core `rank` writes its core's line counts (KM_QUIET_*)
+    // into page link_at(rank, cpu) of the DRAM tensor at r.to and waits for the write.
+    template <typename Kernel>
+    inline uint32_t pages_quiet(
+        const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
+    ) {
+        if constexpr (noc_mode == DM_DYNAMIC_NOC) {
+            return kGaveBadTransfer;
+        }
+        const uint32_t area = islands_at(kernel.args().control).link_area();
+        const uint32_t page = link_at(rank, cpu);
+        if (kLinksACore < 2 && page == KM_PAGES_NO_LINK) {
+            return kGaveNone;  // no link of this CPU: no row
+        }
+        if (
+            area == 0 || r.page < KM_QUIET_ROW_BYTES + kQuietFar + kQuietForward ||
+            r.page % 64 != 0
+        ) {
+            return kGaveBadTransfer;
+        }
+        const InterleavedAddrGen<true> to = {
+            .bank_base_address = r.to, .page_size = r.page
+        };
+        const uint64_t row = to.get_noc_addr(page);
+        const uint32_t queue = link_queue();
+        noc_async_write(area + KM_PUT_TAIL, row + KM_QUIET_PUT, 48);
+        noc_async_write(area + KM_ASK_TAIL, row + KM_QUIET_ASK, 64);
+        noc_async_write(area + KM_PUT_RING_WORDS, row + KM_QUIET_RING, 32);
+        if (queue != 0) {  // the queue, then its far places and forward rooms
+            noc_async_write(queue, row + KM_QUIET_QUEUE, 16);
+            if constexpr (kQuietFar != 0) {
+                noc_async_write(queue + KM_QUEUE_BYTES, row + KM_QUIET_FAR, kQuietFar);
+            }
+            if constexpr (kQuietForward != 0) {
+                noc_async_write(
+                    queue + KM_QUEUE_BYTES + kFarBytes,
+                    row + KM_QUIET_FAR + kQuietFar,
+                    kQuietForward
+                );
+            }
+        }
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
 #if defined(KM_PAGE_LINKS)  // else km_worker.hpp's stubs (one card: no link services)
     // At the kernel's end: the held connection's teardown, bounded (the router must
     // not keep this core).
@@ -2091,19 +2153,41 @@ namespace km {
         );
     }
 
-    // A batch's landing page in its holder's DRAM: one a holder, source island and put
-    // line owner, then one a holder and far place (source s: s * KM_FAR_LINES + k).
+    // The holders whose landing pages lie in one DRAM: a split card's (KM_WIRE) every
+    // island's, holder by holder; a card's its own alone (what is put to it).
+    constexpr uint32_t landing_holders(uint32_t islands) {
+#if defined(KM_WIRE)
+        return islands;
+#else
+        static_cast<void>(islands);
+        return 1u;
+#endif
+    }
+
+    // The holders before holder `holder` in its DRAM, whose pages come first.
+    constexpr uint32_t landing_before(uint32_t holder) {
+#if defined(KM_WIRE)
+        return holder;
+#else
+        static_cast<void>(holder);
+        return 0u;
+#endif
+    }
+
+    // A batch's landing page in its holder's DRAM: one a source island and put line
+    // owner, then one a far place (source s: s * KM_FAR_LINES + k), holder by holder.
     constexpr uint32_t batch_page(
         uint32_t islands, uint32_t holder, uint32_t source, uint32_t owner
     ) {
-        return (holder * islands + source) * KM_QUEUE_LINES + owner;
+        return (landing_before(holder) * islands + source) * KM_QUEUE_LINES + owner;
     }
 
     constexpr uint32_t batch_far_page(
         uint32_t islands, uint32_t holder, uint32_t place
     ) {
         return (
-            islands * islands * KM_QUEUE_LINES + holder * islands * KM_FAR_LINES + place
+            landing_holders(islands) * islands * KM_QUEUE_LINES +
+            landing_before(holder) * islands * KM_FAR_LINES + place
         );
     }
 
@@ -3158,6 +3242,10 @@ namespace km {
             code = pages_open(kernel, r, index - r.first, cpu);
         } else if (r.mode == KM_PAGES_COUNTS && links) {
             code = pages_counts(kernel, r, index, cpu);
+#if defined(KM_COLL_QUIET)  // a load whose movers call a collective
+        } else if (r.mode == KM_PAGES_QUIET && links) {
+            code = pages_quiet(kernel, r, index, cpu);
+#endif
 #if defined(KM_LINKS) && (defined(COMPILE_FOR_BRISC) || defined(KM_MESSAGE_SERVICES))
         } else if (r.mode == KM_PAGES_MESSAGES && links) {
             // link 0's CPU; with a service a link, each link's below the services

@@ -75,6 +75,6 @@ def test_the_generation_row_is_at_blackholes_dram_read_alignment_inside_the_tabl
     assert align % 64 == 0  # Blackhole's DRAM read alignment (Wormhole's: 32)
     for table in range(0x17DBC0, 0x17DBC0 + align, 16):  # an L1 tensor: 16 B steps
         at = table + 4 * (6 * count + 1 + words[0, 6 * count])  # km_ask coll_gen_of
-        row = (at + 4 * 2 + align - 1) // align * align
+        row = (at + 4 * 4 + align - 1) // align * align  # 2 words, landing's 2
         assert row % align == 0
         assert row + h["KM_COLL_GEN_BYTES"] <= table + 4 * words.shape[1]

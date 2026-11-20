@@ -251,7 +251,9 @@ def held_sum_copy(frame, value, buffer, width):
     copies = "\n".join(f"copy_tile({source.name}, {t}, {t});" for t in range(width))
     again = f"{copies}\n" + pack(0, buffer.name, width)
     body = "\n".join("    " + line for line in again.split("\n"))
-    sum_freed_after(frame, value, f"cb_pop_front({source.name}, {width});")
+    sum_freed_after(
+        frame, value, f"cb_pop_front({source.name}, {width});", (source.name, width)
+    )
     return Line(
         f"// {value.cxx}, the sum held across the loop, copied for this turn\n"
         f"km_ok = km_ok && compute.wait_front({source.name}, {width});\n"
@@ -351,9 +353,11 @@ def second_sums(frame, node, name, count):
     return True
 
 
-def sum_freed_after(frame, value, freed):
+def sum_freed_after(frame, value, freed, followed=None):
     """A held sum's free: after the outermost loop the sum was made outside of,
-    under the leader's condition (only the leader holds the sum)."""
+    under the leader's condition (only the leader holds the sum); `followed`
+    (buffer, pages), a buffer mover B also reads: its read pointer moved past the
+    pages compute frees (km::passed_front)."""
     condition, uses = frame.leader_condition
     loop = frame.loops[value.made_at[0]]
     loop.setdefault("after", []).append(
@@ -363,6 +367,15 @@ def sum_freed_after(frame, value, freed):
             set(uses),
         )
     )
+    if followed is not None:
+        loop.setdefault("after_moved", []).append(
+            Line(
+                f"if ({condition}) {{  // compute freed {value.cxx}\n"
+                f"    km::passed_front({followed[0]}, {followed[1]});\n}}",
+                set(uses),
+                mover="B",
+            )
+        )
 
 
 def sum_held(frame, value):

@@ -835,6 +835,22 @@ def test_a_queued_command_takes_its_count_and_the_kernel_picks_the_group():
         run.submit(1, 121, queued=True)
 
 
+def test_a_near_load_refuses_a_queued_or_plain_command_given_as_words(tmp_path):
+    # its words hold no tensor the near check could look at (islands/local.near_words)
+    (tmp_path / "k.cpp").write_text("void kernel_main() {}\n")
+    program = Program("near", kernels={"compute": tmp_path / "k.cpp"})
+    run, _, _ = make_run(program=program)
+    program.near = (26552, 16384)
+    for submit in (
+        lambda: run.submit(1, 30, queued=True),
+        lambda: run.submit(1, (0, 8)),
+    ):
+        with pytest.raises(KomorebiError, match="near was built without the far paths"):
+            submit()
+    program.near = None
+    run.submit(1, 30, queued=True)
+
+
 def test_wait_any_returns_the_first_event_of_a_set_and_forgets_only_it():
     run, port, _ = make_run()
     port.auto = False

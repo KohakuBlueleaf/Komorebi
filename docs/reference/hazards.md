@@ -383,6 +383,31 @@ the L1 budget table.
 Described in [Host API, several programs in one run](host.md#several-programs-in-one-run)
 and [movement, the NoC of each CPU](movement.md#the-noc-of-each-cpu).
 
+### A writer once over its code memory built again in the same process
+
+**The hazard.** On Wormhole a writer over its 16 KiB at a writer level is built at the
+next one ([overlays](overlays.md#transfers-to-and-from-the-host)). The runtime's ELF
+cache (tt-metal v0.81.1, `llrt.cpp` `get_cached_binary`) keeps an empty slot for an
+ELF whose image it refused as too large, and a later load of that same ELF in the
+process waits on it without end: no error, the host at about 1% CPU in the build. Seen
+on 2 islands of the mock, when island 1 asked for the build island 0 had found over.
+
+**The rule.** In one process, a program is not loaded again at a writer level it was
+refused at; a script that catches a load's refusal does not load that program again.
+
+**The guard.** Refused by name, on both chips: the session keeps, for its process, each
+build the runtime refused as an ELF over its region (its programs' keys, the writer
+level, near or not: `kernels.over_key`), and a later load that would hand the runtime
+that build again is refused before the runtime sees it, with the first refusal's
+sentence ("already refused in this process: ..."): a walk goes on to its next level, a
+load at the highest level or on Blackhole raises `ProgramError`. Each island's load
+also starts at the level the first island kept, the near build too
+(`remembered.writer_near`), and a kept near build that is no longer near is refused
+before any build. A program the key does not name (no sources of its own) is not
+followed.
+
+Described in [overlays, transfers to and from the host](overlays.md#transfers-to-and-from-the-host).
+
 ### Formats another program left on the same cores
 
 **The hazard.** In a run loaded with a list, every core holds every program and nothing
@@ -617,7 +642,9 @@ Described in [the L1 layout](overlays.md#l1-layout).
 ### A small write whose two addresses differ in their low four bits
 
 **The hazard.** A small write between two cores' L1 is silently wrong when the two
-addresses do not share their low four bits.
+addresses do not share their low four bits. A read is the same: a 32-byte
+`noc_async_read` from an address 16-byte aligned into one 8 bytes past a 16-byte
+boundary landed 8 bytes off (Wormhole, seen once).
 
 **The rule.** Send a small write between two cores' L1 only with `km::small_write`, slot
 to slot.
@@ -723,6 +750,25 @@ does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root)
 not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program).
+
+### A plain buffer drained by two processors
+
+**The hazard.** The count above is not a pair's alone: every circular buffer has one
+count of pages freed, and each processor that pops it keeps its own running count and
+writes it whole into that word. A plain buffer (`km.Buffer`) of a hand kernel that one
+mover drains in one command and compute drains in another (or two movers, or a mover
+and compute in the same command) has the count rewound at the second processor's pop:
+the producer then sees the buffer still full, and its next reserve waits until the
+deadline. The symptom is a hang at the buffer's second use, its first use correct.
+Found with a hand tree whose writer took a sync page from a buffer that compute took
+the block's arrivals from: every first round ran and the second gave up at its deadline.
+
+**The rule.** A buffer has one draining processor (and one filling one) for the whole
+load. A second consumer takes its own buffer. Where one cannot, the processor that pops
+after the other adds the other's pages to its own count first, as in the entry above.
+
+**The guard.** None for a plain buffer. The load's source check (`check_pairs`) looks only
+at the halves of a pair; a plain buffer drained by name in two sources is not refused.
 
 ### A chain's input read before it is written
 
@@ -1063,6 +1109,24 @@ product and pack when it mixes tile formats. For a hand-written body, nothing.
 Described in [Programs written as classes, a body's own buffer](classes.md#a-bodys-own-buffer) and
 [products](classes.md#products).
 
+### A float32 operand and a 16-bit operand copied in one tile function
+
+**The hazard.** A float32 tile is unpacked straight to `Dst`, a 16-bit one through SrcA,
+each by its own `copy_init`. A copy run under the other kind's setup never marks SrcA
+ready while the math waits on it: the core hangs. Before the commit that added the guard
+below, one element-wise tile function with a float32 operand and a 16-bit one
+(`x * w`, x float32, w bfloat16) hung the core on both chips (a Wormhole chip until the
+whole-box reset; a Blackhole card's command timed out).
+
+**The rule.** A body that copies both kinds runs each copy under its own buffer's
+`copy_init`, not only its format's reconfiguration.
+
+**The guard.** For a class: the tile compiler writes each copy's own `copy_init` when a
+call copies both kinds (exact on a Blackhole card: 3.8e-8 and 4.4e-8 of the largest
+value); one kind keeps one setup before the loop. For a hand-written body, nothing.
+
+Described in [The tile compiler](tile.md).
+
 ### Buffers of the two exponent families in one kernel
 
 **The hazard.** The unpacker and the packer hold one exponent width for a kernel's
@@ -1120,6 +1184,29 @@ pack the same values.
 
 Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
 
+### A block-float page packed by hand with a negative zero
+
+**The hazard.** A block-float datum of sign 1 and magnitude 0 (bfp8 `0x80`, bfp4 nibble
+`0x8`, bfp2 `0x2`) is read by the card's unpacker as minus the family's largest value:
+-inf in the B family, -65536 in the A family, whatever the row's exponent (Wormhole,
+one tile of each of the six formats through a copy and through a product). Bytes
+packed by a program's own code (random weights, a converter of another tool's format)
+that hold the code make a product give inf or about 3e38 where the host reads 0.
+
+**The rule.** Write block-float bytes from `formats.to_bytes` (or `session.tensor`),
+which never makes the code, or pass bytes made otherwise through
+`formats.bfp_canonical(raw, bits)` first, which makes each such datum a plain zero and
+changes nothing else.
+
+**The guard.** A refusal: `session.write` (and an islands session's write, through
+it) refuses block-float pages that hold the code, with a `ValueError` naming the tiles
+and `formats.bfp_canonical` (`formats.bfp_check`; about 1.5 ms for 4.7 MB of bfp4_b on
+the host). `formats.from_bytes` reads the code as the card does, so a check against
+the host's decode sees the same -inf. Blackhole's ISA documentation has no BFP table
+and Blackhole has not been measured; the guard is the same on both.
+
+Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
+
 ### A turned product's weight written without transposed tiles
 
 **The hazard.** A product marked to put its right operand in SrcB (`x @ km.srcb(w)`)
@@ -1137,6 +1224,26 @@ with its tiles transposed, and ... reads it as W of a turned product"). A W a
 command reaches other than as a tensor argument is the programmer's.
 
 Described in [Tile formats, placement](formats.md#placement).
+
+### A tile function with a product and an operand copied beside it
+
+**The hazard.** A tile function that holds a matrix product and also copies a tile into
+`Dst` (`x * c + (x @ p) * s`, or `(x @ p) * c.row()`) sets up the copy's unpack and then
+the product's (`mm_no_mop_init_short`), whose unpack setup replaces the copy's: each copy
+then runs the product's unpack, which marks no SrcB ready, while the copy's math waits for
+one; and the math takes the copies before the product, the unpacker the product's
+operands first. On a Wormhole chip the core hung, its command timed out ("reader waits in
+next, writer waits in move" on every core) and the chip did not open again until the
+whole-box reset. tt-llk's Blackhole product setup replaces the same unpack setup.
+
+**The rule.** The product and the element-wise rest are two tile functions in two
+handlers: the product pushed into a tensor of its own (`y = a @ w`), the rest reading it
+as a stream. A body of products alone (`silu(a @ w1) * (a @ w3)`) is not affected.
+
+**The guard.** Refused at the build, on both chips, at the call's line ("rotate has a
+matrix product (`@`) and copies x, c, s into DST beside it ... (the core hangs)").
+
+Described in [The tile compiler, a product in the trace](tile.md#a-product-in-the-trace).
 
 ### An A-family tile function's values at the 16-bit Dst's edges
 
@@ -1454,9 +1561,10 @@ later collective of that leader go on before its pages came.
 
 **The rule.** After a collective is given up, write again, from the host, every tensor
 it was reducing, gathering or broadcasting, then call `run.clear_collectives()`,
-before any other collective. The clear waits for every command, then raises every
-core's generation. It does not restore any data: it only says the tensors are whole
-again.
+before any other collective. The clear waits for every command, then waits until no
+line is anywhere in the links and sets back every rank's page ports (below), then
+raises every core's generation. It does not restore any data: it only says the
+tensors are whole again.
 
 **The guard.** Each core holds a generation in a DRAM page the host reads and writes (1
 at the load). A command's leader reads it as its collective begins:
@@ -1492,19 +1600,95 @@ One gap stays: a host collective already queued when the give-up comes, or queue
 before the host has read the give-up's event, falls under the older rule and ends the
 run.
 
-One window stays open: a collective's page lines into another island's copy (its
-tree's shares, `gather_run`) are not among the lines the give-up settles. The settle
-waits only for a CPU's own page reads and puts, which it counts as it sends them. A
-share's line already in its link core's queue when the collective is given up is
-still served after it. It adds its pages to the far leader's counts table and its
-confirmation to the sender's page port. If that lands after the host's clear and
-after the leader began again with its counts at 0, a later collective takes those
-counts for its own: it goes on before its pages came, and a partial may be missing.
-`run.clear_collectives()` waits for every command, not for the link cores' queues, so
-it does not close this. Nothing here was seen to happen: the queues are served in
-microseconds and the clear comes milliseconds later, but nothing waits for them.
+**The links before the raise.** A collective's page lines into another island's copy
+(its tree's shares) are not among the lines a give-up settles: the settle waits only
+for a CPU's own page reads and puts. A share's line still in a link core's queue, or
+in a relay island's forward room, when the collective is given up is served after it,
+adds its pages to the far leader's counts table and its confirmation to the sender's
+page port. Landing after the raise, it would be taken by a later collective for its
+own, which would go on before its pages came. So the clear, with nothing running,
+decides from counters that no line is anywhere in the graph before it raises:
+- **READ.** Every link core of every island writes its words that count lines (a
+  QUIET command of the link service, `KM_PAGES_QUIET`), and every rank its CPUs' own
+  put words (ENTRY with `KM_ENTRY_QUIET`). The host checks, over every link core:
+  each queue's lines numbered are each page CPU's lines taken; the put lines a link
+  core sent across are the arrivals the link core across took, and none of them is
+  pending there (an arrival leaves once its pages landed and its confirmation went
+  out); the gets it sent across are the gets the far page CPUs answered; each ring's
+  words written are its words sent; each far place's lines sent are its credits back,
+  none with pages counted; each forward room's packets sent on are its credits back
+  and its packets landed are its packets passed on; and on every rank each put line
+  numbered is confirmed (the confirmation itself landed). The graph is quiet when two
+  READs in a row read the same words and all of them balance. Nothing assumes a line,
+  a ring or one hop.
+- **SETTLE.** Then every rank sets back its page and put ports, so a confirmation
+  counted after its command's own settle leaves no surplus. Each leader's counts table
+  starts at 0 at its first collective under the new generation, after the raise.
+- **The limit.** A rank whose own line was held when its command was given up is
+  still settling it and takes no command: the READ waits for it (see below, a
+  runtime command to a core still settling). Not free within the clear's `timeout`,
+  the clear fails by name (the island, the cores that did not take the probe and
+  where each waits): no rank is settled, the generation is not raised, the host's
+  collectives stay refused, and the run goes on; call the clear again once the line
+  passes. Then the host reads again until the `timeout`. A line that never balances
+  (held or lost, or a number handed out whose line was never written) fails the clear
+  by name, with the island and link core or the rank and the counts that differ, in
+  the same way. Such a load cannot be made safe: load it again.
+
+How long a clear takes: about two READ passes when nothing is held, and up to a
+core's wait limit when a line is held, since the settling core takes the READ only
+when its line passes or its own wait ends. When a link core's own wait ends, the next
+command to it ends the run by the older rule (a link core has no reset list); a rank
+whose wait ended is reset and loaded again at the next give-up of a command to it,
+when the load kept its reset lists.
+
+The READ and the SETTLE are built only into a load with links whose movers call a
+collective (`KM_COLL_QUIET`, from the same scan of the movers as the refusal); on any
+other load the clear waits for every command and raises the generation, and its
+kernels carry none of them.
+
+The landing of a get's pages is known only to the asker's own count: the get's line
+is counted above (sent across against answered), and its pages are covered by the
+asker's settle, which waits for its flight. Not covered: the deliveries of dynamic
+runs and the message links, which have their own confirmation path and carry no
+collective. A load without links (one island) only raises.
 
 Described in [Islands, collectives across islands](islands.md#collectives-across-islands).
+
+### A runtime command to a core still settling a given-up command
+
+**The hazard.** A core leaves a command given up at its deadline at once, but before
+it takes the next one it settles: a consumer clears its buffers, and on a load with
+links each CPU waits for its own page lines and puts to be confirmed. Those waits
+are bounded only by the load's wait limit, and the core takes no command meanwhile.
+A runtime command (a tensor's read or write, a load, the pages' commands, ENTRY, a
+host collective) is never given up at its deadline, so one sent to a core still
+settling ends the run, even though the run would have gone on. `run.drain()` waits
+only for the host's commands, not for the cores.
+
+**The rule.** After the host has seen a command given up at its deadline, no runtime
+command goes to cores that are not known free.
+
+**The guard.** From a give-up the host has seen (on any island of a run over
+islands, since a settle waits on the islands its lines crossed to), every runtime
+command first sends a NOP to the cores it addresses, again while the NOP is given up
+at its deadline, until one completes; those cores are then known free until the
+next give-up seen. A NOP is a program's command: given up, the run goes on. The
+probes' give-ups are not the user's: the run forgets them, and they are counted apart
+from the give-ups that refuse the host's collectives. The probes take the command's
+own time (its timeout, else one load deadline; within `run.clear_collectives()`,
+the time left of the clear's timeout); not free in that time, the command
+is refused by name before it is sent, naming the cores that did not take the probe
+and where each waits, and the run goes on. Nothing is sent while no give-up was seen.
+The refusal of a host collective reads its leaders' rows within one deadline; when a
+core is still settling it names the islands that gave up and says the leaders were
+not read. A core whose own wait ended while it settled is the older rule's end, not
+the probe's: a rank is reset and loaded again by the probe's give-up (with the load's
+reset lists, the default), said in the session's log with the cores named, since its
+state started again; a link core keeps no reset list, so the probe turns late and the
+run ends, and the command's error names that core and its wait. A rank on a load that
+keeps no reset list (a card split into islands) is not reset: the probe sees it ended
+and stops at once, and the command fails naming it; that load cannot go on with it.
 
 ### A NoC write of a hand kernel to a core of another island
 
@@ -1719,6 +1903,34 @@ ranks the run has, and tests each call's result.
 
 Described in [Dynamic handlers, X280 ranks](dynamic.md#x280-ranks).
 
+### A given-up command's report that names another command's records
+
+**The hazard.** When a command of a run over islands is given up, the host reads each
+other island's dispatcher's last timeout block and keeps it when its group is this
+part's, without checking which command the block belongs to. A dispatcher keeps only
+its last timeout, so when a command queued behind on the same group is given up too
+(a refused second collective), the report of the first can name a leader's record of
+the second ("refused (stale)"). Seen on 31 Wormhole islands (2026-11-20). The result
+words and the run are not affected: only which command the report says.
+
+**The rule.** After two give-ups on one group in a row, take a far leader the first
+report names as possibly the second command's.
+
+**The guard.** None yet.
+
+### A give-up over many islands that takes seconds
+
+**The hazard.** On a give-up event each island's run reads the inspect block of every
+other island's dispatcher, about 10 ms a read. Over 31 Wormhole islands a reduce given
+up at a 0.5 s deadline took 10.5 s from its submit to the raise of
+`run.clear_collectives()`, 9.7 s of it in those reads (31 x 30); over two islands,
+0.54 s (2026-11-20). The run goes on; only the host's time is spent.
+
+**The rule.** Over many islands give a command's deadline room for this, and do not
+count a give-up's time as the card's.
+
+**The guard.** None yet.
+
 ## The host
 
 ### A process that leaves the card half closed
@@ -1931,9 +2143,31 @@ passes. The same kill with `FABRIC_1D` open left the chips usable, and so did a 
 close of a two-dimensional open. A reset of one chip did not clear it (three chips of
 eight were seen stuck); a reset of the whole group did.
 
+The one-hop forms differ. With `FABRIC_1D_RING` open over all 32 chips of a Wormhole
+Galaxy (islands on 8 of them, nothing loaded; one try of each signal): a SIGTERM ran
+the session's exit hook, which closed the mesh in 1 s, and the next open was as quick
+as one after a clean close (the fabric up in 7.4 s). A SIGKILL closed nothing: the
+routers kept running, and the next open found every Ethernet core of the 32 chips
+still running ("active ethernet dispatch core ... detected as still running, issuing
+exit signal", 512 times) and stopped them itself; the fabric was up in 18.5 s instead
+of 7.4. Both left the chips usable: a run over the 8 islands after each was exact, with
+no reset.
+
+A kernel of one's own on an active Ethernet core was tried the same way (two Wormhole
+chips, one link, no fabric; the kernel ran until a stop word, a host heartbeat silent
+for 5 s, or tt-metal's `exit_erisc_kernel` in its launch message; the host process
+killed with SIGKILL; one try of each, the last twice). An open with no fabric 8 s
+later, after the kernel had stopped on the silent heartbeat, logged "Read unexpected
+run_mailbox value: 0x40" and "failed to complete an early exit ... continuing", then
+opened. An open with no fabric at once took 0.5 s, logged the same, and the kernel had
+stopped on tt-metal's exit signal: an open without the fabric sends it too. An open with
+`FABRIC_1D_RING` at once sent its exit signals and was up in 7.0 s. After each, a
+16-byte ping over the link took 0.815 µs there and back, as before the kill; no reset.
+
 **The rule.** Close such a mesh, do not kill it; after a kill, reset every chip the
 process had open. A kernel of your own on an Ethernet core needs a way to stop that does
-not depend on the host being alive.
+not depend on the host being alive: watch `exit_erisc_kernel` in the launch message (as
+tt-metal's fabric router does), and a host heartbeat.
 
 **The guard.** None.
 
@@ -2212,6 +2446,92 @@ the card: its island build there has `KM_LINK_NO_FAR_DRAM`, and the core gives u
 before the line reaches its link core (`fardram`, the island named). Asks into L1 and
 `km::write_l1` cross.
 
+The collectives over islands (`km::all_reduce`, `km::reduce_to`, `km::all_gather`,
+`km::broadcast_from`) write a copy's pages into the other islands' DRAM. On such a
+build their pages for a neighbour land in the L1 of that island's leader of the
+command, and the leader writes them into its own DRAM (`km_ask.hpp`, `land_run`):
+- The sender reads a run of pages from its own DRAM into a staging slot. It writes
+  them into a free slot of the leader's landing (`km::write_l1`, landed at return),
+  then the slot's header: the share and the generation in one word, the tensor, the
+  first page and the count.
+- The leader writes the slot's pages into its own copy (or its scratch) and waits
+  until those writes are flushed. Only then does it clear the header, write the
+  credit into the sender's word for that slot (its generation, whole, landed at
+  return), and count the pages for their share in its counts table. A slot is never
+  reused while its pages are still being written out of it.
+- Every wait of a tree (its counts, a free slot, the last credit) serves the
+  landings meanwhile. A wait that only waited would hold the neighbour that waits on
+  its credits.
+- The tree itself, its shares, and the fold on the movers are unchanged.
+
+The landing is in the island table on every core of the island, because a command's
+leader is its first rank there. It holds:
+- two slots for each of the four ports;
+- for each slot, a 32 B header and as many whole pages as fit, up to 32 KiB;
+- a staging slot and a 32 B credit for each slot.
+It follows the core's generation row
+([a collective given up mid-way](#a-collective-given-up-mid-way)), which also counts
+the slots it dropped.
+Everything is at 32 B, because a Wormhole DRAM read wants its L1 end at the DRAM
+address's offset in 32 B.
+
+The landing is made only by a load whose movers call a collective (comments and
+strings aside, the files they include beside them too). It is sized from half the
+L1 the load's buffers leave. The load's listing names it, and it says when a slot
+holds one page, the floor. A load that cannot hold two slots of one page a port is
+refused by name.
+
+The host's `run.all_reduce()`, `run.reduce_to()`, `run.all_gather()` and
+`run.broadcast_from()` run through the same code in the service overlay. On a load
+without the landing they are refused at the call, by name, before anything is
+queued.
+
+`km.all_gather` in a chain puts into the far DRAM itself (`km_chain.hpp`), so it is
+refused at its call on such a chip.
+
+A class's `km.reduce` and `km.all_reduce` are not these collectives. They
+reduce tiles through the ports, and a part or sum for another island goes by
+`km::write_l1` into that rank's L1 arrival slot. Their movers call none of the four,
+so the load makes no landing for them, and they need none. They do need the page
+links: on Wormhole a class in the kernel form whose writer is over its 16 KiB at the
+highest writer level is built without the far paths, and a command whose reduce group
+crosses an island's edge is refused at its submit. Make such a class with
+`form="runtime"`: its handlers' code is in parts in L1, its movers keep the page links,
+and its reduce across islands is exact (two Wormhole chips, 156 ranks, 2026-11-20).
+
+A collective given up mid-way leaves slots full and credits in flight, besides what
+[a collective given up mid-way](#a-collective-given-up-mid-way) says of every chip.
+These never count for a later collective:
+- **The generation.** A leader puts the generation it read as its collective began
+  in every header and every credit it sends. A slot of another generation is
+  dropped: cleared, with no credit and no count, and counted in a word
+  `run.landing_drops()` reports by island and core. A credit is taken only when it
+  equals the generation. Credits are written whole, not added, so no sum of older
+  credits can equal it, after any number of give-ups.
+- **One write.** The generation sits in the header's first word, beside the share.
+  The header's four words, its first 16 B, land in one write, so a header that lands
+  over a stale one is not read half new.
+- **The clear.** After `run.clear_collectives()` every slot and credit sent before
+  is of another generation. A leader begins with its slots free.
+
+On this runtime only a give-up at the dispatcher's deadline lets the run go on: the
+host reports the command as given up ("the run goes on; at the deadline") and names
+each core's wait. A give-up at a core's own wait limit stops that core, and the host
+reports the command as timed out, with the run stopped.
+
+One case is left: an older write that lands on a slot or a credit after a newer one.
+The newer slot or credit is lost, and the collective gives up at its deadline, named
+at the wait. It never gives a wrong result.
+
+Every wait of the landing gives up by name (`land`): a free slot, the last credits,
+a share's pages, a slot written into DRAM, a header that names no page here. Each
+names the island, the port, and the command.
+
+The fold stays on the movers, and it is the slow place. In the measurements of the
+islands' tree, adds on the writer cost 2.5 to 11 ms for a 320 KiB block over 31
+islands, against 559 µs for the tree up with Tensix adds. A fold on Tensix is the
+next design, for both chips.
+
 ### A line of three Wormhole chips opened as one mesh
 
 **The hazard.** tt-metal v0.81.1 opens no 1 x 3 mesh of Wormhole chips. With three
@@ -2225,3 +2545,43 @@ the same line opens, and packets cross two and three links exactly.
 left unused, or as meshes of two.
 
 **The guard.** None.
+
+### A two-dimensional fabric form under Komorebi's link packets
+
+**The hazard.** Under any two-dimensional or torus fabric configuration tt-metal adds
+its two-dimensional routing mode to every data-movement kernel, and the packet header
+becomes one whose one-dimensional route call is empty. Komorebi's link packets set
+their route with that call, so under such a form they would go out unrouted. Read in
+tt-metal v0.81.1 (`tt_metal.cpp`, `fabric_edm_packet_header.hpp`), 2026-11-20; not
+run.
+
+**The rule.** Komorebi's link packets run only under `FABRIC_1D_RING` or `FABRIC_1D`.
+
+**The guard.** An island session opens only those two forms (the ring form first where
+the machine's pairs hold a cycle) and names the form it kept in its log.
+
+### A Wormhole chip whose cores stay busy after a run (open)
+
+**The hazard.** Twice in 38 runs of `examples/12_overlays/as_class/overlays_class.py`,
+and about twice in 17 runs of `projects/dense/islands.py --shape sq8192`, a run on one
+chip of a Galaxy ended with its stop's grid timeout (a command given up, then
+"waiting for physical cores to finish" on a row's cores), and the next open of that
+chip timed out on the same cores until the whole box was reset (2026-11-19). Once a
+load stopped at a chip whose core 0's compute unit was not ready, its instruction
+FIFOs full, which no reset by software clears (2026-11-20). The cause was not found.
+
+**The rule.** None known. Run such scripts on a chip no other job needs.
+
+**The guard.** The load names a compute unit that is not ready (`StartError`, "the
+card needs a reset") before it runs anything.
+
+### A DRAM bank that flips one bit
+
+**The hazard.** One chip of the Galaxy used here (chip 16 in PCI order) reads wrong
+from DRAM bank 0, the lower GiB of channel 0: bit 21 only, mostly one of two reads,
+mostly 0 to 1, at no address twice (2026-11-20). A tensor with a page there is wrong
+with no error.
+
+**The rule.** Leave such a chip out of every session: it is not an island of the 31.
+
+**The guard.** None: Komorebi does not check DRAM.

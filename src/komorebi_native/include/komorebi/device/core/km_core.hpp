@@ -306,12 +306,27 @@ namespace km {
     // A put, or an ask answered into DRAM, toward another island on a chip whose link
     // packets may not reach the far chip's DRAM (KM_LINK_NO_FAR_DRAM; hazards.md).
     constexpr uint32_t kWhereFarDram = 95;
+    // A far page, put or collective in a build without the far paths (KM_ISLAND_NEAR),
+    // refused by the host at submit; the gave-up word's top byte: the island, if any.
+    constexpr uint32_t kWhereNear = 96;
+    constexpr uint32_t kNearNoIsland = 0xFFu;  // the island a collective names: none
+    constexpr uint32_t kNearNotWhole = 0xFEu;  // a tensor not whole on this island
     // A collective's guard (km_ask.hpp coll_guard): the gave-up word's slot byte is
     // what (kColl*) << 4 | 0xF, its top byte the island.
     constexpr uint32_t kWhereColl = 97;
     constexpr uint32_t kCollStale = 1;  // a collective given up, not yet cleared
     constexpr uint32_t kCollGen = 2;    // the core's generation words read or written
     constexpr uint32_t kCollNone = 3;   // no generation page on this load
+    // A collective's landing where links may not target far DRAM (km_ask.hpp land_run):
+    // the slot byte is what was waited for (kLand*) << 4 | port, top byte the island.
+    constexpr uint32_t kWhereLand = 98;
+    constexpr uint32_t kLandSlot = 1;     // a free slot in the far leader's landing
+    constexpr uint32_t kLandCredits = 2;  // the last credits of this collective
+    constexpr uint32_t kLandShare = 3;    // a share's pages (port 15: by any port)
+    constexpr uint32_t kLandHeader = 4;   // a slot whose header names no page here
+    constexpr uint32_t kLandWrite = 5;    // a slot's pages written into DRAM
+    constexpr uint32_t kLandNone = 6;     // no landing on this load
+    constexpr uint32_t kLandGen = 7;      // the core's generation row written (drops)
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -411,7 +426,9 @@ namespace km {
                 kWherePutRefused,
                 kWhereMoveBuffer,
                 kWhereFarDram,
-                kWhereColl
+                kWhereNear,
+                kWhereColl,
+                kWhereLand
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

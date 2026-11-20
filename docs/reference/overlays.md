@@ -376,6 +376,35 @@ for the life of the load (3,776 bytes of L1 a core at level 3, the L1 budget tab
 stay resident. A program that fits at level 0 has no part and runs as before. On
 Blackhole every program is at level 0 and its kernels are as before, byte for byte.
 
+**The near build.** On an island load, a writer still over the 16 KiB at the highest
+level is built once more **without the far paths** (`KM_ISLAND_NEAR`,
+`komorebi.program.checks.near`), walking the levels from 0 again, when the host can
+keep every command of the load on its own island. That holds for a load whose
+programs are each a class's, not dynamic, not on a card split into islands, with no
+X280 thread and no chain gather, whose make's island tensors are copies, and whose
+movers' sources name no collective and no put or ask line (`near.NAMES`, comments and
+strings aside). Its movers keep the tensor table and lose the page links' client side
+(`near.DROPPED`; the link cores keep them): a `km::Tensor` is this island's bank
+address of its pages (`km::here_address`), so its streams and page calls are the
+one-card ones. The listing says so, with the far build's size and what is left:
+`writer code: 13,160 of 16,384 B, margin 3,224 B, writer level 0, built without the
+far paths (with them the writer is 26,552 B of 16,384 B at the highest writer level)`.
+A load over at the highest level that cannot be near is refused with its size and
+the reason. That a program was built near is kept with its level, so its next load
+(the next island's) builds near at first, at that level. At the submit the host refuses by name, before anything is queued:
+
+- a tensor that is not whole on the island that runs the command (a copy is; a
+  tensor one island holds is whole there alone; a split one is whole nowhere);
+- a command of a handler that reduces, uses ports or broadcasts, when its group (or
+  one of its reduce's groups of S ranks) holds ranks of two islands;
+- a collective of the host (`run.all_reduce()` and the others);
+- a command given as words (`run.submit_many`, or a handler named by its name or
+  number): it holds no tensor to check; submit the class's handler with its tensors.
+
+Behind those checks, on the card, a page of a tensor that is not whole on its island
+(under `KM_GUARD`), a put or ask line, a collective or a chain's gather gives up by
+name (where `near`). Blackhole has no writer levels and never reaches it.
+
 - **Who may issue one.** The host: the session itself, for a read or a write. An X280
   thread too, when its command's region word is the session's region (the load hands
   the dispatcher its size); with any other region word, and from a stream or a graph,
