@@ -3,9 +3,11 @@
 //! stored row computed from the row, that value broadcast with `.col()` and a resident
 //! row broadcast with `.row()`. Layout rule: a per-row value is lanes of one tile.
 //! `row_program`, its levels (`level_program`) and the chunk form of a wider row
-//! (`chunk_program`, `chunk_cost`) are ported; the band is refused by name.
+//! (`chunk_program`, `chunk_cost`) are ported, and the band of the row form of one
+//! reduction (`band_groups`).
 
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 use super::chain::{Chain, ChainError, Compiler, Source, SLOTS};
 use super::checks::{check_dst_window, hazard_checks_on, STALL_SFPU, TILE, WAIT_MATH};
@@ -17,7 +19,8 @@ use super::lower::{
 use super::py::round1;
 use super::schedule::interleave;
 use super::unit::{
-    Arg, Check, Insn, Item, UnitError, UnitProgram, MATH, PACK, PRICES, PROGRAMMABLE, UNPACK,
+    Arg, Check, Count, Insn, Item, Kind, Loop, Runtime, UnitError, UnitProgram, MATH, PACK, PRICES,
+    PROGRAMMABLE, UNPACK,
 };
 use super::vector::{FnResult, VId, Vs};
 
@@ -40,6 +43,8 @@ const REDUCTIONS: [&str; 3] = ["sum", "max", "min"];
 pub const DST_TILES: i64 = 8;
 /// The per-row slots of a row group in the rows tile (Dst rows).
 const ROW_SLOTS: [i64; 4] = [0, 2, 32, 34];
+/// The row form's band: two row groups (scheduled together).
+const BAND_ROWS: i64 = 8;
 /// What a level's reduction reads.
 const SUMMED: [&str; 3] = ["copy", "bcast_col", "bcast_row"];
 
@@ -610,10 +615,94 @@ fn repairs(unit: &UnitProgram) -> usize {
         .unwrap_or(0)
 }
 
+/// The first row of the band a store writes: a row's vector or a per-row slot of
+/// `slots` (today's `_store_rows`).
+fn store_rows(x: &Insn, slots: Layout) -> Result<i64, ChainError> {
+    let Layout::Rows(tile, offset) = slots else {
+        return Err(ChainError::NotPorted("a band of no per-row slots".into()));
+    };
+    let Some(a) = x.arg("dest_reg_addr").and_then(Arg::num) else {
+        return Err(ChainError::NotPorted("a store of no Dst address".into()));
+    };
+    let group = if (TILE * tile..TILE * (tile + 1)).contains(&a) {
+        (a - TILE * tile - offset).div_euclid(4)
+    } else {
+        4 * a.rem_euclid(TILE).div_euclid(32) + a.rem_euclid(16).div_euclid(4)
+    };
+    Ok((4 * group).div_euclid(BAND_ROWS) * BAND_ROWS)
+}
+
+/// Rule band in the row form (today's `band_groups`): an instruction runs while the
+/// first band its stores write (followed back through the registers) holds a live row:
+/// runs of one band under `if`, an SFPNOP after a run's last MAD (the next run may not
+/// run). Refused with lane flags (a flag set in a run would change the lanes of the
+/// next). `slots`: the per-row slots.
+pub fn band_groups(code: Vec<Insn>, slots: Layout) -> Result<(Vec<Item>, Vec<String>), ChainError> {
+    if code
+        .iter()
+        .any(|x| x.sets_flags() || x.op.kind == Kind::Flags)
+    {
+        return Err(ChainError::Unit(
+            "the row form's band takes no lane flags".into(),
+        ));
+    }
+    let mut first: Vec<Option<i64>> = vec![None; code.len()];
+    let mut need: HashMap<Arg, i64> = HashMap::new();
+    for (i, x) in code.iter().enumerate().rev() {
+        first[i] = if x.op.name == "SFPSTORE" {
+            Some(store_rows(x, slots)?)
+        } else {
+            x.writes()?.iter().filter_map(|w| need.remove(w)).min()
+        };
+        if let Some(row) = first[i] {
+            for r in x.reads() {
+                let at = need.entry(r).or_insert(row);
+                *at = (*at).min(row);
+            }
+        }
+    }
+    let mut runs: Vec<(i64, Vec<Insn>)> = Vec::new();
+    let mut start = 0;
+    for (x, row) in code.into_iter().zip(first) {
+        start = row.unwrap_or(start);
+        match runs.last_mut() {
+            Some((at, run)) if *at == start => run.push(x),
+            _ => runs.push((start, vec![x])),
+        }
+    }
+    let (count, mut items, mut nops) = (runs.len(), Vec::new(), 0);
+    for (k, (row, mut run)) in runs.into_iter().enumerate() {
+        if run.last().is_some_and(|x| x.op.kind == Kind::Mad) && k + 1 < count {
+            run.push(insn("SFPNOP", &[], "the next run may not run")?);
+            nops += 1;
+        }
+        if row == 0 {
+            items.extend(run.into_iter().map(Item::Insn));
+            continue;
+        }
+        let guard = Runtime {
+            text: format!("rows - 1u >= {row}u"),
+            of: Rc::new(move |r| i64::from(!(1..=row).contains(&r))),
+            guard: true,
+        };
+        items.push(Item::Loop(Loop {
+            name: "band".into(),
+            count: Count::Runtime(guard),
+            body: run.into_iter().map(Item::Insn).collect(),
+            unroll: false,
+        }));
+    }
+    let guarded = items.iter().filter(|x| matches!(x, Item::Loop(_))).count();
+    let done = vec![format!(
+        "{count} runs in bands of {BAND_ROWS} rows, {guarded} guarded; {nops} SFPNOP"
+    )];
+    Ok((items, done))
+}
+
 /// The unit program of row kernel `ir` over a row of `width` tiles in Dst tiles 0 ..
 /// width - 1 (the result stored over them), its per-row value in Dst tile `rows_tile`
 /// and its per-column operand read from Dst tile `cols_tile` (today's `row_program`);
-/// `band`: the body's live rows a runtime argument, not ported yet.
+/// `band`: the body's live rows a runtime argument (`band_groups`).
 pub fn row_program(
     ir: &KernelIR,
     width: i64,
@@ -792,18 +881,19 @@ pub fn row_program(
         .map(|t| format!("copy_tile(x, {t}, dst + {t})"))
         .collect();
     copies.push(format!("copy_tile(cols, 0, dst + {cols_tile})"));
-    finish(unit, body, width, &copies, band)
+    finish(unit, body, width, &copies, band.then_some(rows))
 }
 
 /// The row form's unit from its body checked for broadcasts on: the hoist, allocation,
 /// the tile program around the code (`copies` into Dst), the hazard checks with their
-/// repairs taken back, and the Dst window; `band` refused by name.
+/// repairs taken back, the band on the per-row slots `band` (`band_groups`), and the Dst
+/// window.
 fn finish(
     mut unit: UnitProgram,
     mut body: Body,
     width: i64,
     copies: &[String],
-    band: bool,
+    band: Option<Layout>,
 ) -> Result<UnitProgram, ChainError> {
     let (mut setup, mut head, mut tail) = (Vec::new(), Vec::new(), Vec::new());
     let done = hoist(&mut body.code, &mut setup, &mut head, &mut tail)?;
@@ -890,12 +980,22 @@ fn finish(
     // the checks' repairs went into the code: the tile program takes it again (as
     // today, from the end less the code's length and the mad-reader's repairs)
     let repaired = repairs(&unit);
-    let math = &mut unit.tile[MATH];
-    let end = math.len().saturating_sub(1);
+    let end = unit.tile[MATH].len().saturating_sub(1);
     let start = (end + repaired).saturating_sub(code.len()).min(end);
-    math.splice(start..end, code);
-    if band {
-        return Err(ChainError::NotPorted("the row form's band".into()));
+    if let Some(slots) = band {
+        let mut words = Vec::new();
+        for x in code {
+            let Item::Insn(x) = x else {
+                return Err(ChainError::NotPorted("a band over more than words".into()));
+            };
+            words.push(x);
+        }
+        let (banded, done) = band_groups(words, slots)?;
+        unit.tile[MATH].splice(start..end, banded);
+        unit.band = true;
+        unit.passes.push(pass("schedule", "band", done));
+    } else {
+        unit.tile[MATH].splice(start..end, code);
     }
     unit.not_checked = NOT_CHECKED
         .iter()
@@ -1200,7 +1300,7 @@ fn level_program(
         .map(|t| format!("copy_tile(x, {t}, dst + {t})"))
         .collect();
     copies.extend((0..fields).map(|k| format!("copy_tile(cols{k}, 0, dst + {})", cols_tile + k)));
-    finish(unit, body, width, &copies, false)
+    finish(unit, body, width, &copies, None)
 }
 
 /// What a level's phase reads: each reduction's chain, each per-row value's, the

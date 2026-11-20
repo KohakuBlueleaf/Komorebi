@@ -1,7 +1,7 @@
 """Today's tile compiler on a corpus of tile functions, the port's reference (written in
-the IR's text in tile_units.kom). Writes each KernelIR (`<case>.ir`), chain, unit as
-data, listing (`.txt`), header and listing after the emit (`.hpp`, `.emitted.txt`),
-each word's encoding, the refusals, each case's Dst and band. Usage: <this> <folder>."""
+the IR's text in tile_units.kom). Writes each KernelIR, chain, unit as data, listing
+(`.txt`), header and listing after the emit (`.hpp`, `.emitted.txt`), each word's
+encoding, refusals, Dst, band, a band's cost by live rows. Usage: <this> <folder>."""
 
 import inspect
 import operator
@@ -44,6 +44,21 @@ CASES = [
     ("times", lambda a, k: a * k, [BF, SCALAR], {}),
     ("plus", lambda a, b: a + b, [BF, BF], {}),
     ("plus_band", lambda a, b: a + b, [F, F], {"rows": True}),
+    # the band beside a scalar, in a bf16 Dst, without a load macro, on the per-row
+    # path (with lane flags), after products, over a vector function; a product alone
+    ("times_band", lambda a, k: a * k, [BF, SCALAR], {"rows": True}),
+    ("plus_bf16_band", lambda a, b: a + b, [BF, BF], {"rows": True}),
+    ("smooth_band", lambda a: a * 0.5 + abs(a) * 0.5, [F], {"rows": True}),
+    ("by_col_band", lambda a, b: a * b.col(), [F, F], {"rows": True}),
+    (
+        "col_select_band",
+        lambda a, b: km.where(b.col() > 0.0, a, -a),
+        [F, F],
+        {"rows": True},
+    ),
+    ("project_silu_band", lambda x, w: km.silu(x @ w), [BF, BF], {"rows": True}),
+    ("exp_band", lambda a: km.exp(a), [F], {"rows": True}),
+    ("project_band", lambda x, w: x @ w, [BF, BF], {"rows": True}),
     ("plus_bfp8", lambda a, b: a + b, ["bfp8_b", "bfp8_b"], {}),
     ("gate", lambda a, b: km.silu(a) * b, [F, F], {}),
     ("silu_gate_bf16", lambda a, b: km.silu(a) * b, [BF, BF], {}),
@@ -323,6 +338,11 @@ def main(folder):
         (folder / f"{case}.txt").write_text(text + "\n")
         (folder / f"{case}.fields").write_text("\n".join(fields(unit)) + "\n")
         (folder / f"{case}.dst").write_text("\n".join(dst_lines(function, unit)) + "\n")
+        if unit.band:  # the run-time counts: the cost at 0 .. 33 live rows
+            costs = [(r, *unit.cost("math", r)[:2]) for r in range(34)]
+            (folder / f"{case}.band").write_text(
+                "".join(f"{r}\t{n}\t{c!r}\n" for r, n, c in costs)
+            )
         try:
             words = emit(unit)  # as the class's files are written (program.write)
         except UnitError as error:

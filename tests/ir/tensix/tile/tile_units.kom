@@ -23,6 +23,38 @@ func t_plus_band(a: tile<f32>, b: tile<f32>) -> tile<f32> {
     return a + b
 }
 
+func t_times_band(a: tile<bf16>, k: f32) -> tile<bf16> {
+    return a * k
+}
+
+func t_plus_bf16_band(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> {
+    return a + b
+}
+
+func t_smooth_band(a: tile<f32>) -> tile<f32> {
+    return a * 0.5 + abs(a) * 0.5
+}
+
+func t_by_col_band(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * b.col()
+}
+
+func t_col_select_band(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(b.col() > 0.0, a, -a)
+}
+
+func t_project_silu_band(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
+    return silu(matmul(x, w))
+}
+
+func t_exp_band(a: tile<f32>) -> tile<f32> {
+    return exp(a)
+}
+
+func t_project_band(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
+    return matmul(x, w)
+}
+
 func t_plus_bfp8(a: tile<bfp8>, b: tile<bfp8>) -> tile<bfp8> {
     return a + b
 }

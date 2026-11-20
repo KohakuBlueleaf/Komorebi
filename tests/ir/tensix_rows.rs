@@ -2,18 +2,20 @@
 //! `tests/ir/tensix/tile/tile_rows_form.py` traces functions on a row of n tiles,
 //! written in the IR on blocks in `tile_rows_form.kom`, and makes the row form's unit
 //! of each row of 2 tiles (one reduction, or in levels) from its KernelIR, which the
-//! port reads back from today's text; the branches the corpus does not reach, the
-//! row form's checks on a few words, and where a call holds its operands in Dst.
+//! port reads back from today's text, and its band; the branches the corpus does not
+//! reach, the row form's checks and the band's runs on a few words, and where a call
+//! holds its operands in Dst.
 
 use std::path::Path;
 
 use komorebi_ir::backend::tensix::tile::emit::emit;
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, row_kernel_ir};
 use komorebi_ir::backend::tensix::tile::lower::{unit_program, FIDELITY};
+use komorebi_ir::backend::tensix::tile::py::float_repr;
 use komorebi_ir::backend::tensix::tile::rows::{
-    check_broadcast, check_lanes, row_program, Layout, Layouts,
+    band_groups, check_broadcast, check_lanes, row_program, Layout, Layouts,
 };
-use komorebi_ir::backend::tensix::tile::unit::{Insn, UnitProgram};
+use komorebi_ir::backend::tensix::tile::unit::{Count, Insn, Item, UnitProgram, MATH};
 use komorebi_ir::backend::tensix::unit::row_layout;
 use komorebi_ir::program::body::{InstId, Op};
 use komorebi_ir::program::notes::{Anchor, Origin};
@@ -305,17 +307,158 @@ fn the_row_forms_branches_the_corpus_does_not_reach_are_todays() {
         }
     }
     assert_eq!(not_ported, Vec::<String>::new());
-    // the band of the row form (today's `band_groups`) is the last slice; the levels
-    // refuse it today
-    let text = std::fs::read_to_string(folder.join("rms_norm.ir")).expect("the IR");
-    let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
-    assert_eq!(banded.text(), "not ported: the row form's band");
+    // the levels refuse the band today
     let text = std::fs::read_to_string(folder.join("softmax_pair.ir")).expect("the IR");
     let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
     let today = std::fs::read_to_string(folder.join("band.txt")).expect("today's band");
     let today = today.trim_end();
     assert_eq!(banded.text(), today.split(" (at ").next().unwrap_or(today));
     assert_eq!(banded.refusal(None).code, "K962");
+}
+
+/// A unit's math cost at 0 .. 33 live rows, a line each: the rows, the instructions and
+/// the cycles as today writes them.
+fn band_costs(unit: &UnitProgram) -> String {
+    (0..34)
+        .map(|r| {
+            let cost = unit
+                .cost(MATH, r)
+                .unwrap_or_else(|e| panic!("{r} rows: {e}"));
+            let cycles = cost.cycles.map_or("None".to_string(), float_repr);
+            format!("{r}\t{}\t{cycles}\n", cost.instructions)
+        })
+        .collect()
+}
+
+#[test]
+fn each_row_of_two_tiles_gets_todays_band() {
+    let Some(folder) = today_rows() else { return };
+    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
+    let refused = std::fs::read_to_string(folder.join("band_refused.txt")).expect("refused");
+    let (folder, refused) = (&folder, &refused);
+    // each case on a thread of its own, the outcomes taken in the cases' order: none
+    // (not this test's, or refused today with the same text), or the case made whole
+    let same: Vec<&str> = std::thread::scope(|s| {
+        let runs: Vec<_> = (cases.lines())
+            .map(|line| {
+                s.spawn(move || {
+                    let f: Vec<&str> = line.split('\t').collect();
+                    if f[1] != "2" {
+                        return None;
+                    }
+                    let case = f[0];
+                    let text =
+                        std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
+                    let made = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true);
+                    if let Some(today) = refused
+                        .lines()
+                        .find_map(|l| l.strip_prefix(&format!("{case}\t")))
+                    {
+                        // refused today: the same text, but for the place it names (K962)
+                        let error = made.expect_err(case);
+                        assert_eq!(
+                            error.text(),
+                            today.split(" (at ").next().unwrap_or(today),
+                            "{case}"
+                        );
+                        assert_eq!(error.refusal(None).code, "K962", "{case}");
+                        return None;
+                    }
+                    let mut unit = made.unwrap_or_else(|e| panic!("{case}: {}", e.text()));
+                    let listing = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+                    let costs = band_costs(&unit);
+                    let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
+                    let emitted = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+                    for (file, got) in [
+                        ("band.txt", listing),
+                        ("band", costs),
+                        ("band.hpp", words),
+                        ("band.emitted.txt", emitted),
+                    ] {
+                        let want = std::fs::read_to_string(folder.join(format!("{case}.{file}")))
+                            .unwrap_or_else(|e| panic!("{case}.{file}: {e}"));
+                        assert!(
+                            got == want,
+                            "{case}'s {file} differs, {}",
+                            first_difference(&want, &got)
+                        );
+                    }
+                    Some(case)
+                })
+            })
+            .collect();
+        (runs.into_iter())
+            .filter_map(|r| r.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    // the row form of one reduction, with and without a resident row (f32 and bf16):
+    // its runs of one band under `if`, the cost at each count of live rows
+    assert_eq!(
+        same,
+        [
+            "rms_norm",
+            "centred",
+            "row_min",
+            "rms_plain",
+            "peak",
+            "weighted_bf16",
+            "peak_square"
+        ]
+    );
+    // two row tensors, the levels (12), lane flags (a sum of exponentials, a
+    // reciprocal), more live values than the work registers: today's refusals (K962)
+    assert_eq!(refused.lines().count(), 15);
+}
+
+#[test]
+fn the_band_runs_are_todays_on_a_few_words() {
+    let Some(folder) = today_rows() else { return };
+    let lines = std::fs::read_to_string(folder.join("band_words.txt")).expect("the runs");
+    let mut cases = 0;
+    for line in lines.lines() {
+        let f: Vec<&str> = line.splitn(3, '\t').collect();
+        let (case, offset, today) = (f[0], f[1].parse::<i64>().expect("an offset"), f[2]);
+        let words =
+            std::fs::read_to_string(folder.join(format!("band_{case}.in"))).expect("the words");
+        let code: Vec<Insn> = words.lines().map(row_word).collect();
+        cases += 1;
+        let (items, done) = match band_groups(code, Layout::Rows(2, offset)) {
+            Ok(made) => made,
+            Err(e) => {
+                assert_eq!(e.text(), today, "{case}");
+                continue;
+            }
+        };
+        assert_eq!(done.join("; "), today, "{case}");
+        let mut got = String::new();
+        for item in &items {
+            match item {
+                Item::Insn(x) => got += &format!("{}\n", row_line(x)),
+                Item::Loop(l) => {
+                    let Count::Runtime(r) = &l.count else {
+                        panic!("{case}: a band of a count known at the build");
+                    };
+                    let passes: Vec<String> = (0..34).map(|n| (r.of)(n).to_string()).collect();
+                    got += &format!("{} if {}: {}\n", l.name, r.text, passes.join(" "));
+                    for x in &l.body {
+                        let Item::Insn(x) = x else {
+                            panic!("{case}: a band of more than words");
+                        };
+                        got += &format!("  {}\n", row_line(x));
+                    }
+                }
+                _ => panic!("{case}: {item:?}"),
+            }
+        }
+        let want =
+            std::fs::read_to_string(folder.join(format!("band_{case}.out"))).expect("the runs");
+        assert!(got == want, "{case}: {}", first_difference(&want, &got));
+    }
+    // an SFPNOP after a run's last MAD (none after the last run's), words before any
+    // store's band, a value two stores need, the per-row slots (at an offset too), a
+    // store past them, a word writing two values of two bands, lane flags refused (set
+    // or pushed)
+    assert_eq!(cases, 9);
 }
 
 #[test]

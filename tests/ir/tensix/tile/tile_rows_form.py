@@ -1,7 +1,7 @@
 """Today's trace and row form of tile functions on a row of n tiles, the port's
-reference (in the IR's text in tile_rows_form.kom). Writes each KernelIR, the cases,
-each unit's listing, header and emitted listing (`<case>.rows.*` at 2 tiles, else
-`<case>.chunk.*` and its cost) or refusal, and a reduction on one tile's refusal."""
+reference (in tile_rows_form.kom). Writes each KernelIR, the cases, each unit's
+listing, header and emitted listing (`<case>.rows.*` at 2 tiles, else `.chunk.*` and
+its cost), its band at 2 tiles (`.band.*`) or the refusals, and a few words' runs."""
 
 import inspect
 import sys
@@ -15,12 +15,13 @@ from komorebi.dsl.tile.forms.rows import (
     Layout,
     _check_broadcast,
     _check_lanes,
+    band_groups,
     chunk_cost,
     chunk_program,
     row_program,
 )
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
-from komorebi.dsl.tile.unit import UnitError, UnitProgram
+from komorebi.dsl.tile.unit import Insn, UnitError, UnitProgram
 
 BF, F = "bfloat16", "float32"
 
@@ -438,11 +439,13 @@ def one_tile():
 def main(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    cases, refused, costs = [], [], []
+    cases, refused, costs, band_refused = [], [], [], []
     for case, function, formats, width, fields in CASES:
         cases.append(f"{case}\t{width}\t{fields}")
         ir = traced(case, function, formats, fields)
         (folder / f"{case}.ir").write_text(ir.dump() + "\n")
+        if width == 2:
+            band_refused += banded(folder, case, ir)
         form = "rows" if width == 2 else "chunk"
         try:  # as tile_unit calls it on a row of 2 tiles, or of more
             if width == 2:
@@ -470,6 +473,10 @@ def main(folder):
     (folder / "branches.txt").write_text("".join(f"{b}\n" for b in branches(folder)))
     (folder / "checks.txt").write_text("".join(f"{c}\n" for c in checks(folder)))
     (folder / "band.txt").write_text(band() + "\n")
+    (folder / "band_refused.txt").write_text("".join(f"{r}\n" for r in band_refused))
+    (folder / "band_words.txt").write_text(
+        "".join(f"{b}\n" for b in band_words(folder))
+    )
     (folder / "chunk_costs.txt").write_text("".join(f"{c}\n" for c in costs))
     (folder / "chunk_branches.txt").write_text(
         "".join(f"{b}\n" for b in chunks(folder))
@@ -598,6 +605,92 @@ def band():
     except PlanError as error:
         return str(error)
     raise AssertionError("the levels took the band")
+
+
+def banded(folder, case, ir):
+    """Today's band of the row form at 2 tiles (`row_program`'s `rows`): its listing,
+    header, emitted listing and math cost at 0 .. 33 live rows; or its refusal (a list
+    of one line)."""
+    try:
+        unit = row_program(ir, 2, 2, 4, rows=True)
+        text = unit.dump()
+        costs = [(r, *unit.cost("math", r)[:2]) for r in range(34)]
+        words = emit(unit)
+    except (PlanError, UnitError) as error:
+        return [f"{case}\t{error}"]
+    (folder / f"{case}.band.txt").write_text(text + "\n")
+    (folder / f"{case}.band").write_text(
+        "".join(f"{r}\t{n}\t{c!r}\n" for r, n, c in costs)
+    )
+    (folder / f"{case}.band.hpp").write_text(words)
+    (folder / f"{case}.band.emitted.txt").write_text(unit.dump() + "\n")
+    return []
+
+
+# the band's runs on words the row form does not make (slots in tile 2, at an offset if
+# given): Dst addresses 0, 8, 32, 40 are rows 0, 8, 16, 24; the slots' 136 row 8
+BAND_WORDS = [
+    # a run ending in a MAD before another run: an SFPNOP after it
+    (
+        "nop",
+        [load("v1", 0), load("v3", 8), mul("v1", "v1", "v2"), mul("v3", "v3", "v4")]
+        + [store("v4", 8), store("v2", 0)],
+    ),
+    # words before any store's band run with band 0; a word no store needs, in the
+    # run before it; the last run ending in a MAD: no SFPNOP
+    (
+        "lead",
+        [load("v5", 0), load("v1", 32), store("v1", 32), load("v2", 40)]
+        + [store("v2", 40), mul("v2", "v2", "v3")],
+    ),
+    # a value two stores need: the first band of the two
+    (
+        "shared",
+        [load("v1", 40), add("v1", "v1", "v2"), store("v2", 40), store("v2", 8)],
+    ),
+    # the per-row slots; slots 2 rows into their tile (136: row 0); a store past the
+    # slots' tile (200, Dst tile 3: row 8)
+    ("slots", [load("v1", 0), store("v1", 136), load("v2", 8), store("v2", 162)]),
+    ("offset", [load("v1", 0), store("v1", 136)], 2),
+    ("far", [load("v1", 0), store("v1", 200)]),
+    # a word that writes two values two bands need: the first band of the two
+    (
+        "swapped",
+        [load("v1", 0), load("v2", 8), swap("v1", "v2"), store("v1", 8)]
+        + [store("v2", 0)],
+    ),
+    # lane flags, set or pushed: refused
+    ("flags", [load("v1", 0), load("v2", 8), gt("v1", "v2"), ENCC, store("v1", 0)]),
+    ("pushed", [load("v1", 0), w("SFPPUSHC", "push"), store("v1", 0)]),
+]
+
+
+def band_words(folder):
+    """Today's `band_groups` on BAND_WORDS: each case's words in `band_<case>.in`, its
+    items in `band_<case>.out` (a guarded run: its test and its passes at 0 .. 33 live
+    rows, then its words indented), its slots' offset and verdict (what it did, or its
+    refusal) a line of the result."""
+    lines = []
+    for case, words, *offset in BAND_WORDS:
+        offset = offset[0] if offset else 0
+        layouts = {"bcast_col": Layout("rows", 2, offset)}
+        (folder / f"band_{case}.in").write_text("".join(f"{line(x)}\n" for x in words))
+        try:
+            items, done = band_groups(words, layouts)
+        except UnitError as error:
+            lines.append(f"{case}\t{offset}\t{error}")
+            continue
+        out = []
+        for item in items:
+            if isinstance(item, Insn):
+                out.append(line(item))
+                continue
+            passes = " ".join(str(item.count.of(r)) for r in range(34))
+            out.append(f"{item.name} if {item.count.text}: {passes}")
+            out += [f"  {line(x)}" for x in item.body]
+        (folder / f"band_{case}.out").write_text("".join(f"{x}\n" for x in out))
+        lines.append(f"{case}\t{offset}\t{'; '.join(done)}")
+    return lines
 
 
 def branches(folder):

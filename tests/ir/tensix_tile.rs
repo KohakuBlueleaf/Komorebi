@@ -23,6 +23,7 @@ use komorebi_ir::backend::tensix::tile::lower::{
     common_values, drop_copies, per_row_prepass, stream_chain, unit_program,
 };
 use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
+use komorebi_ir::backend::tensix::tile::py::float_repr;
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
 use komorebi_ir::backend::tensix::tile::schedule::interleave;
 use komorebi_ir::backend::tensix::tile::unit::{
@@ -241,20 +242,22 @@ fn unit(text: &str) -> UnitProgram {
 fn each_unit_programs_listing_and_costs_are_todays() {
     let Some(folder) = today() else { return };
     let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
-    // `five` reads five tiles: its chain runs as two stages, its unit is refused;
-    // `by5`'s and `four_registers`' chains are refused (each_functions_chain_is_todays)
+    // `project_band`'s unit is refused (a product alone under the band); `five` reads
+    // five tiles: its chain runs as two stages, its unit is refused; `by5`'s and
+    // `four_registers`' chains are refused (each_functions_chain_is_todays)
     let refused: Vec<(&str, &str)> = refused.lines().filter_map(|l| l.split_once('\t')).collect();
     let names: Vec<&str> = refused.iter().map(|r| r.0).collect();
-    assert_eq!(names, ["four_registers", "five", "by5"], "{refused:?}");
+    let refused_names = ["project_band", "four_registers", "five", "by5"];
+    assert_eq!(names, refused_names, "{refused:?}");
     let five = "komorebi.dsl.tile: five: the unit program reads at most 4 operand tiles";
-    assert!(refused[1].1.starts_with(five), "{}", refused[1].1);
+    assert!(refused[2].1.starts_with(five), "{}", refused[2].1);
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&folder)
         .expect("the folder")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 46, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 53, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -516,7 +519,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 50);
+    assert_eq!(compared, 58);
 }
 
 /// What a caller reads of a unit that its listing does not print, as
@@ -544,13 +547,27 @@ fn unit_fields(unit: &UnitProgram) -> String {
     )
 }
 
+/// A unit's math cost at 0 .. 33 live rows, a line each: the rows, the instructions and
+/// the cycles as today writes them.
+fn band_costs(unit: &UnitProgram) -> String {
+    (0..34)
+        .map(|r| {
+            let cost = unit
+                .cost(MATH, r)
+                .unwrap_or_else(|e| panic!("{r} rows: {e}"));
+            let cycles = cost.cycles.map_or("None".to_string(), float_repr);
+            format!("{r}\t{}\t{cycles}\n", cost.instructions)
+        })
+        .collect()
+}
+
 #[test]
 fn each_unit_programs_listing_is_todays() {
     let Some(folder) = today() else { return };
     let module = corpus();
     let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("cases.txt");
     let refused = std::fs::read_to_string(folder.join("refused.txt")).expect("refused.txt");
-    let (mut same, mut not_ported) = (Vec::new(), Vec::new());
+    let (mut same, mut not_ported, mut banded) = (Vec::new(), Vec::new(), 0);
     // `times_on_blocks`, `times` declared on blocks, gives `times`'s unit
     let blocks = "times\tfp32\t0\ttimes_on_blocks";
     for line in cases.lines().chain([blocks]) {
@@ -603,6 +620,13 @@ fn each_unit_programs_listing_is_todays() {
             first_difference(&want, &got)
         );
         // the emit: the header, and the listing with the emit's checks
+        if unit.band {
+            // the band's run-time counts, at each count of live rows
+            let want = std::fs::read_to_string(folder.join(format!("{case}.band")))
+                .unwrap_or_else(|e| panic!("{case}.band: {e}"));
+            assert_eq!(band_costs(&unit), want, "{case}");
+            banded += 1;
+        }
         let mut unit = unit;
         let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
         for (file, got) in [
@@ -636,6 +660,14 @@ fn each_unit_programs_listing_is_todays() {
     let whole = [
         "t_times",
         "t_plus",
+        "t_plus_band",
+        "t_times_band",
+        "t_plus_bf16_band",
+        "t_smooth_band",
+        "t_by_col_band",
+        "t_col_select_band",
+        "t_project_silu_band",
+        "t_exp_band",
         "t_plus_bfp8",
         "t_gate",
         "t_silu_gate_bf16",
@@ -682,12 +714,8 @@ fn each_unit_programs_listing_is_todays() {
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
-    let refused = ["plus_band: the band (a body on the live rows)"];
-    let named: Vec<String> = not_ported
-        .iter()
-        .map(|l| l.replacen(": not ported", "", 1))
-        .collect();
-    assert_eq!(named, refused);
+    assert_eq!(not_ported, Vec::<String>::new());
+    assert_eq!(banded, 8);
 }
 
 /// A word as `op fields ; note`.
@@ -934,17 +962,6 @@ fn the_matrix_units_words_are_todays_at_each_fidelity_and_shape() {
         "the words differ, {}",
         first_difference(&want, &got)
     );
-}
-
-/// A word as `tile_rows.py` writes it: its operation, its fields, its note.
-fn row_line(x: &Insn) -> String {
-    let fields: Vec<String> =
-        x.op.args
-            .iter()
-            .zip(&x.args)
-            .map(|((f, _), v)| format!("{f}={v}"))
-            .collect();
-    format!("{} {} ; {}", x.op.name, fields.join(" "), x.note)
 }
 
 #[test]

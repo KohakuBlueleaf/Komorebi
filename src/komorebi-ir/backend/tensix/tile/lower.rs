@@ -10,11 +10,12 @@
 //! products, alone or before the vector code, at the fidelity given; operands spread
 //! from a tile's row 0 (`.row()`) and per-row operands (`.col()`: a 4-row block's even
 //! and odd vectors, with `drop_copies`, `common_values`, the per-row pre-pass's
-//! estimate and the schedule's `interleave`). Refused by name (K964) where it would
-//! act: `flash_exp2`, several results, a per-row pre-pass cheaper than the rows, and
-//! the band. Not on this path, so not ported: `allocate`'s high registers.
+//! estimate and the schedule's `interleave`); the band (`band_faces`). Refused by name
+//! (K964) where it would act: `flash_exp2`, several results, and a per-row pre-pass
+//! cheaper than the rows. Not on this path, so not ported: `allocate`'s high registers.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::chain::{shape, Chain, ChainError, Compiler, Source};
 use super::checks::{
@@ -27,9 +28,9 @@ use super::py;
 use super::r#macro::{self, NoFit, Plan};
 use super::schedule::interleave;
 use super::unit::{
-    insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Kind, Loop, Pass, Product,
-    Sync, UnitError, UnitProduct, UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, MATH, PACK,
-    PROGRAMMABLE, REPLAY_ENTRIES, SAVED, SHIFT_IMM_VC, UNPACK, WORK,
+    insns, op_named, passes, Arg, Call, Check, Constant, Count, Insn, Item, Kind, Loop, Pass,
+    Product, Runtime, Sync, UnitError, UnitProduct, UnitProgram, FIXED, IADD_IMM, IADD_NO_CC,
+    IADD_SUB, MATH, PACK, PROGRAMMABLE, REPLAY_ENTRIES, SAVED, SHIFT_IMM_VC, UNPACK, WORK,
 };
 use super::vector::{FnResult, VId, VValue, Vs};
 
@@ -2218,6 +2219,95 @@ fn replay_args(count: usize, load: i64) -> [(&'static str, i64); 4] {
     ]
 }
 
+/// The band's C++ (`rows`: the body's argument, 1 .. 32; 0 or past 32: the whole tile):
+/// bands in faces 0 and 1, whether faces 2 and 3 run, and the bands in them.
+const LOWER: &str = "(rows - 1u < 16u ? (rows + 3u) / 4u : 4u)";
+const UPPER_FACES: &str = "(rows - 1u >= 16u ? 2u : 0u)";
+const UPPER: &str = "(rows - 17u < 16u ? (rows - 13u) / 4u : 4u)";
+
+/// The live rows of the body's argument `rows`.
+fn live(rows: i64) -> i64 {
+    if (1..=32).contains(&rows) {
+        rows
+    } else {
+        32
+    }
+}
+
+/// The bands faces 0 and 1 run at `rows`.
+fn lower_bands(rows: i64) -> i64 {
+    4.min((live(rows) + 3).div_euclid(4))
+}
+
+/// The bands faces 2 and 3 run at `rows`.
+fn upper_bands(rows: i64) -> i64 {
+    0.max((live(rows) - 13).div_euclid(4))
+}
+
+/// Rule band: the face loop (`face`: a face's row loop, `steps`: the two SETRWC to the
+/// next face) on the live rows: faces 0, 1, then 2, 3 past 16 rows, each a recorded
+/// pass and a runtime loop of its other bands, replayed; each face's Dst set from its
+/// base by the SETRWC, whatever rows the face before ran.
+fn band_faces(face: &Loop, steps: &[Item]) -> Result<Vec<Item>, ChainError> {
+    let Count::Times(count) = face.count else {
+        return Err(ChainError::NotPorted(
+            "a band of a run-time row loop".into(),
+        ));
+    };
+    let per_band = usize::try_from(count.div_euclid(BANDS)).unwrap_or(0);
+    let row = &face.body;
+    let n = row.len().min(REPLAY_ENTRIES as usize);
+    let record = Item::Insn(insn(
+        "REPLAY",
+        &replay_args(n, 1),
+        &format!("record {n} while they run"),
+    )?);
+    let mut play = vec![Item::Insn(insn(
+        "REPLAY",
+        &replay_args(n, 0),
+        &format!("replay {n}"),
+    )?)];
+    play.extend(row.iter().skip(n).cloned());
+    // `times` passes of the replayed part
+    let plays = |times: usize| play.iter().cycle().take(play.len() * times).cloned();
+    let one = |text: &str, of: fn(i64) -> i64| {
+        let more = Loop {
+            name: "band".into(),
+            count: Count::Runtime(Runtime {
+                text: format!("{text} - 1u"),
+                of: Rc::new(move |r| of(r) - 1),
+                guard: false,
+            }),
+            body: plays(per_band).collect(),
+            unroll: false,
+        };
+        let mut out = vec![record.clone()];
+        out.extend(row.iter().cloned());
+        out.extend(plays(per_band.saturating_sub(1)));
+        out.push(Item::Loop(more));
+        out.extend(steps.iter().cloned());
+        out
+    };
+    Ok(vec![
+        Item::Loop(Loop {
+            name: "face".into(),
+            count: Count::Times(2),
+            body: one(LOWER, lower_bands),
+            unroll: false,
+        }),
+        Item::Loop(Loop {
+            name: "face".into(),
+            count: Count::Runtime(Runtime {
+                text: UPPER_FACES.into(),
+                of: Rc::new(|r| if live(r) > 16 { 2 } else { 0 }),
+                guard: false,
+            }),
+            body: one(UPPER, upper_bands),
+            unroll: false,
+        }),
+    ])
+}
+
 /// SETRWC's fields, `rwc_cr`, `rwc_d` and `BitMask` given.
 fn setrwc(cr: i64, d: i64, mask: i64, note: &str) -> Result<Insn, UnitError> {
     insn(
@@ -2888,23 +2978,32 @@ pub fn unit_program(
         sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ];
     hazard_checks(&mut unit)?;
-    let Some(faces) = unit.tile[1].iter_mut().find_map(|x| match x {
-        Item::Loop(l) => Some(l),
-        _ => None,
-    }) else {
+    let Some(at) = unit.tile[1].iter().position(|x| matches!(x, Item::Loop(_))) else {
+        return Err(ChainError::Unit("a unit program of no face loop".into()));
+    };
+    let Some(Item::Loop(faces)) = unit.tile[1].get_mut(at) else {
         return Err(ChainError::Unit("a unit program of no face loop".into()));
     };
     let Some(Item::Loop(face)) = faces.body.first().cloned() else {
         return Err(ChainError::Unit("a face loop of no row loop".into()));
     };
-    let (rows, done) = replay(face)?;
+    let (rows, done) = replay(face.clone())?;
     unit.passes.push(pass("schedule", "replay", done));
     if band {
-        return Err(ChainError::NotPorted(
-            "the band (a body on the live rows)".into(),
-        ));
+        let banded = band_faces(&face, &faces.body[1..])?;
+        unit.tile[1].splice(at..at + 1, banded);
+        unit.band = true;
+        let mut done = vec![format!(
+            "{} pass(es) of the face's rows a band of 4 live rows, faces 2 and 3 past 16 rows",
+            passes(&face.count, 32) / BANDS
+        )];
+        if leaves > 0 {
+            done.push("the products run the whole tile".into());
+        }
+        unit.passes.push(pass("schedule", "band", done));
+    } else {
+        faces.body.splice(0..1, rows);
     }
-    faces.body.splice(0..1, rows);
     unit.not_checked = NOT_CHECKED
         .iter()
         .filter(|r| plan.is_none() || !r.contains("load-macro"))

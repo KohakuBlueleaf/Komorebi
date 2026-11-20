@@ -47,6 +47,17 @@ pub fn first_difference(a: &str, b: &str) -> String {
     )
 }
 
+/// A word as `tile_rows.py` writes it: its operation, its fields, its note.
+pub fn row_line(x: &Insn) -> String {
+    let fields: Vec<String> =
+        x.op.args
+            .iter()
+            .zip(&x.args)
+            .map(|((f, _), v)| format!("{f}={v}"))
+            .collect();
+    format!("{} {} ; {}", x.op.name, fields.join(" "), x.note)
+}
+
 /// A word from its line (a field's value a number, else a name).
 pub fn row_word(line: &str) -> Insn {
     let (head, note) = line.split_once(" ; ").unwrap_or((line, ""));
