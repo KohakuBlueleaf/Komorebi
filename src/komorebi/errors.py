@@ -460,6 +460,17 @@ def _core_parts(core):
                     "(docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-"
                     "dram); asks into L1 cross"
                 )
+            elif gave["where"] == "coll":
+                island = gave.get("island")
+                said = {
+                    "stale": f"island {island}: a collective was given up on this load "
+                    "and the host has not yet cleared it; the tensors it was reducing "
+                    "are not whole: write them again, then run.clear_collectives()",
+                    "gen": f"island {island}'s generation words in its DRAM, read or "
+                    "written",
+                    "none": f"island {island}: this load made no generation page",
+                }.get(gave.get("waited"), f"{gave.get('waited')} of island {island}")
+                parts[-1] += f": a collective: {said}"
             elif gave["where"] == "gathertree":
                 parts[-1] += (
                     ": km::all_gather takes no tree (each share comes from its own "

@@ -1561,6 +1561,13 @@ call of either is refused there too. In a class's chain, `km.all_gather(copy, fi
 pages)` between two calls is a record of its own, its leaders the same as these
 ([a gather in a chain](chain.md#a-gather-in-a-chain)).
 
+A collective given up mid-way leaves its tensors not whole (half summed, or copied on
+some islands only), and its leaders refuse every later collective by name until the
+host has written the tensors again and called `run.clear_collectives()`, which raises
+each core's generation (a DRAM page a core the island table names); a leader's first
+collective under it starts its counts at 0. The clear restores no data
+([hazards](hazards.md#a-collective-given-up-mid-way)).
+
 Each call runs over a tree of the islands: by default the routes' tree of each root
 (island i's parent toward root r is the island across its next link toward r, the same
 table every core holds; its children are the neighbours whose next island toward r is

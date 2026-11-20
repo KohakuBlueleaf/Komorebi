@@ -687,7 +687,9 @@ KM_STATIC_ASSERT(
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* the island table (KM_ISLAND_TABLE): an entry an island {first u16, count u16, next
    link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids;
-   then the meeting words: a word, their number m (the most ranks an island), m words */
+   then the meeting words: a word, their number m (the most ranks an island), m words;
+   then two words, the collectives' generation pages' DRAM address and page bytes, and
+   at the next 32 B the core's generation row (KM_COLL_GEN_BYTES) */
 #define KM_ISLAND_ENTRY_BYTES 8u
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
@@ -715,6 +717,14 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_PORT_LINKS 4u
 #define KM_ISLAND_PORT_BYTES 8u
 #define KM_ISLAND_NO_CORE 0xFFu
+/* a collective's generation (km_ask.hpp coll_guard): a DRAM page of 64 B a core (page
+ * = the core) the host reads and writes, its first 32 B these words: the generation
+ * (the host raises it after a collective is given up), the core's give-up mark, the
+ * generation it last led a collective under (0: none) */
+#define KM_COLL_GEN_NOW 0u
+#define KM_COLL_GEN_MARK 1u
+#define KM_COLL_GEN_LAST 2u
+#define KM_COLL_GEN_BYTES 32u
 /* after the ports: a word, the link area's L1 address on this island's cores (0: no
    link area) */
 #define KM_ISLAND_LINK_AREA \

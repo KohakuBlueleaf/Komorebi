@@ -273,6 +273,21 @@ def test_a_put_into_a_far_dram_refused_on_the_card_names_its_island_and_hazard()
     assert "hazards.md#a-link-packet-for-a-far-wormhole-chips-dram" in row
 
 
+def test_a_collective_given_up_before_names_its_island_and_says_not_whole():
+    stale = CONSTANTS["kCollStale"] << 4 | 0xF
+    word = (
+        CONSTANTS["kGaveRefused"]
+        | CONSTANTS["kWhereColl"] << 8
+        | (stale | 3 << 8) << 16
+    )
+    gave = device_state.gave_up(word, 5)
+    assert (gave["code"], gave["where"], gave["waited"]) == ("refused", "coll", "stale")
+    assert gave["island"] == 3
+    row = describe_core({"core": 3, "island": 3, "rank": 4, "reader": gave})
+    assert "island 3: a collective was given up on this load and the host" in row
+    assert "are not whole: write them again, then run.clear_collectives()" in row
+
+
 def test_no_free_slot_is_told_apart_from_the_table():
     word = (
         CONSTANTS["kGaveOverlay"]

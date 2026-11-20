@@ -1442,6 +1442,49 @@ multiple of 4, or a `source` whose low four bits differ from the offset's, is re
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
+### A collective given up mid-way
+
+**The hazard.** A collective over islands (`km::all_reduce`, `km::reduce_to`,
+`km::all_gather`, `km::broadcast_from`, or the host's `run.` calls) given up mid-way
+leaves its tensors NOT WHOLE: some pages already summed or copied, others not, the
+copies of the islands no longer the same. A reduce's partials are then half summed and
+a second reduce over them adds wrong numbers. It also leaves each leader's counts
+table counting pages that were sent for it and never taken off, which would let a
+later collective of that leader go on before its pages came.
+
+**The rule.** After a collective is given up, write again, from the host, every tensor
+it was reducing, gathering or broadcasting, then call `run.clear_collectives()`,
+before any other collective. The clear waits for every command, then raises every
+core's generation. It does not restore any data: it only says the tensors are whole
+again.
+
+**The guard.** Each core holds a generation in a DRAM page the host reads and writes (1
+at the load). A command's leader reads it as its collective begins:
+- A leader that gives up inside a collective writes the generation into its mark. Its
+  next collective, the ones already queued behind too, gives up at once, by name ("a
+  collective was given up on this load and the host has not yet cleared it; the tensors
+  it was reducing are not whole: write them again, then run.clear_collectives()").
+- The first collective a leader leads under a new generation starts its counts table
+  at 0.
+
+The meeting and release words need nothing: they hold markers of their command, which
+no later command's marker equals. The page ports are set back when the command is
+given up (its page lines settled).
+
+One window stays open: a collective's page lines into another island's copy (its
+tree's shares, `gather_run`) are not among the lines the give-up settles. The settle
+waits only for a CPU's own page reads and puts, which it counts as it sends them. A
+share's line already in its link core's queue when the collective is given up is
+still served after it. It adds its pages to the far leader's counts table and its
+confirmation to the sender's page port. If that lands after the host's clear and
+after the leader began again with its counts at 0, a later collective takes those
+counts for its own: it goes on before its pages came, and a partial may be missing.
+`run.clear_collectives()` waits for every command, not for the link cores' queues, so
+it does not close this. Nothing here was seen to happen: the queues are served in
+microseconds and the clear comes milliseconds later, but nothing waits for them.
+
+Described in [Islands, collectives across islands](islands.md#collectives-across-islands).
+
 ### A NoC write of a hand kernel to a core of another island
 
 **The hazard.** A NoC address made with tt-metal's own `get_noc_addr(x, y, address)`

@@ -3410,6 +3410,151 @@ namespace km {
         return partition(pages, c, n);
     }
 
+    // A collective given up (at the dispatcher's deadline or at a wait's limit) leaves
+    // what its leaders counted, and the tensors it was reducing half summed. The
+    // generation ties a leader's state to the host's clear: a DRAM page a core
+    // (KM_COLL_GEN_*, 1 at the load), raised by run.clear_collectives() with nothing
+    // running. A leader reads it into its L1 row as its collective begins. One that
+    // gives up inside a collective marks itself with it, and its next collective gives
+    // up at once, by name, until the host has raised it; one that last led under
+    // another generation starts its counts table at 0.
+    struct CollGen {
+        uint32_t row;   // the core's generation row in L1 (0: the load made none)
+        uint32_t dram;  // the generation pages' DRAM address
+        uint32_t page;  // their page bytes
+    };
+
+    // After the island table's meeting words: two words (the pages' address and page
+    // bytes), then at the next 32 B the row.
+    inline CollGen coll_gen_of(const Islands& view) {
+        const uint32_t meets = view.meetings();
+        if (meets == 0) {
+            return {0, 0, 0};
+        }
+        const uint32_t at = meets + 4 * (1 + l1(meets)[0]);
+        const volatile tt_l1_ptr uint32_t* words = l1(at);
+        if (words[0] == 0) {
+            return {0, 0, 0};
+        }
+        return {(at + 4 * 2 + 31) / 32 * 32, words[0], words[1]};
+    }
+
+    // This CPU's generation, read as its collective began (an overlay part's own, as
+    // team_goes_now's).
+#if defined(KM_OVERLAY_PART)
+    inline uint32_t& coll_gen_now() {
+        static uint32_t own = 0;
+        return own;
+    }
+#else
+    inline uint32_t coll_gen_state = 0;
+
+    inline uint32_t& coll_gen_now() {
+        return coll_gen_state;
+    }
+#endif
+
+    // The row from this core's DRAM page, or into it (`write`), done at return; a wait
+    // the dispatcher's abort does not end, so a mark made after a give-up at the
+    // deadline lands. Its kGave* code.
+    template <typename Kernel>
+    inline uint32_t coll_gen_io(const Kernel& core, const CollGen& g, bool write) {
+        const Islands view = islands_at(core.args().control);
+        const InterleavedAddrGen<true> pages = {
+            .bank_base_address = g.dram, .page_size = g.page
+        };
+        const uint32_t page = core.me() - view.offset();
+        if (write) {
+            noc_async_write(g.row, pages.get_noc_addr(page), KM_COLL_GEN_BYTES);
+        } else {
+            noc_async_read(pages.get_noc_addr(page), g.row, KM_COLL_GEN_BYTES);
+        }
+        return core.poll_stop_at(
+            kWhereAsk,
+            [write] {
+                return write ? ncrisc_noc_nonposted_writes_flushed(noc_index)
+                             : ncrisc_noc_reads_flushed(noc_index);
+            },
+            core.args().wait_limit
+        );
+    }
+
+    // The guard gave up, named: what (kColl*), the island. False.
+    template <typename Kernel>
+    __attribute__((noinline)) bool coll_refused(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t code,
+        uint32_t what,
+        uint32_t island
+    ) {
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            code,
+            kWhereColl,
+            (what << 4 | 0xFu) | island << 8,
+            command.sequence
+        );
+        return false;
+    }
+
+    // A leader's collective: it marks itself with its generation if it does not end.
+    template <typename Kernel>
+    struct CollMark {
+        const Kernel& core;
+        bool armed;
+
+        ~CollMark() {
+            const CollGen g = coll_gen_of(islands_at(core.args().control));
+            if (armed && g.row != 0) {
+                l1(g.row)[KM_COLL_GEN_MARK] = coll_gen_now();
+                static_cast<void>(coll_gen_io(core, g, true));  // for its next begin
+            }
+        }
+
+        bool done(bool ok) {
+            armed = armed && !ok;
+            return ok;
+        }
+    };
+
+    // A leader begins a collective: its generation read; one it gave up in, the host
+    // not having raised it since, gives up at once. The first it leads under a
+    // generation starts its counts table at 0, marked or not (what a given-up
+    // collective counted and left). False: gave up.
+    template <typename Kernel>
+    __attribute__((noinline)) bool coll_guard(
+        const Kernel& core, const km_command_t& command
+    ) {
+        const Islands view = islands_at(core.args().control);
+        const CollGen g = coll_gen_of(view);
+        if (g.row == 0) {
+            return coll_refused(core, command, kGaveBadItem, kCollNone, view.here());
+        }
+        const uint32_t code = coll_gen_io(core, g, false);
+        if (code != kGaveNone) {
+            return coll_refused(core, command, code, kCollGen, view.here());
+        }
+        invalidate_l1_cache();
+        volatile tt_l1_ptr uint32_t* gen = l1(g.row);
+        coll_gen_now() = gen[KM_COLL_GEN_NOW];
+        if (gen[KM_COLL_GEN_MARK] == coll_gen_now()) {
+            return coll_refused(core, command, kGaveRefused, kCollStale, view.here());
+        }
+        if (gen[KM_COLL_GEN_LAST] != coll_gen_now()) {  // first under this generation
+            for (uint32_t c = 0; c < view.count(); c++) {
+                l1(view.counts() + 4 * c)[0] = 0;
+            }
+            gen[KM_COLL_GEN_MARK] = 0;
+            gen[KM_COLL_GEN_LAST] = coll_gen_now();
+            const uint32_t cleared = coll_gen_io(core, g, true);
+            if (cleared != kGaveNone) {
+                return coll_refused(core, command, cleared, kCollGen, view.here());
+            }
+        }
+        return true;
+    }
+
     // The leader waits (bounded) until word `c` of its counts table counted `pages`
     // pages, then takes them off. False: gave up.
     template <typename Kernel>
@@ -3634,6 +3779,10 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
+        CollMark<Kernel> marked = {core, t.index == 0};
+        if (t.index == 0 && !coll_guard(core, command)) {
+            return false;
+        }
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -3644,7 +3793,7 @@ namespace km {
         ) {
             return false;
         }
-        return tree_end(core, command, t, posted);
+        return marked.done(tree_end(core, command, t, posted));
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
         static_cast<void>(first), static_cast<void>(pages), static_cast<void>(tree);
@@ -3680,6 +3829,10 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
+        CollMark<Kernel> marked = {core, t.index == 0};
+        if (t.index == 0 && !coll_guard(core, command)) {
+            return false;
+        }
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -3705,7 +3858,7 @@ namespace km {
             )) {
             return false;
         }
-        return tree_end(core, command, t, posted);
+        return marked.done(tree_end(core, command, t, posted));
     }
 
     // All-reduce of pages first .. + pages - 1 of the copy `tensor` (`kind`): share c
@@ -3823,6 +3976,10 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
+        CollMark<Kernel> marked = {core, t.index == 0};
+        if (t.index == 0 && !coll_guard(core, command)) {
+            return false;
+        }
         if (!team_meet(core, command, t)) {
             return false;
         }
@@ -3833,7 +3990,7 @@ namespace km {
         ) {
             return false;
         }
-        return tree_end(core, command, t, posted);
+        return marked.done(tree_end(core, command, t, posted));
 #else
         static_cast<void>(core), static_cast<void>(command), static_cast<void>(tensor);
         static_cast<void>(first), static_cast<void>(pages), static_cast<void>(root);

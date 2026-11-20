@@ -306,6 +306,12 @@ namespace km {
     // A put, or an ask answered into DRAM, toward another island on a chip whose link
     // packets may not reach the far chip's DRAM (KM_LINK_NO_FAR_DRAM; hazards.md).
     constexpr uint32_t kWhereFarDram = 95;
+    // A collective's guard (km_ask.hpp coll_guard): the gave-up word's slot byte is
+    // what (kColl*) << 4 | 0xF, its top byte the island.
+    constexpr uint32_t kWhereColl = 97;
+    constexpr uint32_t kCollStale = 1;  // a collective given up, not yet cleared
+    constexpr uint32_t kCollGen = 2;    // the core's generation words read or written
+    constexpr uint32_t kCollNone = 3;   // no generation page on this load
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -404,7 +410,8 @@ namespace km {
                 kWhereAskRefused,
                 kWherePutRefused,
                 kWhereMoveBuffer,
-                kWhereFarDram
+                kWhereFarDram,
+                kWhereColl
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

@@ -407,6 +407,7 @@ class LinkPlanMixin:
                 "link core 0's"
             )
         landings = self._landings(h)
+        self._coll_gen = {}  # a card's collectives' generation pages (session: tensor)
         for island, session in enumerate(self.sessions):
             far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
@@ -516,15 +517,27 @@ class LinkPlanMixin:
     def _table_of(self, session):
         """The island table in the L1 of every core of `session`'s card, each core its
         own island's (graph.table): KM_ISLAND_TABLE, sized by the island count and
-        the most ranks an island (km::team_meet's words, a rank each)."""
+        the most ranks an island (km::team_meet's words, a rank each). Two words follow
+        the meeting words: the collectives' generation pages' DRAM address and page
+        bytes (km_ask.hpp coll_guard; KM_COLL_GEN_*, generation 1, made here in DRAM,
+        `_coll_gen`'s), then at the next 32 B the core's generation row."""
         columns, rows = session.grid
         count = len(self.graph.islands)
         ranks = max(self.graph.count(island) for island in range(count))
+        h = abi.headers()
         # the entries (2 words an island), far tiles (2), counts (1), children (1),
-        # the meeting words (their number, then one a rank)
-        size = 6 * count + 1 + ranks
+        # the meeting words (their number, then one a rank), the generation's two
+        # words, the row at the next 32 B
+        meet = 6 * count + 1 + ranks
+        size = meet + 2 + 8 + h["KM_COLL_GEN_BYTES"] // 4
+        # 64 B a page, its first 32 B the words: a live transfer moves whole 64 B
+        gen = np.zeros((columns * rows, 16), np.uint32)
+        gen[:, h["KM_COLL_GEN_NOW"]] = 1
+        gen = session.tensor(gen, "uint32")
+        self._coll_gen[self.sessions.index(session)] = gen
         words = np.zeros((columns * rows, -(-size // 16) * 16), np.uint32)
         words[:, 6 * count] = ranks
+        words[:, meet : meet + 2] = [gen.address, gen.aligned_page_bytes]
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)
@@ -538,6 +551,38 @@ class LinkPlanMixin:
             )
             words[cores, 5 * count : 6 * count] = self.graph.children(island)
         return session.tensor(words, "uint32", shard_grid=(columns, rows))
+
+    def _gen_words(self):
+        """[(session, tensor, {core: island}, words)]: each card's collectives'
+        generation pages now, [cores, 16] uint32, the first KM_COLL_GEN_BYTES / 4 the
+        words."""
+        out = []
+        for index, tensor in getattr(self, "_coll_gen", {}).items():
+            session = self.sessions[index]
+            columns, rows = session.grid
+            islands = dict.fromkeys(range(columns * rows), index)
+            if self.split > 1:  # one card: each core its island's
+                for island, each in enumerate(self.graph.islands):
+                    islands |= dict.fromkeys(each.cores, island)
+            words = session.read(tensor)[0].view(np.uint32)
+            out.append((session, tensor, islands, words.reshape(columns * rows, -1)))
+        return out
+
+    def raise_generation(self):
+        """Every core's collectives' generation one more (the host's, after a
+        collective is given up, with nothing running): a leader that gave up leads
+        again, and each leader's first collective after it starts its counts at 0.
+        Returns the new generation, None on a load without islands."""
+        now = abi.headers()["KM_COLL_GEN_NOW"]
+        generation = None
+        for session, tensor, _islands, words in self._gen_words():
+            words = words.copy()
+            words[:, now] += 1
+            generation = int(words[0, now])
+            session.write(tensor, words.view(np.uint8))
+        if generation is not None:
+            self.log(f"collectives: generation {generation}")
+        return generation
 
     def message_services(self):
         """The message services an island runs: between two cards with

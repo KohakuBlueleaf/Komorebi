@@ -68,7 +68,10 @@ WHERES = (
     "PutRefused",
     "MoveBuffer",
     "FarDram",
+    "Coll",
 )
+# kColl*: why a collective's guard gave up
+COLLS = ("Stale", "Gen", "None")
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 
@@ -215,6 +218,10 @@ def gave_up(word, sequence, abi_headers=None):
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
         out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
+    if out["where"] == "coll":  # a collective's guard: why, the island
+        names = {abi_headers[f"kColl{k}"]: k.lower() for k in COLLS}
+        out["waited"] = names.get(out["slot"] >> 4, out["slot"] >> 4)
+        out["island"] = word >> 24
     if out["where"] == "putunsent":
         out["handler"] = word >> 24  # the command's handler (km_worker.hpp puts_sent)
     if str(out["where"]).startswith("overlay"):

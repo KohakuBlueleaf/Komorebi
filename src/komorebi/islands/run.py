@@ -1,6 +1,7 @@
 """A run over islands (IslandRun): one Run a piece, the flat group split by island on
 the host, events joined, links' calls served."""
 
+import contextlib
 import time
 
 import numpy as np
@@ -1206,6 +1207,17 @@ class IslandRun(TreeCalls, RunCalls):
         if self._counts is None:
             return island_records.Crossings({})
         return self._counts(puts=puts) if puts else self._counts()
+
+    def clear_collectives(self, timeout=10.0):
+        """After a collective given up: every command waited for, then every core's
+        collectives' generation raised, so the cores that gave up lead collectives
+        again (until then each gives up at once, by name) and each leader's counts
+        start at 0. The data is not restored: write the tensors the given-up
+        collective was reducing again first (clearing says they are whole). Returns
+        the new generation."""
+        with contextlib.suppress(KomorebiError):  # given up again: its cores marked
+            self.drain(timeout)
+        return self.session.raise_generation()
 
     def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
         """All-gather of pages first .. first + pages - 1 (default to the end) of the
