@@ -23,6 +23,46 @@ namespace {
         }
     }
 
+    // The roots meet (km::team_meet's marker, the roots alone): a root writes the
+    // meeting's marker into its word of the leader's meeting words, the leader waits
+    // until each root's word holds it. A marker, not a count: a crossing given up
+    // before its leader met leaves nothing a later meeting counts. False: gave up.
+    bool roots_meet(
+        km::Reader& reader,
+        const km_command_t& command,
+        const km::Team& t,
+        uint32_t roots,
+        uint32_t stride
+    ) {
+        const uint32_t count = km::team_now(command).meets++;
+        const uint32_t marker = km::team_marker(command, count);
+        const uint32_t words = km::islands_at(reader.args().control).meetings();
+        if (words == 0 || t.size > km::l1(words)[0]) {
+            return km::coll_gave_up(reader, command, km::kGaveBadItem);
+        }
+        if (t.index != 0) {
+            noc_inline_dw_write(
+                reader.core_noc(reader.core_of(t.leader), words + 4 + 4 * t.index),
+                marker
+            );
+            return km::team_wrote(reader, command);
+        }
+        const volatile tt_l1_ptr uint32_t* met = km::l1(words + 4);
+        uint32_t k = 1;  // the roots before it have met (a word keeps its marker)
+        const uint32_t code = reader.poll_at(
+            km::kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                while (k < roots && met[k * stride] == marker) {
+                    k++;
+                }
+                return k >= roots;
+            },
+            reader.args().wait_limit
+        );
+        return code == km::kGaveNone || km::coll_gave_up(reader, command, code);
+    }
+
     bool cross(km::Reader& reader, const km_command_t& command) {
         const km::Islands view = km::islands_at(reader.args().control);
         const uint32_t here = view.here(), far = 1 - here;
@@ -61,13 +101,13 @@ namespace {
                 }
                 stamp(kXsPosted);
             }
-            if (t.index != 0 && !km::team_add(reader, command, t.leader)) {
+            if (t.index != 0 && !roots_meet(reader, command, t, roots, stride)) {
                 return false;
             }
             stamp(kXsMarked);
         }
         if (t.index == 0) {
-            if (!km::team_met(reader, command, roots - 1)) {
+            if (!roots_meet(reader, command, t, roots, stride)) {
                 return false;
             }
             stamp(kXsMet);
