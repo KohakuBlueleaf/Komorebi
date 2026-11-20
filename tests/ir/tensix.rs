@@ -76,7 +76,7 @@ fn module_from(script: &Path) -> Module {
 
 /// Today's emitter run on a copy of the script in its own folder: the build folder
 /// it wrote.
-fn today(dir: &Path) -> PathBuf {
+fn today(dir: &Path) -> (PathBuf, String) {
     let python = std::env::var("KOMO_IR_PYTHON").unwrap_or_else(|_| "python3".into());
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let out = Command::new(&python)
@@ -95,7 +95,7 @@ fn today(dir: &Path) -> PathBuf {
         .lines()
         .find_map(|l| l.strip_prefix("FOLDER "))
         .unwrap_or_else(|| panic!("no FOLDER line:\n{stdout}"));
-    PathBuf::from(folder)
+    (PathBuf::from(folder), stdout.into_owned())
 }
 
 /// The first line where `a` and `b` differ, for the message.
@@ -122,7 +122,7 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
     std::fs::create_dir_all(&dir).expect("a folder for the script");
     let script = dir.join("t1_class.py");
     std::fs::copy(here().join("t1_class.py"), &script).expect("the script copied");
-    let folder = today(&dir);
+    let (folder, printed) = today(&dir);
     let module = module_from(&script.canonicalize().expect("the script's path"));
     let ours = tensix::sources(&module).unwrap_or_else(|r| panic!("{r:?}"));
 
@@ -134,8 +134,8 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
         layout: vec![2, 2048],
         dram_page: None,
     };
-    let header =
-        thread_header(&module, &[stand_in.clone(), stand_in]).unwrap_or_else(|r| panic!("{r:?}"));
+    let stand_ins = [stand_in.clone(), stand_in];
+    let header = thread_header(&module, &stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
     let mut ours = ours;
     ours.push(("scale_thread.h".to_string(), header));
     ours.sort();
@@ -155,6 +155,51 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
             first_difference(&want, text)
         );
     }
+    // The kernels the load hands the runtime: today's (the Program's sources,
+    // compile arguments, defines and compute options, as describe hands them on) and
+    // the output's Build::Kernels with each tensor's layout filled from the same
+    // stand-ins, field by field.
+    let output = Tensix
+        .compile(&module, &target("tensix"))
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let Build::Kernels(built) = &output.build else {
+        panic!("kernels built at load");
+    };
+    let loaded = load::kernels(&module, built, &stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
+    let joined = |pairs: &[(String, String)]| {
+        let mut pairs = pairs.to_vec();
+        pairs.sort();
+        pairs
+            .iter()
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let described: Vec<String> = loaded
+        .iter()
+        .map(|k| {
+            // describe's roles and numbers (session/backend/backend.py, _launch)
+            let (role, number) = match k.processor {
+                Processor::Reader => ("reader", 0),
+                Processor::Writer => ("writer", 1),
+                Processor::Compute => ("compute", 2),
+            };
+            let args: Vec<String> = k.args.iter().map(u64::to_string).collect();
+            format!(
+                "KERNEL {role} {} {number} args={} defines={} options={}",
+                k.source,
+                args.join(","),
+                joined(&k.defines),
+                joined(&k.options)
+            )
+        })
+        .collect();
+    let theirs: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("KERNEL "))
+        .collect();
+    assert_eq!(described, theirs, "the kernels handed to the runtime");
+
     // The folder's name is today's digest of its files (dsl/files.py, text_key): the
     // same files give the same folder.
     let mut digest = Vec::new();

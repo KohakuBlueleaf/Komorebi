@@ -4,7 +4,7 @@
 //! holds each tensor's page count and kind, which a compile does not know; so it is
 //! not one of the compiled files and not in the compile's key.
 
-use crate::backend::{Refusal, Target, NOT_BUILT};
+use crate::backend::{CompileArg, Kernel, Processor, Refusal, Target, NOT_BUILT};
 use crate::program::Module;
 
 use super::chip::Chip;
@@ -17,7 +17,8 @@ use super::Lines;
 pub struct LoadTensor {
     /// Its pages.
     pub pages: u64,
-    /// Its layout as the kernels' compile arguments take it (`CompileArg::TensorLayout`),
+    /// Its layout as the kernels' compile arguments take it (`CompileArg::TensorLayout`,
+    /// today's `tensor_args`: the accessor's words),
     /// with whatever else makes two tensors of one kind: tensors of one layout share a
     /// kind, numbered from 1 in parameter order.
     pub layout: Vec<u64>,
@@ -78,6 +79,81 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
         }]);
     }
     Ok(text(name, &plans, &names, tensors, &lines))
+}
+
+/// A kernel as a load hands it to the chip's runtime: a compiled `Kernel` with each
+/// tensor's layout filled in from the tensors given.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedKernel {
+    /// Its source: a path in the output's files.
+    pub source: String,
+    /// The processor it runs on.
+    pub processor: Processor,
+    /// Its defines, by name.
+    pub defines: Vec<(String, String)>,
+    /// Its compile-time arguments, each tensor's layout in its place.
+    pub args: Vec<u64>,
+    /// Its compile options, by name.
+    pub options: Vec<(String, String)>,
+}
+
+/// The kernels of `module`'s output as a load given `tensors` (one for each tensor
+/// parameter, as `thread_header` takes them) hands them on: a `TensorLayout{param}`
+/// becomes that tensor's layout words (today's `tensor_args`), a word stays itself.
+pub fn kernels(
+    module: &Module,
+    built: &[Kernel],
+    tensors: &[LoadTensor],
+) -> Result<Vec<LoadedKernel>, Vec<Refusal>> {
+    let (plans, _) = super::planned(module)?;
+    let names = super::tensors(&plans);
+    let refused = |what: String| {
+        vec![Refusal {
+            code: NOT_BUILT,
+            what,
+            at: None,
+        }]
+    };
+    if names.len() != tensors.len() {
+        return Err(refused(format!(
+            "kernels for {} tensors given; the program takes {}",
+            tensors.len(),
+            names.len()
+        )));
+    }
+    let layout = |param: usize| {
+        plans
+            .first()
+            .and_then(|plan| plan.words.get(param))
+            .and_then(|word| names.iter().position(|n| *n == word.name))
+            .and_then(|at| tensors.get(at))
+            .map(|t| t.layout.clone())
+    };
+    let mut out = Vec::new();
+    for kernel in built {
+        let mut args = Vec::new();
+        for arg in &kernel.args {
+            match *arg {
+                CompileArg::Word(w) => args.push(u64::from(w)),
+                CompileArg::TensorLayout { param } => match layout(param) {
+                    Some(words) => args.extend(words),
+                    None => {
+                        return Err(refused(format!(
+                            "a tensor layout of parameter {param}, which is no tensor given"
+                        )))
+                    }
+                },
+            }
+        }
+        out.push(LoadedKernel {
+            source: kernel.source.clone(),
+            processor: kernel.processor,
+            defines: kernel.defines.clone(),
+            args,
+            options: kernel.options.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// The header's text.
