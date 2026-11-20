@@ -15,15 +15,14 @@ use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
 use crate::backend::tensix::load::LoadTensor;
 use crate::backend::{
-    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, IslandGraph, Kernel, Machine, Processor,
-    Setting,
+    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Machine, Processor, Setting,
 };
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
 use crate::errors::{Diagnostic, Severity};
 use crate::program::derive::Cause;
 use crate::program::Module;
-use crate::types::{Ability, Entry};
+use crate::types::{Ability, Entry, IslandGraph};
 
 create_exception!(
     _rs,
@@ -510,8 +509,13 @@ fn setting<'py>(py: Python<'py>, value: &Setting) -> PyResult<Bound<'py, PyAny>>
 type TensorRow = (u64, Vec<u64>, Option<u64>);
 
 /// The machine a load is on: (workers, a worker's memory bytes, its islands (each
-/// one's workers, the connections), the named options).
-type MachineRow = (u64, u64, (Vec<u64>, Vec<(u32, u32)>), Vec<(String, u64)>);
+/// one's workers, the connections or None: every pair), the named options).
+type MachineRow = (
+    u64,
+    u64,
+    (Vec<usize>, Option<Vec<(usize, usize)>>),
+    Vec<(String, u64)>,
+);
 
 /// A load on Tensix (`api::load`) of a module given its tensors by parameter name, on
 /// `chip` when one is named: (thread header's name, its text, kernels, buffers); a

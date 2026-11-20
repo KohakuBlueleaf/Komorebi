@@ -216,5 +216,6 @@ and names what. It never substitutes other behaviour silently"). What depends on
 | `K963` | A format the module declares that the backend does not compute | The backend's check |
 | `K964` | A construct the backend does not emit yet | The backend's check |
 | `K965` | A module whose tile shape the backend does not compute on | The backend's check |
+| `K966` | A machine given at load that is not a machine: its islands' sizes not summing to its workers, an island of no worker, a connection naming no island, islands not connected | A backend's load and the reference interpreter's, with the same text |
 
 A limit only the run can show stays the run's failure `capacity` (`K903`).

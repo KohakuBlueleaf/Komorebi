@@ -226,10 +226,11 @@ class LoadBuffer(NamedTuple):
 
 class Islands(NamedTuple):
     """A machine's islands as a graph: the workers each holds, in order (island 0 the
-    first ``sizes[0]``), and the connections between them, by number, each both ways."""
+    first ``sizes[0]``), and the connections between them, by number, each both ways;
+    None: every pair of islands connected (an empty list of several: not connected)."""
 
     sizes: list[int]
-    links: list[tuple[int, int]]
+    links: list[tuple[int, int]] | None = None
 
 
 class Machine(NamedTuple):
@@ -266,7 +267,9 @@ def load(
     ]
     given = None
     if machine is not None:
-        islands = (list(machine.islands.sizes), list(machine.islands.links))
+        links = machine.islands.links
+        links = None if links is None else [tuple(link) for link in links]
+        islands = (list(machine.islands.sizes), links)
         given = (machine.workers, machine.worker_memory, islands, list(machine.options))
     name, text, kernels, buffers = _rs.load(program, rows, chip, given)
     return Loaded(

@@ -5,7 +5,9 @@
 //! not one of the compiled files and not in the compile's key. A load also checks the
 //! machine it is on against what the compile sized (`machine`).
 
-use crate::backend::{CompileArg, Kernel, Machine, Processor, Refusal, Setting, Target, NOT_BUILT};
+use crate::backend::{
+    CompileArg, Kernel, Machine, Processor, Refusal, Setting, Target, NOT_A_MACHINE, NOT_BUILT,
+};
 use crate::program::notes::Anchor;
 use crate::program::{BodyRef, Module};
 
@@ -90,10 +92,19 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
     Ok(text(name, &plans, &names, tensors, &lines))
 }
 
-/// What a load refuses of `machine` for `module`: a machine of more than one island
-/// when a reduce's arrivals are sized for one (a tree's rounds; today's make sizes
-/// them from a session's graph, which this backend does not read yet).
+/// What a load refuses of `machine` for `module`: islands that are not a graph of its
+/// workers (`IslandGraph::hops`, as a run's load refuses them); a machine of more than
+/// one island when a reduce's arrivals are sized for one (a tree's rounds; today's
+/// make sizes them from a session's graph, which this backend does not read yet).
 pub fn machine(module: &Module, machine: &Machine) -> Result<(), Vec<Refusal>> {
+    let workers = usize::try_from(machine.workers).unwrap_or(usize::MAX);
+    if let Err(why) = machine.islands.hops(workers) {
+        return Err(vec![Refusal {
+            code: NOT_A_MACHINE,
+            what: why.sentence(),
+            at: None,
+        }]);
+    }
     let (plans, _) = super::planned(module)?;
     let islands = machine.islands.count();
     if islands <= 1 {

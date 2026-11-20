@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use komorebi_ir::backend::emit::{walk, Event};
 use komorebi_ir::backend::{
-    check_load, check_statement, ArgWord, Backend, Build, Built, CacheKey, IslandGraph,
-    LoadStatement, Machine, Output, Provided, Reads, Refusal, Statement, Target, TILE_NOT_COMPUTED,
+    check_load, check_statement, ArgWord, Backend, Build, Built, CacheKey, LoadStatement, Machine,
+    Output, Provided, Reads, Refusal, Statement, Target, TILE_NOT_COMPUTED,
 };
 use komorebi_ir::backend::{
     Limit, FORMAT_NOT_COMPUTED, NOT_BUILT, NOT_PROVIDED, NO_IMPLEMENTATION, OVER_LIMIT,
@@ -18,6 +18,7 @@ use komorebi_ir::bytecode::hashes;
 use komorebi_ir::program::body::Body;
 use komorebi_ir::program::notes::Anchor;
 use komorebi_ir::program::Module;
+use komorebi_ir::types::IslandGraph;
 use komorebi_ir::types::{Ability, Format, FuncId, ProgramId, TileShape};
 
 fn golden_dir() -> PathBuf {
@@ -93,7 +94,7 @@ impl Backend for Test {
     fn statement_at(&self, _: &Target, machine: &Machine, _: &Built) -> LoadStatement {
         LoadStatement {
             workers: Some(machine.workers),
-            islands: Some(machine.islands.count()),
+            islands: Some(machine.islands.count() as u64),
             local_state_bytes: Some(machine.worker_memory),
             ..LoadStatement::default()
         }
@@ -235,8 +236,8 @@ fn islands_and_local_state_are_compared_at_load() {
         options: vec![("depth".to_string(), 2)],
         worker_memory,
         islands: IslandGraph {
-            sizes: vec![8 / islands; islands as usize],
-            links: (1..islands as u32).map(|i| (i - 1, i)).collect(),
+            sizes: vec![8 / islands as usize; islands as usize],
+            links: Some((1..islands as usize).map(|i| (i - 1, i)).collect()),
         },
     };
     let t12 = lesson("t12_spread");

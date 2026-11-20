@@ -3,12 +3,13 @@
 //! instruction; and one run made twice, which gives the same report.
 
 use komorebi_ir::derive::derive;
-use komorebi_ir::interp::control::{Arg, End, IslandRefusal, Islands, Machine, Options, Refusal};
+use komorebi_ir::interp::control::{Arg, End, Machine, Options, Refusal};
 use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Tile};
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::{BodyRef, Module};
 use komorebi_ir::types::{HandlerId, ProgramId, RunId};
+use komorebi_ir::types::{IslandGraph, IslandRefusal};
 
 fn lesson(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1350,7 +1351,7 @@ fn the_corpus_races_the_build_refuses_are_races_at_the_run() {
 
 fn on_islands(sizes: &[usize], links: Option<&[(usize, usize)]>) -> Options {
     Options {
-        islands: Some(Islands {
+        islands: Some(IslandGraph {
             sizes: sizes.to_vec(),
             links: links.map(<[(usize, usize)]>::to_vec),
         }),
@@ -1406,6 +1407,11 @@ fn t12_islands_that_are_not_a_connected_graph_are_refused_by_name() {
     assert_eq!(
         load(&[2, 2], Some(&[])),
         Some(Refusal::Islands(IslandRefusal::NotConnected))
+    );
+    // the code and the text a backend's load gives for the same graph
+    assert_eq!(
+        load(&[2, 2], Some(&[])).map(|r| r.to_string()).as_deref(),
+        Some("K966: the machine given at load is not a machine: the islands are not connected")
     );
     assert_eq!(
         load(&[1, 1, 1, 1], Some(&[(0, 1), (2, 3)])),

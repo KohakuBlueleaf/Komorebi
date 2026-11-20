@@ -527,7 +527,7 @@ fn the_statement_is_the_chips() {
     let machine = komorebi_ir::backend::Machine {
         workers: 120,
         worker_memory: 1 << 20,
-        islands: komorebi_ir::backend::IslandGraph::one(120),
+        islands: komorebi_ir::types::IslandGraph::one(120),
         options: vec![("depth".to_string(), 100)],
     };
     let at = Tensix.statement_at(&target("blackhole"), &machine, &Default::default());
@@ -647,12 +647,13 @@ fn a_sum_other_than_program_2s_is_refused_by_name() {
 #[test]
 fn a_load_on_islands_of_a_reduce_sized_for_one_is_refused_by_name() {
     use komorebi_ir::api::load::load;
-    use komorebi_ir::backend::{IslandGraph, Machine};
-    let machine = |sizes: Vec<u64>| Machine {
-        workers: sizes.iter().sum(),
+    use komorebi_ir::backend::Machine;
+    use komorebi_ir::types::IslandGraph;
+    let machine = |sizes: Vec<usize>| Machine {
+        workers: sizes.iter().sum::<usize>() as u64,
         worker_memory: 1 << 20,
         islands: IslandGraph {
-            links: (1..sizes.len() as u32).map(|i| (i - 1, i)).collect(),
+            links: Some((1..sizes.len()).map(|i| (i - 1, i)).collect()),
             sizes,
         },
         options: Vec::new(),
@@ -688,6 +689,58 @@ fn a_load_on_islands_of_a_reduce_sized_for_one_is_refused_by_name() {
     };
     let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
     load(&scale, &both, None, Some(&machine(vec![6, 6]))).expect("no reduce: loads");
+}
+
+#[test]
+fn a_load_refuses_islands_that_are_not_a_graph_of_its_workers_as_a_run_does() {
+    use komorebi_ir::api::load::load;
+    use komorebi_ir::backend::Machine;
+    use komorebi_ir::types::{IslandGraph, IslandRefusal};
+    let scale = edited("module scale", "module scale");
+    let t = LoadTensor {
+        pages: 2048,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
+    let on = |sizes: &[usize], links: Option<&[(usize, usize)]>| Machine {
+        workers: 4,
+        worker_memory: 1 << 20,
+        islands: IslandGraph {
+            sizes: sizes.to_vec(),
+            links: links.map(<[(usize, usize)]>::to_vec),
+        },
+        options: Vec::new(),
+    };
+    // each graph the interpreter refuses, refused at the backend's load with the
+    // type's own reason
+    for (machine, why) in [
+        (on(&[2, 2], Some(&[])), IslandRefusal::NotConnected),
+        (
+            on(&[1, 1, 1, 1], Some(&[(0, 1), (2, 3)])),
+            IslandRefusal::NotConnected,
+        ),
+        (
+            on(&[2, 1], None),
+            IslandRefusal::NotTheWorkers {
+                held: 3,
+                workers: 4,
+            },
+        ),
+        (on(&[4, 0], None), IslandRefusal::Empty(1)),
+        (on(&[2, 2], Some(&[(0, 2)])), IslandRefusal::NoSuchIsland(2)),
+    ] {
+        let refused = load(&scale, &both, None, Some(&machine)).expect_err("refused");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].code, "K966");
+        assert_eq!(
+            refused[0].what,
+            format!("the machine given at load is not a machine: {why}")
+        );
+    }
+    // no links given: every pair connected, one documented meaning for both
+    load(&scale, &both, None, Some(&on(&[2, 2], None))).expect("loads");
+    load(&scale, &both, None, Some(&on(&[1, 3], Some(&[(1, 0)])))).expect("loads");
 }
 
 #[test]

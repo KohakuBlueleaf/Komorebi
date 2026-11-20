@@ -30,6 +30,7 @@ use crate::types::{
     Ability, Binding, ChainId, Combiner, ConstValue, ControlId, Entry, HandlerId, On, ProgramId,
     RunId, Type,
 };
+use crate::types::{IslandGraph, IslandRefusal, NOT_A_MACHINE};
 
 /// The options of a run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,109 +44,13 @@ pub struct Options {
     /// live is refused. None: no bound.
     pub live_bound: Option<u64>,
     /// The islands of the run. None: one island holding every worker.
-    pub islands: Option<Islands>,
-}
-
-/// The islands of a run, as a graph: the islands, which workers each holds, and the
-/// connections between them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Islands {
-    /// How many workers each island holds, in order: island 0 holds the first
-    /// `sizes[0]` workers, island 1 the next `sizes[1]`, and so on.
-    pub sizes: Vec<usize>,
-    /// The connections between islands, by number, each both ways. None: every pair
-    /// of islands is connected (a host that does not care about distance). An empty
-    /// list with more than one island is not connected.
-    pub links: Option<Vec<(usize, usize)>>,
-}
-
-/// Why a run's islands are refused at load.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IslandRefusal {
-    /// The sizes add up to another number than the loaded workers.
-    NotTheWorkers {
-        /// The sum of the sizes.
-        held: usize,
-        /// The loaded workers.
-        workers: usize,
-    },
-    /// An island that holds no worker.
-    Empty(usize),
-    /// A connection that names no island.
-    NoSuchIsland(usize),
-    /// Some two islands have no path between them.
-    NotConnected,
-}
-
-impl fmt::Display for IslandRefusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IslandRefusal::NotTheWorkers { held, workers } => {
-                write!(
-                    f,
-                    "the islands hold {held} workers, not the {workers} loaded"
-                )
-            }
-            IslandRefusal::Empty(i) => write!(f, "island {i} holds no worker"),
-            IslandRefusal::NoSuchIsland(i) => {
-                write!(f, "a connection to island {i}, which is not one")
-            }
-            IslandRefusal::NotConnected => write!(f, "the islands are not connected"),
-        }
-    }
+    pub islands: Option<IslandGraph>,
 }
 
 /// The island map of a graph: each worker's island, and the hops of a shortest path
-/// between every two islands, by a breadth-first walk from each.
-fn island_map(g: &Islands, workers: usize) -> Result<IslandMap, IslandRefusal> {
-    let held: usize = g.sizes.iter().sum();
-    if held != workers {
-        return Err(IslandRefusal::NotTheWorkers { held, workers });
-    }
-    if let Some(i) = g.sizes.iter().position(|s| *s == 0) {
-        return Err(IslandRefusal::Empty(i));
-    }
-    let n = g.sizes.len();
-    let mut next: Vec<Vec<usize>> = vec![Vec::new(); n];
-    match &g.links {
-        None => {
-            for (a, out) in next.iter_mut().enumerate() {
-                out.extend((0..n).filter(|b| *b != a));
-            }
-        }
-        Some(links) => {
-            for &(a, b) in links {
-                if a >= n || b >= n {
-                    return Err(IslandRefusal::NoSuchIsland(a.max(b)));
-                }
-                if let Some(x) = next.get_mut(a) {
-                    x.push(b);
-                }
-                if let Some(x) = next.get_mut(b) {
-                    x.push(a);
-                }
-            }
-        }
-    }
-    let mut hops = Vec::with_capacity(n);
-    for from in 0..n {
-        let mut dist: Vec<Option<u64>> = vec![None; n];
-        let mut queue = std::collections::VecDeque::from([from]);
-        if let Some(d) = dist.get_mut(from) {
-            *d = Some(0);
-        }
-        while let Some(a) = queue.pop_front() {
-            let here = dist.get(a).copied().flatten().unwrap_or(0);
-            for &b in next.get(a).into_iter().flatten() {
-                if let Some(d @ None) = dist.get_mut(b) {
-                    *d = Some(here + 1);
-                    queue.push_back(b);
-                }
-            }
-        }
-        let row: Option<Vec<u64>> = dist.into_iter().collect();
-        hops.push(row.ok_or(IslandRefusal::NotConnected)?);
-    }
+/// between every two islands (`IslandGraph::hops`).
+fn island_map(g: &IslandGraph, workers: usize) -> Result<IslandMap, IslandRefusal> {
+    let hops = g.hops(workers)?;
     let of = g
         .sizes
         .iter()
@@ -188,7 +93,7 @@ impl fmt::Display for Refusal {
             Refusal::Unbound(p) => write!(f, "load parameter with no value: {p}"),
             Refusal::BadValue(p) => write!(f, "a value that does not fit the parameter {p}"),
             Refusal::Invalid(w) => write!(f, "not a program the interpreter runs: {w}"),
-            Refusal::Islands(why) => write!(f, "islands refused: {why}"),
+            Refusal::Islands(why) => write!(f, "{NOT_A_MACHINE}: {}", why.sentence()),
         }
     }
 }

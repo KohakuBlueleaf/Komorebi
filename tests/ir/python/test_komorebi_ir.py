@@ -249,3 +249,24 @@ def test_load_on_islands_refuses_a_reduce_sized_for_one():
     assert one == ir.load(steps, {"s": s, "t": t})
     x = ir.LoadTensor(2048, [2, 2048])
     ir.load(T1, {"x": x, "y": x}, machine=machine(6, 6))
+
+
+def test_load_refuses_a_machine_whose_islands_are_not_a_graph_of_its_workers():
+    x = ir.LoadTensor(2048, [2, 2048])
+
+    def on(sizes, links=None):
+        return ir.Machine(4, 1 << 20, ir.Islands(sizes, links), [])
+
+    for machine, why in [
+        (on([2, 2], []), "the islands are not connected"),
+        (on([2, 1]), "the islands hold 3 workers, not the 4 loaded"),
+        (on([4, 0]), "island 1 holds no worker"),
+        (on([2, 2], [(0, 2)]), "a connection to island 2, which is not one"),
+    ]:
+        with pytest.raises(ir.IrError, match="K966") as refused:
+            ir.load(T1, {"x": x, "y": x}, machine=machine)
+        assert f"the machine given at load is not a machine: {why}" in str(
+            refused.value
+        )
+    # no links: every pair connected
+    ir.load(T1, {"x": x, "y": x}, machine=on([2, 2]))

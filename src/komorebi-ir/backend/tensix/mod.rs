@@ -1341,7 +1341,7 @@ impl Backend for Tensix {
             .map_or(0, |(_, v)| *v);
         LoadStatement {
             workers: Some(machine.workers),
-            islands: Some(machine.islands.count()),
+            islands: Some(machine.islands.count() as u64),
             local_state_bytes: Some(machine.worker_memory.saturating_sub(used)),
             in_flight: Some(option("depth").unwrap_or(chip::DEPTH).min(chip::RING_SLOTS)),
             live_messages: Some(option("max_live").unwrap_or(chip::MAX_LIVE)),

@@ -2,9 +2,10 @@
 //! and control programs it runs, and the tensors it reads, as plain text. The same
 //! script runs on the interpreter (`komo run`) and on a backend's driver.
 
-use crate::interp::control::{Arg, Islands, Machine, Options, Report};
+use crate::interp::control::{Arg, Machine, Options, Report};
 use crate::interp::memory::{Format, Scalar, Tensor, TensorId, Tile};
 use crate::program::Module;
+use crate::types::IslandGraph;
 
 /// A run script, read.
 #[derive(Clone, Debug, PartialEq)]
@@ -233,7 +234,7 @@ pub fn run(m: &Module, script: &Script) -> Result<Report, String> {
         islands: script
             .islands
             .clone()
-            .map(|sizes| Islands { sizes, links: None }),
+            .map(|sizes| IslandGraph { sizes, links: None }),
         ..Options::default()
     };
     let mut machine = Machine::load(m, script.workers, &[], options).map_err(|r| r.to_string())?;

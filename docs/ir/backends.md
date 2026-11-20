@@ -18,11 +18,16 @@ On a target (an architecture and its features) a backend states, before it sees 
 
 On a machine (workers, worker memory, islands, and the load's named options) it states what
 depends on that machine and on what was built: how many workers and islands, how many bytes of
-state a worker holds, how many invocations may be in flight. Islands are a count; nothing names
-their shape. The order is: compile, build, this statement, then the check at load.
+state a worker holds, how many invocations may be in flight. A machine's islands are a graph
+(`types::IslandGraph`, the reference interpreter's too): the workers each island holds, in order,
+and the connections between islands, each both ways. No connections given means every pair is
+connected; an empty list of several islands is not connected. Nothing names a shape or a count.
+A graph that is not one of the machine's workers is refused at load with `K966`, with the same
+text from a backend's load and the interpreter's. The order is: compile, build, this statement,
+then the check at load.
 
 A program that asks for more is refused by name at the construct that asks, before anything is
-emitted (`K960` to `K965`, [the checks](checks.md)). A backend never substitutes other behaviour.
+emitted (`K960` to `K966`, [the checks](checks.md)). A backend never substitutes other behaviour.
 
 Its output is files, the entries an invocation names, and its build, as data: steps to run in the
 output's directory, or kernels the machine's runtime compiles at load (a kernel's source, the
@@ -161,8 +166,8 @@ is not one of these two.
 `komorebi_ir.load(program, tensors, chip=None, machine=None)` gives what a load on Tensix makes.
 Its `tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words and its
 page in DRAM. Its `machine` is a `Machine`: its workers, a worker's memory, its islands as a graph
-(`Islands`: the workers each holds, in order, and the connections between them) and the load's
-options. With none, the machine is one island holding every worker. The result holds:
+(`Islands`: the workers each holds, in order, and the connections between them, None for every
+pair) and the load's options. With none, the machine is one island holding every worker. The result holds:
 - the thread header, its name and text;
 - the kernels, each tensor's layout among the compile arguments;
 - the buffers, each format by the name today's loader gives it (`bfloat16`; the block-float
