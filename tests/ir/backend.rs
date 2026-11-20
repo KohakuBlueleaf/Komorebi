@@ -528,3 +528,26 @@ fn the_cpu_backend_refuses_a_function_on_blocks_by_name() {
         "{refused:?}"
     );
 }
+
+#[test]
+fn the_cpu_backend_refuses_a_reduction_along_a_row_of_a_block_by_name() {
+    // reading R43's row form: a function on blocks, so refused as one (K964)
+    let m = built(
+        "module rows\n\ntile [32, 32]\nformat f32\n\n\
+         func spread(x: tile<f32>[2]) -> tile<f32>[2] {\n    \
+         return reduce_sum(x, axis = row).col()\n}\n",
+    );
+    let target = Target {
+        arch: std::env::consts::ARCH.to_string(),
+        features: BTreeSet::new(),
+    };
+    let refused = komorebi_ir::backend::cpu::Cpu
+        .compile(&m, &target)
+        .expect_err("refused");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].code, "K964");
+    assert!(
+        refused[0].what.contains("a function on blocks"),
+        "{refused:?}"
+    );
+}

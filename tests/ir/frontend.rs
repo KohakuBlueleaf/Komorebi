@@ -52,6 +52,17 @@ fn made(name: &str, script: &str, class: &str) -> Made {
 /// `made`, today's make on a session of `islands` (islands, the largest's workers)
 /// as its compile takes it (`made.py`).
 fn made_on(name: &str, script: &str, class: &str, islands: Option<(usize, usize)>) -> Made {
+    made_given(name, script, class, islands, &[])
+}
+
+/// `made_on`, both makes given the class's constants `constants` (`NAME=value`).
+fn made_given(
+    name: &str,
+    script: &str,
+    class: &str,
+    islands: Option<(usize, usize)>,
+    constants: &[(&str, u64)],
+) -> Made {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("frontend-{name}"));
     std::fs::create_dir_all(&dir).expect("a folder for the script");
     let file = format!("{script}.py");
@@ -66,6 +77,7 @@ fn made_on(name: &str, script: &str, class: &str, islands: Option<(usize, usize)
                 .into_iter()
                 .flatten(),
         )
+        .args(constants.iter().map(|(n, v)| format!("{n}={v}")))
         .current_dir(&dir)
         .env(
             "PYTHONPATH",
@@ -501,6 +513,26 @@ fn program_4_through_the_frontend_is_todays_text_byte_for_byte() {
     let made = made("gate", "gate_class", "Gate");
     let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
     // The stand-ins: a, b and out of 768 bfloat16 pages of 2048 B each.
+    let tensor = LoadTensor {
+        pages: 768,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let stand_ins = [tensor.clone(), tensor.clone(), tensor];
+    same_as_today(&made, &module, &stand_ins, "gate");
+}
+
+#[test]
+fn program_4_with_another_block_is_todays_at_that_block() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // `BLOCK=4` at both makes: the module parameter's value is the make's, and every
+    // file, kernel and buffer and the folder are today's at that value
+    let made = made_given("gate4", "gate_class", "Gate", None, &[("BLOCK", 4)]);
+    assert!(made.text.contains("param BLOCK: u32 = 4 @bind(build)"));
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
     let tensor = LoadTensor {
         pages: 768,
         layout: vec![2, 2048],

@@ -1,7 +1,7 @@
-"""A class made both ways for tests/ir/frontend.rs, today's (folder, kernels, buffers)
-and the frontend's: `made.py <script> <class> [<islands> <most>]`. With islands, ONE
-function is stood in for, `program.islands_of` (the session's graph, as the compile
-takes it), since no session is made without a device; nothing else is replaced."""
+"""A class made both ways for tests/ir/frontend.rs, today's and the frontend's:
+`made.py <script> <class> [<islands> <most>] [NAME=n ...]` (the class's constants at
+both makes). With islands, ONE function is stood in for, `program.islands_of` (the
+session's graph, as the compile takes it): no session is made without a device."""
 
 import importlib
 import sys
@@ -19,7 +19,9 @@ def made_with(script):
     return {"l1": 1 << 20, "x": script.tensor(), "y": script.tensor()}
 
 
-def main(name, class_name, islands=None, most=None):
+def main(name, class_name, *rest):
+    constants = dict(r.split("=") for r in rest if "=" in r)
+    islands, most = ([r for r in rest if "=" not in r] + [None, None])[:2]
     if islands is not None:
         # a session's islands reach today's compile by `islands_of` alone (its
         # `compile_class(islands=...)`): no session is made, so no card is opened
@@ -27,7 +29,7 @@ def main(name, class_name, islands=None, most=None):
         program.islands_of = lambda session: given_islands
     script = importlib.import_module(name)
     cls = getattr(script, class_name)
-    given = made_with(script)
+    given = made_with(script) | {k: int(v) for k, v in constants.items()}
     built = cls(log=lambda line: None, **given)
     print(f"FOLDER {built.built.folder}")
     # The kernels the program hands the runtime (role, source, describe's processor,
@@ -65,4 +67,4 @@ def main(name, class_name, islands=None, most=None):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:5])
+    main(*sys.argv[1:])

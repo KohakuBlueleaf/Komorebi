@@ -605,6 +605,45 @@ pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Reduced, Fault> {
     Ok(Reduced { axis, tile: out })
 }
 
+/// A reduction along a row of a whole block (R43): each row of the tiles side by side,
+/// combined in order from tile 0's first column, a value for each row.
+pub fn reduce_rows(kind: Reduce, tiles: &[Tile]) -> Result<Reduced, Fault> {
+    let Some(first) = tiles.first() else {
+        return Err(Fault::undefined(
+            "a reduction along a row of an empty block",
+        ));
+    };
+    for t in tiles {
+        whole(t)?;
+    }
+    let (rows, cols) = (first.shape.height(), first.shape.width());
+    let op = match kind {
+        Reduce::Sum => Bin::Add,
+        Reduce::Max => Bin::Max,
+        Reduce::Min => Bin::Min,
+    };
+    let mut out = Tile::zeros(first.format, first.shape);
+    for r in 0..rows {
+        let mut acc: Option<Scalar> = None;
+        for t in tiles {
+            for c in 0..cols {
+                let e = elem(t, r * cols + c)?;
+                acc = Some(match acc {
+                    None => e,
+                    Some(a) => scalar_binary(op, a, e)?,
+                });
+            }
+        }
+        if let Some(acc) = acc {
+            put_at(&mut out, r * cols, acc);
+        }
+    }
+    Ok(Reduced {
+        axis: Axis::Row,
+        tile: out,
+    })
+}
+
 /// Writes `value` at flat position `i` of `tile`, held as the tile holds it.
 fn put_at(tile: &mut Tile, i: usize, value: Scalar) {
     match &mut tile.elements {

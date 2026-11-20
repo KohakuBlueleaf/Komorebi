@@ -118,6 +118,36 @@ fn scalar_of(c: &ConstValue) -> Type {
 }
 
 impl<'m> Validator<'m> {
+    /// A function on blocks works on each tile, reduces along a row of the whole block,
+    /// spreads that back with `.col()` and a parameter's row 0 with `.row()` (R43):
+    /// `matmul`, `.T`, a reduction along a column and any other spread are violations.
+    fn on_blocks_body(&mut self, at: BodyRef, body: &Body) {
+        let arg = |v: ValueId| {
+            body.insts
+                .iter()
+                .any(|i| matches!(i.op, Op::Arg(_)) && i.defs.first() == Some(&v))
+        };
+        for (k, inst) in body.insts.iter().enumerate() {
+            let what = match &inst.op {
+                Op::Matmul(..) => "`matmul`",
+                Op::Transpose(_) => "`.T`",
+                Op::Reduce(_, _, crate::types::Axis::Col) => "a reduction along a column",
+                Op::SpreadCol(v) => match body.values.get(v.0 as usize) {
+                    Some(Type::Reduced(_, crate::types::Axis::Row)) => continue,
+                    _ => "`.col()` of other than a reduction along a row",
+                },
+                Op::SpreadRow(v) if arg(*v) => continue,
+                Op::SpreadRow(_) => "`.row()` of other than a parameter",
+                _ => continue,
+            };
+            self.fail(
+                Some(at),
+                Some(InstId(k as u32)),
+                format!("{what} in a function on blocks"),
+            );
+        }
+    }
+
     fn fail(&mut self, body: Option<BodyRef>, inst: Option<InstId>, what: impl Into<String>) {
         self.out.push(Violation {
             body,
@@ -277,6 +307,9 @@ impl<'m> Validator<'m> {
                              result are blocks of one count"
                         ),
                     );
+                }
+                if let Some(body) = &f.body {
+                    self.on_blocks_body(BodyRef::Func(crate::types::FuncId(i as u32)), body);
                 }
             }
         }

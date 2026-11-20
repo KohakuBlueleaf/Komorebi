@@ -77,9 +77,18 @@ tile parameters and its result is then a block, all of one count n (`K102`); n i
 or a module parameter, the block of the stream the blocks come from. Its body is written on one tile
 and works on each tile of the blocks in turn: the elementwise operations above (the arithmetic, the
 elementary functions, `where`, a conversion), a scalar going to every tile. It gives a block of the
-same count; a last block that is shorter gives a shorter result. `matmul`, a reduction, `.col()`,
-`.row()` and `.T` in its body work on a whole tile and are refused by name (`K010`), as is a `combine`
-or an `extern func` on blocks. A function on one tile is never given a block (`K203`).
+same count; a last block that is shorter gives a shorter result. A function on one tile is never
+given a block (`K203`).
+
+A reduction along a row (`reduce_sum`, `reduce_max`, `reduce_min` with `axis = row`) runs along the
+whole block: its n tiles side by side, a row of n times the tile's width, combined in order from
+the first tile's first column. It gives one value for each row. `.col()` of those values spreads
+each row's value over every tile of the block, and `.row()` of a tile parameter spreads that tile's
+row 0 down its own tile. On one tile the same body keeps its meaning: the tile's own rows. This is
+how a row wider than one tile is normalised (`x - reduce_max(x, axis = row).col()`). A reduction
+along a column, `.col()` of anything else, `.row()` of anything else, `matmul` and `.T` in its body
+are refused by name (`K010`), as is a `combine` or an `extern func` on blocks. What a backend
+computes of a row is its own statement ([backends](backends.md)).
 
 ## Views of a tensor
 
@@ -186,5 +195,6 @@ The language names these and the build does not have them yet. Each is refused b
 - A `store` of scalars.
 - A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
 - Several tile shapes in one module.
-- In a function on blocks: `matmul`, a reduction, `.col()`, `.row()` and `.T`; a `combine` or an
-  `extern func` on blocks.
+- In a function on blocks: `matmul`, a reduction along a column, `.col()` of other than a reduction
+  along a row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func`
+  on blocks.

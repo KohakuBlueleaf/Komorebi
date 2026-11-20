@@ -9,7 +9,7 @@ use crate::syntax::ast::{
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
-use crate::types::{Failure, Format, ScalarType};
+use crate::types::{Axis, Failure, Format, ScalarType};
 
 use super::attrs::{named_args, on_grid};
 use super::codes;
@@ -425,18 +425,29 @@ impl Checker<'_> {
     }
 
     /// `K010` for each operation in `span` (a function on blocks) that works on a whole
-    /// tile rather than on each element: named in the language on a block and not built.
+    /// tile and is named in the language on a block but not built. Built (R43): a
+    /// reduction along a row (along the whole block), `.col()` of its values, and
+    /// `.row()` of a tile parameter (on its own tile).
     fn whole_block_ops(&mut self, name: &str, span: Span) {
+        let operand = |r: &super::op::Resolved| r.parts.first().copied().flatten();
         let mut found: Vec<(usize, usize, &'static str)> = self
             .ops
             .iter()
             .filter(|((start, end), _)| *start >= span.start && *end <= span.end)
             .filter_map(|(&(start, end), r)| {
+                let of = operand(r).map(|s| (s.start, s.end));
                 let what = match r.kind {
                     OpKind::Matmul => "`matmul`",
-                    OpKind::Reduce(..) => "a reduction",
-                    OpKind::SpreadCol => "`.col()`",
-                    OpKind::SpreadRow => "`.row()`",
+                    OpKind::Reduce(_, Axis::Row) => return None,
+                    OpKind::Reduce(_, Axis::Col) => "a reduction along a column",
+                    OpKind::SpreadCol => match of.and_then(|k| self.types.get(&k)) {
+                        Some(Ty::Reduced(_, Axis::Row)) => return None,
+                        _ => "`.col()` of other than a reduction along a row",
+                    },
+                    OpKind::SpreadRow => match of.and_then(|k| self.names.get(&k)) {
+                        Some(Name::Param(_)) => return None,
+                        _ => "`.row()` of other than a tile parameter",
+                    },
                     OpKind::Transpose => "`.T`",
                     _ => return None,
                 };
@@ -450,7 +461,8 @@ impl Checker<'_> {
                 format!(
                     "{what} in `{name}`, a function on blocks, is named in the language and not \
                      built yet: a function on blocks works on each tile with elementwise \
-                     operations"
+                     operations, reduces along a row of the whole block and spreads it back \
+                     with `.col()`"
                 ),
                 Span { start, end },
             );

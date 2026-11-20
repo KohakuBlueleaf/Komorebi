@@ -9,8 +9,8 @@ use komorebi_ir::program::{
     Scope,
 };
 use komorebi_ir::types::{
-    Ability, BinOp, CmpOp, ConstValue, Count, Format, FuncId, MessageId, ParamId, Peers, ProgramId,
-    RecordId, ScalarType, TileShape, Type,
+    Ability, Axis, BinOp, CmpOp, ConstValue, Count, Format, FuncId, MessageId, ParamId, Peers,
+    ProgramId, RecordId, ReduceOp, ScalarType, TileShape, Type,
 };
 
 const U32: Type = Type::Scalar(ScalarType::U32);
@@ -512,4 +512,67 @@ fn a_function_on_blocks_reads_one_tile_and_its_blocks_have_one_count() {
     let mut m = make(block(3), block(3));
     m.funcs[0].kind = FuncKind::Combine { commutative: false };
     has(&m, "on blocks");
+}
+
+#[test]
+fn a_function_on_blocks_reduces_along_a_row_and_spreads_it_back_and_nothing_else() {
+    // `f(x: tile<f32>[2]) -> tile<f32>[2]`, its body on one tile (reading R43)
+    let block = Type::Block(Format::F32, Count::Const(2));
+    let tile = Type::Tile(Format::F32);
+    let rows = Type::Reduced(Format::F32, Axis::Row);
+    let make = |values: Vec<Type>, insts: Vec<Inst>| {
+        module(vec![block.clone()], block.clone(), values, insts)
+    };
+    // reduce_sum(x, axis = row).col() + x.row()
+    let m = make(
+        vec![
+            tile.clone(),
+            rows.clone(),
+            tile.clone(),
+            tile.clone(),
+            tile.clone(),
+        ],
+        vec![
+            inst(Op::Arg(0), &[0]),
+            inst(Op::Reduce(ReduceOp::Sum, v(0), Axis::Row), &[1]),
+            inst(Op::SpreadCol(v(1)), &[2]),
+            inst(Op::SpreadRow(v(0)), &[3]),
+            inst(Op::Binary(BinOp::Add, v(2), v(3)), &[4]),
+            inst(Op::Return(Some(v(4))), &[]),
+        ],
+    );
+    assert!(validate(&m).is_empty(), "{:?}", found(&m));
+    // (x * x).row(): `.row()` of other than a parameter
+    let m = make(
+        vec![tile.clone(), tile.clone(), tile.clone()],
+        vec![
+            inst(Op::Arg(0), &[0]),
+            inst(Op::Binary(BinOp::Mul, v(0), v(0)), &[1]),
+            inst(Op::SpreadRow(v(1)), &[2]),
+            inst(Op::Return(Some(v(2))), &[]),
+        ],
+    );
+    has(
+        &m,
+        "`.row()` of other than a parameter in a function on blocks",
+    );
+    // x.col(), x.T and matmul(x, x)
+    for (op, what) in [
+        (
+            Op::SpreadCol(v(0)),
+            "`.col()` of other than a reduction along a row",
+        ),
+        (Op::Transpose(v(0)), "`.T`"),
+        (Op::Matmul(v(0), v(0)), "`matmul`"),
+    ] {
+        let m = make(
+            vec![tile.clone(), tile.clone()],
+            vec![
+                inst(Op::Arg(0), &[0]),
+                inst(op, &[1]),
+                inst(Op::Return(Some(v(1))), &[]),
+            ],
+        );
+        has(&m, &format!("{what} in a function on blocks"));
+    }
 }

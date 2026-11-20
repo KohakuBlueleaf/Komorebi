@@ -1778,3 +1778,121 @@ fn a_tile_against_a_block_in_a_function_on_blocks_says_its_body_is_on_one_tile()
         assert!(d.message.ends_with(why), "{d:?}");
     }
 }
+
+/// A function on blocks of `n` tiles that reduces along a row (reading R43): the
+/// reduction runs along the whole block, `.col()` spreads each row's value over every
+/// tile, `.row()` spreads each tile's own row 0, `* 2.0` and `+` work tile by tile. A
+/// stream of one tile a block gives tiles: the same body, on one tile.
+fn row_form(n: usize) -> String {
+    let t = if n == 1 {
+        "tile<f32>".to_string()
+    } else {
+        format!("tile<f32>[{n}]")
+    };
+    format!(
+        "module rows
+
+tile [32, 32]
+format f32
+
+func spread(x: {t}) -> {t} {{
+    return reduce_sum(x * 2.0, axis = row).col() + x.row()
+}}
+
+program Rows {{
+    handler run(a: tensor<f32>, out: tensor<f32>) @on(group) {{
+        let results = sink(out.tiles(0, 2), block = {n})
+        for x in stream(a.tiles(0, 2), block = {n}) {{
+            results.push(spread(x))
+        }}
+    }}
+}}
+"
+    )
+}
+
+/// The two tiles of `row_form(n)` run on a tensor whose tile 0 holds r + c at row r,
+/// column c, and tile 1 holds 1: the result's two tiles, element by element.
+fn row_form_run(n: usize) -> (Vec<f64>, Vec<f64>) {
+    let m = module(&row_form(n));
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let a = tensor(&mut run, Format::F32, (1, 2), |i, k| {
+        if i == 0 {
+            (k / 32 + k % 32) as f64
+        } else {
+            1.0
+        }
+    });
+    let out = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
+    let args = [Arg::Tensor(a), Arg::Tensor(out)];
+    assert_eq!(
+        run.invoke("Rows.run", &args, (0, 1), &[]),
+        End::Completed(None)
+    );
+    (tile_f64(&run, out, 0), tile_f64(&run, out, 1))
+}
+
+#[test]
+fn a_reduction_along_a_row_in_a_function_on_blocks_runs_along_the_whole_block() {
+    // a block of 2 tiles: row r of the 64 elements side by side doubled is
+    // 2 (32 r + 496 + 32) = 64 r + 1056; tile 0 adds its row 0 (c at column c), tile 1
+    // its own (1)
+    let (first, second) = row_form_run(2);
+    for k in 0..32 * 32 {
+        let (r, c) = ((k / 32) as f64, (k % 32) as f64);
+        assert_eq!(first[k], 64.0 * r + 1056.0 + c, "tile 0, element {k}");
+        assert_eq!(second[k], 64.0 * r + 1057.0, "tile 1, element {k}");
+    }
+    // blocks of 1 tile: each tile's own rows, 2 (32 r + 496) + c and 2 x 32 + 1
+    let (first, second) = row_form_run(1);
+    for k in 0..32 * 32 {
+        let (r, c) = ((k / 32) as f64, (k % 32) as f64);
+        assert_eq!(first[k], 64.0 * r + 992.0 + c, "tile 0, element {k}");
+        assert_eq!(second[k], 65.0, "tile 1, element {k}");
+    }
+}
+
+#[test]
+fn in_a_function_on_blocks_what_works_on_a_whole_tile_but_a_row_is_not_built() {
+    // R43 builds a reduction along a row, `.col()` of its values and `.row()` of a tile
+    // parameter; a reduction along a column, `.col()` of a tile, `.row()` of another
+    // tile, `matmul` and `.T` stay named and not built (K010)
+    let body = |line: &str| {
+        format!(
+            "module rows\n\ntile [32, 32]\nformat f32\n\n\
+             func f(x: tile<f32>[2], y: tile<f32>[2]) -> tile<f32>[2] {{\n    {line}\n}}\n"
+        )
+    };
+    let built = [
+        "return reduce_max(x, axis = row).col() - x",
+        "return reduce_min(x + y, axis = row).col() * y.row()",
+    ];
+    for line in built {
+        komorebi_ir::check(&body(line)).unwrap_or_else(|d| panic!("{line}: {d:?}"));
+    }
+    let refused = [
+        (
+            "return reduce_sum(x, axis = col).row()",
+            "a reduction along a column",
+        ),
+        (
+            "return x.col()",
+            "`.col()` of other than a reduction along a row",
+        ),
+        (
+            "return (x * 2.0).row()",
+            "`.row()` of other than a tile parameter",
+        ),
+        ("return matmul(x, y)", "`matmul`"),
+        ("return x.T", "`.T`"),
+    ];
+    for (line, what) in refused {
+        let found = komorebi_ir::check(&body(line)).expect_err(line);
+        assert!(
+            found
+                .iter()
+                .any(|d| d.code == "K010" && d.message.starts_with(what)),
+            "{line}: {found:?}"
+        );
+    }
+}
