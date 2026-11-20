@@ -89,6 +89,7 @@ class StopMixin:
             exit_handle = self._queue_command(
                 self.h["KM_HANDLER_EXIT"], (0, self.cores)
             )
+            self._exit_handle = exit_handle
             self.wait(exit_handle, _left(deadline))
             step = "the STOP's store"
             stop_handle = self._queue_command(self.h["KM_HANDLER_STOP"], None)
@@ -368,26 +369,25 @@ class StopMixin:
         if sequence is None:
             sequence = self.sequence(event.handle)
         known = group and group[0] is not None and self._state is not None
+        own = self._own_part(event.handle, group) if known else None
         cores = (
             device_state.not_reported(
-                self._state, self._local(group), event.auxiliary, sequence, self.h
+                self._state, own, event.auxiliary, sequence, self.h
             )
             if known
             else []
         )
+        exits = event.handle == self._exit_handle
         gave = (  # the cores' words, unless the stop failed before it read them
             messages_gave.named(result, self._blocks, self.h, self._state)
             if result is not None and self._blocks is not None
             else None
         )
+        told = (event.handle, event.auxiliary, sequence, own if exits else group)
         error = (
-            MessagesGaveUp(
-                event.handle, event.auxiliary, sequence, group, cores, result, gave=gave
-            )
+            MessagesGaveUp(*told, cores, result, gave=gave, own=exits)
             if gave is not None
-            else CommandTimeout(
-                event.handle, event.auxiliary, sequence, group, cores, result
-            )
+            else CommandTimeout(*told, cores, result, own=exits)
         )
         self._name_lines(error)
         if seen:
@@ -482,6 +482,8 @@ class StopMixin:
             )
         if log or stop_failed is not None:
             self._log(error.args[0])
+        if stop_failed is None:  # not `from None`: an error it is raised in stays shown
+            raise self._remember(error)
         raise self._remember(error) from stop_failed
 
     def _failed_result(self):

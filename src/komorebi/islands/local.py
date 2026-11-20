@@ -5,6 +5,7 @@ DSL module: the mock run imports it, and the DSL front reaches the mock's tensor
 
 import numpy as np
 
+from komorebi.device import chips
 from komorebi.errors import KomorebiError
 from komorebi.program.checks import near as near_module
 
@@ -80,6 +81,39 @@ def check_direct(graph, handler, group, values):
                 "submit a group inside that island, place the tensor as a copy, or "
                 "leave km.direct out on two cards"
             )
+
+
+FAR_DRAM = "docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram"
+
+
+def check_far_writes(program, method, values, island, group, ranks, arch):
+    """Refuses a command whose handler writes, at every call, a tensor of which island
+    `island` (its flat ranks `ranks`, [low, high), some in `group`) holds no page, on a
+    chip whose link packets may not target a far DRAM: those ranks' writes would cross
+    into another island's DRAM, which the card refuses (fardram)."""
+    if island is None or arch is None or chips.chip(arch).link_far_dram:
+        return
+    low, high = max(group[0], ranks[0]), min(group[0] + group[1], ranks[1])
+    writes = (getattr(program, "writes_every_call", None) or {}).get(method.name, ())
+    if low >= high or not writes:
+        return
+    given = dict(zip(method.places(), values))
+    for name, line, text in writes:
+        placement = getattr(given.get(name), "placement", None)
+        if placement is None or placement.copy or placement.parts[island][1]:
+            continue
+        holders = [i for i, (_, steps) in enumerate(placement.parts) if steps]
+        held = ", ".join(str(i) for i in holders)
+        raise KomorebiError(
+            f"{type(program).__name__}.{method.name}, line {line} (`{text}`): it "
+            f"writes {name} at every call, {name}'s pages are held by island(s) "
+            f"{held}, and the command's group {tuple(group)} holds ranks {low} to "
+            f"{high - 1} of island {island}, which holds none of them: on this chip "
+            f"no link packet may target a far chip's DRAM ({FAR_DRAM}), so those "
+            f"ranks' writes would be refused on the card; place {name} by hint so "
+            f"each rank writes its own island's pages (split=, group= over the "
+            f"command's group), or submit a group inside island(s) {held}"
+        )
 
 
 def check_near(program, method, values, island, group=None, ranks=None):

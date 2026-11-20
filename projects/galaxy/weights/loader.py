@@ -13,7 +13,16 @@ import numpy as np
 
 # the folder of the checkpoint (ckpt/), placement.json and the cache (cache/v1/)
 LLM = os.path.expanduser(os.environ.get("GALAXY_LLM", "~/llm"))
-PLACEMENT = os.path.join(LLM, "placement.json")
+
+
+def placement_path(name=None):
+    """The placement named `name` (default $GALAXY_PLACEMENT): "" placement.json, the
+    default; "home" placement-home.json (README.md, "Home")."""
+    name = os.environ.get("GALAXY_PLACEMENT", "") if name is None else name
+    return os.path.join(LLM, f"placement-{name}.json" if name else "placement.json")
+
+
+PLACEMENT = placement_path()
 CACHE = os.path.join(LLM, "cache", "v1")
 # a write's launch costs about 50 ms (card 0: 64 MiB in 0.12 s, 256 MiB in 0.29 s)
 CHUNK_BYTES = 256 << 20
@@ -72,6 +81,14 @@ def _pick(entries, names):
     if missing:
         raise KeyError(f"not in the placement: {sorted(missing)[:5]}")
     return out
+
+
+def _fold(p, island, count):
+    """The default session island of placement island `island`: p mod islands; for a
+    placement folded "home", island 0 stays and the others go over the rest."""
+    if p.get("fold") == "home" and count > 1:
+        return 0 if island == 0 else 1 + (island - 1) % (count - 1)
+    return island % count
 
 
 def _islands_of(session):
@@ -169,7 +186,7 @@ def load(
     log=print,
 ):
     """Writes the picked weights (`names`: None, names or a predicate) onto a session's
-    islands (`islands`: {placement island: session island}, default p mod islands);
+    islands (`islands`: {placement island: session island}, default `_fold`);
     returns Weights. verify "sample"/"full"/None, resume, threads: README.md."""
     with open(placement) as f:
         p = json.load(f)
@@ -181,8 +198,10 @@ def load(
             f"a session of {count} islands does not hold the whole backbone: give "
             "names= (and islands= if the default p -> p mod islands does not suit)"
         )
+    if any(e["dtype"] == "bfp4_b" for e in picked):
+        picked = p.get("relay", []) + picked  # first in its arena (README.md, "Home")
     if islands is None:
-        islands = {e["island"]: e["island"] % count for e in picked}
+        islands = {e["island"]: _fold(p, e["island"], count) for e in picked}
     W = Weights()
     t_start = time.time()
     # each arena: the source runs it copies (cache island, cache first, pages) in order
@@ -190,7 +209,7 @@ def load(
     for e in picked:
         key = (islands[e["island"]], e["dtype"])
         plan.setdefault(key, []).append(e)
-    whole = names is None and count == len(p["cards"])
+    whole = names is None and count == len(p["cards"]) and "relay" not in p
     copies = {}
     for (island, dtype), entries in sorted(plan.items()):
         if whole:  # the placement's own arena: pages as placed
@@ -203,8 +222,9 @@ def load(
             firsts = {e["name"]: e["first"] for e in entries}
         else:  # the picked weights, one after another
             runs, firsts, at = [], {}, 0
-            for e in entries:
-                runs.append((e["island"], e["first"], e["pages"], at))
+            for e in entries:  # where the cache holds it: `cache` if not as placed
+                src, src_first = e.get("cache", (e["island"], e["first"]))
+                runs.append((src, src_first, e["pages"], at))
                 firsts[e["name"]] = at
                 at += e["pages"]
             pages = at

@@ -9,7 +9,7 @@ entries in one softmax with the head's sink (model.py 429-611, 775-782).
 
 | File | What |
 |---|---|
-| `piece.py` | the piece of the driver's interface: `make(session, weights, layers)` serves the sites `compressor`, `indexer` and `sparse_attn`; `make_compressor`, `make_indexer` and `make_sparse_attn` serve one site each and load only its class. The classes (`Compress`, `Index`, `Attend`, runtime form, `slots(count=1, service="shared")`) share one run, the cores switching program between sites |
+| `piece.py` | the piece of the driver's interface: `make(session, weights, layers)` serves the sites `compressor`, `indexer` and `sparse_attn`; `make_compressor`, `make_indexer` and `make_sparse_attn` serve one site each and load only its class; `make_compress_index` the compressor and the indexer (their two classes); every factory takes `run=` (the shared load, projects/galaxy/load). The classes (`Compress`, `Index`, `Attend`, runtime form, `slots(count=1, service="shared")`) share one run, the cores switching program between sites |
 | `compressor.py` | step 1: the compressor on one chip (synthetic weights), against float64 |
 | `indexer.py` | step 2: the indexer's decode on one chip and the host's top-k, against float64 |
 | `attention.py` | step 3: the decode attention over 128 window keys and 512 gathered entries (the gather by 0/1 selection tiles), against float64 |
@@ -94,5 +94,7 @@ indexer makes those (`make_compressor`, `make_indexer`).
   model is the local attention's single call over the key list; this one checks the math.
 - The gather uploads the whole compressed cache each call (the chip keeps no copy between
   calls yet).
-- The piece's sites run in their own run on the piece's own chip; the selected rows reach
-  the local attention's key list through the host until both share one load.
+- With `make(..., run=)` the classes go to the shared load (projects/galaxy/load) beside
+  the local attention and the parts, on joined islands too (commands on the first
+  island's ranks); the selected rows still reach the local attention's key list through
+  the host.

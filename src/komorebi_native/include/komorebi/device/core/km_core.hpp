@@ -870,12 +870,13 @@ namespace km {
         uint32_t sequence
     ) {
         volatile tt_l1_ptr uint32_t* state = l1(control + KM_CONTROL_STATE);
+        const uint32_t held = state[word] & 0xFF;
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         // kGaveRefused, the one code above kGaveDeadline, a command's own as it is
-        const bool after_deadline = (state[word] & 0xFF) >= kGaveDeadline;
+        const bool after_deadline = held >= kGaveDeadline;
         if (code >= kGaveDeadline) {
 #else
-        const bool after_deadline = (state[word] & 0xFF) == kGaveDeadline;
+        const bool after_deadline = held == kGaveDeadline;
         if (code == kGaveDeadline) {
 #endif
             if (state[word] == 0 || (after_deadline && state[word + 1] != sequence)) {
@@ -884,7 +885,8 @@ namespace km {
             }
             return;  // the run goes on: no stop flag
         }
-        if (state[word] == 0 || after_deadline) {
+        // Over a deadline's only: a refused record (the cause the host names) is kept
+        if (state[word] == 0 || held == kGaveDeadline) {
             state[word] = code | where << 8 | slot << 16;
             state[word + 1] = sequence;
         }

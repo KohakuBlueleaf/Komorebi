@@ -47,7 +47,7 @@ class RmsNorm(km.Program, compute=COMPUTE):
         first = self.rank * self.EACH
         for r in km.Stream(x.pages(first, self.EACH), block=self.EACH, row=self.EACH):
             self.part.write(square_sums(r))
-        km.all_reduce(self.part)
+        km.all_reduce(self.part, local=True)
         results = km.Stream(out.pages(first, self.EACH), write=True, block=2)
         for xt, wt, et in zip(
             km.Stream(x.pages(first, self.EACH), block=2),

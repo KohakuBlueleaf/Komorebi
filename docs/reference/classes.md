@@ -596,7 +596,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `m0, m1 = t.pages(i, 1).read(km.fp32)[0:2]`, t float32 | the same, each word a C++ `float` of its bits | the same, handed as bits: float words, a command's float words' equal (A float word in tile arithmetic) |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
 | `jobs = t.pages(i, 1).entries(...)`, then `for e in jobs[a:b]:` and `jobs.count` | the same read at the line, at the handler's top; the slice's ends clamped to the count | the same; the page freed at the handler's end |
-| `total += tile` | | the tile copied and added into the held tile |
+| `total += tile` | | the tile copied and added into the held tile; into sums of n tiles (`km.tile.zeros(km.fp32, n)`), tile j of the stream's block added into the sums' tile j % n, so a block of n tiles adds tile for tile; a block that is not a multiple of n (or one the build does not know), a broadcast's block, and sums that leave DST no tile for the copy (n up to 7) are refused by name |
 | `out = km.Stream(pages, write=True, block=8)` and `out.push(tile)` | one write stream, moved with the read that feeds it | the tile copied into the same half of the write pair |
 | `out.push(t)`, `t` a body's tile in the loop | | DST 0 packed into the write pair at the loop tile's place |
 | `pages.write(total)` (one page) | mover B: `wait_front`, `km::write_pages` of one page, `noc_async_writes_flushed`, `cb_pop_front` | the held tile packed into a page buffer, DST released |

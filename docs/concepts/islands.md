@@ -232,6 +232,11 @@ on chips in a line, one link, slow dispatch:
 - The routers' largest payload is 7,616 bytes. They take it only when the open asks for it.
 - No link packet may target the far chip's DRAM
   ([hazards](../reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
+  A handler reads a tensor another island holds (exact), but does not write one:
+  `run.submit` refuses by name a command whose ranks on an island write, at every call,
+  a tensor that island holds no page of, and the card refuses any other such write
+  (`refused` in `fardram`, the island named). Place what a handler writes by hint so
+  each rank writes its own island's pages.
 - Three chips in a line open as a 1 x 4 mesh
   ([hazards](../reference/hazards.md#a-line-of-three-wormhole-chips-opened-as-one-mesh)).
 

@@ -3,6 +3,8 @@
 from ..reference.model_loader import Checkpoint, load_reference
 from .path import TokenPath
 
+WEIGHTS = "checkpoint"  # the driver's W for make: the Checkpoint (interface.py)
+
 
 class HostPiece:
     sites = (

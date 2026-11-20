@@ -91,8 +91,12 @@ One instance a part: `make_norms`, `make_mixing`, `make_engram` and `make_head` 
 a piece of that part's sites only, which loads that part once and keeps it. `make` gives
 every site on one chip: a session holds one loaded run, so it keeps one part loaded at a
 time and changes part when a site needs another (the old part's run stopped and its
-tensors freed). Every weight a part reads is written when the part is made (all its
-layers) and never again: a call only points the commands at its layer's tensors.
+tensors freed). A part is made only when one of its sites is at a layer given: Engram at
+layers 1 and 14, the head, the choice, the final norm and hc_head_pre at the layer None
+(the global sites), the others at the numbered layers. A call to a site at a layer that
+has none, or at a layer the piece was not made for, is refused by name. Every weight a
+part reads is written when the part is made (all its layers) and never again: a call only
+points the commands at its layer's tensors.
 
 The mixing's time is the host's: in the driver, 240 calls a decode step cost 1.02 s
 (4.3 ms a call), almost all of it the round trips of each call's inputs and outputs and

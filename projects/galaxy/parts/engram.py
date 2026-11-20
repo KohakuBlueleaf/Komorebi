@@ -147,8 +147,8 @@ class Engram(km.Program, compute=COMPUTE):
             kv.tiles[0:1, k0 : k0 + self.EACH], block=2, row=self.EACH
         ):
             self.s1.write(square_sums(row))
-        km.all_reduce(self.s0)
-        km.all_reduce(self.s1)
+        km.all_reduce(self.s0, local=True)
+        km.all_reduce(self.s1, local=True)
         for t in km.Stream(xs.tiles[c : c + 1, t0 : t0 + 1], block=1):
             factor.push(norm_factor(t, self.s0, self.s1))
 
@@ -160,7 +160,7 @@ class Engram(km.Program, compute=COMPUTE):
             p.tiles[c : c + 1, t0 : t0 + self.EACH], block=2, row=self.EACH
         ):
             self.s0.write(plain_sums(row))
-        km.all_reduce(self.s0)
+        km.all_reduce(self.s0, local=True)
         acc = km.tile.zeros(km.fp32)
         for t in km.Stream(a.pages(c * self.GROUP + self.rank, 1), block=1):
             acc += t
@@ -199,7 +199,7 @@ class EngramMix:
     [4, 5120]); `__call__(x, rows)`, x [s, 4, 5120], rows [s, 24, 256] -> (out, kv,
     microseconds)."""
 
-    def __init__(self, session, w=None, at=0):
+    def __init__(self, session, w=None, at=0, run=None):
         self.session = session
         s = session
         self.rows = s.empty((32, ROWS_IN), "bfloat16", "tile")
@@ -231,7 +231,8 @@ class EngramMix:
             g=self.g,
             out=self.out,
         )
-        self.run = s.load(self.kp)
+        # run: (None: a load of its own; else the run given, its programs already in it)
+        self.run, self.loaded = (s.load(self.kp), True) if run is None else (run, False)
 
     def put(self, tensor, values, dtype):
         raw, _ = formats.to_bytes(
@@ -325,7 +326,8 @@ class EngramMix:
         return out.transpose(1, 0, 2), kv, us
 
     def stop(self):
-        self.run.stop()
+        if self.loaded:
+            self.run.stop()
 
 
 def reference(x, rows, wkv, q, k):

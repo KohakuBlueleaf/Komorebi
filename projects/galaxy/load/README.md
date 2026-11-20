@@ -5,6 +5,11 @@ attention, the experts' tree and class, and the small parts. A load on 30 island
 tens of seconds, so nothing can be loaded between calls. Every piece's programs must sit
 in ONE load that stays for the whole run. `shared.py` makes that load.
 
+The shared load is the form that makes the whole model RUN in one session. It does not
+carry chains today: the framework refuses a program that runs chains in a load whose
+groups switch program (`src/komorebi/program/several.py`), so a layer cannot yet be one
+chain inside it.
+
 ## How a piece takes part
 
 A piece's factory takes one more argument, the shared load:
@@ -39,15 +44,23 @@ another piece may have switched those cores since; `Shared` keeps what every ran
 With no hand program, `hold(session)` gives a small dict's program
 (`start(hold(session))`).
 
+A switch touches only the group it names. Every class is added on every island (its
+parts in each island's room, whatever group was taken), so the groups given to `take`
+only order the programs; what a piece switches is the group it passes to `run.load`.
+Under the home placement (every weight but the routed experts on island 0) the attention,
+the global attention and the parts switch only island 0's ranks (their command groups
+are at most 73 cores); the experts' classes switch every island's.
+
 ## What every program in the load must agree on
 
 - Compute: HiFi2, float32 in Dst, Dst in full-sync mode (`math_fidelity`,
   `fp32_dest_acc_en`, `dst_full_sync_en`). A subclass's `compute=` replaces its
   parent's, so name all three.
-- Buffer formats: at every index that the dict's program uses, an added class holds the
-  same format or no buffer (`run.addon` refuses otherwise, naming the index). Classes use
-  indices 0 to 25; 26 to 31 are the runtime's own (messages, chain words, tokens, trace).
-  Added classes may differ from one another.
+- Buffer indices: an added class takes its own formats at its own indices, even where
+  the dict's program has a buffer of another format. In a switching load a program's
+  buffers stay off 25 and 26 to 31, the runtime's own (the switch, messages, chain
+  words, tokens, trace); a class built `beside` another can be pushed onto 25 and is
+  refused, so build it beside only for a list load of its own.
 - `kernel_bytes`: one value for the session. The attention needs at most 104,448 B.
 - At most 75 ranks a command on a joined island, and `km.reduce(..., local=True)` for
   every reduce whose group stays on one island.
@@ -57,12 +70,42 @@ With no hand program, `hold(session)` gives a small dict's program
 
 ## The check
 
-The attention's `attn` of layers 0 and 3 and the experts' `ffn` of layer 3, in one
-session through one load, against golden, on four joined islands:
+Every piece in one session through one load, against golden, on four joined islands:
+the attention's `attn`, the experts' `ffn`, the parts' norms, mixing, Engram, head and
+choice, with no load between any two calls.
 
 ```
 python -m projects.galaxy.driver.verify --golden G --cards 0-3 --kernel-bytes 104448 \
     --piece projects.galaxy.experts.piece:make \
     --piece projects.galaxy.attention_local.piece:make \
-    --load "0,3@ffn." --sites attn,ffn --layers 0,3 --prompts en
+    --piece projects.galaxy.parts.piece:make \
+    --load "0,1,3,none@ffn.,engram.,head." --layers 0,1,3,none --prompts en \
+    --sites attn,ffn,attn_norm,hc_attn_mixes,hc_attn_pre,hc_attn_post,engram_mix,head,choose
 ```
+
+Every row equals the same piece's run alone (each in a load of its own) through the
+same verify.
+
+## On more islands
+
+`check.py` loads the four pieces' classes in one load at the attention's kernel_bytes
+and prints the bytes of the load's kernels (what the kernel buffer holds: the dict's
+program's build; the added classes' code is in their parts), the load's phases, a
+switch's time on the first island and on every island, and whether a host write on
+every island after a switch reads back equal:
+
+```
+python -m projects.galaxy.load.check --cards 0-7 --ckpt C
+```
+
+On four islands, the build cache warm: the dict's load 9.8 s, the ten added classes
+0.2 to 0.6 s each (13 s in all); a switch 0.2 ms on the first island's ranks, 0.4 ms on
+every island's; the write reads back equal. Each island's added classes took the same
+room, 3.4 MB of the 23 MB reserved (read once from each island run's room, which no
+public call reports; the load's log names each added class's parts): an island has its
+own room, so the count of islands does not change it.
+
+What grows with the islands is the session's own L1 on every core: the island table
+(128 B on 4 islands, 192 B on 8, 768 B on 31) and a cached tensor table (8,896 B, 12,992
+B, 33,472 B), 25 KB more on 31 islands than on 4. The attention's Projections, the
+largest program, use 1,239,120 of 1,359,520 B on 4 islands in the shared load.

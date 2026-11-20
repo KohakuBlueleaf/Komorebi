@@ -282,14 +282,27 @@ Described in [Dynamic handlers, how a message travels](dynamic.md#how-a-message-
 ### Two commands on overlapping groups that must run in order
 
 **The hazard.** Two commands in flight whose groups share a core may run on that core in
-either order.
+either order, and they overlap even in order: a core's reader takes the next command as
+soon as the writer has taken the one before, so the next command's reads start while the
+writer still writes the one before. A command that reads a page the command before it
+writes, with no wait and no flag between them, can read the old page or a page half
+written; the same group is no exception. Measured on one Wormhole chip, 79 ranks, each
+adding one to its own page, 50 commands back to back and one wait: 1 to 3 pages short in
+4 runs of 5; exclusive, each waited for, or as a chain: exact in 5 of 5.
 
-**The rule.** A command that must run after an earlier one on overlapping cores is
-submitted with `exclusive=True`.
+**The rule.** A command that must run after an earlier one on overlapping cores (one
+that reads what the earlier one writes, above all) is submitted with `exclusive=True`,
+or after the earlier one's event, or both are calls of one chain (its marks order them).
 
 **The guard.** The flag is the guard, and it has a cost: the dispatcher submits an
-exclusive command only when no command in flight overlaps it, and host commands behind a
-held one wait with it, whatever their groups. Without the flag, nothing.
+exclusive command only when no command in flight overlaps it (a command reported done
+has its writes acknowledged), and host commands behind a held one wait with it, whatever
+their groups. Without the flag, `run.submit` and `run.submit_many` of a class's
+handler (as a method or as its number and words) warn (`km.CommandOrderWarning`, naming
+both commands and the tensors) when it reads a tensor that a command on overlapping
+cores without its event yet writes, by the handlers' lines: a tensor, not its pages, so
+two commands on different pages of one tensor are named too. A hand program's handlers,
+queued commands (`queued=True`), threads, streams and graphs are not checked.
 
 Described in [Host API, `Run`](host.md#run).
 
@@ -2481,10 +2494,18 @@ chip's DRAM.
 
 **The guard.** The chips table's `link_far_dram` is false on Wormhole. There the
 session refuses `send_pages` into a tensor and `cross()` by name, before anything is
-queued; pages into a far core's L1 (`send_pages(core=...)`) still cross. A kernel's
-put into a tensor another island holds, and an ask answered into DRAM, are decided on
-the card: its island build there has `KM_LINK_NO_FAR_DRAM`, and the core gives up
-before the line reaches its link core (`fardram`, the island named). Asks into L1 and
+queued; pages into a far core's L1 (`send_pages(core=...)`) still cross. A class's
+handler that writes a tensor at every call (a write stream or a page write in no if,
+loop body or branch) is refused at `run.submit`, by name and before anything is queued,
+when the command's group holds ranks of an island that holds no page of that tensor:
+place the tensor by hint so each rank writes its own island's pages (`split=`,
+`group=` over the command's group), or submit a group inside the islands that hold it.
+Reading such a tensor across the link is exact. Any other put into a tensor another
+island holds (a write under an if, an island that holds some of the pages, a kernel's
+own put), and an ask answered into DRAM, are decided on the card: its island build
+there has `KM_LINK_NO_FAR_DRAM`, and the core gives up before the line reaches its link
+core. The error names it `refused` in `fardram` with the island; a give-up the refusal
+leads to (the move that waited for the write) does not replace it. Asks into L1 and
 `km::write_l1` cross.
 
 The collectives over islands (`km::all_reduce`, `km::reduce_to`, `km::all_gather`,

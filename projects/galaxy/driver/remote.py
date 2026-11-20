@@ -7,8 +7,8 @@ import subprocess
 import sys
 import traceback
 
-from .interface import HOOKS, load_factory, load_weights, set_hooks
-from .run import open_session, parse_layers
+from .interface import HOOKS, load_factory, load_weights, set_hooks, weights_for
+from .run import open_checkpoint, open_session, parse_layers
 
 
 def _send(f, obj):
@@ -77,11 +77,6 @@ def serve(argv):
     calls until "close"."""
     import komorebi as km  # noqa: PLC0415 (only the piece's process opens cards)
 
-    try:  # the module name the pieces check the weights' type against
-        from galaxy.reference.model_loader import Checkpoint  # noqa: PLC0415
-    except ImportError:
-        from ..reference.model_loader import Checkpoint  # noqa: PLC0415
-
     factory, cards, layers, ckpt, down, up, kernel_bytes, load = argv
     rx, tx = os.fdopen(int(down), "rb"), os.fdopen(int(up), "wb")
 
@@ -93,10 +88,10 @@ def serve(argv):
 
     try:
         session = open_session(km, parse_layers(cards, 0), int(kernel_bytes) or None)
-        weights = Checkpoint(ckpt)
-        if load != "-":
-            weights = load_weights(session, load, parse_layers)
-        piece = load_factory(factory)(session, weights, parse_layers(layers, 40))
+        loaded = None if load == "-" else load_weights(session, load, parse_layers)
+        make = load_factory(factory)
+        weights = weights_for(make, loaded, open_checkpoint(ckpt))
+        piece = make(session, weights, parse_layers(layers, 40))
         set_hooks(piece, {n: lambda *a, _n=n: hook(_n, a) for n in HOOKS})
         _send(tx, ("result", piece.sites))
         while True:

@@ -2,6 +2,8 @@
 wait, a stream's C++, a tensor's page format, and the moves and hand-overs the build
 reports."""
 
+import ast
+
 from komorebi.dsl.compile import layout
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.layout import REGION_PAGE, WRITE_ITEMS, block_step
@@ -20,9 +22,28 @@ def handover(frame, node, what, sender, receivers):
     )
 
 
+def every_call(frame, node):
+    """Whether `node` runs at every call of the handler: not in the body or else of
+    an if, a loop or a conditional expression (a loop's iterable runs)."""
+    if frame.definition is None:
+        return False
+    for outer in ast.walk(frame.definition):
+        if isinstance(outer, (ast.If, ast.For, ast.While)):
+            parts = [*outer.body, *outer.orelse]
+        elif isinstance(outer, ast.IfExp):
+            parts = [outer.body, outer.orelse]
+        else:
+            continue
+        if any(inner is node for part in parts for inner in ast.walk(part)):
+            return False
+    return True
+
+
 def moved(frame, node, tensor, how):
+    text = line_text(frame.where, node)
+    every = every_call(frame, node)
     frame.compiled.moves.append(
-        Move(frame.method.name, node.lineno, line_text(frame.where, node), tensor, how)
+        Move(frame.method.name, node.lineno, text, tensor, how, every)
     )
     mover = {"page write": "B", "fill": "A"}.get(how)
     if mover is not None:

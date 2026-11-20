@@ -33,6 +33,7 @@ CANDIDATE_SOURCE = 20
 MAX_LEN = 4096
 PAGE = {"bfloat16": 2048, "float32": 4096}
 # the one set of compute options of every class on the box
+WEIGHTS = "checkpoint"  # the driver's W for make: the Checkpoint (driver/interface.py)
 COMPUTE = {"math_fidelity": "HiFi2", "fp32_dest_acc_en": True, "dst_full_sync_en": True}
 # the attention's key list: tile 0 the sink, 1-4 the window, 5 a prefill block's own
 # keys, from tile ENTRY0 the selected entries (entry j in row 32 ENTRY0 + j)
@@ -104,7 +105,7 @@ class Linear(km.Program, compute=COMPUTE):
             km.Stream(wx.tiles[k0:k1, first : first + width], block=2 * width),
         ):
             acc += product(xb, wb)
-        whole = km.reduce(acc, form="tree", group=split)
+        whole = km.reduce(acc, form="tree", group=split, local=True)
         if self.rank == self.leader:
             yx.pages(y0 + first, width).write(whole)
 
@@ -323,7 +324,7 @@ def f32(t):
 class Piece:
     sites = ("compressor", "indexer", "sparse_attn")
 
-    def __init__(self, session, ckpt, layers, sites=None, log=None):
+    def __init__(self, session, ckpt, layers, sites=None, log=None, run=None):
         self.session = session
         self.sites = tuple(sites or Piece.sites)
         self.log = log or (lambda m: print(m, file=sys.stderr, flush=True))
@@ -338,14 +339,16 @@ class Piece:
             or (indexer and any(m >= li for m in want if m in INDEX_SOURCES))
         ]
         self.index_layers = [li for li in INDEX_SOURCES if indexer and li in want]
-        self.ranks = getattr(session, "ranks", 79)
+        # a command's ranks: the first island's (joined islands: 4 are link cores)
+        graph = getattr(session, "graph", None)
+        self.ranks = getattr(session, "ranks", 79) if graph is None else graph.count(0)
         t0 = time.monotonic()
         self._tensors(ckpt)
         self.log(
             f"piece: tensors in {time.monotonic() - t0:.1f} s (kv {self.kv_layers}, "
             f"index {self.index_layers})"
         )
-        self._load()
+        self._load(run)
         self.state = {
             li: {"k": torch.zeros(MAX_LEN // KV_SOURCES[li], IDX, dtype=torch.bfloat16)}
             for li in self.kv_layers
@@ -470,7 +473,7 @@ class Piece:
             self.tp = s.empty((32 * ROWS, 32 * COLS), "bfloat16", "tile")
             self.to = s.empty((32 * ROWS, HEAD), "bfloat16", "tile")
 
-    def _load(self):
+    def _load(self, run=None):
         common = dict(session=self.session, log=self.log, form="runtime")
         t0 = time.monotonic()
         programs = []  # (program, ranks it starts on)
@@ -493,6 +496,7 @@ class Piece:
                 packed=self.tpk,
                 handlers={"linear_x": [self.p_wq, self.p_wp]},
                 **common,
+                **self._rect(),
             )
             programs.append(self.index)  # first: its broadcasts' rectangle (0, 72)
             plans.update(wq_b=self.p_wq, weights_proj=self.p_wp)
@@ -529,22 +533,43 @@ class Piece:
             programs.append(self.attend)
         for program in programs:  # the one load's place for the service overlay
             program.slots(count=1, service="shared")
-        # one run; the cores switch program (a load command, a few us) when a site needs
-        # another: the first program on the ranks the others leave, each other one rank
-        r = self.ranks
+        self.held = None  # the first submit loads its program on every rank
+        if run is not None:  # the shared load (projects/galaxy/load): handed to it
+            run.take({p: (0, self.session.ranks) for p in programs})
+            self.run = run
+            return
+        # one run, switched as a site needs another program: the first on the island.s
+        # ranks the others leave, each other one rank, the last on the later islands too
+        r, every = self.ranks, self.session.ranks
         first = r - (len(programs) - 1)
         groups = {programs[0]: (0, first)}
         groups.update({p: (first + i, 1) for i, p in enumerate(programs[1:])})
+        last = programs[-1]
+        groups[last] = (groups[last][0], every - groups[last][0])
         self.run = self.session.load(groups)
-        self.held = None  # the first submit loads its program on every rank
         self.log(
             f"piece: {[type(p).__name__ for p in programs]} built and loaded in "
             f"{time.monotonic() - t0:.1f} s; plans {plans}"
         )
 
+    def _rect(self):
+        """A broadcast class's rectangle on joined islands: the first island's whole
+        rows (the grid is not its ranks); one chip: the grid, given by nothing."""
+        if getattr(self.session, "graph", None) is None:
+            return {}
+        columns = self.session.nocs().grid[0]
+        return {"rect": (0, 0, columns, self.ranks // columns)}
+
+    def _holds(self, program):
+        """Whether the ranks hold `program`: a shared load says (another piece may
+        have switched them); a load of its own, the last one loaded."""
+        if hasattr(self.run, "take"):
+            return self.run.holds(program, (0, self.ranks))
+        return program is self.held
+
     def _submit(self, program, name, group, words, us):
         # a load to the cores' program sets its buffers up again (empty)
-        if program is not self.held:
+        if not self._holds(program):
             t0 = time.monotonic()
             self.run.wait(self.run.load(program, group=(0, self.ranks)), timeout=30.0)
             self.held = program
@@ -854,26 +879,32 @@ def entry_mask(seen):
     return np.where(tiles, 0.0, MASKED).astype(np.float32).reshape(-1, 32)
 
 
-def make(session, weights, layers, sites=None):
-    """The piece for `sites` (default all three) of `layers`, on `session`'s chip."""
+def make(session, weights, layers, sites=None, run=None):
+    """The piece for `sites` (default all three) of `layers`, on `session`'s chip;
+    `run`: the shared load (projects/galaxy/load) its classes go to, else its own."""
     from galaxy.reference.model_loader import Checkpoint  # noqa: PLC0415
 
     assert isinstance(
         weights, Checkpoint
     ), "version 1 converts from the checkpoint (verify --ckpt)"
-    return Piece(session, weights, layers, sites)
+    return Piece(session, weights, layers, sites, run=run)
 
 
-def make_compressor(session, weights, layers):
+def make_compressor(session, weights, layers, run=None):
     """The site `compressor` alone (its class alone in the run)."""
-    return make(session, weights, layers, ("compressor",))
+    return make(session, weights, layers, ("compressor",), run=run)
 
 
-def make_indexer(session, weights, layers):
+def make_indexer(session, weights, layers, run=None):
     """The site `indexer` alone (its class alone in the run)."""
-    return make(session, weights, layers, ("indexer",))
+    return make(session, weights, layers, ("indexer",), run=run)
 
 
-def make_sparse_attn(session, weights, layers):
+def make_sparse_attn(session, weights, layers, run=None):
     """The site `sparse_attn` alone (its class alone in the run)."""
-    return make(session, weights, layers, ("sparse_attn",))
+    return make(session, weights, layers, ("sparse_attn",), run=run)
+
+
+def make_compress_index(session, weights, layers, run=None):
+    """The sites `compressor` and `indexer` (their two classes, not the attention's)."""
+    return make(session, weights, layers, ("compressor", "indexer"), run=run)

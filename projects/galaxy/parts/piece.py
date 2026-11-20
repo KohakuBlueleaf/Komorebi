@@ -30,6 +30,21 @@ POSTS = ("hc_attn_post", "hc_ffn_post")
 SITES = (*NORMS, *MIXES, *PRES, *POSTS, "engram_mix", "head", "choose")
 HEAD = [f"head.s{q}@bfloat16" for q in range(4)]  # the loader's four slices
 ENGRAM = (1, 14)  # the layers with Engram
+GLOBAL = ("hc_head_pre", "final_norm", "head", "choose")  # the sites of the layer None
+
+
+def serves(site, layer):
+    """Whether `site` is at `layer` (None: the global sites after the last layer)."""
+    if site in GLOBAL:
+        return layer is None
+    return layer in ENGRAM if site == "engram_mix" else layer is not None
+
+
+def refuse(site, layer):
+    """The refusal by name of a call to `site` at a layer that has none."""
+    at = {"engram_mix": f"layers {ENGRAM}", **dict.fromkeys(GLOBAL, "layer None")}
+    only = at.get(site, "the numbered layers")
+    raise KeyError(f"{site}: layer {layer} has no {site} (it is at {only})")
 
 
 def host(values, dtype):
@@ -59,6 +74,22 @@ def done(run, ticket, name):
     return event.microseconds
 
 
+def hand(session, programs, run):
+    """The run the programs take commands on: `run` (the shared load,
+    projects/galaxy/load), the programs handed to it; None: a load of their own."""
+    if run is None:
+        return session.load(programs[0] if len(programs) == 1 else programs)
+    run.take({program: (0, session.ranks) for program in programs})
+    return run
+
+
+def ready(run, program, group):
+    """In a shared load, `program` loaded on `group` first when another piece left
+    those ranks holding another program; a load of its own: nothing to do."""
+    if hasattr(run, "take") and not run.holds(program, group):
+        done(run, run.load(program, group), f"switch to {program.name}")
+
+
 class NormPart:
     """The norms of every width (one class, norms.RmsNorm) on the chip, every weight of
     `names` written once here: `__call__(x, name)` with x [s, width] -> [s, width]
@@ -66,7 +97,7 @@ class NormPart:
 
     WIDTHS = (DIM, 1280, 512)
 
-    def __init__(self, session, names):
+    def __init__(self, session, names, run=None):
         self.session, self.parts = session, {}
         for width in self.WIDTHS:
             e = session.empty((32, 32 * nm.EACH), "float32", "tile")
@@ -81,7 +112,7 @@ class NormPart:
         self.program = nm.RmsNorm(
             log=nm.log, session=session, form="runtime", x=x, w=w, e=e, out=out
         )
-        self.run = session.load(self.program)
+        self.run, self.own = hand(session, [self.program], run), run is None
         self.weights = {}
         for name in names:  # float32: the norm reads it by .row()
             weight = cache.held(name).reshape(-1)
@@ -97,6 +128,7 @@ class NormPart:
         rows[:s] = x
         put(self.session, xt, rows, "bfloat16")
         group = (0, nm.cores(width))
+        ready(self.run, self.program, group)
         us = done(
             self.run,
             self.run.submit(nm.RmsNorm.norm, group, args=(xt, w, e, out)),
@@ -105,7 +137,8 @@ class NormPart:
         return get(self.session, out, (32, width), "bfloat16")[:s], {"norm": us}
 
     def close(self):
-        self.run.stop()
+        if self.own:
+            self.run.stop()
         for t in (
             *[t for ts in self.parts.values() for t in ts],
             *self.weights.values(),
@@ -117,8 +150,10 @@ class MhcPart:
     """mhc.Mhc on the chip, the hc_fn of every prefix (layers.N.hc_attn, ...) written
     once here; scale and base kept on the host for the split."""
 
-    def __init__(self, session, prefixes):
-        self.m = mhc.Mhc(session)
+    def __init__(self, session, prefixes, run=None):
+        self.m = mhc.Mhc(session, run)
+        if run is not None:
+            hand(session, [self.m.mp], run)
         self.fn, self.split = {}, {}
         for prefix in prefixes:
             # held [20,480, 24]: the [24, in] of the reference
@@ -128,8 +163,12 @@ class MhcPart:
                 for n in ("scale", "base")
             ]
 
+    def ready(self):
+        ready(self.m.run, self.m.mp, self.m.group)
+        return self.m
+
     def mixes(self, x, prefix):
-        mixes, us = self.m.mixes(x, self.fn[prefix])
+        mixes, us = self.ready().mixes(x, self.fn[prefix])
         return mixes, {"mixes": us[0], "gather": us[1]}
 
     def close(self):
@@ -152,9 +191,11 @@ class EngramPart:
     q_weight and k_weight rows written once here; `use(layer)` points the commands at
     that layer's (no write)."""
 
-    def __init__(self, session, weights, layers):
+    def __init__(self, session, weights, layers, run=None):
         first = weights[f"layers.{layers[0]}.engram.wkv@bfloat16"]
-        self.e = e = en.EngramMix(session, first.arena, first.first)
+        self.e = e = en.EngramMix(session, first.arena, first.first, run)
+        if run is not None:
+            hand(session, [e.kp], run)
         self.own = (e.q, e.kw)
         self.layers = {}
         for n in layers:
@@ -167,6 +208,7 @@ class EngramPart:
 
     def use(self, layer):
         e = self.e
+        ready(e.run, e.kp, (0, max(en.KV_CORES, en.HC * en.GROUP)))
         e.w, e.at, e.q, e.kw = self.layers[layer]
 
     def close(self):
@@ -182,7 +224,7 @@ class HeadPart:
     on the box) and each one's ids beside the shared x, y, c, g, r; the logits and the
     choice command by command, a slice after another."""
 
-    def __init__(self, session, slices):
+    def __init__(self, session, slices, run=None):
         self.session = s = session
         n = hd.CORES * hd.WIDTH * 32
         self.ts = ts = hd.Tensors(session, False)
@@ -201,16 +243,18 @@ class HeadPart:
             g=ts.g,
             r=ts.r,
         )
+        # its own load is a list (one layout: beside); a shared load switches them
+        beside = {"beside": self.cp} if run is None else {}
         self.lp = hd.HeadLogits(
             log=hd.log,
             session=s,
             form="runtime",
-            beside=self.cp,
+            **beside,
             x=ts.x,
             w=self.slices[0][0],
             y=ts.y,
         )
-        self.run = s.load([self.cp, self.lp])
+        self.run, self.own = hand(s, [self.cp, self.lp], run), run is None
         self.group = (0, hd.CORES)
 
     def logits(self, x):
@@ -220,6 +264,7 @@ class HeadPart:
         rows[0] = x
         ts.write_x(0, rows)
         out, us = [], []
+        ready(run, self.lp, self.group)
         for w, at in self.slices:
             us.append(
                 done(
@@ -248,6 +293,7 @@ class HeadPart:
             y[0] = slots.reshape(-1)
             raw, _ = formats.to_bytes(y, "float32", "tile")
             ts.put(ts.y, 0, raw)
+            ready(run, self.cp, self.group)
             us["choose"].append(
                 done(
                     run,
@@ -271,7 +317,8 @@ class HeadPart:
         return best_i, us
 
     def close(self):
-        self.run.stop()
+        if self.own:
+            self.run.stop()
         ts = self.ts
         for t in (ts.x, ts.w, ts.y, ts.c, ts.g, ts.r, *self.ids):
             t.free()
@@ -279,21 +326,34 @@ class HeadPart:
 
 class PartsPiece:
 
-    def __init__(self, session, weights, layers, sites=SITES):
-        self.session, self.W, self.layers = session, weights, layers
-        self.sites = sites
+    def __init__(self, session, weights, layers, sites=SITES, run=None):
+        self.session, self.W, self.given = session, weights, list(layers)
+        self.layers = [n for n in layers if n is not None]
+        self.sites, self.run = sites, run
         self.part, self.part_key = None, None
         self.spent = {}
+        self.made = {}  # a shared load: every part made here, its classes handed to it
         for key, part in PARTS.items():  # one part's instance: its part made here
-            if tuple(sites) == part:
+            if not self._has(part):  # none of its sites at a layer given: not made
+                continue
+            if run is not None:
+                self.made[key] = getattr(self, f"_make_{key}")()
+            elif tuple(sites) == part:
                 self._use(key, getattr(self, f"_make_{key}"))
+
+    def _has(self, part):
+        """Whether a site of `part` asked of this instance is at a layer given."""
+        return any(serves(s, n) for s in part if s in self.sites for n in self.given)
 
     def _make_norms(self):
         held = set(cache.select(formats=["bfloat16"]))
         names = {
-            pattern.format(L=n) for _, pattern in NORMS.values() for n in self.layers
+            pattern.format(L=n)
+            for site, (_, pattern) in NORMS.items()
+            for n in self.given
+            if serves(site, n)
         }
-        return NormPart(self.session, sorted(names & held))
+        return NormPart(self.session, sorted(names & held), self.run)
 
     def _make_mixing(self):
         held = set(cache.select(formats=["float32"]))
@@ -303,16 +363,18 @@ class PartsPiece:
             for kind in MIXES.values()
             if f"layers.{n}.{kind}_fn@float32" in held
         ]
-        return MhcPart(self.session, prefixes)
+        return MhcPart(self.session, prefixes, self.run)
 
     def _make_engram(self):
         layers = [n for n in ENGRAM if n in self.layers]
-        return EngramPart(self.session, self.W, layers)
+        return EngramPart(self.session, self.W, layers, self.run)
 
     def _make_head(self):
-        return HeadPart(self.session, [self.W[n] for n in HEAD])
+        return HeadPart(self.session, [self.W[n] for n in HEAD], self.run)
 
     def _use(self, key, make):
+        if key in self.made:  # a shared load: every part kept, no load between
+            return self.made[key]
         if self.part_key != key:
             if self.part is not None:
                 self.part.close()
@@ -323,6 +385,11 @@ class PartsPiece:
     def __call__(self, site, layer, *inputs):
         if site not in self.sites:
             raise KeyError(f"{site}: not a site of this instance ({self.sites})")
+        if not serves(site, layer):
+            refuse(site, layer)
+        if layer not in self.given:
+            given = self.given
+            raise KeyError(f"{site}: layer {layer} is not one of this piece's {given}")
         t0 = time.monotonic()
         out = getattr(self, f"_{site}" if hasattr(self, f"_{site}") else "_site")(
             site, layer, *inputs
@@ -345,6 +412,8 @@ class PartsPiece:
         width, name = NORMS[site]
         name = name.format(L=layer)
         part = self._use("norms", self._make_norms)
+        if name not in part.weights:
+            refuse(site, layer)
         y, self.spent = part(numpy(x[0]), name)
         return host(y[None], x.dtype)
 
@@ -354,6 +423,8 @@ class PartsPiece:
     def _mixes(self, site, layer, x):
         prefix = f"layers.{layer}.{MIXES[site]}"
         part = self._mhc()
+        if prefix not in part.fn:
+            refuse(site, layer)
         mixes, self.spent = part.mixes(numpy(x[0]), prefix)
         # the reference's own split (the driver's tree; not this one's)
         from galaxy.reference.cpu_kernels import hc_split_sinkhorn  # noqa: PLC0415
@@ -365,13 +436,13 @@ class PartsPiece:
 
     def _pre(self, site, layer, x, pre_mix):
         part = self._mhc()
-        y, us = part.m.pre(numpy(x[0]), numpy(pre_mix[0]))
+        y, us = part.ready().pre(numpy(x[0]), numpy(pre_mix[0]))
         self.spent = {"pre": us}
         return host(y[None], x.dtype)
 
     def _post(self, site, layer, x, residual, post, comb):
         part = self._mhc()
-        y, us = part.m.post(
+        y, us = part.ready().post(
             numpy(x[0]), numpy(residual[0]), numpy(post[0]), numpy(comb[0])
         )
         self.spent = {"post": us}
@@ -395,6 +466,8 @@ class PartsPiece:
         return torch.tensor([token], dtype=torch.int64)
 
     def close(self):
+        for part in self.made.values():
+            part.close()
         if self.part is not None:
             self.part.close()
             self.part, self.part_key = None, None
@@ -409,24 +482,24 @@ PARTS = {  # one instance a part (its own process and chip): its sites
 
 
 def names(layers, sites=SITES):
-    """The loader's names of the large weights the sites read: the head's slices and
-    the Engram layers' wkv (bf16, an arena's pages each)."""
-    head = HEAD if "head" in sites else []
+    """The loader's names of the large weights the sites read: the head's slices (the
+    layer None) and the Engram layers' wkv (bf16, an arena's pages each)."""
+    head = HEAD if "head" in sites and None in layers else []
     engram = [f"layers.{n}.engram.wkv@bfloat16" for n in ENGRAM if n in layers]
     return head + (engram if "engram_mix" in sites else [])
 
 
-def make(session, weights, layers, sites=SITES):
-    """The piece on the session's chip, for `sites` (all by default; one part's: the
-    make_<part> factories, each loading only its part). `weights`: the loader's W when
-    it holds the sites' large weights on this chip; else they are loaded here."""
-    layers = [n for n in layers if n is not None]
+def make(session, weights, layers, sites=SITES, run=None):
+    """The piece for `sites` (all by default; make_<part>: one part's). `weights`: the
+    loader's W when it holds the sites' large weights; else loaded here. `run`: the
+    shared load (projects/galaxy/load) every part's classes go to; None: a part's own
+    load, made again when another part is called (none with no site at `layers`)."""
     wanted = names(layers, sites)
     if wanted and not (
         hasattr(weights, "arenas") and all(n in weights for n in wanted)
     ):
         weights = cache.loader.load(session, wanted)
-    return PartsPiece(session, weights, layers, sites)
+    return PartsPiece(session, weights, layers, sites, run)
 
 
 def make_norms(session, weights, layers):

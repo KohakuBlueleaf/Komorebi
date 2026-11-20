@@ -366,28 +366,11 @@ def at_submit(frame, node, check):
     """Keeps `check` for the handler's submit (front.HandlerMethod.bounds_checked)
     where every part of it is known there and its line runs at every call (in no
     if, loop body or branch of the handler)."""
-    if None in check or not every_call(frame, node):
+    if None in check or not handler_buffers.every_call(frame, node):
         return
     entry = [ast.unparse(node), *check]
     if entry not in frame.bounds:
         frame.bounds.append(entry)
-
-
-def every_call(frame, node):
-    """Whether `node` runs at every call of the handler: not in the body or else of
-    an if, a loop or a conditional expression (a loop's iterable runs)."""
-    if frame.definition is None:
-        return False
-    for outer in ast.walk(frame.definition):
-        if isinstance(outer, (ast.If, ast.For, ast.While)):
-            parts = [*outer.body, *outer.orelse]
-        elif isinstance(outer, ast.IfExp):
-            parts = [outer.body, outer.orelse]
-        else:
-            continue
-        if any(inner is node for part in parts for inner in ast.walk(part)):
-            return False
-    return True
 
 
 def known_end(frame, end):

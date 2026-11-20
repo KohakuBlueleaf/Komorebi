@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from ..reference.model_loader import Checkpoint
-from .interface import load_factory, load_weights, set_hooks
+from .interface import load_factory, load_weights, set_hooks, weights_for
 from .run import open_session, parse_layers
 
 _DT = {
@@ -119,7 +119,7 @@ def main():
     ap.add_argument(
         "--ckpt",
         default=None,
-        help="checkpoint dir: W = its Checkpoint when no --load",
+        help="checkpoint dir: its Checkpoint, for a piece that declares it takes it",
     )
     ap.add_argument("--sites", default=None)
     ap.add_argument("--layers", default=None)
@@ -132,21 +132,20 @@ def main():
         import komorebi as km  # noqa: PLC0415 (only a run with box pieces needs it)
 
         session = open_session(km, parse_layers(a.cards, 0), a.kernel_bytes)
-    if a.load:
-        W = load_weights(session, a.load, parse_layers)
-    elif a.ckpt:
-        W = Checkpoint(a.ckpt)
-    else:
-        W = None
+    W = load_weights(session, a.load, parse_layers) if a.load else None
+    ckpt = Checkpoint(a.ckpt) if a.ckpt else None
     layers = parse_layers(a.layers, 40) if a.layers else list(range(40)) + [None]
     factories = [load_factory(spec) for spec in a.piece]
     if len(factories) == 1:
-        pieces = [factories[0](session, W, layers)]
+        pieces = [factories[0](session, weights_for(factories[0], W, ckpt), layers)]
     else:  # one load that stays, every piece's programs in it (projects/galaxy/load)
         from projects.galaxy.load.shared import Shared  # noqa: PLC0415
 
         run = Shared(session)
-        pieces = [factory(session, W, layers, run=run) for factory in factories]
+        pieces = [
+            factory(session, weights_for(factory, W, ckpt), layers, run=run)
+            for factory in factories
+        ]
         run.start()
     of_site = {}
     for piece in pieces:

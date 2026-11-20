@@ -988,7 +988,7 @@ class HalfSync(km.Program, compute={"dst_full_sync_en": False}):
     @km.handler
     def apply(self, x: km.Tensor):
         acc = km.tile.zeros(km.fp32, 6)
-        for tile in km.Stream(x.pages(0, 4), block=4):
+        for tile in km.Stream(x.pages(0, 6), block=6):
             acc += tile
 
 

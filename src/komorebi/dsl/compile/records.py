@@ -47,13 +47,15 @@ class Buffer:
 @dataclass
 class Move:
     """A line that moves pages: its handler, line and text, the tensor, and how
-    (a read stream, a write stream, a page write, a fill)."""
+    (a read stream, a write stream, a page write, a fill); `every`: it runs at every
+    call of the handler (not in an if, a loop or a conditional expression)."""
 
     handler: str
     line: int
     text: str
     tensor: str
     how: str
+    every: bool = False
 
 
 @dataclass

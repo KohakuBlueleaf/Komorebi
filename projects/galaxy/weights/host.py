@@ -36,8 +36,9 @@ def held(name, placement=loader.PLACEMENT, cache=loader.CACHE):
     tile_bytes, by_name, _ = _entries(placement)
     e = by_name[name]
     tile = tile_bytes[e["dtype"]]
-    with open(convert.arena_path(cache, e["island"], e["dtype"]), "rb") as f:
-        f.seek(e["first"] * tile)
+    island, first = e.get("cache", (e["island"], e["first"]))  # its cache position
+    with open(convert.arena_path(cache, island, e["dtype"]), "rb") as f:
+        f.seek(first * tile)
         raw = np.frombuffer(f.read(e["pages"] * tile), np.uint8)
     shape = formats.padded_shape(e["shape"], "tile")
     values = formats.from_bytes(raw, shape, e["dtype"], "tile")

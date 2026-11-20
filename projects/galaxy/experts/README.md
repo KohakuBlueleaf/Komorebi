@@ -97,9 +97,31 @@ its own island.
 makes: `r.take({tree: every rank, moe: every rank})`, the tree first, since a hand
 program can only be a dict's. The piece then loads nothing and goes through `r`'s
 `load`, `submit`, `wait` and `store`. Every class added beside it must hold bfloat16 or
-no buffer at indices 0, 1, 18, 20, 21, 22, 26 and 27, and uint32 or none at 23. The shared run says what
-the cores hold (`run.holds`); the piece asks it before a switch, since another piece may
+no buffer at indices 0, 1, 18, 20, 21, 22, 24 and 25, and uint32 or none at 23 (26 to
+31 are the runtime's own). The shared run says what
+the cores hold (`run.holding`); the piece asks it before a switch, since another piece may
 have switched them between two calls.
+
+## The tree kernels
+
+`kernels/` holds the tree in the runtime's form (`km_program`, a program of a load that
+switches program). The block goes down a spanning tree of the islands into each island's
+own copy in DRAM, and the islands' results come up the same tree, added on Tensix at each
+island (its own slice and its children's, fp32 in Dst), the sum written into the home's
+DRAM. An island works on it with S cores, n tiles (bf16, 2 KiB) each: core s takes from
+and puts to core s of its neighbours. The tree comes in the command: a parent an island.
+
+- `reader.cpp`: core s takes its children's sync pages. Down, the home reads its slice
+  of x for the writer, and another island takes its parent's block and writes it into
+  its own copy. Up, it reads its own y slice for compute and takes its children's sums,
+  and the home writes compute's total into its DRAM.
+- `writer.cpp`: the sync; the block down (the home's slice from its reader, another
+  island's from its parent, copied to the buffer it sends from and put to each child);
+  the sums up (compute's sum put to its parent); the home's ticks from after the sync to
+  its end.
+- `compute.cpp`: an island's sum, tile by tile: its own slice's tile and each child's,
+  added in Dst (fp32), packed to the sum's buffer.
+- `tree.h`: the handlers, the phase bits of the command's first word, the buffer indices.
 
 ## The sites
 
@@ -130,23 +152,3 @@ have switched them between two calls.
 - In the runtime form the cards' command times are longer than in the kernel form (layer
   3, a 32-token block, four islands): `up` of the experts 2,741 against 2,367 us, `down`
   1,320 against 1,105 us, `route` 66 against 49 us. Not looked into.
-
-## The tree kernels (kernels/)
-
-`tree.h`: the block's activation goes down a spanning tree of the islands into each
-island's own copy in DRAM, and the islands' results come up the same tree, added on Tensix
-at each island (its own slice and its children's, fp32 in DST), the sum written into the
-home island's DRAM. S cores an island, n tiles (bf16, 2 KiB) each: core s takes from and
-puts to core s of its neighbours. The tree comes in the command: a parent an island. The
-runtime's form (km_program): a program of one load that switches program.
-
-`reader.cpp`: an island's core s takes the sync pages of its children; down, the home reads
-its slice of x for the writer, another island takes its parent's block and writes it into
-its own copy; up, it reads its own y slice for compute, takes its children's sums, and the
-home writes compute's total into its DRAM.
-
-`writer.cpp`: the sync; the block down (the home's slice from its reader, another island's
-from its parent, copied to the buffer it sends from and put to each child); the sums up
-(compute's sum put to its parent; the home's reader writes it); the home's ticks from after
-the sync to its end. The stamp handler's word 0 picks the writer's ticks after the sync (0)
-or the home reader's on the way up (1).

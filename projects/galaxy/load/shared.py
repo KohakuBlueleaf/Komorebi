@@ -14,7 +14,7 @@ SHARED = {"math_fidelity": "HiFi2", "fp32_dest_acc_en": True, "dst_full_sync_en"
 
 class Hold(km.Program, compute=SHARED):
     """The dict's program of a load with no hand program: a page copy, its buffers at
-    index 0 and 16 only (bfloat16), where the added classes' formats must agree."""
+    index 0 and 16 only (bfloat16); an added class keeps its own formats there."""
 
     @km.handler
     def copy(self, x: km.Tensor, y: km.Tensor):

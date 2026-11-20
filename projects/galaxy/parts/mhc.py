@@ -68,7 +68,7 @@ class Hc(km.Program, compute=COMPUTE):
             x.tiles[0:1, first : first + self.K_EACH], block=2, row=self.K_EACH
         ):
             self.sq.write(square_sums(row))
-        km.all_reduce(self.sq)
+        km.all_reduce(self.sq, local=True)
         acc = km.tile.zeros(km.fp32, 1)
         for xb, wb in zip(
             km.Stream(x.tiles[0:1, first : first + self.K_EACH], block=2),
@@ -160,7 +160,7 @@ class Mhc:
     the box commands' microseconds.
     """
 
-    def __init__(self, session):
+    def __init__(self, session, run=None):
         self.session = session
         self.x = session.empty((32, FLAT), "bfloat16", "tile")
         self.w = session.empty((FLAT, 32), "float32", "tile")
@@ -180,7 +180,10 @@ class Mhc:
         )
         # built for size: the default kernel buffer of a session holds them then
         self.mp = self.xp = Hc(log=log, session=session, form="runtime", **t)
-        self.run = session.load(self.mp)
+        # run: (None: a load of its own; else the run given, its programs already in it)
+        self.run, self.loaded = (
+            (session.load(self.mp), True) if run is None else (run, False)
+        )
         self.group = (0, CORES)
         self.fn = None
 
@@ -261,7 +264,8 @@ class Mhc:
         return out.transpose(1, 0, 2), us
 
     def stop(self):
-        self.run.stop()
+        if self.loaded:
+            self.run.stop()
 
 
 def errors(got, want):

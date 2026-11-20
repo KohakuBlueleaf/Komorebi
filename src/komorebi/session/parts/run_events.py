@@ -233,6 +233,14 @@ class EventsMixin:
         if timeout is not None:
             self._fail_timeout(timeout)
 
+    def _own_part(self, handle, group):
+        """The cores command `handle` (its flat `group`) went to on this island, as
+        _local; the stop's EXIT went to every core of the island, its link cores too."""
+        if handle != self._exit_handle:
+            return self._local(group)
+        base = self.island_cores[0]
+        return base, min(self.island_span, self._workers - base)
+
     def _local(self, group):
         """The part of a flat group on this island, (first core, count) in its own
         cores; count 0 when it has none (one island: the group)."""
@@ -245,7 +253,8 @@ class EventsMixin:
         if not hasattr(self.backend, "inspect"):
             return False
         group = self.group(event.handle)
-        count = self._local(group)[1] if group and group[0] is not None else 0
+        known = group and group[0] is not None
+        count = self._own_part(event.handle, group)[1] if known else 0
         read = self.backend.inspect(count)
         tag = getattr(getattr(self.backend, "port", None), "tag", None)
         if read["given_up"] == self._given_up_seen:
@@ -275,7 +284,8 @@ class EventsMixin:
         """An island run's command given up: the cores of its parts on the other
         islands, as their dispatchers read them (IslandRun._far_cores); [] otherwise."""
         far, group = self.far_cores, self.group(handle)
-        if far is None or not group or group[0] is None:
+        exits = handle == self._exit_handle  # every core of this island alone
+        if far is None or not group or group[0] is None or exits:
             return []
         return far(group)
 

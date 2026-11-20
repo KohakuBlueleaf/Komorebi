@@ -1046,6 +1046,7 @@ class IslandRun(TreeCalls, RunCalls):
                 [ranks.get(core, core) for core in error.recovered],
                 ranks=True,
                 links=error.links,
+                own=getattr(error, "own", False),
             )
             if isinstance(error, MessagesGaveUp):  # its core's rank and island
                 (core,) = self._ranked(island, [{"core": error.gave["core"]}])

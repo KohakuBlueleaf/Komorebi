@@ -1,4 +1,4 @@
-"""The fixed prompts `en`, `zh` (32 tokens each) and `long` (README.md,
+"""The fixed prompts `en`, `zh` (32 tokens each), `en40` (40) and `long` (README.md,
 `reference/prompts.py`)."""
 
 import os
@@ -7,6 +7,9 @@ import sys
 PROMPTS = {
     "en": "Explain in two short sentences why the sky looks blue during the day but "
     "turns red and orange at sunset, close to the far horizon line.",
+    "en40": "Explain in three short sentences how a rainbow forms after a summer "
+    "storm, why its colors always appear in the same order, and why it is only seen "
+    "with the sun behind you.",
     "zh": "中国的首都是哪里？请用两三句话，简"
     "单介绍一下这座古老城市的悠久历史、传统"
     "文化、地方美食以及它著名的名胜古迹。",

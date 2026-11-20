@@ -129,6 +129,27 @@ def test_a_live_row_is_one_entry_command_an_island_at_its_offset():
     assert len(freed) == 2  # the scratch pages freed after every island is done
 
 
+@pytest.mark.parametrize("count", [5, 8, 31])
+def test_a_live_row_of_many_islands_has_a_page_of_whole_lines_that_holds_it(count):
+    """An entry is 16 + 16 B an island (144 B on 8 islands): the scratch page grows
+    to the 64 B lines from the row's offset to its end, every island's row whole."""
+    made, _, freed, written = live_session(0x1010)
+    made.sessions = made.sessions[:1] * count
+    made._tables = made._tables[:1] * count
+    made.run.runs = [IslandRunPart(118 * i) for i in range(count)]
+    size = islands.tensor_entry_bytes(count)
+    row = bytes(i % 251 for i in range(size))
+    made._entries[3] = SimpleNamespace(entry=lambda banks: row)
+    made._table_row(3)
+    offset = (0x1010 + 3 * size) % 64
+    for island, run in enumerate(made.run.runs):
+        assert run.queued[0][2] == (H["KM_ENTRY_TABLE"], 3, 0x40000 + offset)
+        page = written[island]
+        assert page.size == -(-(offset + size) // 64) * 64 and page.size % 64 == 0
+        assert bytes(page[offset : offset + size]) == row
+    assert len(freed) == count
+
+
 def test_a_row_made_with_no_live_run_is_written_by_the_host():
     made, _, _, _ = live_session(0x1000)
     made.run.stopped = True

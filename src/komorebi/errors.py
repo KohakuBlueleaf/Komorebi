@@ -356,7 +356,10 @@ class CommandTimeout(KernelFailed):
         recovered=(),
         ranks=False,
         links=(),
+        own=False,
     ):
+        # own: `group` is in the run's own cores (the stop's EXIT to every core of
+        # an island), not flat ranks
         named = _named_cores(cores)
         unit = "ranks" if ranks else "cores"
         first, count = group if group else (None, None)
@@ -379,9 +382,10 @@ class CommandTimeout(KernelFailed):
             if slot is not None and int(slot) >= EVENT_ISLAND
             else f"slot {slot}"
         )
+        whose = " of its own cores (the stop's EXIT to every core)" if own else ""
         super().__init__(
             f"command {handle} {what}: {place}, sequence {sequence}, "
-            f"group first {first} count {count}; {unit}: {named}{back}{on}",
+            f"group first {first} count {count}{whose}; {unit}: {named}{back}{on}",
             result=result,
             cores=cores,
         )
@@ -392,6 +396,7 @@ class CommandTimeout(KernelFailed):
         self.sequence = sequence
         self.group = group
         self.given_up = given_up
+        self.own = own
 
 
 class MessagesGaveUp(CommandTimeout):
@@ -623,3 +628,9 @@ class EngineTimeout(WaitTimeout):
     def __init__(self, message, handle):
         super().__init__(message)
         self.handle = handle
+
+
+class CommandOrderWarning(UserWarning):
+    """A command submitted, not exclusive, behind one without its event yet on
+    overlapping cores whose handler writes a tensor this one reads: on a core the
+    next command's reads start while the one before still writes (hazards.md)."""

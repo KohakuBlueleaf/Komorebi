@@ -71,7 +71,7 @@ def run_prompt(
 ):
     text = prompt_text(ref, ckpt, key)
     ids = encode(ref, ckpt, text)
-    assert key == "long" or len(ids) == 32, len(ids)
+    assert key not in ("en", "zh") or len(ids) == 32, len(ids)
     state.reset(ref)
     rec = Recorder(layers=set(layers) | {None})
     path.recorder = rec if record else None

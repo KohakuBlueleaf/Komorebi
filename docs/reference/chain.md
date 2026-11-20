@@ -457,6 +457,21 @@ The runtime's reader zeroes the chain's words once before its first command
 handler (whose message bins take that index); a part does not call
 it. The chain's stamps (`KM_CHAIN_STAMPS`) are not compiled into parts.
 
+A class made with `form="runtime"` and `chain=True` (or a `km.chain` method) walks a
+chain the same way: its movement part holds the kernel form's cases (the input's waits,
+the marks, a tree's credit) with `km::chain_reader` and `km::chain_writer` around them,
+and its compute part takes the records through `km::chain_compute`. A chain build
+whose kernels lack the walk is refused at the make (its chain command would otherwise
+be done with no record run), and so is `chain_stamps=True` in the runtime's form. On
+one Wormhole chip, 2026-11-21, a chain of products (y = x W, K = N = 512, a K split
+over 8 cores, each record reading the y the one before wrote) gave every y bit for
+bit equal to the same handler's commands at 1, 4 and 20 records:
+
+| Wormhole, 20 records | kernel form | runtime's form |
+|---|---:|---:|
+| the chain on the card, us a record | 19.2 | 19.9 |
+| a waited command of the same handler on the card, us | 22.7 | 23.9 |
+
 Example 29 runs both forms (`--form runtime`: `kernels/runtime/`, parts that call the
 kernel form's step functions), 200 runs a way, one Blackhole p150a, 2026-11-16:
 

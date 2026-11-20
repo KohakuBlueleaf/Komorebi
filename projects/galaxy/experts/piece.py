@@ -146,7 +146,8 @@ class MoePiece:
         hold another (a shared run says what they hold); sent every STORE_EVERY."""
         run = self._start(times)
         every = (0, self.s.ranks)
-        held = run.holds(program, every) if self.handed else None
+        holding = getattr(run, "holding", None) if self.handed else None
+        held = holding(program, every) if holding else None
         if not held and (held is not None or self.on is not program):
             queue.append(("switch", run.load(program, every)))
             self.on = program

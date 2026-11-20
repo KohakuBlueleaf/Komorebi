@@ -102,7 +102,7 @@ carries the sequence number. The command has landed when all four agree
 
 | Flag | Meaning |
 |---|---|
-| `KM_FLAG_EXCLUSIVE` (2) | never in flight together with a command whose group overlaps (`km::groups_overlap`). Required for commands that use ports or broadcasts |
+| `KM_FLAG_EXCLUSIVE` (2) | never in flight together with a command whose group overlaps (`km::groups_overlap`). Required for commands that use ports or broadcasts, and for a command that reads what an earlier one on a shared core writes: without it, a core's reader starts the next command's reads while its writer still writes the one before ([hazards](hazards.md#two-commands-on-overlapping-groups-that-must-run-in-order)) |
 | `KM_FLAG_RESULT` (4) | the leader acknowledges with `{ack, result}`; see `Writer::result` |
 | `KM_FLAG_QUEUE` (8) | dispatcher: the group allocator chooses `first` |
 

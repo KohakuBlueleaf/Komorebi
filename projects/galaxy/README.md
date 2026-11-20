@@ -124,6 +124,10 @@ A piece's module (in its worker's folder) exposes a factory:
   `galaxy.reference.model_loader.Checkpoint` (host memory-mapped views of the released
   tensors, by the same names) from which the piece converts and uploads what it needs
   itself;
+  which of the two a piece takes, its module (or factory) declares: `WEIGHTS =
+  "checkpoint"`, or nothing for the loader's handle (None when nothing was loaded: the
+  piece loads its own); `interface.weights_for(factory, loader, checkpoint)` picks it
+  for every tool and refuses by name when the Checkpoint is wanted and not given;
 - `layers`: the layer numbers the driver will call it for (a piece may prepare per layer
   at make time).
 
@@ -192,10 +196,16 @@ switch.
 list like `0-39` or `3,20` or `-` (the global sites), the optional last part the sites
 to route (default: all the piece offers); `+` adds another group of layers and sites
 for the same piece (one `make` with every layer named); a last `#cards` runs the piece in a
-process of its own with only those cards visible (its session, the Checkpoint as its
-weights, or with `#cards%layers@kinds[@formats]` the loader's W of those weights;
+process of its own with only those cards visible (its session; its weights by
+`weights_for`, with `#cards%layers@kinds[@formats]` the loader's W of those weights;
 `driver/remote.py`): two sessions in one process are refused. `--kernel-bytes`:
-the kernel buffer of a joined session. Without any --piece no session is opened:
+the kernel buffer of a joined session. `--prompt-by-decode`: a prompt
+longer than 32 tokens runs as its first 32 tokens in the one prefill block, then every
+further prompt token through a decode step with that token forced (no choice taken until
+the prompt ends): the same math as a whole prefill, a step a token. `--one-load`: the pieces of the driver's own session
+(those without `#cards`) are made with `run=`, a `load.shared.Shared` of that session,
+which loads once after the last `make` (`Shared.start`; the first program taken is the
+dict's, so list first the piece whose program must be it). Without any --piece no session is opened:
 everything is the reference.
 
 Free running (default): the driver's own tokens; it reports where they first differ from
@@ -323,4 +333,5 @@ The fixed prompts. `en` and `zh`: each exactly 32 tokens with the model's chat
 encoding (one prefill block of 32). `long`: a summary request over the start of the
 checkpoint's own README.md, cut to at most LONG_TOKENS tokens (the largest cut; 1,100 or
 a token less), so that a decode step's indexer chooses 512 of more than 512 entries
-(ratio 2: 550 entries at 1,100 positions; layer 20: 1,100).
+(ratio 2: 550 entries at 1,100 positions; layer 20: 1,100). `en40`: 40 tokens, for a run that
+puts the 8 tokens after the first block through decode steps (`driver.run --prompt-by-decode`).

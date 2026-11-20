@@ -149,8 +149,9 @@ class TableMixin:
 
     def _table_row_live(self, word, timeout=10.0):
         """Entry `word` written by every island's ranks (ENTRY with KM_ENTRY_TABLE): the
-        row in a page of each island's DRAM at its L1 place's offset mod 64, one
-        command an island, all handed before any is waited for."""
+        row in a page of each island's DRAM at its L1 place's offset mod 64, the page
+        whole 64 B lines that hold it (an entry grows with the islands), one command
+        an island, all handed before any is waited for."""
         h = abi.headers()
         size = islands.tensor_entry_bytes(len(self.sessions))
         row = np.frombuffer(self._entries[word].entry(self.dram_banks), np.uint8)
@@ -164,7 +165,7 @@ class TableMixin:
                     address = 0
                 else:
                     offset = (self._tables[island].address + word * size) % 64
-                    page = np.zeros(128, np.uint8)
+                    page = np.zeros(-(-(offset + size) // 64) * 64, np.uint8)
                     page[offset : offset + size] = row
                     scratch = self.sessions[island].tensor(
                         page.view(np.uint32)[None], "uint32"

@@ -272,6 +272,12 @@ def make(
         )
     walked = chain_made(self, cls, compiled, chain, tensors)
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
+    if chain_stamps and form == "runtime":
+        raise ProgramError(
+            f"{cls.__name__}: chain_stamps=True with {spelling('program_form')}="
+            "\"runtime\": the chain's stamps are not compiled into a program's parts; "
+            'stamp the chain in the kernel form (form="kernel")'
+        )
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
     if walked and islands[0] > 1:  # a share of K by island, a write by island
@@ -331,6 +337,8 @@ def make(
         log("  defines: " + ", ".join(f"{k}={v}" for k, v in defines.items()))
     report = may_cross(compiled, tensors)
     setattr(self, spelling("may_cross"), report)
+    self.writes_every_call = writes_every_call(compiled)
+    self.moved_tensors = moved_tensors(compiled)
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
@@ -718,6 +726,32 @@ CROSSING = {
 }
 
 
+def move_direction(move):
+    """A move's direction: "read" or "write"."""
+    reads = ("read stream", "fill", "broadcast's read", "word read")
+    return "read" if move.how in reads else "write"
+
+
+def writes_every_call(compiled):
+    """{handler: ((tensor, line, text), ...)}: the writes of each handler that run at
+    every call of it (a far write refused on the host: islands.local)."""
+    out = {}
+    for move in compiled.moves:
+        if move.every and move_direction(move) == "write":
+            out.setdefault(move.handler, []).append((move.tensor, move.line, move.text))
+    return {handler: tuple(writes) for handler, writes in out.items()}
+
+
+def moved_tensors(compiled):
+    """{handler: (tensors it reads, tensors it writes)}: the names its lines move pages
+    of, at any call (a command's order behind another at submit: session.run)."""
+    out = {}
+    for move in compiled.moves:
+        reads, writes = out.setdefault(move.handler, (set(), set()))
+        (reads if move_direction(move) == "read" else writes).add(move.tensor)
+    return {name: (frozenset(r), frozenset(w)) for name, (r, w) in out.items()}
+
+
 def may_cross(compiled, tensors):
     """The "may cross" report of a program made with island tensors (their
     placement): each move of each handler, whether a page of it can be another
@@ -727,11 +761,7 @@ def may_cross(compiled, tensors):
     lines = ["may cross (each move: its tensor's placement; what it lowers to):"]
     for move in compiled.moves:
         placement = tensors[move.tensor].placement
-        direction = (
-            "read"
-            if move.how in ("read stream", "fill", "broadcast's read", "word read")
-            else "write"
-        )
+        direction = move_direction(move)
         holders = [i for i, (_, steps) in enumerate(placement.parts) if steps]
         if placement.copy:
             where = "a copy on every island: each island's own"
@@ -1073,20 +1103,24 @@ def runtime_start(compiled, kernel):
 
 def runtime_movement_source(compiled):
     """The movement source in the runtime's form: the handler switch as a function
-    on the mover's runtime, called by each mover's km_program."""
+    on the mover's runtime, called by each mover's km_program; a chain build's walk
+    of a chain command's records inside it, as the kernel form's."""
+    walk = runtime_movement_walk(compiled) if compiled.chain else None
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// its parts on the runtime's reader (RISCV_0) and writer (RISCV_1).",
         *movement_includes(compiled),
         '#include "komorebi/device/core/km_program.hpp"',
+        *(['#include "komorebi/device/movement/km_chain.hpp"'] if walk else []),
         f'#include "{header_name(compiled)}"',
         "",
+        *([chain_helpers(compiled)] if walk else []),
         "static bool km_handlers(",
         f"{INDENT}km::MoverRuntime& km_core, const km_command_t& command",
         ") {",
         *PART_MOVEMENT,
         *(INDENT + line for line in tensor_aliases(compiled)),
-        *cases(compiled, compiled.movement, "return true;", 1, "movement"),
+        *(walk or cases(compiled, compiled.movement, "return true;", 1, "movement")),
         "}",
         *runtime_start(compiled, "movement"),
         "",
@@ -1103,20 +1137,68 @@ def runtime_movement_source(compiled):
     return "\n".join(lines) + "\n"
 
 
+def runtime_movement_walk(compiled):
+    """km_handlers' body in a chain build of the runtime's form: the cases (with the
+    input's waits and the marks) as one function, a chain command's records walked
+    through it (km::chain_reader on the reader, km::chain_writer on the writer)."""
+    chain = f"kHandler{camel(CHAIN_HANDLER)}"
+    return [
+        f"{INDENT}const auto km_case = [&](const km_command_t& command)",
+        f"{INDENT * 3}__attribute__((noinline)) -> bool {{",
+        *(
+            line[len(INDENT) :] if line.startswith(INDENT) else line
+            for line in chain_cases(compiled)
+        ),
+        f"{INDENT}}};",
+        f"{INDENT}if (km::handler(command) != {chain}) {{",
+        f"{INDENT * 2}return km_case(command);",
+        f"{INDENT}}}",
+        "#if defined(COMPILE_FOR_BRISC)  // the reader",
+        f"{INDENT}km::chain_reader(movement, command, km_case);",
+        f"{INDENT}return true;",
+        "#else  // the writer",
+        f"{INDENT}return km::chain_writer(km::ChainShape{{}}, movement, command, "
+        "km_case);",
+        "#endif",
+    ]
+
+
 def runtime_compute_source(compiled):
     """The compute source in the runtime's form: the handler switch as compute's
-    km_program (the start-up is the runtime's)."""
+    km_program (the start-up is the runtime's); a chain build's records taken in
+    turn through it (km::chain_compute), as the kernel form's."""
+    depth = 2 if compiled.chain else 1  # the chain's: inside km_case
+    switch = cases(compiled, compiled.compute, "break;", depth, "compute")
+    if compiled.chain:
+        chain = f"kHandler{camel(CHAIN_HANDLER)}"
+        text = in_place_compute("\n".join(switch) + "\n", compiled)
+        switch = [
+            f"{INDENT}const auto km_case = [&](const km_command_t& command)",
+            f"{INDENT * 3}__attribute__((noinline)) {{",
+            *text.rstrip("\n").split("\n"),
+            f"{INDENT}}};",
+            f"{INDENT}if (km::handler(command) == {chain}) {{",
+            f"{INDENT * 2}km::chain_compute(compute, command, km_case);",
+            f"{INDENT}}} else {{",
+            f"{INDENT * 2}km_case(command);",
+            f"{INDENT}}}",
+        ]
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// its part on compute, under the runtime's compute kernel.",
         *compute_includes(compiled),
         '#include "api/compute/reconfig_data_format.h"',
         '#include "komorebi/device/core/km_program.hpp"',
+        *(
+            ['#include "komorebi/device/movement/km_chain.hpp"']
+            if compiled.chain
+            else []
+        ),
         f'#include "{header_name(compiled)}"',
         "",
         "void km_program(km::Compute& compute, const km_command_t& command) {",
         *start_formats(compiled),
-        *cases(compiled, compiled.compute, "break;", 1, "compute"),
+        *switch,
         "}",
         *runtime_start(compiled, "compute"),
     ]
@@ -1187,6 +1269,7 @@ def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
+    walk_refused(compiled, files, form)
     if thread is not None:
         files[thread_header_name(compiled)] = thread
     for name, text in files.items():
@@ -1893,6 +1976,46 @@ def in_place_prepared(cls, compiled, declared, key, used):
     )
 
 
+# What each kernel of a chain build calls to walk a chain command's records.
+WALK_CALLS = {
+    "movement.cpp": ("km::chain_reader(", "km::chain_writer("),
+    "compute.cpp": ("km::chain_compute(",),
+}
+
+
+def walk_refused(compiled, files, form):
+    """Refuses a chain build whose kernels have no walk: its chain command would
+    fall to the switch's default and be done with nothing run."""
+    if not compiled.chain:
+        return
+    for name, calls in WALK_CALLS.items():
+        lacking = [call for call in calls if call not in files.get(name, call)]
+        if lacking:
+            raise ProgramError(
+                f"{compiled.name}: a chain build (chain=True or a km.chain method) "
+                f'whose {name} in {spelling("program_form")}="{form}" has no '
+                f"chain walk ({', '.join(c + ')' for c in lacking)}): a chain "
+                "command would be done with no record run; submit the calls as "
+                "commands"
+            )
+
+
+def in_place_compute(cases_text, compiled):
+    """Compute's cases with an in-place direct input's case on kDirectIn (its case
+    up to the next one); the cases unchanged without one."""
+    held = getattr(compiled, "direct_in", None)
+    if held is None:
+        return cases_text
+    head_at = cases_text.index(f"case kHandler{camel(held[0])}: {{")
+    end_at = cases_text.find("            case kHandler", head_at + 1)
+    end_at = len(cases_text) if end_at < 0 else end_at
+    return (
+        cases_text[:head_at]
+        + in_place_case(compiled, held[0], cases_text[head_at:end_at])
+        + cases_text[end_at:]
+    )
+
+
 def chain_compute_source(compiled):
     """The compute kernel of a chain build: a chain command's records taken in turn
     (km::chain_compute), each its handler's case."""
@@ -1901,16 +2024,7 @@ def chain_compute_source(compiled):
     head = f"{INDENT}compute.run([&](const km_command_t& command) {{"
     before, after = text.split(head + "\n", 1)
     cases_text, tail = after.rsplit(f"{INDENT}}});\n", 1)
-    held = getattr(compiled, "direct_in", None)
-    if held is not None:  # its case's stream on kDirectIn, up to the next case
-        head_at = cases_text.index(f"case kHandler{camel(held[0])}: {{")
-        end_at = cases_text.find("            case kHandler", head_at + 1)
-        end_at = len(cases_text) if end_at < 0 else end_at
-        cases_text = (
-            cases_text[:head_at]
-            + in_place_case(compiled, held[0], cases_text[head_at:end_at])
-            + cases_text[end_at:]
-        )
+    cases_text = in_place_compute(cases_text, compiled)
     before = before.replace(
         f'#include "{header_name(compiled)}"',
         '#include "komorebi/device/movement/km_chain.hpp"\n'

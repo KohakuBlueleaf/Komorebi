@@ -1,5 +1,5 @@
 // The tree's reader: the children's sync pages, the block down into the island's copy,
-// the y slice and the children's sums up, the home's total into DRAM (README.md).
+// its own slice and its children's sums up (README.md, "The tree kernels").
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

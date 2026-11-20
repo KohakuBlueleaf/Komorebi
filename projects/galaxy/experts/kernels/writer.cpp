@@ -1,5 +1,5 @@
-// The tree's writer: the sync, the block down to each child, compute's sum up to the
-// parent, and the home's ticks from after the sync to its end (README.md).
+// The tree's writer: the sync; the block down to each child; compute's sum up to the
+// parent; the home's ticks (README.md, "The tree kernels").
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"

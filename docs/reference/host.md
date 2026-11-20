@@ -596,7 +596,15 @@ waits for room only while that count is on its way.
 Exclusive commands. The host stores a command with `KM_FLAG_EXCLUSIVE` like any other; the
 dispatcher holds it at the head of its command ring while a busy command's group
 shares a core with it, and submits it once that command's leader has acknowledged. Host
-commands behind a held one wait with it, whatever their groups. Its deadline counts from
+commands behind a held one wait with it, whatever their groups. A command reported
+done has its writes in DRAM (each core's writer waits for their acknowledgements before
+it reports), so an exclusive command reads what the commands before it wrote. A command
+that is not exclusive has no such order: on a core its reads may start while the command
+before still writes, the same group or not, and `submit` and
+`submit_many` warn (`km.CommandOrderWarning`) when a class's handler, not exclusive,
+reads a tensor that a command on overlapping cores without its event yet writes
+([hazards](hazards.md#two-commands-on-overlapping-groups-that-must-run-in-order)).
+Its deadline counts from
 the kernel's submit, not from the store. So back-to-back exclusive commands on one group
 are the kernel's boundary apart, while one submitted after idle still pays the host's store
 reaching the X280 (a round trip of about 14 us). Measured on 2026-11-13, one p150a, X280

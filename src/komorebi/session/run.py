@@ -4,6 +4,7 @@ bookkeeping is the same against a fake transport.
 """
 
 import time
+import warnings
 from array import array
 
 import numpy as np
@@ -21,6 +22,7 @@ from komorebi.dsl.front.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
+    CommandOrderWarning,
     CommandTimeout,
     KomorebiError,
     ProgramError,
@@ -297,6 +299,7 @@ class Run(EventsMixin, StopMixin):
         self.recoveries = []  # give-ups whose cores the dispatcher reset: handle, text
         self._reset_failed = (-1, 0)  # a give-up's failed reset: core, KMD_RESET_*
         self._timeout_cores = []  # a deadline's inspect, not given up: its cores
+        self._exit_handle = None  # the stop's EXIT: its group is every core, not ranks
         self.inspect_ticks = None  # mtime ticks the last inspect() took on core 0
         self._failure = None
         self._stopped = False
@@ -337,6 +340,8 @@ class Run(EventsMixin, StopMixin):
         self._has = np.zeros(0, bool)  # the event arrived
         self._gone = np.zeros(0, bool)  # returned by wait() or forgotten
         self._ports = {}  # a port command without its event yet: handle -> group
+        self._writers = {}  # a writing command without its event: handle -> group, keys
+        self._order_methods = {}  # (program id, number) -> (program, its HandlerMethod)
         self._unsent()
 
     def _unsent(self):
@@ -470,11 +475,16 @@ class Run(EventsMixin, StopMixin):
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
             handler, group, args, exclusive, result, queued, cluster, block, part
         )
+        written = None
+        if not queued and cluster is None:
+            written = self._check_order(handler, args, program_field, group, exclusive)
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
         )
         if ports:
             self._ports[handle] = group
+        if written:
+            self._writers[handle] = (group, written)
         if kept is not None:
             self._kept[handle] = kept
         self.submit_s += time.perf_counter() - started
@@ -519,6 +529,16 @@ class Run(EventsMixin, StopMixin):
                 island_local.check_near(
                     self.programs[program_field], method, given, self.island_number
                 )
+                mine = (self.island_first, self.island_first + self.island_ranks)
+                island_local.check_far_writes(
+                    self.programs[program_field],
+                    method,
+                    given,
+                    self.island_number,
+                    (mine[0], self.island_ranks),
+                    mine,
+                    self._arch(),
+                )
             elif handler != self._nop:  # words alone: no tensor to check
                 island_local.near_words(
                     self.programs[program_field : program_field + 1],
@@ -539,6 +559,15 @@ class Run(EventsMixin, StopMixin):
                     self.island_number,
                     group,
                     (self.island_first, self.island_first + self.island_ranks),
+                )
+                island_local.check_far_writes(
+                    self.programs[program_field],
+                    method,
+                    given,
+                    self.island_number,
+                    group,
+                    (self.island_first, self.island_first + self.island_ranks),
+                    self._arch(),
                 )
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -688,6 +717,68 @@ class Run(EventsMixin, StopMixin):
                     f"exclusive=True, or wait for command {held} first"
                 )
         return True
+
+    def _check_order(self, number, words, program_field, group, exclusive, handle=None):
+        """A command of a class's handler (by number or method, its words): warns
+        (CommandOrderWarning) when, not exclusive, it reads a tensor that a command on
+        overlapping cores without its event yet writes; returns what it writes."""
+        if not self.programs:
+            return None
+        program = self.programs[program_field]
+        moved = getattr(program, "moved_tensors", None)
+        if not moved or getattr(program, "merged_number", None) is not None:
+            return None  # a merged class numbers its handlers anew: not checked
+        found = self._order_methods.get((id(program), number))
+        if found is None or found[0] is not program:
+            method = next(
+                (
+                    value
+                    for klass in type(program).__mro__
+                    for value in vars(klass).values()
+                    if isinstance(value, HandlerMethod) and value.number == number
+                ),
+                None,
+            )
+            found = self._order_methods[(id(program), number)] = (program, method)
+        method = found[1]
+        if method is None or not method.words or method.name not in moved:
+            return None
+        at, place = {}, 0  # each tensor parameter's word
+        for parameter, kind in method.words:
+            if kind == "tensor" and parameter not in at and place < len(words):
+                at[parameter] = int(words[place])
+            place += {"rect words": 0, "rect": 4}.get(kind, 1)
+
+        def key(name):  # a tensor given: its word; one of the make's: its name
+            return ("word", at[name]) if name in at else ("make", program_field, name)
+
+        reads, writes = moved[method.name]
+        reads = {key(name): name for name in reads}
+        handle = self._next if handle is None else int(handle)
+        first, count = group
+        for held, ((low, cores), written) in list(self._writers.items()):
+            row = held - self._base
+            if held < self._base or (held < self._handed and self._has[row]):
+                del self._writers[held]  # its event came: its writes have landed
+                continue
+            both = sorted(reads[k] for k in reads.keys() & written.keys())
+            if (
+                exclusive
+                or not both
+                or not (low < first + count and first < low + cores)
+            ):
+                continue
+            warnings.warn(
+                f"command {handle} ({type(program).__name__}.{method.name}, cores "
+                f"{first} to {first + count - 1}) reads {', '.join(both)}, which "
+                f"command {held} (cores {low} to {low + cores - 1}) writes and has "
+                "no event yet: on a shared core its reads may start before those "
+                f"writes land; submit it exclusive=True, or wait for command {held}",
+                CommandOrderWarning,
+                stacklevel=3,
+            )
+            break
+        return {key(name): name for name in writes} or None
 
     def _check_reduce_groups(self, method, program_field, group):
         """Refuses a command of a class's handler that reduces in groups of S ranks
@@ -1376,6 +1467,14 @@ class Run(EventsMixin, StopMixin):
             raise
         if args is not None and args.size and (args.min() < 0 or args.max() > M32):
             raise ValueError("arguments are 32-bit unsigned words")
+        for row in range(shape[0] if self._writers or args is not None else 0):
+            group, handle = (int(first[row]), int(count[row])), self._next + row
+            words = () if args is None else args[row]
+            written = self._check_order(
+                int(handlers[row]), words, program_field, group, exclusive, handle
+            )
+            if written:
+                self._writers[handle] = (group, written)
         return handlers, first, count, args, shape, program_field
 
     def _to_thread(self, handler, cluster, group, exclusive, queued):
@@ -1396,6 +1495,13 @@ class Run(EventsMixin, StopMixin):
         if handler.__class__ is not int:
             handler = thread.handler(handler) if thread is not None else int(handler)
         return handler, (self._cluster_base + self.thread_first - 1 + cluster, 1)
+
+    def _arch(self):
+        """The open card's chip, read once; None without a card's device (a mock)."""
+        if "_chip_arch" not in self.__dict__:
+            device = getattr(getattr(self.backend, "card", None), "device", None)
+            self._chip_arch = device.arch() if device is not None else None
+        return self._chip_arch
 
     def _part(self, first, count):
         """The cores [low, high) of flat group (first, count) on this island (numbers

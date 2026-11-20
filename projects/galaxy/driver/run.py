@@ -12,8 +12,10 @@ import torch
 from ..reference.model_loader import load_reference
 from ..reference.prompts import encode, prompt_text
 from . import state
-from .interface import install, load_factory, load_weights, set_hooks
+from .interface import install, load_factory, load_weights, set_hooks, weights_for
 from .path import SITE_PIECE, TokenPath
+
+BLOCK = 32  # the pieces' one prefill block (tokens, from position 0)
 
 
 def parse_layers(text, n_layers):
@@ -43,6 +45,26 @@ def open_session(km, cards, kernel_bytes=None):
     return km.Session(cards=cards, links=1, **given).__enter__()
 
 
+def open_checkpoint(path):
+    """The Checkpoint, of the module name the pieces check its type against."""
+    try:
+        from galaxy.reference.model_loader import Checkpoint  # noqa: PLC0415
+    except ImportError:
+        from ..reference.model_loader import Checkpoint  # noqa: PLC0415
+    return Checkpoint(path)
+
+
+def dram_left(session):
+    """Prints island 0's free DRAM after the pieces are made (tt-metal's allocator)."""
+    first = session.sessions[0] if hasattr(session, "sessions") else session
+    bank, banks, largest, free = first.device.dram_room(2048, 2048)
+    print(
+        f"island 0 DRAM free: {free * banks:,} B ({banks} banks, "
+        f"{largest:,} B the largest piece a bank)",
+        flush=True,
+    )
+
+
 def compare(logits, ref_logits):
     a, b = logits.float(), torch.from_numpy(ref_logits).float()
     rel = ((a - b).norm() / b.norm()).item()
@@ -62,13 +84,24 @@ def main():
     ap.add_argument(
         "--load",
         default=None,
-        help="the loader's W: 'all' or layers@kinds[@formats] (else the Checkpoint)",
+        help="the loader's W: 'all' or layers@kinds[@formats] (by weights_for)",
     )
     ap.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
         help="a joined session's kernel buffer",
+    )
+    ap.add_argument(
+        "--one-load",
+        action="store_true",
+        help="the session's pieces made with run= one shared load (load/shared.py)",
+    )
+    ap.add_argument(
+        "--prompt-by-decode",
+        action="store_true",
+        help="a prompt longer than 32 tokens: its first 32 as the prefill block, every "
+        "further prompt token through a decode step with that token forced",
     )
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--threads", type=int, default=32)
@@ -84,7 +117,8 @@ def main():
     ids = encode(ref, a.ckpt, prompt_text(ref, a.ckpt, a.prompt))
     assert ids == gold["prompt_ids"]
 
-    session, W, pieces, remote = None, ref.ckpt, [], []
+    session, W, pieces, remote = None, None, [], []
+    ckpt = open_checkpoint(a.ckpt)
     hooks = {
         "compress_hook": lambda i, *x: path.compress_kv(
             i, path.model.layers[i].attn, *x
@@ -98,6 +132,11 @@ def main():
             t0 = time.time()
             W = load_weights(session, a.load, parse_layers)
             print(f"loaded {len(W)} weights in {time.time() - t0:.1f} s", flush=True)
+    shared = None
+    if a.one_load:  # the pieces of the driver's session hand their programs to one load
+        from projects.galaxy.load.shared import Shared  # noqa: PLC0415 (box runs only)
+
+        shared = Shared(session)
     if a.piece:
         n_layers = len(ref.model.layers)
         for n, spec in enumerate(a.piece):
@@ -121,7 +160,10 @@ def main():
                 )
                 remote.append(piece)
             else:
-                piece = load_factory(fac)(session, W, every)
+                extra = {} if shared is None else {"run": shared}
+                factory = load_factory(fac)
+                weights = weights_for(factory, W, ckpt)
+                piece = factory(session, weights, every, **extra)
                 set_hooks(piece, hooks)
             for layers, sites in groups:
                 install(
@@ -132,10 +174,26 @@ def main():
                 )
             pieces.append((spec, piece.sites))
             print(f"piece {spec}: sites {piece.sites}", flush=True)
+    if shared is not None:
+        t0 = time.time()
+        shared.start()
+        print(f"the one load: {time.time() - t0:.1f} s", flush=True)
+    if session is not None:
+        dram_left(session)
 
     state.reset(ref)
     steps, tokens, first_diff = [], [], None
     pos, inp = 0, torch.tensor([ids])
+    by_decode = None
+    if a.prompt_by_decode and len(ids) > BLOCK:  # the block, then forced decode steps
+        inp, forced, t0 = torch.tensor([ids[:BLOCK]]), ids[BLOCK:], time.time()
+        for nxt in forced:  # the last prompt token is step 0's input
+            path.forward(inp, pos)
+            pos += inp.size(1)
+            inp = torch.tensor([[nxt]])
+        by_decode = {"block": BLOCK, "forced_steps": len(forced)}
+        by_decode["seconds"] = round(time.time() - t0, 3)
+        print(json.dumps({"prompt_by_decode": by_decode}), flush=True)
     n_steps = min(a.new, len(gold["generated_ids"])) if a.force else a.new
     for n in range(n_steps):
         path.seconds.clear()
@@ -180,6 +238,7 @@ def main():
         "ref_tokens": gold["generated_ids"][: len(tokens)],
         "same_tokens": tokens == gold["generated_ids"][: len(tokens)],
         "first_difference": first_diff,
+        "prompt_by_decode": by_decode,
         "prefill_s": steps[0]["seconds"],
         "decode_steps": len(dec),
         "decode_s": round(sum(dec), 3),

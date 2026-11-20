@@ -23,10 +23,21 @@ def accumulate(frame, node, value):
     item = frame.scope[source.id]
     scope.whole_tile(frame, node, source.id, item, "an add")
     tile_lookup.other_tile_line(frame, node)
+    add_scratch(frame, node, value)
     if item.kind == "streamed":
         frame.compiled.includes |= {"add"}
-        text = add_tile(item.cxx, item.first, value.dst, scratch(frame))
+        target = added_tile(frame, node, value, item, source.id)
+        text = add_tile(item.cxx, item.first, target, scratch(frame))
         return [], [Line(text, {item.cxx, item.first})]
+    if item.kind == "block" and value.width > 1:
+        refuse(
+            frame.where,
+            node,
+            f"{target_name(node)} holds {value.width} tiles; a block's tiles all "
+            "add into one",
+            f"write {target_name(node)} = km.{spelling('tile')}."
+            f"{spelling('zeros')}(km.fp32)",
+        )
     if item.kind == "block":
         frame.compiled.includes |= {"add"}
         loop = (
@@ -36,6 +47,51 @@ def accumulate(frame, node, value):
         body = add_tile(item.cxx, item.first, value.dst, scratch(frame))
         return [], [Block(loop, "}", [Line(body)], {item.cxx})]
     refuse(frame.where, node, f"{source.id} is a {item.kind}", "add a tile of a stream")
+
+
+def target_name(node):
+    return node.target.id
+
+
+def add_scratch(frame, node, value):
+    """The DST tile an add copies into (the one after the sums): refused past DST,
+    and DST in full-sync mode when it lies past a half."""
+    if scratch(frame) >= DST_FULL:
+        refuse(
+            frame.where,
+            node,
+            f"{target_name(node)}'s {value.width} tiles leave no DST tile for the "
+            f"add's copy (DST holds {DST_FULL})",
+            f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32, n), n up to "
+            f"{DST_FULL - 1 - value.dst}",
+        )
+    if scratch(frame) >= DST_HALF:
+        frame.compiled.full_dst = True
+
+
+def added_tile(frame, node, value, item, name):
+    """The DST tile `total += tile` adds into: tile j of a stream's block into the
+    sums' tile j % n, so a block must hold whole rows of the sums' n tiles."""
+    n = value.width
+    if n == 1:
+        return value.dst
+    state = next(
+        (s for s in reversed(frame.loop_states) if s.get("first") == item.cxx), None
+    )
+    block = state["block"] if state is not None else None
+    if (item.width or 1) != 1 or not isinstance(block, int) or block % n:
+        refuse(
+            frame.where,
+            node,
+            f"{target_name(node)} holds {n} tiles: tile j of {name}'s block adds "
+            f"into its tile j % {n}, so the block is a multiple of {n} tiles, as "
+            "the build knows it",
+            f"stream the tiles with {spelling('block')}={n} (or a multiple), or "
+            f"write {target_name(node)} = km.{spelling('tile')}."
+            f"{spelling('zeros')}(km.fp32) to sum them all into one",
+        )
+    place = item.first if block == n else f"{item.first} % {n}"
+    return f"{value.dst} + {place}" if value.dst else place
 
 
 def carried_back(frame, loop):
