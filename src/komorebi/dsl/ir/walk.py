@@ -1479,6 +1479,9 @@ MATH = tuple(
     for name in ("exp", "exp2", "sigmoid", "silu", "tanh", "erf", "log", "sqrt")
     + ("rsqrt", "reciprocal", "relu", "square", "floor")
 )
+# the reductions along a row (the row form), and the kind of a name a body's line gives
+REDUCES = ("math_reduce_sum", "math_reduce_max", "math_reduce_min")
+LET = "let"
 # a call's own lines in the text: `(`, the call on lines of its own placed at the
 # call's source lines (a node's line today is its call's, `caller_line`), then `)`
 CALL_OPEN, CALL_CLOSE = "\x00", "\x01"
@@ -1503,9 +1506,7 @@ def along_row(function):
     if not isinstance(function, front.TileFunction):
         return False
     definition = source_of(function.function)[0]
-    reduces = {
-        spelling(f"math_{k}") for k in ("reduce_sum", "reduce_max", "reduce_min")
-    }
+    reduces = {spelling(k) for k in REDUCES}
     return any(
         isinstance(n, ast.Call)
         and isinstance(n.func, ast.Attribute)
@@ -1525,20 +1526,22 @@ def tile_function(text, function, kinds, helpers, result=None):
         definition = returned = function.node
         value = function.value
         names = {}
+        lets = []
     else:
         definition, lines, first = source_of(function.function)
         what = "helper" if isinstance(function, Helper) else "tile function"
         where = Where(function.name, what, lines, first, file_of(function.function))
         parameters = [a.arg for a in definition.args.args]
         statements = definition.body[1:] if docstring(definition) else definition.body
-        if len(parameters) != len(kinds) or len(statements) != 1:
+        lets = statements[:-1]  # `name = <expression>` lines before the return
+        if len(parameters) != len(kinds) or not all(map(let_line, lets)):
             refuse(
                 where,
                 definition,
-                "not one return over its parameters",
-                "write `return <expression>`",
+                "not names given values, then one return, over its parameters",
+                "write `name = <expression>` lines, then `return <expression>`",
             )
-        returned = statements[0]
+        returned = statements[-1]
         if not isinstance(returned, ast.Return) or returned.value is None:
             refuse(
                 where,
@@ -1548,18 +1551,47 @@ def tile_function(text, function, kinds, helpers, result=None):
             )
         value = returned.value
         names = function.function.__globals__
-    body = Body(
-        where, returned, dict(zip(parameters, kinds)), returned.lineno, names, helpers
-    )
-    written = bare(expression(body, value))
+    known = dict(zip(parameters, kinds))
+    written = []
+    for node in lets:  # each name known from its line on, as a value (LET)
+        body = Body(where, node, dict(known), node.lineno, names, helpers)
+        name = node.targets[0].id
+        if name in known:  # an IR `let` is given once
+            refuse(
+                where,
+                node,
+                f"{name} given a value again: a name of the IR is given its value once",
+                "give each value a name of its own",
+            )
+        written.append((f"let {quoted(name)} = ", expression(body, node.value), node))
+        known[name] = LET
+    body = Body(where, returned, known, returned.lineno, names, helpers)
+    written.append(("return ", expression(body, value), returned))
     start = text.line(0, f"func {quoted(function.name)}(")
     for name, kind in zip(parameters, kinds):
         text.line(1, f"{quoted(name)}: {kind},")
     fidelity = getattr(function, "fidelity", None)
     hint = f" @tensix.fidelity({fidelity})" if fidelity else ""
     text.line(0, f") -> {result or kinds[0]}{hint} {{")
-    # each call marked, its columns on the return's line placed at its own source lines
-    current, opened, calls = INDENT + "return ", [], []
+    for head, line_text, node in written:
+        statement_line(text, where, INDENT + head, bare(line_text), node)
+    text.line(0, "}")
+    text.place(start, where.file, definition.lineno, definition.lineno)
+
+
+def let_line(node):
+    """Whether a tile function's line is `name = <expression>`, one name given."""
+    return (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    )
+
+
+def statement_line(text, where, current, written, node):
+    """One line of a function's body, placed at its statement's lines; each call marked
+    in `written` is placed, by its columns, at its own source lines."""
+    opened, calls = [], []
     marks = f"({CALL_OPEN}[0-9]+,[0-9]+{CALL_OPEN}|{CALL_CLOSE})"
     for token in re.split(marks, written):
         if token.startswith(CALL_OPEN):
@@ -1571,11 +1603,9 @@ def tile_function(text, function, kinds, helpers, result=None):
         else:
             current += token
     line = text.line(0, current)
-    text.place(line, where.file, returned.lineno, returned.end_lineno)
+    text.place(line, where.file, node.lineno, node.end_lineno)
     for column, end, lo, hi in calls:
         text.span((line, column), (line, end), where.file, lo, hi)
-    text.line(0, "}")
-    text.place(start, where.file, definition.lineno, definition.lineno)
 
 
 def docstring(definition):
@@ -1602,6 +1632,10 @@ def expression(body, value):
         left = expression(body, value.left)
         right = expression(body, value.right)
         return f"({left} {operators[type(value.op)]} {right})"
+    if isinstance(value, ast.Call) and spread(value):
+        # `.col()` / `.row()`: a per-row or per-column value spread over the block
+        inner = expression(body, value.func.value)
+        return own_line(body, value, f"{inner}.{value.func.attr}()")
     if isinstance(value, ast.Call):
         return own_line(body, value, call(body, value))
     refuse(
@@ -1610,6 +1644,46 @@ def expression(body, value):
         "an expression the IR module does not write yet",
         "write + - * / of its parameters",
     )
+
+
+def spread(value):
+    """Whether a call is `<expression>.col()` or `.row()` (not of the km module)."""
+    func = value.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in ("col", "row")
+        and not value.args
+        and not value.keywords
+        and not (isinstance(func.value, ast.Name) and func.value.id == "km")
+    )
+
+
+def reduction(body, value):
+    """`km.reduce_sum(x, exact=True)` (`reduce_max`, `reduce_min`): the IR's reduction
+    along the row, `reduce_sum(x, axis = row)`, as today's row form takes it, exact;
+    one that is not exact is refused with today's text."""
+    func = value.func
+    kind = kind_of(func.attr, REDUCES)
+    keywords = {k.arg: k.value for k in value.keywords}
+    for key in keywords:
+        if key != "exact":
+            refuse(
+                body.where,
+                body.node,
+                f"a reduction's {key}= is not written in an IR module yet",
+                "leave it out",
+            )
+    exact = keywords.get("exact", ast.Constant(kind == "math_reduce_min"))
+    if len(value.args) != 1 or not (isinstance(exact, ast.Constant) and exact.value):
+        refuse(
+            body.where,
+            body.node,
+            "the row form's reduction is reduce_sum, reduce_max or reduce_min(..., "
+            "exact=True) along the row",
+            "write exact=True",
+        )
+    operand = bare(expression(body, value.args[0]))
+    return f"{kind.removeprefix('math_')}({operand}, axis = row)"
 
 
 def own_line(body, value, written):
@@ -1625,6 +1699,8 @@ def call(body, value):
     """`km.exp(x)`, one of the tile compiler's functions of one tile on one operand;
     or `helper(a, b)`, a plain function of the module on parameters."""
     func = value.func
+    if isinstance(func, ast.Attribute) and kind_of(func.attr, REDUCES):
+        return reduction(body, value)
     if value.keywords:
         refuse(
             body.where,
@@ -1644,7 +1720,9 @@ def call(body, value):
             "a call the IR module does not write yet",
             "call km's functions of a tile, or a helper on its parameters",
         )
-    if not all(isinstance(a, ast.Name) and a.id in body.kinds for a in value.args):
+    if not all(
+        isinstance(a, ast.Name) and body.kinds.get(a.id, LET) != LET for a in value.args
+    ):
         refuse(
             body.where,
             body.node,

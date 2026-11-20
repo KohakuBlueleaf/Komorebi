@@ -19,7 +19,7 @@ from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
 from komorebi.dsl.chain.chain_calls import chain_calls
 from komorebi.dsl.compile.records import Refused
-from komorebi.dsl.ir import written
+from komorebi.dsl.ir import walk, written
 from komorebi.dsl.ir.built import Entry, chain, module, program
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -394,13 +394,87 @@ class Scaled(km.Program):
             results.push(times(row, k))
 
 
-def test_a_streams_row_is_taken_and_its_function_must_reduce_along_it():
-    # the stream's row= is no longer refused: the lane sum meets its function's body
-    with pytest.raises(Refused, match="lane_sum.tile function, line .*: a call the IR"):
-        made(Lanes)
+def test_a_streams_row_is_its_block_and_its_passes_a_hint():
+    # row=16 in moves of 8: blocks of the row, read in passes of 8 tiles
+    m = made(Lanes)
+    assert "for row in stream(x.tiles(0, 32), block = 16) @tensix.passes(8) {" in m.text
+    assert "    return (row * 0.0) + reduce_sum(row, axis = row).col()\n" in m.text
+    assert ir.check(m.text, m.origin) == []
+    # the row form's emitter is the other half's: refused by name until it is there
+    with pytest.raises(ir.IrError, match="does not emit a call of lane_sum on a row"):
+        ir.emit(ir.compile(m.text, m.origin), backend="tensix")
     # a function with no reduction along the row: today's row form has no IR text
     with pytest.raises(Refused, match="times on a row with no reduction along it"):
         made(Scaled)
+
+
+ROWS_FORM = ROOT / "tests" / "ir" / "tensix" / "tile"
+
+
+def corpus_functions():
+    """The functions of the row form's corpus (tile_rows_form.kom): (name, kinds,
+    result, its text)."""
+    kom = (ROWS_FORM / "tile_rows_form.kom").read_text()
+    found = re.finditer(
+        r"^func t_(\w+)\((.*?)\) -> (\S+) \{\n.*?^\}\n", kom, re.S | re.M
+    )
+    return [
+        (m[1], [p.split(": ")[1] for p in m[2].split(", ")], m[3], m[0]) for m in found
+    ]
+
+
+@pytest.mark.parametrize("name, kinds, result, theirs", corpus_functions())
+def test_a_row_function_is_written_as_the_row_forms_corpus(
+    monkeypatch, name, kinds, result, theirs
+):
+    # today's function of tile_rows_form.py, written by the frontend: the corpus's
+    # function, whose listings the port compares with today's (tensix_tile.rs)
+    monkeypatch.syspath_prepend(str(ROWS_FORM))
+    corpus = importlib.import_module("tile_rows_form")
+    text = walk.Text()
+    walk.tile_function(text, km.tile_function(getattr(corpus, name)), kinds, {}, result)
+    head = "module rows\n\ntile [32, 32]\nformat f32, bf16\n\n"
+    ours = ir.hashes(ir.compile(head + "\n".join(text.lines) + "\n"))
+    theirs = theirs.replace(f"func t_{name}(", f"func {name}(")
+    assert ours.semantic == ir.hashes(ir.compile(head + theirs)).semantic
+
+
+@km.tile_function
+def lane_sum_rounded(row):
+    return row * 0.0 + km.reduce_sum(row).col()
+
+
+class Rounded(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor):
+        results = km.Stream(y.pages(0, 32), write=True, block=16)
+        for row in km.Stream(x.pages(0, 32), row=16):
+            results.push(lane_sum_rounded(row))
+
+
+def test_a_reduction_that_is_not_exact_is_refused_with_todays_text():
+    with pytest.raises(Refused, match="the row form's reduction is reduce_sum"):
+        made(Rounded)
+
+
+@km.tile_function
+def halved_twice(a):
+    t = a * 0.5
+    t = t * 0.5
+    return t
+
+
+class Twice(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor):
+        results = km.Stream(y.pages(0, 4), write=True)
+        for xt in km.Stream(x.pages(0, 4)):
+            results.push(halved_twice(xt))
+
+
+def test_a_name_given_a_value_twice_in_a_tile_function_is_refused_by_name():
+    with pytest.raises(Refused, match="t given a value again"):
+        made(Twice)
 
 
 class InRow(km.Program):

@@ -146,12 +146,21 @@ same one), and on the sink's `let` for the write stream. On the path through the
 takes a `km.Pattern` (or its letters) for it and gives today's word. Any other value is refused
 before anything is sent. A `pattern=` of anything but such a parameter is refused by name.
 
-A tile function is one `return` (a docstring before it writes nothing) of `+ - * /` of its
-parameters and numbers, the tile compiler's functions of one tile by their names (`km.exp(x)` is
+A tile function is lines `name = <expression>`, each written `let name = ...` (a name given a
+value twice is refused by name: an IR name is given its value once), then one `return`
+(a docstring before it writes nothing), of `+ - * /` of its parameters, its names and numbers, the tile compiler's functions of one tile by their names (`km.exp(x)` is
 written `exp(x)`; `exp`, `exp2`, `sigmoid`, `silu`, `tanh`, `erf`, `log`, `sqrt`, `rsqrt`,
 `reciprocal`, `relu`, `square`, `floor`), and calls of a plain function of its module on its
 parameters (a helper), which is written as a `func` of its own, its lines its own. A call with a
 keyword (`exp(x, error=...)`) and a helper called on other than parameters are refused by name.
+On a row, `km.reduce_sum(x, exact=True)` (`reduce_max`; `reduce_min`, exact by default) is
+`reduce_sum(x, axis = row)`, and `v.col()` and `w.row()` are written as they are, as the row
+form's corpus (`tests/ir/tensix/tile/tile_rows_form.kom`) writes them. Today's row form takes an
+exact reduction alone, so one that is not exact is refused with today's text. A function called
+on a row that does not reduce along it is refused by name: the IR cannot tell it from a block.
+Today's choice of the row form for it is a form, not a meaning (the result is the same tile by
+tile), so if a class needs today's bytes for it, that is a Tensix hint on the loop, not a row of
+the language.
 A tile function's `tolerance=` is taken and writes nothing. The IR states no precision, and
 `tolerance=` changes none of today's files: it is a check of the trace, in `program.txt` alone.
 `fidelity=` is refused by name.
