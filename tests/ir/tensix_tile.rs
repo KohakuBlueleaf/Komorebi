@@ -1,5 +1,5 @@
 //! The tile compiler's port against today's compiler, stage by stage, with no card:
-//! today's `tests/ir/tensix/tile_units.py` runs on a corpus of tile functions and
+//! today's `tests/ir/tensix/tile/tile_units.py` runs on a corpus of tile functions and
 //! writes each one's KernelIR, and its unit program as data and as today's listing.
 //! The port must trace the same functions written in the IR (`tile_units.kom`) into
 //! the same KernelIR and the same vector-unit function (its SFPI code included), print
@@ -64,7 +64,7 @@ fn run_today(script: &str, name: &str) -> Option<PathBuf> {
     let python = std::env::var("KOMO_IR_PYTHON").unwrap_or_else(|_| "python3".into());
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new(&python)
-        .arg(root.join("tests/ir/tensix").join(script))
+        .arg(root.join("tests/ir/tensix/tile").join(script))
         .arg(&folder)
         .env("PYTHONPATH", root.join("src"))
         .output()
@@ -355,7 +355,7 @@ fn every_word_of_the_table_encodes_and_decodes_as_today() {
 
 /// The corpus in the IR's text, built.
 fn corpus() -> komorebi_ir::program::Module {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile_units.kom");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile/tile_units.kom");
     let text = std::fs::read_to_string(path).expect("tile_units.kom");
     komorebi_ir::api::build(&text).unwrap_or_else(|e| panic!("{e:?}"))
 }
