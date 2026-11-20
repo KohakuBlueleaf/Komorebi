@@ -206,11 +206,9 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     if plans.is_empty() && refusals.is_empty() {
         refusals.push(refused("a program of no handler", Anchor::Program(p)));
     }
-    if plans.len() > 1 {
-        refusals.push(refused(
-            "a program of more than one handler",
-            Anchor::Program(p),
-        ));
+    // a kernel's layout argument names a tensor by its place, one for all handlers
+    if let Err(r) = tensors_placed(&plans, Anchor::Program(p)) {
+        refusals.push(r);
     }
     for plan in &plans {
         if let Err(r) = bounds(plan) {
@@ -219,7 +217,10 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     }
     let mut units: Vec<Unit> = Vec::new();
     for plan in &plans {
-        let Shape::Mapped { call, .. } = &plan.shape else {
+        let Shape::Mapped {
+            call: Some(call), ..
+        } = &plan.shape
+        else {
             continue;
         };
         match unit::unit(module, call.func) {
@@ -402,6 +403,13 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
 
 /// The last head line of a compound statement: the line before its body's first.
 fn head_last(lines: &Lines, plan: &Plan) -> Option<u32> {
+    if let Shape::Dropped = plan.shape {
+        // a loop whose body is one line that makes nothing (`pass`): its head ends
+        // the line before the statement's last
+        let body = BodyRef::Handler(plan.program, plan.handler);
+        let place = lines.place(Anchor::Inst(body, plan.reads[0].inst))?;
+        return Some(place.last.saturating_sub(1).max(place.first));
+    }
     head_before(lines, plan, plan.looped())
 }
 
@@ -524,6 +532,32 @@ pub(crate) fn tensors(plans: &[Plan]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Refuses handlers that take one tensor at two places, or two tensors at one place:
+/// the kernels' layout arguments (`CompileArg::TensorLayout`) name a tensor by its
+/// place, the same in each handler that takes it.
+fn tensors_placed(plans: &[Plan], at: Anchor) -> Result<(), Refusal> {
+    let mut placed: Vec<(usize, &str)> = Vec::new();
+    for plan in plans {
+        for (p, w) in plan.words.iter().enumerate() {
+            if w.kind != WordKind::Tensor {
+                continue;
+            }
+            let clash = placed.iter().any(|(q, n)| (*q == p) != (*n == w.name));
+            if clash {
+                return Err(Refusal {
+                    code: NOT_BUILT,
+                    what: "the Tensix backend does not emit handlers that take one tensor at \
+                           two places, or two at one place, yet"
+                        .to_string(),
+                    at: Some(at),
+                });
+            }
+            placed.push((p, &w.name));
+        }
+    }
+    Ok(())
 }
 
 /// A command word's line, read as its kind is.
@@ -707,12 +741,13 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
         let ints = plan
             .reads
             .iter()
+            .chain(written)
             .flat_map(|r| range_ints(plan, &r.range))
-            .chain(range_ints(plan, &written.range));
+            .chain(plan.repeat.as_ref());
         let mut reads = Uses::of(plan, ints);
         reads.words.extend(plan.reads.iter().map(|r| r.tensor));
-        reads.words.push(written.tensor);
-        let patterns = plan.reads.iter().chain([written]).filter_map(|m| m.pattern);
+        reads.words.extend(written.map(|w| w.tensor));
+        let patterns = plan.reads.iter().chain(written).filter_map(|m| m.pattern);
         reads.words.extend(patterns);
         if !plan.parts.is_empty() {
             (reads.rank, reads.size) = (true, true);
@@ -739,8 +774,13 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
                 }
             };
             let pattern = pattern_text(plan, moved, pair);
+            // a read stream's repeat: the counted loop around its loop (R46)
+            let repeat = match (&plan.repeat, kind) {
+                (Some(r), "km::kMoveRead") => int_text(plan, r),
+                _ => "1".to_string(),
+            };
             format!(
-                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, 1, {pair}, {pattern}\n);",
+                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, {repeat}, {pair}, {pattern}\n);",
                 camel(t),
             )
         };
@@ -806,6 +846,11 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
                 );
             }
             Shape::Summed(sum) => movement_sum(&mut out, plan, sum, lines),
+            Shape::Dropped => indented(
+                &mut out,
+                4,
+                "if (!movement.move(km_read0)) {\n    return false;\n}",
+            ),
         }
         indented(&mut out, 4, "return true;");
         indented(&mut out, 3, "}");
@@ -919,11 +964,19 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
     for plan in plans {
         indented(&mut out, 3, &case_line(plan, lines));
         match &plan.shape {
-            Shape::Mapped { call, .. } => {
+            Shape::Mapped {
+                call: Some(call),
+                write,
+                ..
+            } => {
                 let unit = called.next().expect("a unit for each mapped plan");
-                compute_mapped(&mut out, plan, call, unit, lines);
+                compute_mapped(&mut out, plan, Some((call, unit)), write, lines);
+            }
+            Shape::Mapped { write, .. } => {
+                compute_mapped(&mut out, plan, None, write, lines);
             }
             Shape::Summed(sum) => compute_sum(&mut out, plan, sum, lines),
+            Shape::Dropped => compute_dropped(&mut out, plan, lines),
         }
         indented(&mut out, 4, "break;");
         indented(&mut out, 3, "}");
@@ -1037,15 +1090,15 @@ fn compute_sum(out: &mut Vec<String>, plan: &Plan, sum: &Sum, lines: &Lines) {
 fn compute_mapped(
     out: &mut Vec<String>,
     plan: &Plan,
-    call: &plan::Call,
-    unit: &Unit,
+    called: Option<(&plan::Call, &Unit)>,
+    written: &Moved,
     lines: &Lines,
 ) {
     let body = BodyRef::Handler(plan.program, plan.handler);
-    let f = &call.name;
     let (mut reads, part, count) = compute_count(plan);
-    reads.words.extend(&call.scalars);
-    let written = plan.written();
+    if let Some((call, _)) = called {
+        reads.words.extend(&call.scalars);
+    }
     reads
         .words
         .extend(plan.reads.iter().chain([written]).filter_map(|m| m.pattern));
@@ -1063,18 +1116,14 @@ fn compute_mapped(
             head_last(lines, plan),
         ),
     );
-    // a pattern the command gives is checked before any block (`page_streams`):
-    // an invalid word ends the case, each read stream's word once, in order
-    let mut checked = Vec::new();
-    for w in plan.reads.iter().filter_map(|m| m.pattern) {
-        if !checked.contains(&w) {
-            checked.push(w);
-            let name = &plan.words[w].name;
-            indented(out, 4, &format!("if (!{name}.valid()) {{\n    return;\n}}"));
-        }
-    }
+    pattern_checks(out, plan);
     let p = &count;
     let out_pattern = pattern_text(plan, written, "kWrite0");
+    let Some((call, unit)) = called else {
+        compute_copied(out, plan, p, &out_pattern, lines);
+        return;
+    };
+    let f = &call.name;
     let dst = unit.dst_tiles() as u64;
     let slots = DST_HALF / dst;
     let words: String = call
@@ -1151,6 +1200,128 @@ fn compute_mapped(
     for i in 0..plan.reads.len() {
         indented(out, 5, &format!("cb_pop_front(km_half{i}, kRead{i}Block);"));
     }
+    indented(out, 4, "}");
+}
+
+/// A pattern the command gives is checked before any block (`page_streams`): an
+/// invalid word ends the case, each read stream's word once, in order.
+fn pattern_checks(out: &mut Vec<String>, plan: &Plan) {
+    let mut checked = Vec::new();
+    for w in plan.reads.iter().filter_map(|m| m.pattern) {
+        if !checked.contains(&w) {
+            checked.push(w);
+            let name = &plan.words[w].name;
+            indented(out, 4, &format!("if (!{name}.valid()) {{\n    return;\n}}"));
+        }
+    }
+}
+
+/// The blocks of the read stream: each waited for (its half by the stream's pattern)
+/// and the case left when the run ends.
+fn wait_block(out: &mut Vec<String>, plan: &Plan) {
+    let read = &plan.reads[0];
+    let pattern = pattern_text(plan, read, "kRead0");
+    indented(
+        out,
+        5,
+        &format!(
+            "const uint32_t km_half0 = km::block_half(kRead0, {pattern}, km_block0);\n\
+             km_ok = compute.wait_front(km_half0, kRead0Block);\n\
+             if (!km_ok) {{\n    break;\n}}"
+        ),
+    );
+}
+
+/// A copy's compute (`out.push(tile)`, today's copy of a block): each tile of the
+/// block copied to Dst tile 0 and packed into the out half, one an acquire.
+fn compute_copied(out: &mut Vec<String>, plan: &Plan, p: &str, out_pattern: &str, lines: &Lines) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    indented(
+        out,
+        4,
+        &format!(
+            "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;\n\
+             for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{"
+        ),
+    );
+    wait_block(out, plan);
+    indented(
+        out,
+        5,
+        &format!(
+            "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
+             const uint32_t km_out0 = km::block_half(kWrite0, {out_pattern}, km_block0);\n\
+             const bool km_room0 = compute.reserve_back(km_out0, kWrite0Block);\n\
+             KM_UNPACK_FORMAT_A(km_half0);\n\
+             copy_init(km_half0);\n\
+             for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; km_tile0++) {{"
+        ),
+    );
+    comment(
+        out,
+        6,
+        lines.comment(Anchor::Inst(body, plan.looped()), None),
+    );
+    indented(
+        out,
+        6,
+        "tile_regs_acquire();\n\
+         copy_tile(km_half0, km_tile0, 0);\n\
+         tile_regs_commit();\n\
+         tile_regs_wait();\n\
+         if (km_room0) {\n    \
+         KM_PACK_FORMAT(km_out0);\n    \
+         pack_tile<true>(0, km_out0, km_tile0);\n\
+         }\n\
+         tile_regs_release();",
+    );
+    indented(out, 5, "}");
+    indented(
+        out,
+        5,
+        "if (km_room0) {\n    cb_push_back(km_out0, kWrite0Block);\n}\n\
+         cb_pop_front(km_half0, kRead0Block);",
+    );
+    indented(out, 4, "}");
+}
+
+/// A dropped stream's compute (`for _ in stream(...) { }`, maybe repeated): each block
+/// waited for and freed, its count times the repeat.
+fn compute_dropped(out: &mut Vec<String>, plan: &Plan, lines: &Lines) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    let (mut reads, _, count) = compute_count(plan);
+    reads
+        .words
+        .extend(plan.reads.iter().filter_map(|m| m.pattern));
+    let repeat = plan.repeat.as_ref();
+    let more = Uses::of(plan, repeat);
+    reads.words.extend(more.words);
+    reads.locals.extend(more.locals);
+    case_head(out, plan, "compute", &reads);
+    indented(out, 4, "bool km_ok = true;");
+    comment(
+        out,
+        4,
+        lines.comment(
+            Anchor::Inst(body, plan.reads[0].inst),
+            head_last(lines, plan),
+        ),
+    );
+    pattern_checks(out, plan);
+    let total = match repeat {
+        Some(r) => format!("km_blocks0 * {}", int_text(plan, r)),
+        None => "km_blocks0".to_string(),
+    };
+    indented(
+        out,
+        4,
+        &format!(
+            "const uint32_t km_blocks0 = ({count} + kRead0Block - 1) / kRead0Block;\n\
+             for (uint32_t km_block0 = 0; km_ok && km_block0 < {total}; km_block0++) {{"
+        ),
+    );
+    wait_block(out, plan);
+    indented(out, 5, "cb_pop_front(km_half0, kRead0Block);");
     indented(out, 4, "}");
 }
 
@@ -1500,7 +1671,7 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
 /// cannot be stated is refused by name: no range of a tensor goes unchecked.
 fn bounds(plan: &Plan) -> Result<Vec<Bound>, Refusal> {
     let mut bounds = Vec::new();
-    for moved in plan.reads.iter().chain([plan.written()]) {
+    for moved in plan.reads.iter().chain(plan.written()) {
         let (first, n) = match &moved.range {
             Range::Part(p) => (&plan.parts[*p].first, &plan.parts[*p].n),
             Range::Tiles { first, n } => (first, n),
@@ -1654,14 +1825,16 @@ mod tests {
             reads: vec![moved.clone()],
             shape: Shape::Mapped {
                 write: moved,
-                call: plan::Call {
+                call: Some(plan::Call {
                     func: crate::types::FuncId(0),
                     name: "f".into(),
                     tiles: 1,
                     scalars: vec![0],
                     inst: InstId(0),
-                },
+                }),
+                push: InstId(0),
             },
+            repeat: None,
         };
         let at = Anchor::Handler(ProgramId(0), HandlerId(0));
         let halved = Int::Bin('/', Box::new(Int::Word(3)), Box::new(Int::Const(2)));

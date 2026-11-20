@@ -541,3 +541,23 @@ fn program_4_with_another_block_is_todays_at_that_block() {
     let stand_ins = [tensor.clone(), tensor.clone(), tensor];
     same_as_today(&made, &module, &stand_ins, "gate");
 }
+
+#[test]
+fn program_5_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // Movement.read drops its blocks, repeated (a counted loop around the stream's
+    // loop, reading R46); Movement.copy pushes each block as it is.
+    let made = made("movement", "movement_class", "Movement");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    // The stand-ins: source and output of 768 bfloat16 pages of 2048 B each.
+    let tensor = LoadTensor {
+        pages: 768,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let stand_ins = [tensor.clone(), tensor];
+    same_as_today(&made, &module, &stand_ins, "movement");
+}

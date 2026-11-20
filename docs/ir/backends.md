@@ -144,6 +144,18 @@ pattern's word. A `@tensix.pattern` naming anything else, on another statement, 
 stream is refused by name (`K964`). The thread header prints each module parameter fixed at
 build, of an int, as a constant of the class (`#define GATE_BLOCK 8u`), as today's does.
 
+It also emits the corpus's program 5 (`Movement`), a program of two handlers. Each handler is a
+case of both kernels, numbered from 1 in order. A tensor is at the same place in each handler that
+takes it, since a kernel's layout argument names a tensor by its place; handlers that take one
+tensor at two places, or two tensors at one place, are refused by name. `read` drops what it reads,
+repeated. Its loop over one stream has an empty body, and around it is a counted loop whose body
+is exactly that stream loop (`for i in range(r) { for _ in stream(...) { } }`). That nest is
+today's repeat: the mover moves the stream's tiles `r` times (`km::Stream`'s repeat), and compute
+waits for and frees `r` times its blocks. `copy` pushes the loop's block itself (`out.push(tile)`).
+Compute copies each tile of the block to Dst tile 0 and packs it into the out half. Any other
+counted loop is refused by name: one with more in it than the stream loop, one after the stream
+loop, and one around a loop that pushes.
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of

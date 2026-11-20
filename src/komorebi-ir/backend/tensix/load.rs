@@ -167,10 +167,12 @@ pub fn kernels(
             names.len()
         )));
     }
+    // the tensor at place `param` of any handler: one place a tensor (`planned`)
     let layout = |param: usize| {
         plans
-            .first()
-            .and_then(|plan| plan.words.get(param))
+            .iter()
+            .filter_map(|plan| plan.words.get(param))
+            .find(|word| word.kind == WordKind::Tensor)
             .and_then(|word| names.iter().position(|n| *n == word.name))
             .and_then(|at| tensors.get(at))
             .map(|t| t.layout.clone())

@@ -79,6 +79,23 @@ class Patterned(km.Program):
             out.push(times(xb, k))
 
 
+class RepeatedBody(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int, n: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a in km.Stream(x.pages(0, tiles), repeat=n):
+            out.push(a)
+
+
+class RepeatedZip(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int, n: int):
+        for _a, _b in zip(
+            km.Stream(x.pages(0, tiles), repeat=n), km.Stream(y.pages(0, tiles))
+        ):
+            pass
+
+
 class TwoPatterns(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, tiles: int, p: km.Pattern, q: km.Pattern):
@@ -258,6 +275,8 @@ def test_a_name_that_is_an_ir_word_is_renamed():
         (Counted, "n = k * 2.0", "an assignment the IR module does not write yet"),
         (Patterned, "pattern=", "a stream's pattern= that is not a km.Pattern param"),
         (TwoPatterns, "for a, b", "the streams of one loop in different patterns"),
+        (RepeatedBody, "for a in", "a repeat of a loop with a body"),
+        (RepeatedZip, "for _a, _b", "a repeat of a loop over two streams"),
         (Unblocked, "for a in", "a stream's block that is not a number or a constant"),
         (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
         (Led, "pages(self.leader", "self.leader as a number is not written"),
@@ -277,13 +296,14 @@ def test_a_constant_other_than_an_int_is_refused_by_name():
         made(Floated)
 
 
-def gate_script(folder, monkeypatch):
-    """Program 4's script, copied into `folder` (today's make writes beside it)."""
-    script = folder / "gate_class.py"
-    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "gate_class.py", script)
-    spec = importlib.util.spec_from_file_location("gate_class", script)
+def gate_script(folder, monkeypatch, name="gate_class"):
+    """Program 4's script (or tests/ir/tensix/<name>.py), copied into `folder` (today's
+    make writes beside it)."""
+    script = folder / f"{name}.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / f"{name}.py", script)
+    spec = importlib.util.spec_from_file_location(name, script)
     gate = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "gate_class", gate)
+    monkeypatch.setitem(sys.modules, name, gate)
     spec.loader.exec_module(gate)
     return gate
 
@@ -495,6 +515,30 @@ def test_program_4_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     for value in (word, 0, "AXB", None):
         with pytest.raises(km.ProgramError, match="pattern"):
             ours.entry("gate").args(a, b, out, gate.TILES, value, group=group)
+
+
+def test_program_5_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    movement = gate_script(tmp_path, monkeypatch, "movement_class")
+    given = movement.made_with()
+    today = movement.Movement(log=lambda line: None, **given)
+    ours = program(movement.Movement, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "movement.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    source, output = given["source"], given["output"]
+    group, tiles = (0, movement.CORES), movement.TILES
+    pattern = km.Pattern("AB")
+    # each handler's number and words are today's, the repeat's among them
+    for name, values in (
+        ("read", (source, tiles, pattern, 3)),
+        ("copy", (source, output, tiles, pattern)),
+    ):
+        assert int(ours.entry(name)) == int(getattr(today, name)), name
+        words = ours.entry(name).args(*values, group=group)
+        assert words == list(getattr(today, name).args(*values)), name
 
 
 def test_program_2_built_on_islands_is_todays_on_a_session_of_them(

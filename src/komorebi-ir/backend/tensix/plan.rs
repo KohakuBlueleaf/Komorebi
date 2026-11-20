@@ -140,13 +140,19 @@ pub struct Call {
 /// What a handler's loop makes of its read stream's tiles.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shape {
-    /// `out.push(f(tile, k))` into a write stream of the same count (the first lesson).
+    /// `out.push(f(tile, k))` into a write stream of the same count (the first lesson),
+    /// or `out.push(tile)`, the loop's block itself, which compute copies (program 5).
     Mapped {
         /// The write stream (the sink).
         write: Moved,
-        /// The loop's call.
-        call: Call,
+        /// The loop's call; none: the block is pushed as it is.
+        call: Option<Call>,
+        /// The push.
+        push: InstId,
     },
+    /// A loop over one read stream whose body is empty: its blocks moved and dropped,
+    /// maybe in a counted loop around it, today's repeat (program 5, reading R46).
+    Dropped,
     /// `total += tile` from `zeros`, the total reduced over the group, the leader's
     /// result stored (program 2).
     Summed(Sum),
@@ -188,22 +194,32 @@ pub struct Plan {
     pub reads: Vec<Moved>,
     /// What the loop makes of them.
     pub shape: Shape,
+    /// The count of the counted loop around the stream loop (today's repeat); none:
+    /// once.
+    pub repeat: Option<Int>,
 }
 
 impl Plan {
-    /// The tiles the handler writes: its write stream's, or its store's.
-    pub fn written(&self) -> &Moved {
+    /// The tiles the handler writes: its write stream's, or its store's; none when
+    /// it drops what it reads.
+    pub fn written(&self) -> Option<&Moved> {
         match &self.shape {
-            Shape::Mapped { write, .. } => write,
-            Shape::Summed(sum) => &sum.store,
+            Shape::Mapped { write, .. } => Some(write),
+            Shape::Summed(sum) => Some(&sum.store),
+            Shape::Dropped => None,
         }
     }
 
-    /// The first instruction of the loop's body (whose line ends the loop's head).
+    /// The first instruction of the loop's body (whose line ends the loop's head); a
+    /// loop with an empty body, its own.
     pub fn looped(&self) -> InstId {
         match &self.shape {
-            Shape::Mapped { call, .. } => call.inst,
+            Shape::Mapped {
+                call: Some(call), ..
+            } => call.inst,
+            Shape::Mapped { push, .. } => *push,
             Shape::Summed(sum) => sum.add,
+            Shape::Dropped => self.reads[0].inst,
         }
     }
 }
@@ -279,6 +295,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         parts,
         mut reads,
         mut shape,
+        repeat,
     } = found;
     if let (Shape::Summed(_), Some((inst, _))) = (&shape, patterns.first()) {
         return Err(not_built(
@@ -309,6 +326,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         parts,
         reads,
         shape,
+        repeat,
     })
 }
 
@@ -409,6 +427,7 @@ struct Found {
     parts: Vec<Part>,
     reads: Vec<Moved>,
     shape: Shape,
+    repeat: Option<Int>,
 }
 
 /// What the walk found of a sum, as it is read.
@@ -448,8 +467,13 @@ struct Walk<'m> {
     call: Option<Call>,
     looped: bool,
     pushed: bool,
+    /// The push, when it pushes the loop's block itself.
+    copied: Option<InstId>,
     ended: bool,
     sum: Summing,
+    /// A counted loop around the stream loop: its count; and whether it is closed.
+    repeat: Option<Int>,
+    repeat_closed: bool,
 }
 
 impl<'m> Walk<'m> {
@@ -467,8 +491,11 @@ impl<'m> Walk<'m> {
             call: None,
             looped: false,
             pushed: false,
+            copied: None,
             ended: false,
             sum: Summing::default(),
+            repeat: None,
+            repeat_closed: false,
         }
     }
 
@@ -500,8 +527,21 @@ impl<'m> Walk<'m> {
         for (i, inst) in self.body.insts.iter().enumerate() {
             let id = InstId(i as u32);
             let anchor = Anchor::Inst(self.at, id);
-            if self.ended && self.sum.local.is_none() {
+            let closes_repeat = matches!(inst.op, Op::End) && self.repeat.is_some();
+            if self.ended && self.sum.local.is_none() && !(closes_repeat && !self.repeat_closed) {
                 return Err(not_built("a handler's lines after its stream loop", anchor));
+            }
+            // a counted loop whose body is exactly one stream loop (R46): its stream
+            let in_repeat = self.repeat.is_some() && !self.looped;
+            let stream_part = matches!(
+                inst.op,
+                Op::Stream(..) | Op::ForStream { .. } | Op::Param(_) | Op::Const(_) | Op::Arg(_)
+            );
+            if in_repeat && !stream_part {
+                return Err(not_built(
+                    "a counted loop other than around one stream loop, today's repeat",
+                    anchor,
+                ));
             }
             if self.sum.closed {
                 return Err(not_built(
@@ -526,11 +566,27 @@ impl<'m> Walk<'m> {
         if self.sum.zeros_seen {
             return Err(not_built("a zeros other than a var's start", at));
         }
-        let (Some((_, write, wover)), Some(call), true) =
-            (self.sink.take(), self.call.take(), self.ended)
-        else {
+        if self.repeat.is_some() && !self.repeat_closed {
+            return Err(not_built("a counted loop not closed", at));
+        }
+        if self.ended && self.sink.is_none() && self.call.is_none() && !self.pushed {
+            return self.dropped(at);
+        }
+        if self.repeat.is_some() {
             return Err(not_built(
-                "a handler other than a stream loop that pushes a tile function's result into a sink",
+                "a counted loop around a stream loop that pushes (a repeat of a loop with a body)",
+                at,
+            ));
+        }
+        let call = self.call.take();
+        let (Some((_, write, wover)), Some(push), true) = (
+            self.sink.take(),
+            call.as_ref().map(|c| c.inst).or(self.copied),
+            self.ended,
+        ) else {
+            return Err(not_built(
+                "a handler other than a stream loop that pushes a tile function's result, or its \
+                 block, into a sink",
                 at,
             ));
         };
@@ -593,7 +649,38 @@ impl<'m> Walk<'m> {
             locals: self.locals,
             parts,
             reads,
-            shape: Shape::Mapped { write, call },
+            shape: Shape::Mapped { write, call, push },
+            repeat: None,
+        })
+    }
+
+    /// The handler whose stream loop drops its blocks, maybe repeated (R46).
+    fn dropped(&mut self, at: Anchor) -> Result<Found, Refusal> {
+        let (reads, overs) = self.walked_streams();
+        if reads.len() != 1 {
+            return Err(not_built("a loop that drops two streams' blocks", at));
+        }
+        let range = match overs.into_iter().next() {
+            Some(Over::Tiles(first, n)) => Range::Tiles { first, n },
+            _ => {
+                return Err(not_built(
+                    "a dropped stream of other than t.tiles(first, n)",
+                    at,
+                ))
+            }
+        };
+        let reads = vec![Moved {
+            range,
+            ..reads[0].clone()
+        }];
+        let moved: Vec<&Moved> = reads.iter().collect();
+        self.locals_read(&[], &moved, at)?;
+        Ok(Found {
+            locals: std::mem::take(&mut self.locals),
+            parts: Vec::new(),
+            reads,
+            shape: Shape::Dropped,
+            repeat: self.repeat.clone(),
         })
     }
 
@@ -730,6 +817,7 @@ impl<'m> Walk<'m> {
             locals: self.locals,
             parts,
             reads: vec![read],
+            repeat: None,
             shape: Shape::Summed(Sum {
                 zeros,
                 add,
@@ -1003,13 +1091,44 @@ impl<'m> Walk<'m> {
             }
             Op::Push(s, v) => {
                 let to_sink = self.sink.as_ref().is_some_and(|(sv, _, _)| sv == s);
-                if self.pushed || !to_sink || !matches!(self.val(*v), Some(Val::Called)) {
-                    return Err("a push other than of the call's tile into the sink, once".into());
+                // the call's result, or the loop's block itself (one stream walked)
+                let block = matches!(self.val(*v), Some(Val::Tile(0))) && self.walked.len() == 1;
+                let called = matches!(self.val(*v), Some(Val::Called));
+                if self.pushed || !to_sink || !(called || block) {
+                    return Err(
+                        "a push other than of the call's tile or the loop's block into the \
+                         sink, once"
+                            .into(),
+                    );
+                }
+                if block {
+                    self.copied = Some(id);
                 }
                 self.pushed = true;
                 None
             }
-            Op::End if self.looped && !self.ended && (self.pushed || self.sum.summed) => {
+            Op::ForRange { n } => {
+                let count = self.int(*n);
+                let (None, false, Some(count)) = (&self.repeat, self.looped, count) else {
+                    return Err(
+                        "a counted loop other than one of u32 words and numbers around the \
+                         stream loop"
+                            .into(),
+                    );
+                };
+                self.repeat = Some(count);
+                None
+            }
+            Op::End if self.ended && self.repeat.is_some() && !self.repeat_closed => {
+                self.repeat_closed = true;
+                None
+            }
+            // a loop whose body is a push or a sum; an empty one drops its blocks
+            Op::End
+                if self.looped
+                    && !self.ended
+                    && (self.pushed || self.sum.summed || self.call.is_none()) =>
+            {
                 self.ended = true;
                 None
             }

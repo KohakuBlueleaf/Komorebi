@@ -63,8 +63,8 @@ class Made:
 @dataclass
 class Value:
     """What a name holds in a handler: its kind ("tensor", "u32", "f32", "partition",
-    "sink", "block", "tile", "reduced"), a partition's tensor and range's words, a
-    block's tiles."""
+    "view", "sink", "block", "tile", "reduced"), a partition's or a view's tensor and
+    range's words, a block's tiles."""
 
     kind: str
     format: str = ""
@@ -328,8 +328,8 @@ class Handler:
         return FORMATS[dtype]
 
     def body(self, statements):
-        """[(node, lines, children)] of a list of statements."""
-        return [self.statement(node) for node in statements]
+        """[(node, lines, children)] of its statements; a `pass` writes nothing."""
+        return [self.statement(n) for n in statements if not isinstance(n, ast.Pass)]
 
     def statement(self, node):
         if isinstance(node, ast.Assign):
@@ -370,6 +370,14 @@ class Handler:
             lines = [self.zeros(node, target, value)]
         elif construct == "reduce":
             lines = [self.reduce(node, target, value)]
+        elif self.pages_of(value):
+            # a view named (`pages = t.pages(a, b)`), streamed by its name
+            tensor = value.func.value.id
+            first, count = (bare(self.word(node, arg)) for arg in value.args)
+            lines = [
+                f"let {self.name(target)} = {self.name(tensor)}.tiles({first}, {count})"
+            ]
+            self.scope[target] = Value("view", tensor=tensor, first=first, count=count)
         elif word is not None:
             lines = [f"let {self.name(target)} = {bare(word)}"]
             self.scope[target] = Value("u32")
@@ -513,10 +521,9 @@ class Handler:
             )
         return f"store {self.view(node, pages, [])} <- {self.name(whole.id)}"
 
-    def view(self, node, view, lines):
-        """The text of a stream's view: `t.pages(a, b)` as `t.tiles(a, b)`; of `t[p]`,
-        p's name or p's range of tensor t restated (`lines` gains the restatement)."""
-        if (
+    def pages_of(self, view):
+        """Whether `view` is `t.pages(a, b)` of a tensor parameter t."""
+        return (
             isinstance(view, ast.Call)
             and isinstance(view.func, ast.Attribute)
             and view.func.attr == spelling("pages")
@@ -524,7 +531,15 @@ class Handler:
             and self.kind(view.func.value.id) == "tensor"
             and len(view.args) == 2
             and not view.keywords
-        ):
+        )
+
+    def view(self, node, view, lines):
+        """The text of a stream's view: `t.pages(a, b)` as `t.tiles(a, b)`; a view's
+        name; of `t[p]`, p's name or p's range of tensor t restated (`lines` gains the
+        restatement)."""
+        if isinstance(view, ast.Name) and self.kind(view.id) == "view":
+            return self.name(view.id)
+        if self.pages_of(view):
             first, count = (bare(self.word(node, arg)) for arg in view.args)
             return f"{self.name(view.func.value.id)}.tiles({first}, {count})"
         if not (
@@ -557,11 +572,9 @@ class Handler:
         """The lines of `km.Stream(t[p], block=n)` (n 1 when not given), the last one
         the stream itself."""
         keywords = {k.arg: k.value for k in call.keywords}
-        allowed = {
-            spelling("block"),
-            "pattern",
-        }  # the keyword, as page_streams reads it
-        allowed |= {spelling("write_stream")} if write else set()
+        # `pattern=` and `repeat=` by the keyword, as page_streams reads them
+        allowed = {spelling("block"), "pattern"}
+        allowed |= {spelling("write_stream")} if write else {"repeat"}
         for key in keywords:
             if key not in allowed:
                 self.refuse(
@@ -658,6 +671,14 @@ class Handler:
             streams.append(made[-1])
         held = ", ".join(self.name(n.id) for n in names)
         walked = f"zip({', '.join(streams)})" if zipped else streams[0]
+        repeat = self.repeat_of(node, calls)
+        if repeat is not None:
+            # `repeat=r` is a counted loop around the stream's loop (reading R46)
+            counter = "i"
+            while counter in self.used or counter in RESERVED:
+                counter += "_"
+            self.used.add(counter)
+            lines.append(f"for {counter} in range({repeat}) {{")
         lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
         for name, call in zip(names, calls):
             text, block = self.block_of(node, call)
@@ -670,9 +691,29 @@ class Handler:
         children = self.body(node.body)
         return (node, lines, children)
 
+    def repeat_of(self, node, calls):
+        """The count of a read stream's `repeat=`, an int of the handler's words; none
+        when not given. Only a loop over one stream that drops its blocks repeats."""
+        given = [k.value for c in calls for k in c.keywords if k.arg == "repeat"]
+        if not given:
+            return None
+        if len(calls) != 1:
+            self.refuse(
+                node, "a repeat of a loop over two streams", "repeat one stream's loop"
+            )
+        if not all(isinstance(n, ast.Pass) for n in node.body):
+            self.refuse(
+                node,
+                "a repeat of a loop with a body",
+                "repeat a loop that drops its blocks (`pass`)",
+            )
+        return bare(self.word(node, given[0]))
+
     def scope_format(self, call):
         """The format of the tensor a stream's view reads."""
         view = call.args[0]
+        if isinstance(view, ast.Name):
+            return self.scope[self.scope[view.id].tensor].format
         tensor = view.func.value if isinstance(view, ast.Call) else view.value
         return self.scope[tensor.id].format
 
@@ -692,6 +733,9 @@ class Handler:
                 node, "a call the IR module does not write yet", "see the IR's lines"
             )
         pushed = call.args[0]
+        if isinstance(pushed, ast.Name) and self.kind(pushed.id) == "block":
+            # the loop's block itself, copied
+            return f"{self.name(func.value.id)}.push({self.name(pushed.id)})"
         if isinstance(pushed, ast.BinOp):
             called = self.tile_expression(node, pushed)
         else:
@@ -837,11 +881,14 @@ class Handler:
     def write_body(self, text, statements, depth):
         for node, lines, children in statements:
             first = len(text.lines) + 1
+            opened = 0  # the blocks the statement's lines open, one inside the other
             for line in lines:
-                text.line(depth, line)
-            if lines[-1].endswith("{"):
-                self.write_body(text, children, depth + 1)
-                text.line(depth, "}")
+                text.line(depth + opened, line)
+                opened += line.endswith("{")
+            if opened:
+                self.write_body(text, children, depth + opened)
+            for inner in reversed(range(opened)):
+                text.line(depth + inner, "}")
             text.place(first, self.file, node.lineno, node.end_lineno)
 
 

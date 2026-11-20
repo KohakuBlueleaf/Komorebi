@@ -76,17 +76,25 @@ class compiler does, and gives a `Made`: the text and `made.origin` for `komoreb
 does not import `komorebi_ir`, and today's make does not call it.
 
 It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`), 2
-(`StepHandlers.sum`), 3 (`StepHandlers.add`) and 4 (`Gate.gate`):
+(`StepHandlers.sum`), 3 (`StepHandlers.add`), 4 (`Gate.gate`) and 5 (`Movement.read` and
+`Movement.copy`):
 - an int value (`first = self.rank * TILES`): int parameters and values, numbers, a module's int
   constant as its number, `self.rank`, `+ - *`, written `let first = worker.rank * 64`;
 - a partition of a tensor's pages;
 - a write stream and a read loop, each over a partition or over `t.pages(first, count)`, written
-  `t.tiles(first, count)`;
+  `t.tiles(first, count)`. A view may be named first (`pages = source.pages(a, b)`, written
+  `let pages = source.tiles(a, b)`) and streamed by its name;
+- a read stream's `repeat=r`, which is no word of the IR: a counted loop around the stream's loop,
+  `for i in range(r) { for _ in stream(pages, block = BLOCK) { } }` (the counter renamed when the
+  class uses `i`). Only a loop over one stream whose body is `pass` is repeated. A repeat of a loop
+  with a body, or of two streams zipped, is refused by name;
+- a loop whose body is `pass`, written with an empty body (its blocks moved and dropped);
 - a loop over two read streams zipped (`for x, y in zip(km.Stream(...), km.Stream(...)):`),
   written `for x, y in zip(a.tiles(...), b.tiles(...))`. Three streams, a write stream or names
   other than one a stream are refused by name;
 - a push of a tile function's result, or of a tile expression (`results.push(x * scale)`), which
-  is written as the function `tile_line_<line>` of the names it reads, as today's class compiles it;
+  is written as the function `tile_line_<line>` of the names it reads, as today's class compiles
+  it; or of the loop's block itself (`out.push(tile)`, a copy);
 - a tile of zeros (`total = km.tile.zeros(km.fp32)`), written `var total: tile<f32> = zeros`, and
   the loop's tile added to it (`total += tile`, a stream of one tile a block);
 - `whole = km.reduce(total, form="tree")`, written `let whole = reduce(total, with = sum)`. The

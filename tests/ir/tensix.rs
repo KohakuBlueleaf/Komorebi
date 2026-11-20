@@ -847,3 +847,88 @@ fn a_zip_other_than_program_3s_is_refused_by_name() {
     assert!(!file("stephandlers.h").contains("kRead1Pattern"));
     assert!(file("stephandlers.h").contains("kWrite0Pattern = km::pattern(\"B\")"));
 }
+
+#[test]
+fn a_counted_loop_other_than_program_5s_repeat_is_refused_by_name() {
+    // program 5 as the frontend writes it: a drop repeated, and a copy
+    let source = r#"module movement
+
+tile [32, 32]
+format bf16
+
+param BLOCK: u32 = 16 @bind(build)
+
+program Movement {
+    handler read(
+        source: tensor<bf16>,
+        tiles: u32,
+        pattern: u32,
+        repetitions: u32,
+    ) @on(group) {
+        let pages = source.tiles(worker.rank * tiles, tiles)
+        for i in range(repetitions) {
+            for _ in stream(pages, block = BLOCK) @tensix.pattern(pattern) {
+            }
+        }
+    }
+    handler copy(
+        source: tensor<bf16>,
+        output: tensor<bf16>,
+        tiles: u32,
+        pattern: u32,
+    ) @on(group) {
+        let first = worker.rank * tiles
+        let out = sink(output.tiles(first, tiles), block = BLOCK) @tensix.pattern(pattern)
+        for tile_ in stream(source.tiles(first, tiles), block = BLOCK) @tensix.pattern(pattern) {
+            out.push(tile_)
+        }
+    }
+}
+"#;
+    let built = |from: &str, to: &str| {
+        assert!(source.contains(from), "{from}");
+        komorebi_ir::api::build(&source.replacen(from, to, 1)).unwrap_or_else(|d| panic!("{d:?}"))
+    };
+    let refused = |from: &str, to: &str| {
+        let refusals = tensix::sources(&built(from, to)).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    let files = tensix::sources(&built("", "")).unwrap_or_else(|r| panic!("{r:?}"));
+    let file = |name: &str| &files.iter().find(|(n, _)| n == name).expect(name).1;
+    assert!(file("movement.cpp").contains("tiles, kRead0Block, repetitions, kRead0, pattern"));
+    assert!(file("movement.cpp").contains("movement.move(km_read0)"));
+    assert!(file("compute.cpp").contains("km_block0 < km_blocks0 * repetitions;"));
+    assert!(file("compute.cpp").contains("copy_tile(km_half0, km_tile0, 0);"));
+    // the nest is a counted loop whose body is exactly one stream loop
+    let stream_loop =
+        "for _ in stream(pages, block = BLOCK) @tensix.pattern(pattern) {\n            }";
+    let other = refused(
+        stream_loop,
+        &format!("let k = tiles + 1\n            {stream_loop}"),
+    );
+    assert!(
+        other.contains("a counted loop other than around one stream loop"),
+        "{other}"
+    );
+    let two = refused(
+        stream_loop,
+        &format!("{stream_loop}\n            {stream_loop}"),
+    );
+    assert!(two.contains("lines after its stream loop"), "{two}");
+    let after = refused(
+        "        for i in range(repetitions) {\n            for _",
+        "        for _ in stream(pages, block = BLOCK) {\n        }\n        for i in range(repetitions) {\n            for _",
+    );
+    assert!(after.contains("lines after its stream loop"), "{after}");
+    // a repeat of a loop with a body (today's repeat moves blocks only)
+    let pushed = refused(
+        "        for tile_ in stream(source.tiles(first, tiles), block = BLOCK) @tensix.pattern(pattern) {\n            out.push(tile_)\n        }",
+        "        let view = source.tiles(first, tiles)\n        for i in range(tiles) {\n            for tile_ in stream(view, block = BLOCK) @tensix.pattern(pattern) {\n                out.push(tile_)\n            }\n        }",
+    );
+    assert!(
+        pushed.contains("a counted loop around a stream loop that pushes"),
+        "{pushed}"
+    );
+}
