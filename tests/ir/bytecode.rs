@@ -156,6 +156,20 @@ fn a_comment_added_changes_the_full_hash_only() {
 }
 
 #[test]
+fn a_funcs_hint_leaves_the_semantic_hash_only() {
+    let text = lesson("t04_compute");
+    let a = hashes(&built(&text));
+    let b = hashes(&built(&edited(
+        &text,
+        "func gram(a: tile<f32>) -> tile<f32> {",
+        "func gram(a: tile<f32>) -> tile<f32> @tensix.fidelity(HiFi2) {",
+    )));
+    assert_eq!(a.semantic, b.semantic);
+    assert_ne!(a.build, b.build);
+    assert_ne!(a.full, b.full);
+}
+
+#[test]
 fn a_hint_changed_leaves_the_semantic_hash_only() {
     let text = lesson("t13_hinted");
     let a = hashes(&built(&text));

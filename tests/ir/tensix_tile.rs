@@ -27,6 +27,7 @@ use komorebi_ir::backend::tensix::tile::unit::{
     Runtime, Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
 };
 use komorebi_ir::backend::tensix::tile::wormhole::forms;
+use komorebi_ir::backend::tensix::unit::fidelity;
 
 /// Between the items of a list in one field.
 const SEP: char = '\x1f';
@@ -282,7 +283,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 40, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 41, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -550,7 +551,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 44);
+    assert_eq!(compared, 45);
 }
 
 /// What a caller reads of a unit that its listing does not print, as
@@ -593,7 +594,8 @@ fn each_unit_programs_listing_is_todays() {
         let name = f.get(3).map_or(format!("t_{case}"), |n| n.to_string());
         let ir = kernel_ir(&module, func(&module, &name), case)
             .unwrap_or_else(|r| panic!("{name}: {}", r.what));
-        let made = unit_program(&ir, dest, true, band);
+        let at = fidelity(&module, func(&module, &name)).unwrap_or_else(|r| panic!("{}", r.what));
+        let made = unit_program(&ir, dest, true, band, &at);
         let today = refused
             .lines()
             .find_map(|l| l.strip_prefix(&format!("{case}\t")));
@@ -676,6 +678,7 @@ fn each_unit_programs_listing_is_todays() {
         "t_leaky",
         "t_smooth",
         "t_project",
+        "t_project_hifi2",
         "t_by_row",
         "t_project_silu",
         "t_project_bias",
@@ -808,6 +811,44 @@ fn unit_files(folder: &Path) -> Vec<PathBuf> {
         .collect();
     cases.sort();
     cases
+}
+
+/// A function's `tensix.fidelity` hint: no hint is today's default; a name today's
+/// matrix unit does not have is refused with its text (the matrix test pins it); two
+/// hints, or one not of one name, are refused by name.
+#[test]
+fn a_fidelity_hint_is_read_and_an_unknown_one_refused() {
+    let given = |hints: &str| {
+        let text = format!(
+            "module hinted\n\ntile [32, 32]\nformat bf16, f32\n\n\
+             func p(x: tile<bf16>, w: tile<bf16>) -> tile<f32>{hints} {{\n\
+             \x20   return matmul(x, w)\n}}\n"
+        );
+        let module = komorebi_ir::api::build(&text).unwrap_or_else(|d| panic!("{d:?}"));
+        fidelity(&module, func(&module, "p")).map_err(|r| (r.code, r.what))
+    };
+    assert_eq!(given(""), Ok("HiFi4".to_string()));
+    assert_eq!(given(" @tensix.fidelity(LoFi)"), Ok("LoFi".to_string()));
+    let today = tile_products("HiFi5", 1, 1, 0).expect_err("HiFi5").0;
+    assert_eq!(
+        today,
+        "no fidelity 'HiFi5': one of LoFi, HiFi2, HiFi3, HiFi4"
+    );
+    assert_eq!(given(" @tensix.fidelity(HiFi5)"), Err(("K962", today)));
+    let named = |what: &str| {
+        Err((
+            "K964",
+            format!("the Tensix backend does not take {what} yet"),
+        ))
+    };
+    assert_eq!(
+        given(" @tensix.fidelity(HiFi2) @tensix.fidelity(HiFi4)"),
+        named("two `tensix.fidelity` hints on a function")
+    );
+    assert_eq!(
+        given(" @tensix.fidelity(\"HiFi2\")"),
+        named("a `tensix.fidelity` hint other than of one name")
+    );
 }
 
 #[test]

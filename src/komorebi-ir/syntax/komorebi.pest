@@ -98,7 +98,7 @@ record_decl  = { kw_record ~ ident ~ fields }
 fields       = { "{" ~ ogap ~ field ~ (ogap ~ "," ~ ogap ~ field)* ~ (ogap ~ ",")? ~ ogap ~ "}" }
 field        = { ident ~ ":" ~ type_ }
 
-func_decl    = { kw_func ~ ident ~ params ~ arrow ~ type_ ~ block }
+func_decl    = { kw_func ~ ident ~ params ~ arrow ~ type_ ~ attr* ~ block }
 combine_decl = { kw_combine ~ ident ~ params ~ arrow ~ type_ ~ attr* ~ block }
 extern_decl  = { kw_extern ~ kw_func ~ ident ~ params ~ arrow ~ type_ ~ attr* ~ fallback? }
 fallback     = { kw_fallback ~ block }

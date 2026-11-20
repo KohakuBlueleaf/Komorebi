@@ -3,15 +3,16 @@
 //! DSL makes them for a call on one tile at a time: the function traced, its unit
 //! program lowered with a load macro, emitted, and listed with the emit's checks.
 
-use crate::backend::{Refusal, NOT_BUILT};
-use crate::program::notes::Anchor;
+use crate::backend::{Refusal, NOT_BUILT, OVER_LIMIT};
+use crate::program::notes::{Anchor, HintArg};
 use crate::program::Module;
 use crate::types::FuncId;
 
 use super::tile::chain::ChainError;
 use super::tile::emit::emit;
 use super::tile::ir::{kernel_ir, KernelIR};
-use super::tile::lower::{unit_program, A_DTYPES};
+use super::tile::lower::{unit_program, A_DTYPES, FIDELITY};
+use super::tile::matrix::phases;
 use super::tile::unit::UnitProgram;
 
 /// A tile function's two files: its words and its listing.
@@ -66,6 +67,41 @@ fn not_printed(unit: &UnitProgram) -> Option<&'static str> {
     }
 }
 
+/// The fidelity of function `f`'s tile products: its hint `@tensix.fidelity(<name>)`,
+/// one of today's names (another is refused with today's text, `K962`), or with no
+/// hint today's default (`HiFi4`). A second such hint, or one not of one name, is
+/// refused by name (`K964`).
+pub fn fidelity(module: &Module, f: FuncId) -> Result<String, Refusal> {
+    let at = Some(Anchor::Func(f));
+    let mut hints = module
+        .notes
+        .hints
+        .iter()
+        .filter(|h| h.anchor == Anchor::Func(f) && h.path == ["tensix", "fidelity"]);
+    let Some(hint) = hints.next() else {
+        return Ok(FIDELITY.to_string());
+    };
+    let not_built = |what: &str| Refusal {
+        code: NOT_BUILT,
+        what: format!("the Tensix backend does not take {what} yet"),
+        at,
+    };
+    if hints.next().is_some() {
+        return Err(not_built("two `tensix.fidelity` hints on a function"));
+    }
+    let [HintArg::Name(name)] = hint.args.as_slice() else {
+        return Err(not_built("a `tensix.fidelity` hint other than of one name"));
+    };
+    match phases(name) {
+        Ok(_) => Ok(name.clone()),
+        Err(e) => Err(Refusal {
+            code: OVER_LIMIT,
+            what: e.0,
+            at,
+        }),
+    }
+}
+
 /// The unit of function `f` called on one tile at a time, as today's `tile_unit` makes
 /// it at the 1-tile width, or why it is not built.
 pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
@@ -79,7 +115,9 @@ pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
     };
     let name = func.name.clone();
     let ir = kernel_ir(module, f, &name)?;
-    let mut made = unit_program(&ir, dest(&ir), true, false).map_err(|e| e.refusal(at))?;
+    let fidelity = fidelity(module, f)?;
+    let mut made =
+        unit_program(&ir, dest(&ir), true, false, &fidelity).map_err(|e| e.refusal(at))?;
     if let Some(what) = not_printed(&made) {
         return Err(Refusal {
             code: NOT_BUILT,

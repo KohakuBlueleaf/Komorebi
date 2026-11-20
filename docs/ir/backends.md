@@ -154,6 +154,11 @@ function, its unit program with its rules and hazard checks, Wormhole's forms of
 the header with the emit's checks. `tests/ir/tensix_tile.rs` compares each stage with today's on a
 corpus of tile functions. A tile function the port does not take yet is refused with `K964`, by
 name; one today's compiler refuses too, with `K962` and today's text.
+A tile function's products are at the fidelity its hint names, `func f(...) -> T
+@tensix.fidelity(HiFi2) { ... }` (`LoFi`, `HiFi2`, `HiFi3` or `HiFi4`; another name is refused
+with `K962` and today's text), and with no hint at today's default, `HiFi4`. A `func` takes
+hints after its head, as a `combine` and an `extern func` do, and only hints: an undotted
+attribute there is `K006`.
 
 The tests `tests/ir/tensix.rs` and `tests/ir/frontend.rs` run today's emitter on the scripts (`python3`, else
 `KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails

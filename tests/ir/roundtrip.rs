@@ -66,6 +66,23 @@ fn assert_round_trip(module: &Module, what: &str) {
     assert_eq!(write(&again), text, "{what}: the writer is not stable");
 }
 
+/// A `func` takes hints after its head, as a `combine` and an `extern func` do: read,
+/// written back the same, and read again to the same tree.
+#[test]
+fn a_func_with_a_hint_round_trips() {
+    let text = "module hinted\n\ntile [32, 32]\nformat bf16, f32\n\n\
+                func project(x: tile<bf16>, w: tile<bf16>) -> tile<f32> @tensix.fidelity(HiFi2) {\n\
+                \x20   return matmul(x, w)\n}\n";
+    let module = parse(text).unwrap_or_else(|d| panic!("{d:?}"));
+    let Some(Item::Func(func)) = module.items.nodes().find(|i| matches!(i, Item::Func(_))) else {
+        panic!("no func: {module:#?}");
+    };
+    let path: Vec<&str> = func.attrs[0].path.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(path, ["tensix", "fidelity"]);
+    assert_eq!(write(&module), text, "the canonical text written back");
+    assert_round_trip(&module, "a func with a hint");
+}
+
 /// Every lesson is written in the canonical layout: `komo fmt` gives it back.
 #[test]
 fn lessons_write_back() {

@@ -340,7 +340,8 @@ pub struct Func {
     pub params: List<ParamDecl>,
     /// The result type.
     pub ret: Type,
-    /// The attributes before the body (always empty for `func`).
+    /// The attributes before the body (a `func`'s: hints only, the checker refuses
+    /// the language's own there).
     pub attrs: Vec<Attr>,
     /// The body.
     pub body: Block,

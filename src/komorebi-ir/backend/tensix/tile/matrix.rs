@@ -59,7 +59,7 @@ fn setrwc(clear: i64, note: &str, mask: i64) -> Result<Word, UnitError> {
 }
 
 /// The phases of `fidelity`, or today's ValueError's text.
-fn phases(fidelity: &str) -> Result<i64, UnitError> {
+pub fn phases(fidelity: &str) -> Result<i64, UnitError> {
     PHASES
         .iter()
         .find(|(f, _)| *f == fidelity)

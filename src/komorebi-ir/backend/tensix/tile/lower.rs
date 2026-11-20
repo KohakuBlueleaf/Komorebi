@@ -7,7 +7,7 @@
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
 //! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and every
 //! vector function (`FUNCTIONS`), with every pass of that path and the load macro; tile
-//! products, alone or before the vector code, at today's default fidelity. Refused by
+//! products, alone or before the vector code, at the fidelity given. Refused by
 //! name (K964) where it would act: `flash_exp2`, several results, per-row operands and
 //! the band. Not on this path, so not ported: `drop_copies`, `common_values`, the
 //! per-row pre-pass and `allocate`'s high registers.
@@ -1833,8 +1833,8 @@ fn items(code: Vec<Insn>) -> Vec<Item> {
     code.into_iter().map(Item::Insn).collect()
 }
 
-/// The fidelity of a tile function's products: today's default (`HiFi4`), as the IR
-/// states none.
+/// The fidelity of a tile function's products with no `tensix.fidelity` hint: today's
+/// default (`HiFi4`).
 pub const FIDELITY: &str = "HiFi4";
 
 /// The tensor names of matmul node `node`'s two operands (a, w).
@@ -2005,6 +2005,7 @@ pub fn unit_program(
     dest: &str,
     load_macro: bool,
     band: bool,
+    fidelity: &str,
 ) -> Result<UnitProgram, ChainError> {
     let Some(&(_, mode)) = DEST_MODES.iter().find(|(d, _)| *d == dest) else {
         return Err(plan_error(format!("no unit program for a {dest} Dst")));
@@ -2017,7 +2018,7 @@ pub fn unit_program(
     let mut chain = stream_chain(ir)?;
     let root = ir.stores.first().map(|s| s.value);
     if let Some(r) = root.filter(|r| ir.arena.get(r.0).is_some_and(|n| n.kind == "matmul")) {
-        return product_alone(ir, r, FIDELITY, band);
+        return product_alone(ir, r, fidelity, band);
     }
     if chain.prev.is_some() {
         return Err(plan_error(format!(
@@ -2283,7 +2284,7 @@ pub fn unit_program(
         "the input tiles",
     )];
     let multiplied = if leaves > 0 {
-        products(ir, &mut unit, &products_at, FIDELITY)?
+        products(ir, &mut unit, &products_at, fidelity)?
     } else {
         Vec::new()
     };
@@ -2305,7 +2306,7 @@ pub fn unit_program(
             "schedule",
             "products",
             vec![format!(
-                "{leaves} product(s) at {FIDELITY} before the vector code ({words} matrix words), the vector unit's stall on the matrix unit after them"
+                "{leaves} product(s) at {fidelity} before the vector code ({words} matrix words), the vector unit's stall on the matrix unit after them"
             )],
         ));
     }

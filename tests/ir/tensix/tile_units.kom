@@ -56,6 +56,10 @@ func t_project(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
     return matmul(x, w)
 }
 
+func t_project_hifi2(x: tile<bf16>, w: tile<bf16>) -> tile<f32> @tensix.fidelity(HiFi2) {
+    return matmul(x, w)
+}
+
 func t_scaled_sum(a: tile<f32>, b: tile<f32>, k: f32) -> tile<f32> {
     return (a + b) * k
 }

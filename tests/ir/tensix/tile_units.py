@@ -51,6 +51,7 @@ CASES = [
     ("leaky", lambda a: km.where(a > 0.0, a, a * 0.01), [F], {}),
     ("smooth", lambda a: a * 0.5 + abs(a) * 0.5, [F], {}),
     ("project", lambda x, w: x @ w, [BF, BF], {}),
+    ("project_hifi2", lambda x, w: x @ w, [BF, BF], {"fidelity": "HiFi2"}),
     # a tile's row 0 and column 0 spread (bcast_row, bcast_col: the per-row path, its
     # pre-pass taken and kept in the rows)
     ("by_row", lambda a, b: a * b.row(), [F, F], {}),
