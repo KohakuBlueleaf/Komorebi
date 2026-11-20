@@ -1,9 +1,7 @@
-"""Today's tile compiler on a corpus of tile functions, as the reference for the port's
-unit program (backend/tensix/tile/unit.rs): for each function its unit program as
-data (`<case>.unit`, tab-separated lines the Rust test reads) and as today's listing
-(`<case>.txt`); the encoding of words over the whole operation table (`encode.txt`);
-the functions today refuses (`refused.txt`). No card, no compiler.
-Usage: python tile_units.py <folder>."""
+"""Today's tile compiler on a corpus of tile functions: the reference for the port's
+unit program (backend/tensix/tile/unit.rs). Writes each unit as data (`<case>.unit`)
+and as today's listing (`<case>.txt`), every word's encoding (`encode.txt`) and the
+refusals (`refused.txt`). No card, no compiler. Usage: python tile_units.py <folder>."""
 
 import random
 import sys
