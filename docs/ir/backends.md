@@ -31,7 +31,9 @@ and options, each a bool or a text) with the buffers in each core's memory they 
 through (an index, a format, the bytes of a page, the pages, and the other half's index when the
 buffer is one half of a pair, one half for each mover). Each entry carries the invocation's ABI, the same on
 every backend: its number, its argument words in order (a tensor's address, a tensor's tile
-count, a parameter's value), and the bounds a host checks before sending it. Compiling runs nothing and writes nothing. The
+count, a parameter's value), and the bounds a host checks before sending it: tensor tiles whose
+first and count are of the words, numbers, the worker's rank and the group's size, by `+` and `*`,
+checked for each rank of the group when they read the rank. Compiling runs nothing and writes nothing. The
 output's files are kept under a key over the hash of the parts the backend reads, the backend's
 name and version, and the target; what a build makes of them is the build's own cache.
 
@@ -97,8 +99,9 @@ only the rank, size and words its lines use. Partitions of the same values are p
 A tile function may be on blocks, the template applied to each valid tile of the block (today's
 compute loop). Everything else is refused with `K964`, by name.
 
-An entry point states the ranges a host can compute from the words (words, numbers, sums); a
-range that reads the rank is each worker's and is not stated.
+An entry point states the ranges a host can compute from the words and the group (words, numbers,
+the rank and size, sums and products): program 1's `a.tiles(worker.rank * 64, 64)` is checked for
+each rank. A range with a `-` is not stated yet.
 
 The tile function's two files, `tile_<f>.hpp` and its listing, are not made by a port of today's
 tile compiler. They are its output for the one shape `return a * k` (a `bf16` tile times an `f32`),

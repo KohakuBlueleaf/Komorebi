@@ -46,8 +46,9 @@ class Entry(km_program.Handler):
         made.short = point.name.split(".")[-1]
         return made
 
-    def args(self, *values):
-        """The command words of a call with these arguments, in the entry's order."""
+    def args(self, *values, group=None):
+        """The command words of a call with these arguments, in the entry's order;
+        `group`, the submit's (first, count), when a range reads the rank or size."""
         point, short = self.point, self.short
         if len(values) != len(self.names):
             raise ProgramError(
@@ -55,7 +56,18 @@ class Entry(km_program.Handler):
             )
         words = [self.word(kind, p, values[p]) for kind, p in point.words]
         for tensor, first, count in point.bounds:
-            self.bound_checked(values[tensor], self.names[tensor], first, count, words)
+            ranked = reads_group(first) or reads_group(count)
+            if ranked and group is None:
+                raise ProgramError(
+                    f"{short}: a range of {self.names[tensor]} reads the rank: give "
+                    "args(..., group=(first, count)), the submit's group"
+                )
+            size = int(group[1]) if ranked else None
+            for rank in range(size) if ranked else (None,):
+                at = {"rank": rank, "size": size}
+                self.bound_checked(
+                    values[tensor], self.names[tensor], first, count, words, at
+                )
         return words
 
     def word(self, kind, p, value):
@@ -78,28 +90,35 @@ class Entry(km_program.Handler):
             )
         return word_of(self.short, name, WORD_KINDS[scalar], value)
 
-    def bound_checked(self, tensor, name, first, count, words):
-        """Refuses a call whose tiles `first` to `first + count - 1` of `tensor` are
-        not all in it, in the words of today's ranges (pages.ranges.at_submit)."""
-        start, many = value_of(first, words), value_of(count, words)
+    def bound_checked(self, tensor, name, first, count, words, at):
+        """Refuses a call whose tiles `first` to `first + count - 1` of `tensor` (at
+        rank `at["rank"]` of `at["size"]`, when they read it) are not all in it, in the
+        words of today's ranges (pages.ranges.at_submit)."""
+        start, many = value_of(first, words, at), value_of(count, words, at)
         held = tiles_of(tensor)
         if many < 1 or start + many <= held:
             return
         per_page = getattr(tensor, "page_tiles", 1)
         size = tensor.page_bytes // per_page
         written = f"{name}.tiles({self.text(first)}, {self.text(count)})"
+        rank = at["rank"]
+        where = "" if rank is None else f" at rank {rank} of {at['size']}"
         raise ProgramError(
-            f"{self.short}: {written}: items {start} to {start + many - 1} of {name} "
-            f"at this call, and {name} holds {held} items of {size} B "
+            f"{self.short}: {written}: items {start} to {start + many - 1} of {name}"
+            f"{where} at this call, and {name} holds {held} items of {size} B "
             f"({tensor.pages} page(s) of {per_page}): keep the range inside the tensor"
         )
 
-    def text(self, expr):
-        """An end of a range as the handler's parameters write it."""
+    def text(self, expr, inner=False):
+        """An end of a range as the handler's parameters and the IR's words write it."""
         if expr[0] == "const":
             return str(expr[1])
-        if expr[0] == "add":
-            return f"{self.text(expr[1])} + {self.text(expr[2])}"
+        if expr[0] in ("rank", "size"):
+            return {"rank": "worker.rank", "size": "group.size"}[expr[0]]
+        if expr[0] in ("add", "mul"):
+            sign = {"add": "+", "mul": "*"}[expr[0]]
+            text = f"{self.text(expr[1], True)} {sign} {self.text(expr[2], True)}"
+            return f"({text})" if inner else text
         kind, p = self.point.words[expr[1]]
         return self.names[p] if kind == "word" else f"{self.names[p]}'s {kind}"
 
@@ -109,13 +128,25 @@ def tiles_of(tensor):
     return int(tensor.pages) * getattr(tensor, "page_tiles", 1)
 
 
-def value_of(expr, words):
-    """An end of a range at a call: of its words, constants and sums."""
-    if expr[0] == "word":
+def reads_group(expr):
+    """Whether an end of a range reads the worker's rank or the group's size."""
+    if expr[0] in ("rank", "size"):
+        return True
+    return expr[0] in ("add", "mul") and (reads_group(expr[1]) or reads_group(expr[2]))
+
+
+def value_of(expr, words, at):
+    """An end of a range at a call: of its words, constants, the rank and size in
+    `at`, sums and products."""
+    kind = expr[0]
+    if kind == "word":
         return words[expr[1]]
-    if expr[0] == "const":
+    if kind == "const":
         return expr[1]
-    return value_of(expr[1], words) + value_of(expr[2], words)
+    if kind in ("rank", "size"):
+        return at[kind]
+    left, right = value_of(expr[1], words, at), value_of(expr[2], words, at)
+    return left + right if kind == "add" else left * right
 
 
 def load_tensor(tensor):

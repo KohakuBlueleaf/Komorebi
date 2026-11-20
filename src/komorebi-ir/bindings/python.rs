@@ -321,7 +321,12 @@ fn expr<'py>(py: Python<'py>, e: &Expr) -> PyResult<Bound<'py, PyAny>> {
     Ok(match e {
         Expr::Word(i) => ("word", *i).into_pyobject(py)?.into_any(),
         Expr::Const(n) => ("const", *n).into_pyobject(py)?.into_any(),
+        Expr::Rank => ("rank",).into_pyobject(py)?.into_any(),
+        Expr::Size => ("size",).into_pyobject(py)?.into_any(),
         Expr::Add(a, b) => ("add", expr(py, a)?, expr(py, b)?)
+            .into_pyobject(py)?
+            .into_any(),
+        Expr::Mul(a, b) => ("mul", expr(py, a)?, expr(py, b)?)
             .into_pyobject(py)?
             .into_any(),
     })

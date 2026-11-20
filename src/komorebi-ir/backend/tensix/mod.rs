@@ -1054,8 +1054,8 @@ fn entries(module: &Module, plans: &[Plan]) -> Vec<EntryPoint> {
                     WordKind::U32 | WordKind::F32 => ArgWord::Word(p),
                 })
                 .collect();
-            // A range a host can compute from the words: a partition's whole range, or
-            // a stream's tiles; one that reads the rank is each worker's, not stated.
+            // A range a host can compute from the words and the group: a partition's
+            // whole range, or a stream's tiles (each rank's, when it reads the rank).
             let mut bounds = Vec::new();
             for moved in [&plan.read, &plan.write] {
                 let (first, n) = match &moved.range {
@@ -1089,17 +1089,19 @@ fn entries(module: &Module, plans: &[Plan]) -> Vec<EntryPoint> {
         .collect()
 }
 
-/// An int as a host computes it from the command's words, if it can: words, numbers,
-/// sums and named values of these.
+/// An int as a host computes it from the command's words and group, if it can: words,
+/// numbers, the rank and size, sums, products and named values of these.
 fn host_expr(plan: &Plan, int: &Int) -> Option<Expr> {
+    let both =
+        |a: &Int, b: &Int| Some((Box::new(host_expr(plan, a)?), Box::new(host_expr(plan, b)?)));
     match int {
         Int::Word(i) => Some(Expr::Word(*i)),
         Int::Const(n) => Some(Expr::Const(*n)),
+        Int::Rank => Some(Expr::Rank),
+        Int::Size => Some(Expr::Size),
         Int::Local(l) => host_expr(plan, &plan.locals[*l].value),
-        Int::Bin('+', a, b) => Some(Expr::Add(
-            Box::new(host_expr(plan, a)?),
-            Box::new(host_expr(plan, b)?),
-        )),
+        Int::Bin('+', a, b) => both(a, b).map(|(a, b)| Expr::Add(a, b)),
+        Int::Bin('*', a, b) => both(a, b).map(|(a, b)| Expr::Mul(a, b)),
         _ => None,
     }
 }

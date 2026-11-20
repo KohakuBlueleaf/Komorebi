@@ -115,10 +115,10 @@ def run(program: str | bytes, script: str) -> str:
 
 
 class EntryPoint(NamedTuple):
-    """What a host invokes: ``Program.handler``, its kind, number, symbol, parameters'
-    kinds, argument words (``("address" | "tiles" | "word", parameter)``) and the
-    ranges a host checks before sending it, ``(tensor, first, count)``, each end
-    ``("word", i)``, ``("const", n)`` or ``("add", a, b)``."""
+    """What a host invokes: ``Program.handler``, kind, number, symbol, parameter kinds,
+    words (``("address" | "tiles" | "word", p)``), the ranges a host checks, ``(tensor,
+    first, count)``, each end ``("word", i)``, ``("const", n)``, ``("rank",)``,
+    ``("size",)``, ``("add", a, b)`` or ``("mul", a, b)``."""
 
     name: str
     kind: str

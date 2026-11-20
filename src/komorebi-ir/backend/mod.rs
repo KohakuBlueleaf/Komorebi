@@ -204,20 +204,27 @@ pub enum ArgWord {
     Word(usize),
 }
 
-/// A number computed from an invocation's argument words.
+/// A number computed from an invocation's argument words and its group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     /// Argument word `i` (an index into `EntryPoint.words`).
     Word(usize),
     /// A constant.
     Const(u64),
+    /// A worker's rank in the invocation's group.
+    Rank,
+    /// The size of the invocation's group.
+    Size,
     /// A sum.
     Add(Box<Expr>, Box<Expr>),
+    /// A product.
+    Mul(Box<Expr>, Box<Expr>),
 }
 
 /// What a host checks before it sends an invocation: tiles `first` to
-/// `first + count - 1` of the tensor passed as parameter `tensor` lie in it. One that
-/// does not ends the invocation failed (`view_end`) without sending it.
+/// `first + count - 1` of the tensor passed as parameter `tensor` lie in it, for each
+/// rank of the group when an end reads the rank. One that does not ends the
+/// invocation failed (`view_end`) without sending it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bound {
     /// The tensor's parameter.

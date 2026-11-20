@@ -176,6 +176,8 @@ def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monke
     ours = program(t1.Scale, log=lambda line: None, **given)
     run = ours.entry("run")
     assert run.program is ours
+    # T1's ranges read no rank: as before, no group needed
+    assert run.point.bounds == [(t, ("word", 2), ("word", 3)) for t in (0, 1)]
     assert run.args(x, y, 0, 64, 2.0) == list(today.run.args(x, y, 0, 64, 2.0))
     assert run.args(x, y, 0, x.pages, 2.0) == [0x1000, 0x1000, 0, 2048, 0x40000000]
     # one tile past the end: today's make keeps no range for pages under a partition
@@ -210,6 +212,19 @@ def test_program_1_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     assert halves(ours.pairs) == halves(today.pairs)
     a, out = given["a"], given["out"]
     line = ours.entry("line")
-    assert line.args(a, out, 2.0) == list(today.line.args(a, out, 2.0))
-    # each worker's range reads its rank: no range a host computes, none checked
-    assert line.point.bounds == []
+    # each worker's range reads its rank: checked for every rank of the group; on
+    # tensors of exactly 12 x 64 tiles, a group of 12 fits
+    words = line.args(a, out, 2.0, group=(0, p1.CORES))
+    assert words == list(today.line.args(a, out, 2.0))
+    # one worker more: today checks nothing here either and sends it; the IR refuses
+    # it at the rank that does not fit
+    assert list(today.line.args(a, out, 2.0)) == words
+    with pytest.raises(km.ProgramError) as refused:
+        line.args(a, out, 2.0, group=(0, p1.CORES + 1))
+    assert str(refused.value) == (
+        "line: a.tiles(worker.rank * 64, 64): items 768 to 831 of a at rank 12 of 13 "
+        "at this call, and a holds 768 items of 2048 B (768 page(s) of 1): keep the "
+        "range inside the tensor"
+    )
+    with pytest.raises(km.ProgramError, match="reads the rank: give"):
+        line.args(a, out, 2.0)

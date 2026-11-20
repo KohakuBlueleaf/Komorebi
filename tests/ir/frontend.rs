@@ -16,7 +16,7 @@ use komorebi_ir::api::origin::{Given, Mapped};
 use komorebi_ir::api::{self, origin};
 use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
 use komorebi_ir::backend::tensix::{self, chip, Tensix};
-use komorebi_ir::backend::{Backend, Build, Processor, Setting, Target};
+use komorebi_ir::backend::{Backend, Bound, Build, Expr, Processor, Setting, Target};
 use komorebi_ir::bytecode;
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::program::body::InstId;
@@ -300,4 +300,19 @@ fn program_1_through_the_frontend_is_todays_text_byte_for_byte() {
         dram_page: None,
     };
     same_as_today(&made, &module, &[tensor(2048), tensor(4096)], "scalars");
+    // Its ranges read the rank: a host checks a.tiles(worker.rank * 64, 64) and out's
+    // for each rank of the group (today checks nothing here).
+    let target = Target {
+        arch: chip::ARCH.to_string(),
+        features: Default::default(),
+    };
+    let output = Tensix
+        .compile(&module, &target)
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let bound = |tensor| Bound {
+        tensor,
+        first: Expr::Mul(Box::new(Expr::Rank), Box::new(Expr::Const(64))),
+        count: Expr::Const(64),
+    };
+    assert_eq!(output.entries[0].bounds, [bound(0), bound(1)]);
 }

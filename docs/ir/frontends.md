@@ -110,7 +110,10 @@ komorebi-ir wheel, which `komorebi.dsl.ir` does not.
    - the handlers' header;
    - the make's `depth=`.
 6. Each handler is made from its entry point: `entry(name)` is a handler `Run.submit` takes,
-   and its `args(...)` gives the command words of a call, as today's make gives them.
+   and its `args(...)` gives the command words of a call, as today's make gives them. A range
+   that reads the rank (program 1's `a.tiles(worker.rank * 64, 64)`) is checked for every rank
+   of the group, `args(..., group=(first, count))` as the submit's, and refused at the rank
+   that does not fit.
 
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
