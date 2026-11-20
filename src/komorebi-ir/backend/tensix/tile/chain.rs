@@ -263,9 +263,11 @@ pub(crate) struct Compiler<'k> {
     templates: Vec<(String, String)>,
     /// The tile products: register operands as loads are.
     products: Vec<NodeId>,
-    /// The row form's reduction and per-row value, read as register operands as its
-    /// row loads and resident rows are (today's `leaf_of` of `row_program`).
-    row: Option<(NodeId, NodeId)>,
+    /// The row form's nodes read as register operands as its row loads and resident
+    /// rows are (today's `leaf_of` of `row_program` and `level_program`).
+    row: Option<Vec<NodeId>>,
+    /// The register slots a function takes (today's `limit`).
+    limit: usize,
 }
 
 impl<'k> Compiler<'k> {
@@ -284,19 +286,22 @@ impl<'k> Compiler<'k> {
             templates: Vec::new(),
             products,
             row: None,
+            limit: SLOTS,
         }
     }
 
     /// A compiler of the row form's chains of `ir`: the forms of its nodes `shapes`
-    /// (the row form's), its reduction `red` and per-row value `stat` read as operands.
+    /// (the row form's), the nodes `leaves` read as operands (its reductions and its
+    /// per-row values), at most `limit` register operands a function.
     pub(crate) fn rows(
         ir: &'k KernelIR,
         shapes: Vec<Option<&'static str>>,
-        red: NodeId,
-        stat: NodeId,
+        leaves: Vec<NodeId>,
+        limit: usize,
     ) -> Compiler<'k> {
         let mut made = Compiler::new(ir, shapes, Vec::new());
-        made.row = Some((red, stat));
+        made.row = Some(leaves);
+        made.limit = limit;
         made
     }
 
@@ -464,8 +469,10 @@ impl Build {
                     .any(|(k, v)| k == "view" && matches!(v, Attr::View(v) if v.kind == "row"))
             })
         };
-        let read = if let Some((red, stat)) = compiler.row {
-            ["load", "resident"].contains(&kind) && row_view() || node == red || node == stat
+        // today's leaf rule; its row-view test is never reached from a kernel the shapes
+        // take (a tile meeting a row is refused there first), kept as today's line
+        let read = if let Some(leaves) = &compiler.row {
+            ["load", "resident"].contains(&kind) && row_view() || leaves.contains(&node)
         } else if compiler.products.contains(&node) {
             how == "copy"
         } else {
@@ -478,8 +485,9 @@ impl Build {
         if let Some((_, id)) = self.keys.iter().find(|(k, _)| *k == key) {
             return Ok(Val::V(*id));
         }
-        if self.operands.len() == SLOTS {
-            return Err(self.plan(format!("the chain needs more than {SLOTS} register slots")));
+        if self.operands.len() == compiler.limit {
+            let limit = compiler.limit;
+            return Err(self.plan(format!("the chain needs more than {limit} register slots")));
         }
         let id = self
             .vs

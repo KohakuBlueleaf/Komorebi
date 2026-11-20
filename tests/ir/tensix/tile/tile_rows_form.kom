@@ -90,6 +90,56 @@ func t_recip_centred(x: tile<f32>[2]) -> tile<f32>[2] {
     return x - reciprocal(reduce_sum(x * x, axis = row)).col()
 }
 
+func t_layer_pair(x: tile<f32>[2], w: tile<f32>[2], b: tile<f32>[2]) -> tile<f32>[2] {
+    let d = x - (reduce_sum(x, axis = row) * 0.015625).col()
+    let variance = reduce_sum(d * d, axis = row) * 0.015625
+    return d * rsqrt(variance + 1e-5).col() * w.row() + b.row()
+}
+
+func t_kept_sum(x: tile<f32>[2]) -> tile<f32>[2] {
+    let a = reduce_sum(x, axis = row)
+    let m = reduce_max(x - (a * 0.015625).col(), axis = row)
+    return x * (m + a).col()
+}
+
+func t_max_weighted(x: tile<f32>[2], w: tile<f32>[2]) -> tile<f32>[2] {
+    return x - reduce_max(x * w.row(), axis = row).col()
+}
+
+func t_three_levels(x: tile<f32>[2]) -> tile<f32>[2] {
+    let top = reduce_max(x, axis = row)
+    let e = exp(x - top.col())
+    let y = e * reciprocal(reduce_sum(e, axis = row)).col()
+    return y * rsqrt(reduce_sum(y * y, axis = row) + 1e-6).col()
+}
+
+func t_three_plain(x: tile<f32>[2]) -> tile<f32>[2] {
+    let a = reduce_max(x, axis = row)
+    let b = reduce_sum(x - a.col(), axis = row)
+    return x - reduce_min(x * b.col(), axis = row).col()
+}
+
+func t_kept_through(x: tile<f32>[2]) -> tile<f32>[2] {
+    let a = reduce_max(x, axis = row)
+    let p = reduce_sum(x - (a * 2.0).col(), axis = row)
+    return x * p.col()
+}
+
+func t_two_weights(x: tile<f32>[2], w: tile<f32>[2], v: tile<f32>[2]) -> tile<f32>[2] {
+    return x - reduce_sum(x * w.row() * v.row(), axis = row).col()
+}
+
+func t_five_values(x: tile<f32>[2]) -> tile<f32>[2] {
+    let a = x * reduce_sum(x, axis = row).col() + reduce_max(x, axis = row).col()
+    let b = a - reduce_min(x, axis = row).col()
+    return b * reduce_sum(x * x, axis = row).col() + reduce_max(x * x, axis = row).col()
+}
+
+func t_five_fields(x: tile<f32>[2], a: tile<f32>[2], b: tile<f32>[2], c: tile<f32>[2], d: tile<f32>[2], e: tile<f32>[2]) -> tile<f32>[2] {
+    let y = x * reduce_sum(x, axis = row).col() * a.row() * b.row()
+    return y * c.row() * d.row() * e.row()
+}
+
 // a reduction on one tile: today's chain refuses it
 func one(x: tile<f32>[1]) -> tile<f32>[1] {
     return x - reduce_sum(x, axis = row).col()

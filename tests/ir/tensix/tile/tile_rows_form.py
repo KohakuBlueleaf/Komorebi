@@ -125,6 +125,68 @@ def gated(x, g, w):
     return y * km.rsqrt(km.reduce_sum(y * y, exact=True) + 1e-6).col() * w.row()
 
 
+def layer_pair(x, w, b):
+    """layer_norm at 2 tiles: two levels, two resident rows."""
+    d = x - (km.reduce_sum(x, exact=True) * 0.015625).col()
+    variance = km.reduce_sum(d * d, exact=True) * 0.015625
+    return d * km.rsqrt(variance + 1e-5).col() * w.row() + b.row()
+
+
+def kept_sum(x):
+    """A sum a later level's per-row value reads: kept in a slot of its own."""
+    a = km.reduce_sum(x, exact=True)
+    m = km.reduce_max(x - (a * 0.015625).col(), exact=True)
+    return x * (m + a).col()
+
+
+def max_weighted(x, w):
+    """A largest value that reads the resident row by .row(): the levels."""
+    return x - km.reduce_max(x * w.row(), exact=True).col()
+
+
+def three_levels(x):
+    """softmax_pair, then its root mean square: three passes over the row."""
+    top = km.reduce_max(x, exact=True)
+    e = km.exp(x - top.col())
+    y = e * km.reciprocal(km.reduce_sum(e, exact=True)).col()
+    return y * km.rsqrt(km.reduce_sum(y * y, exact=True) + 1e-6).col()
+
+
+def three_plain(x):
+    """Three passes over the row, each reading the value before it, no constant."""
+    a = km.reduce_max(x, exact=True)
+    b = km.reduce_sum(x - a.col(), exact=True)
+    return x - km.reduce_min(x * b.col(), exact=True).col()
+
+
+def kept_through(x):
+    """A sum a later reduction reads through a value made of it: kept in a slot."""
+    a = km.reduce_max(x, exact=True)
+    p = km.reduce_sum(x - (a * 2.0).col(), exact=True)
+    return x * p.col()
+
+
+def two_weights(x, w, v):
+    """A sum that reads two resident rows by .row(): a column of each."""
+    return x - km.reduce_sum(x * w.row() * v.row(), exact=True).col()
+
+
+def five_values(x):
+    """Five per-row values: more than the rows tile's slots."""
+    a = x * km.reduce_sum(x, exact=True).col() + km.reduce_max(x, exact=True).col()
+    b = a - km.reduce_min(x, exact=True).col()
+    return (
+        b * km.reduce_sum(x * x, exact=True).col()
+        + km.reduce_max(x * x, exact=True).col()
+    )
+
+
+def five_fields(x, a, b, c, d, e):
+    """Five resident rows: more per-column tiles than Dst holds after the row's."""
+    y = x * km.reduce_sum(x, exact=True).col() * a.row() * b.row()
+    return y * c.row() * d.row() * e.row()
+
+
 # case, function, its tensors' formats, the row's width, its fields (the last ones)
 CASES = [
     ("rms_norm", rms_norm, [F, F], 2, 1),
@@ -145,6 +207,15 @@ CASES = [
     ("exp_sum", exp_sum, [F], 2, 0),
     ("exp_scaled", exp_scaled, [F], 2, 0),
     ("recip_centred", recip_centred, [F], 2, 0),
+    ("layer_pair", layer_pair, [F, F, F], 2, 2),
+    ("kept_sum", kept_sum, [F], 2, 0),
+    ("max_weighted", max_weighted, [F, F], 2, 1),
+    ("three_levels", three_levels, [F], 2, 0),
+    ("three_plain", three_plain, [F], 2, 0),
+    ("kept_through", kept_through, [F], 2, 0),
+    ("two_weights", two_weights, [F, F, F], 2, 2),
+    ("five_values", five_values, [F], 2, 0),
+    ("five_fields", five_fields, [F] * 6, 2, 5),
 ]
 
 
@@ -169,6 +240,15 @@ BRANCHES = [
         lambda x, w, b: x * km.reduce_sum(x, exact=True).col() * w.row() + b.row(),
         [F, F, F],
         2,
+    ),
+    (
+        "field_levels",
+        lambda x, w: x
+        * km.reduce_sum(x, exact=True).col()
+        * km.reduce_max(x, exact=True).col()
+        + w,
+        [F, F],
+        1,
     ),
     (
         "two_cols",
@@ -344,11 +424,23 @@ def main(folder):
     (folder / "rows_refused.txt").write_text("".join(f"{r}\n" for r in refused))
     (folder / "branches.txt").write_text("".join(f"{b}\n" for b in branches(folder)))
     (folder / "checks.txt").write_text("".join(f"{c}\n" for c in checks(folder)))
+    (folder / "band.txt").write_text(band() + "\n")
+
+
+def band():
+    """Today's refusal of the band (`rows`) in the levels, on softmax_pair."""
+    ir = traced("softmax_pair", softmax_pair, [F], 0)
+    try:
+        row_program(ir, 2, 2, 4, rows=True)
+    except PlanError as error:
+        return str(error)
+    raise AssertionError("the levels took the band")
 
 
 def branches(folder):
     """Today's row_program on BRANCHES and CALLS: each case's width, Dst and verdict
-    (`made`, or its refusal's text), its KernelIR in `branch_<case>.ir`."""
+    (`made`, or its refusal's text), its KernelIR in `branch_<case>.ir` and the unit
+    it makes in `branch_<case>.rows.txt`."""
     made = [(c, traced(c, fn, fm, fd), 2, "fp32") for c, fn, fm, fd in BRANCHES]
     made += [(c, tiled(c, fn), 2, "fp32") for c, fn in TILED]
     corpus = {c: (fn, fm, fd) for c, fn, fm, _, fd in CASES}
@@ -357,7 +449,8 @@ def branches(folder):
     for case, ir, width, dest in made:
         (folder / f"branch_{case}.ir").write_text(ir.dump() + "\n")
         try:
-            row_program(ir, width, width, 2 * width, dest=dest)
+            unit = row_program(ir, width, width, 2 * width, dest=dest)
+            (folder / f"branch_{case}.rows.txt").write_text(unit.dump() + "\n")
             verdict = "made"
         except (PlanError, UnitError) as error:
             verdict = str(error)

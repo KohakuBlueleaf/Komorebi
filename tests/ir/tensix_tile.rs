@@ -1415,7 +1415,9 @@ fn each_row_of_two_tiles_gets_todays_unit_from_its_kernel_ir() {
     // one reduction, with and without a resident row (f32 and bf16), a centred row,
     // a row's largest and smallest values (of a product too, folded by max), a sum of
     // exponentials (the mad-reader's repairs taken back into the tile program), a
-    // reciprocal's constant register
+    // reciprocal's constant register; the levels: two and three passes, two resident
+    // rows, a sum kept for a later level (read directly, or through a value a later
+    // sum reads), a sum and a largest value reading .row() (of two resident rows too)
     assert_eq!(
         same,
         [
@@ -1425,23 +1427,24 @@ fn each_row_of_two_tiles_gets_todays_unit_from_its_kernel_ir() {
             "rms_plain",
             "peak",
             "weighted_bf16",
+            "softmax_pair",
+            "weighted_sum",
             "peak_square",
             "exp_sum",
-            "recip_centred"
+            "recip_centred",
+            "layer_pair",
+            "kept_sum",
+            "max_weighted",
+            "three_plain",
+            "kept_through",
+            "two_weights"
         ]
     );
-    // two row tensors, and more live values than the work registers: today's
-    // refusals (K962)
-    assert_eq!(refused.lines().count(), 2);
-    let levels = "not ported: the row form's levels (several reductions, .col() or resident \
-                  rows, or a reduction that reads .row())";
-    assert_eq!(
-        not_ported,
-        [
-            format!("softmax_pair: {levels}"),
-            format!("weighted_sum: {levels}")
-        ]
-    );
+    // two row tensors, more live values than the work registers, more constants than
+    // the programmable registers, 5 per-row values, 5 resident rows: today's refusals
+    // (K962)
+    assert_eq!(refused.lines().count(), 5);
+    assert_eq!(not_ported, Vec::<String>::new());
 }
 
 #[test]
@@ -1456,7 +1459,12 @@ fn the_row_forms_branches_the_corpus_does_not_reach_are_todays() {
         let ir = parse_ir(&text);
         let made = row_program(&ir, width, width, 2 * width, dest, false);
         match (today, made) {
-            ("made", Ok(_)) => {}
+            ("made", Ok(unit)) => {
+                let want = folder.join(format!("branch_{case}.rows.txt"));
+                let want = std::fs::read_to_string(want).expect("today's unit");
+                let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+                assert!(got == want, "{case}: {}", first_difference(&want, &got));
+            }
             (_, Err(e)) if e.refusal(None).code == "K964" => {
                 not_ported.push(format!("{case}: {}", e.text()));
             }
@@ -1473,19 +1481,18 @@ fn the_row_forms_branches_the_corpus_does_not_reach_are_todays() {
             (today, Ok(_)) => panic!("{case}: made, today refuses it: {today}"),
         }
     }
-    let levels = "not ported: the row form's levels (several reductions, .col() or resident \
-                  rows, or a reduction that reads .row())";
-    assert_eq!(
-        not_ported,
-        [
-            format!("two_fields: {levels}"),
-            format!("two_cols: {levels}")
-        ]
-    );
-    // the band of the row form (today's `band_groups`) is the last slice
+    assert_eq!(not_ported, Vec::<String>::new());
+    // the band of the row form (today's `band_groups`) is the last slice; the levels
+    // refuse it today
     let text = std::fs::read_to_string(folder.join("rms_norm.ir")).expect("the IR");
     let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
     assert_eq!(banded.text(), "not ported: the row form's band");
+    let text = std::fs::read_to_string(folder.join("softmax_pair.ir")).expect("the IR");
+    let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
+    let today = std::fs::read_to_string(folder.join("band.txt")).expect("today's band");
+    let today = today.trim_end();
+    assert_eq!(banded.text(), today.split(" (at ").next().unwrap_or(today));
+    assert_eq!(banded.refusal(None).code, "K962");
 }
 
 #[test]
@@ -1494,8 +1501,8 @@ fn the_row_forms_checks_are_todays_on_a_few_words() {
     let lines = std::fs::read_to_string(folder.join("checks.txt")).expect("the checks");
     let layouts = Layouts {
         copy: Layout::Tile(0),
-        rows: Layout::Rows(2, 0),
-        cols: Layout::Cols(4),
+        rows: vec![Layout::Rows(2, 0)],
+        cols: vec![Layout::Cols(4)],
     };
     let mut cases = 0;
     for line in lines.lines() {
@@ -1506,9 +1513,9 @@ fn the_row_forms_checks_are_todays_on_a_few_words() {
         let code: Vec<Insn> = words.lines().map(row_word).collect();
         let mut unit = UnitProgram::new("c", "fp32");
         let made = if check == "lanes" {
-            check_lanes(&mut unit, &code, layouts.rows)
+            check_lanes(&mut unit, &code, layouts.rows[0])
         } else {
-            check_broadcast(&mut unit, &code, layouts, 2)
+            check_broadcast(&mut unit, &code, &layouts, 2)
         };
         let got = match made {
             Ok(()) => unit

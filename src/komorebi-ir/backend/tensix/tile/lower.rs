@@ -134,30 +134,25 @@ pub struct Body {
     pub(crate) reads: Option<Reads>,
 }
 
-/// How the row form's phases read a function's operands (today's `source`): every
-/// operand one value (`all`), or by its kind (`kinds`, `copy` past its end): a row's
-/// vector loaded once at `address`, a per-row slot loaded once a half (`slot`: its
-/// group, address and note), a per-column vector loaded once a vector column.
+/// How the row form's phases read a function's operands (today's `source`): operand
+/// k by `ops[k]`, a value loaded once while its key is in `cache` (the phase drops
+/// keys where today's dicts of loaded values end).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Reads {
-    /// The value every operand is.
-    pub all: Option<Arg>,
-    /// Each operand's kind.
-    pub kinds: Vec<&'static str>,
-    /// The row's vector read, and its note.
-    pub address: i64,
-    /// Its note.
-    pub note: String,
-    /// The row's vectors loaded, by operand.
-    pub loaded: Vec<(usize, Arg)>,
-    /// The per-row slot read: (its group q, its address, its note).
-    pub slot: (i64, i64, String),
-    /// The per-row slots loaded, by group.
-    pub slots: Vec<(i64, Arg)>,
-    /// The per-column vector read: its address and note.
-    pub column_at: (i64, String),
-    /// The per-column vector loaded.
-    pub column: Option<Arg>,
+    /// Each operand's read.
+    pub ops: Vec<Read>,
+    /// The values loaded, by key.
+    pub cache: Vec<(String, Arg)>,
+}
+
+/// One operand's read in the row form: a load of `address` (noted `note`) once under
+/// key `key`, or a value already made.
+#[derive(Clone, Debug)]
+pub(crate) enum Read {
+    /// (key, address, note).
+    Load(String, i64, String),
+    /// The value.
+    Value(Arg),
 }
 
 /// The per-row form's operand reads: a per-row operand loaded once and held, the
@@ -312,44 +307,23 @@ impl Body {
         let Some(r) = &self.reads else {
             return Ok(None);
         };
-        if let Some(v) = &r.all {
+        let Some(read) = r.ops.get(k).cloned() else {
+            return Err(ChainError::NotPorted(format!(
+                "operand {k}, which the row form's phase does not read"
+            )));
+        };
+        let (key, address, note) = match read {
+            Read::Value(v) => return Ok(Some(v)),
+            Read::Load(key, address, note) => (key, address, note),
+        };
+        if let Some((_, v)) = r.cache.iter().find(|(k, _)| *k == key) {
             return Ok(Some(v.clone()));
         }
-        match r.kinds.get(k).copied().unwrap_or("copy") {
-            "bcast_col" => {
-                let (q, address, note) = r.slot.clone();
-                if let Some((_, v)) = r.slots.iter().find(|(g, _)| *g == q) {
-                    return Ok(Some(v.clone()));
-                }
-                let v = self.load(address, &note)?;
-                if let Some(r) = &mut self.reads {
-                    r.slots.push((q, v.clone()));
-                }
-                Ok(Some(v))
-            }
-            "bcast_row" => {
-                if let Some(v) = &r.column {
-                    return Ok(Some(v.clone()));
-                }
-                let (address, note) = r.column_at.clone();
-                let v = self.load(address, &note)?;
-                if let Some(r) = &mut self.reads {
-                    r.column = Some(v.clone());
-                }
-                Ok(Some(v))
-            }
-            _ => {
-                if let Some((_, v)) = r.loaded.iter().find(|(i, _)| *i == k) {
-                    return Ok(Some(v.clone()));
-                }
-                let (address, note) = (r.address, r.note.clone());
-                let v = self.load(address, &note)?;
-                if let Some(r) = &mut self.reads {
-                    r.loaded.push((k, v.clone()));
-                }
-                Ok(Some(v))
-            }
+        let v = self.load(address, &note)?;
+        if let Some(r) = &mut self.reads {
+            r.cache.push((key, v.clone()));
         }
+        Ok(Some(v))
     }
 
     /// Operand `k` as the per-row form reads it, or none outside that form.
