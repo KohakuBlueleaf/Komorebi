@@ -71,3 +71,31 @@ A format is a notation; this is how the CPU backend holds and computes each one 
 | `bf16` | the high 16 bits of a `float` | `float`, stored rounded to nearest, ties to even; a NaN stays a NaN |
 
 An element past a tensor's edge reads as zero and is never written.
+
+## The Tensix backend
+
+The C++ that today's class DSL writes for Tenstorrent's chips, compiled by the chip's runtime at
+load. Its text names the script, each statement's line and the values' names, so its output
+depends on the positions and names too; its key covers the full hash. Its build is kernels: the
+movement source on the reader and on the writer, each tensor's layout as compile arguments, and
+the compute source. An entry's number counts from 1, a tensor is one argument word (its address),
+and its bounds are each stream's tiles, which a host checks before sending.
+
+A compile's target is `tensix` with no features: the text is one for both chips and the key holds
+no chip. A chip's name there is refused; the chip, `blackhole` or `wormhole_b0`, is checked at
+load. At load the backend also writes the thread's header from the tensors given (their pages and
+kinds), which no compile knows.
+
+At this stage it emits the first lesson: one program of one handler on a group, a loop over a read
+stream of a partition of a tensor's tiles that pushes a tile function's result into a sink.
+Partitions of the same values are printed once. Everything else is refused with `K964`, by name.
+
+The tile function's two files, `tile_<f>.hpp` and its listing, are not made by a port of today's
+tile compiler. They are its output for the one shape `return a * k` (a `bf16` tile times an `f32`),
+kept as a template with two names filled in, and their identity with today's files proves nothing
+about a tile compiler. Any other tile function is refused; the next one starts the port of the tile
+compiler.
+
+The test `tests/ir/tensix.rs` runs today's emitter on the lesson's script (`python3`, else
+`KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails
+without Python unless `KOMO_IR_NO_PYTHON=1` skips it.

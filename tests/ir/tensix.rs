@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use komorebi_ir::backend::tensix::load::{thread_header, LoadTensor};
+use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
 use komorebi_ir::backend::tensix::{self, Tensix};
 use komorebi_ir::backend::{
     ArgWord, Backend, Bound, Build, CacheKey, CompileArg, Expr, Processor, Reads, Target,
@@ -268,7 +268,7 @@ fn target(arch: &str) -> Target {
 fn the_backend_compiles_the_first_lesson_to_kernels_built_at_load() {
     let module = edited("module scale", "module scale");
     let output = Tensix
-        .compile(&module, &target("blackhole"))
+        .compile(&module, &target("tensix"))
         .unwrap_or_else(|r| panic!("{r:?}"));
     let names: Vec<&str> = output.files.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
@@ -322,16 +322,23 @@ fn the_backend_compiles_the_first_lesson_to_kernels_built_at_load() {
     );
     assert_eq!(kernels[0].args, layouts);
 
-    // Wormhole: the same text (the tile words hold both chips' branches).
-    let wormhole = Tensix
-        .compile(&module, &target("wormhole_b0"))
+    // A chip's name is refused at compile; the chip is checked at load, and both
+    // chips take the one output (one key).
+    for chip in ["blackhole", "wormhole_b0"] {
+        let refused = Tensix.compile(&module, &target(chip)).expect_err("a chip");
+        assert!(refused[0].what.contains("not a chip"), "{refused:?}");
+        assert!(load::chip(&target(chip)).is_ok());
+    }
+    let again = Tensix
+        .compile(&module, &target("tensix"))
         .unwrap_or_else(|r| panic!("{r:?}"));
-    assert_eq!(wormhole.files, output.files);
-    assert_ne!(wormhole.key, output.key, "the target is in the key");
+    assert_eq!(again.key, output.key, "one key for both chips");
+    assert!(load::chip(&target("tensix")).is_err());
     let other = Tensix.check(&module, &target("x86_64"));
-    assert!(other
-        .iter()
-        .any(|r| r.what.contains("blackhole or wormhole_b0")));
+    assert!(other.iter().any(|r| r.what.contains("not `x86_64`")));
+    let mut featured = target("tensix");
+    featured.features.insert("avx2".to_string());
+    assert!(Tensix.compile(&module, &featured).is_err());
 }
 
 #[test]
@@ -342,7 +349,7 @@ fn the_key_covers_the_positions_and_names() {
     let source = std::fs::read_to_string(here().join("t1_class.kom")).expect("the .kom");
     let renamed =
         komorebi_ir::api::build(&source.replace("src", "part")).unwrap_or_else(|d| panic!("{d:?}"));
-    let key = |m: &Module| CacheKey::for_backend(m, &Tensix, &target("blackhole"));
+    let key = |m: &Module| CacheKey::for_backend(m, &Tensix, &target("tensix"));
     assert_ne!(key(&module), key(&moved), "a moved line");
     assert_ne!(key(&module), key(&renamed), "a value renamed");
     let text = |m: &Module| tensix::sources(m).unwrap_or_else(|r| panic!("{r:?}"));
@@ -352,7 +359,7 @@ fn the_key_covers_the_positions_and_names() {
 
 #[test]
 fn the_statement_is_the_chips() {
-    let s = Tensix.statement(&target("blackhole"));
+    let s = Tensix.statement(&target("tensix"));
     assert_eq!(s.tile_shapes.len(), 1);
     assert_eq!(s.tensor_words, 1);
     assert!(s
@@ -363,13 +370,51 @@ fn the_statement_is_the_chips() {
         .contains(&(komorebi_ir::backend::Limit::HandlersPerProgram, 239)));
     let machine = komorebi_ir::backend::Machine {
         workers: 120,
-        worker_memory: 0,
+        worker_memory: 1 << 20,
         islands: 1,
         options: vec![("depth".to_string(), 100)],
     };
     let at = Tensix.statement_at(&target("blackhole"), &machine, &Default::default());
     assert_eq!(
         (at.workers, at.in_flight, at.local_state_bytes),
-        (Some(120), Some(64), None)
+        (Some(120), Some(64), Some(1 << 20))
     );
+    let built = komorebi_ir::backend::Built {
+        dir: Default::default(),
+        facts: vec![("l1_used".to_string(), 4096)],
+    };
+    let machine = komorebi_ir::backend::Machine {
+        options: Vec::new(),
+        ..machine
+    };
+    let at = Tensix.statement_at(&target("blackhole"), &machine, &built);
+    assert_eq!(
+        (at.in_flight, at.local_state_bytes),
+        (Some(4), Some((1 << 20) - 4096))
+    );
+}
+
+#[test]
+fn the_version_covers_every_framework_header_on_the_disk() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/komorebi_native/include");
+    let mut on_disk = Vec::new();
+    let mut folders = vec![root.join("komorebi/abi"), root.join("komorebi/device")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).expect("a framework folder") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|e| e == "h" || e == "hpp") {
+                let name = path.strip_prefix(&root).expect("under the root");
+                on_disk.push(name.to_string_lossy().into_owned());
+            }
+        }
+    }
+    on_disk.sort();
+    let mut listed: Vec<String> = tensix::FRAMEWORK
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    listed.sort();
+    assert_eq!(listed, on_disk, "the headers the version hashes");
 }

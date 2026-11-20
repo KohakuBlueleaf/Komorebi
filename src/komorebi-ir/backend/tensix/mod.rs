@@ -871,8 +871,9 @@ impl Backend for Tensix {
 
     /// The workers and islands are the host's (`session.ranks`: the grid less the
     /// dispatcher); in flight, the load's `depth` up to the ring's slots; live
-    /// messages, the load's `max_live`; local state, the L1 the build left (`Built`'s
-    /// `l1_left`, none until a build measures it).
+    /// messages, the load's `max_live`; local state, a worker's memory (the chip's L1,
+    /// today's `l1=`) less what the build uses of it (`Built`'s `l1_used`, when a
+    /// build reports it). The chip is checked at load (`load::chip`).
     fn statement_at(&self, _target: &Target, machine: &Machine, built: &Built) -> LoadStatement {
         let option = |name: &str| {
             machine
@@ -881,15 +882,15 @@ impl Backend for Tensix {
                 .find(|(n, _)| n == name)
                 .map(|(_, v)| *v)
         };
-        let fact = built
+        let used = built
             .facts
             .iter()
-            .find(|(n, _)| n == "l1_left")
-            .map(|(_, v)| *v);
+            .find(|(n, _)| n == "l1_used")
+            .map_or(0, |(_, v)| *v);
         LoadStatement {
             workers: Some(machine.workers),
             islands: Some(machine.islands),
-            local_state_bytes: fact,
+            local_state_bytes: Some(machine.worker_memory.saturating_sub(used)),
             in_flight: Some(option("depth").unwrap_or(chip::DEPTH).min(chip::RING_SLOTS)),
             live_messages: Some(option("max_live").unwrap_or(chip::MAX_LIVE)),
         }
@@ -901,15 +902,8 @@ impl Backend for Tensix {
 
     fn check(&self, program: &Module, target: &Target) -> Vec<Refusal> {
         let mut out = check_statement(program, &self.statement(target));
-        if chip::Chip::of(&target.arch).is_none() {
-            out.push(Refusal {
-                code: NOT_BUILT,
-                what: format!(
-                    "the Tensix backend does not build for `{}`: blackhole or wormhole_b0",
-                    target.arch
-                ),
-                at: None,
-            });
+        if let Some(refusal) = chip::compile_target(target) {
+            out.push(refusal);
         }
         if let Err(refusals) = planned(program) {
             out.extend(refusals);

@@ -3,7 +3,37 @@
 
 use crate::types::{Format, TileShape};
 
-use super::super::{Limit, Provided};
+use super::super::{Limit, Provided, Refusal, Target, NOT_BUILT};
+
+/// The target a compile is for: no chip, since the text is one for both chips
+/// (`tile_<f>.hpp` holds both chips' branches) and the key holds none. The chip comes
+/// at load (`load::chip`).
+pub const ARCH: &str = "tensix";
+
+/// Why a compile's target is refused, if it is: it must be `tensix` with no features;
+/// a chip's name is refused by name.
+pub fn compile_target(target: &Target) -> Option<Refusal> {
+    let what = if Chip::of(&target.arch).is_some() {
+        format!(
+            "the Tensix backend compiles for the target `{ARCH}`, not a chip (`{}`): the text is one for both chips; the chip is checked at load",
+            target.arch
+        )
+    } else if target.arch != ARCH {
+        format!(
+            "the Tensix backend compiles for the target `{ARCH}`, not `{}`",
+            target.arch
+        )
+    } else if !target.features.is_empty() {
+        format!("the Tensix backend's target `{ARCH}` takes no features")
+    } else {
+        return None;
+    };
+    Some(Refusal {
+        code: NOT_BUILT,
+        what,
+        at: None,
+    })
+}
 
 /// A chip the backend builds for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

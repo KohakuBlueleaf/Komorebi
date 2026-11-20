@@ -1,7 +1,9 @@
 //! A tile function's words for the math CPU's vector unit: `tile_<f>.hpp` and its
-//! listing `tile_<f>.txt`, as today's tile compiler (`komorebi.dsl.tile`) emits them.
-//! One unit program is built: a tile times a run-time `f32` (`return a * k`), its
-//! words those the tile compiler gives it; any other body is refused by name (K964).
+//! listing `tile_<f>.txt`. These are NOT made by a port of today's tile compiler
+//! (`komorebi.dsl.tile`): they are its output for the one shape `return a * k` (a bf16
+//! tile times a run-time `f32`), kept as a template with two names filled in. Their
+//! identity with today's files proves nothing about a tile compiler. Any other body
+//! is refused by name (K964); the next tile function starts the tile compiler's port.
 
 use crate::backend::{Refusal, NOT_BUILT};
 use crate::program::body::Op;
@@ -64,7 +66,7 @@ pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
         );
     if !shape {
         return Err(refused(
-            "a tile function other than `return a * k` of a bf16 tile and a f32",
+            "a tile function other than `return a * k` of a bf16 tile and a f32 (that one is today's output kept as a template; no tile compiler is ported)",
         ));
     }
     let k = param_name(module, Owner::Func(f), 1).unwrap_or("k");

@@ -4,8 +4,10 @@
 //! holds each tensor's page count and kind, which a compile does not know; so it is
 //! not one of the compiled files and not in the compile's key.
 
-use crate::backend::Refusal;
+use crate::backend::{Refusal, Target, NOT_BUILT};
 use crate::program::Module;
+
+use super::chip::Chip;
 
 use super::plan::{Plan, WordKind};
 use super::Lines;
@@ -22,6 +24,19 @@ pub struct LoadTensor {
     /// The bytes of a page in DRAM, for a tensor a thread may fetch and store; none
     /// for one it may not (no `<program>_<tensor>_dram` function then).
     pub dram_page: Option<u64>,
+}
+
+/// The chip a load's target names: `blackhole` or `wormhole_b0`; any other is refused
+/// by name. A compile names no chip (`chip::ARCH`); the chip is checked here.
+pub fn chip(target: &Target) -> Result<Chip, Refusal> {
+    Chip::of(&target.arch).ok_or_else(|| Refusal {
+        code: NOT_BUILT,
+        what: format!(
+            "the Tensix backend loads on blackhole or wormhole_b0, not `{}`",
+            target.arch
+        ),
+        at: None,
+    })
 }
 
 /// C words a parameter's name may be: its argument takes a `_` after it
@@ -53,7 +68,7 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
     let names = super::tensors(&plans);
     if names.len() != tensors.len() {
         return Err(vec![Refusal {
-            code: super::NOT_BUILT,
+            code: NOT_BUILT,
             what: format!(
                 "a thread header for {} tensors given; the program takes {}",
                 tensors.len(),
