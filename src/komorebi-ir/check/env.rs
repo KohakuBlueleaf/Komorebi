@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ty::{Count, Shape, Ty};
+use crate::syntax;
 use crate::syntax::ast::{
     Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Span, Type, TypeKind,
 };
@@ -157,7 +158,41 @@ impl Names {
     }
 }
 
+/// The kind of an item a name declares, for the language's names where that kind
+/// stands (R50).
+#[derive(Clone, Copy)]
+pub(crate) enum Declared {
+    /// A `func`, a `combine`, an `extern func`.
+    Function,
+    /// A local, a parameter, a loop's name, a state member, a module constant.
+    Value,
+    /// A record, a message.
+    Type,
+}
+
 impl Checker<'_> {
+    /// Refuses an item of the module declared by a bare name that is the language's
+    /// where its kind stands: it is written between backticks (R50).
+    pub(crate) fn bare_word(&mut self, name: &Ident, kind: Declared) {
+        let (word, what): (fn(&str) -> bool, &str) = match kind {
+            Declared::Function => (syntax::function_word, "function"),
+            Declared::Value => (syntax::value_word, "value"),
+            Declared::Type => (syntax::type_word, "type"),
+        };
+        if !name.quoted && word(&name.name) {
+            self.error(
+                codes::BARE_WORD,
+                format!(
+                    "`{0}` is the language's where a {what} stands: a {what} of the module \
+                     named `{0}` is written between backticks, at its declaration and at \
+                     every use",
+                    name.name
+                ),
+                name.span,
+            );
+        }
+    }
+
     /// Collects the module's declarations and checks the types they write.
     pub(crate) fn collect(&mut self, module: &Module) -> Env {
         let mut env = Env {
@@ -226,21 +261,25 @@ impl Checker<'_> {
                 Item::Tile(_) | Item::Format(_) | Item::Requires(_) => {}
                 Item::Param(p) => {
                     names.declare(self, &p.name);
+                    self.bare_word(&p.name, Declared::Value);
                     let ty = self.ty(&env, &p.ty, Place::Local);
                     env.params.insert(p.name.name.clone(), ty);
                 }
                 Item::Message(m) => {
                     names.declare(self, &m.name);
+                    self.bare_word(&m.name, Declared::Type);
                     let fields = self.fields(&env, &m.fields, true);
                     env.messages.insert(m.name.name.clone(), fields);
                 }
                 Item::Record(r) => {
                     names.declare(self, &r.name);
+                    self.bare_word(&r.name, Declared::Type);
                     let fields = self.fields(&env, &r.fields, false);
                     env.records.insert(r.name.name.clone(), fields);
                 }
                 Item::Func(f) | Item::Combine(f) => {
                     names.declare(self, &f.name);
+                    self.bare_word(&f.name, Declared::Function);
                     let kind = if matches!(item, Item::Func(_)) {
                         FuncKind::Func
                     } else {
@@ -254,6 +293,7 @@ impl Checker<'_> {
                 }
                 Item::Extern(f) => {
                     names.declare(self, &f.name);
+                    self.bare_word(&f.name, Declared::Function);
                     let params = self.func_params(&env, &f.params, FuncKind::Extern);
                     let ret = self.ty(&env, &f.ret, Place::FuncResult);
                     let kind = FuncKind::Extern;
@@ -287,17 +327,20 @@ impl Checker<'_> {
             match part {
                 ProgramItem::Message(m) => {
                     names.declare(self, &m.name);
+                    self.bare_word(&m.name, Declared::Type);
                     let fields = self.fields(env, &m.fields, true);
                     info.messages.insert(m.name.name.clone(), fields);
                 }
                 ProgramItem::Record(r) => {
                     names.declare(self, &r.name);
+                    self.bare_word(&r.name, Declared::Type);
                     let fields = self.fields(env, &r.fields, false);
                     info.records.insert(r.name.name.clone(), fields);
                 }
                 ProgramItem::State(s) => {
                     for member in s.members.nodes() {
                         names.declare(self, &member.name);
+                        self.bare_word(&member.name, Declared::Value);
                         let ty = self.ty(env, &member.ty, Place::StateMember);
                         info.state
                             .insert(member.name.name.clone(), MemberInfo { ty });
@@ -345,6 +388,7 @@ impl Checker<'_> {
         let mut out = Vec::new();
         for p in params.values() {
             names.declare(self, &p.name);
+            self.bare_word(&p.name, Declared::Value);
             let mut ty = self.ty(env, &p.ty, Place::Param);
             if let Ty::Tensor { replicated, .. } = &mut ty {
                 *replicated = p.attrs.iter().any(|a| is_named(a, "replicated"));
@@ -379,6 +423,7 @@ impl Checker<'_> {
         let mut out = Vec::new();
         for p in params.values() {
             names.declare(self, &p.name);
+            self.bare_word(&p.name, Declared::Value);
             let ty = self.ty(env, &p.ty, Place::FuncParam);
             if kind != FuncKind::Extern && matches!(ty, Ty::View { .. }) {
                 self.error(

@@ -497,7 +497,7 @@ impl<'c> Cx<'c> {
             if let (ExprKind::Name(n), [ast::IndexItem::Slice { lo, hi, step: None }]) =
                 (&base.kind, items.as_slice())
             {
-                if n.name == "group" {
+                if n.name == "group" && !n.quoted {
                     return Ok(Some(pg::Part {
                         first: self.count(lo)?,
                         end: self.count(hi)?,

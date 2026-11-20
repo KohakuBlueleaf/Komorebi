@@ -339,8 +339,10 @@ impl Gen {
         } else {
             NAMES
         };
+        let name = self.rng.pick(names).to_string();
         Ident {
-            name: self.rng.pick(names).to_string(),
+            quoted: komorebi_ir::syntax::WORDS.contains(&name.as_str()),
+            name,
             span: sp(),
         }
     }
@@ -350,6 +352,7 @@ impl Gen {
         Ident {
             name: self.rng.pick(NAMES).to_string(),
             span: sp(),
+            quoted: false,
         }
     }
 
@@ -623,7 +626,9 @@ impl Gen {
 
     fn ty(&mut self) -> Type {
         let format = self.plain();
-        let named = self.ident();
+        let mut named = self.ident();
+        // a type named by a type's word is written between backticks where a type is
+        named.quoted |= komorebi_ir::syntax::TYPE_WORDS.contains(&named.name.as_str());
         let (kind, countable) = match self.rng.below(6) {
             0 => (TypeKind::Scalar(*self.rng.pick(&Scalar::ALL)), true),
             1 => (TypeKind::Bool, false),
@@ -1017,13 +1022,99 @@ fn names_that_are_words_are_written_between_backticks_and_round_trip() {
 #[test]
 fn needless_backticks_are_taken_away_and_a_type_word_kept_where_a_type_is() {
     let given = "module m\n\nformat f32\n\nprogram `P` {\n    record `u32` { a: u32 }\n    \
-                 message `M` { r: `u32` }\n    handler h(`x`: u32) @on(group) {\n        \
-                 let `tile` = `x`\n    }\n}\n";
+                 message `M` { r: `u32` }\n    handler `zip`(`x`: u32, `row`: u32) @on(group) {\n        \
+                 let `tile` = `x`\n        var `sum`: u32 = `row` + `sum`\n        \
+                 let y = `square`(`zeros`)\n    }\n}\n";
     let tree = parse(given).unwrap_or_else(|d| panic!("{d:?}"));
     assert_eq!(
         write(&tree),
-        "module m\n\nformat f32\n\nprogram P {\n    record u32 { a: u32 }\n    \
-         message M { r: `u32` }\n    handler h(x: u32) @on(group) {\n        let tile = x\n    \
+        "module m\n\nformat f32\n\nprogram P {\n    record `u32` { a: u32 }\n    \
+         message M { r: `u32` }\n    handler zip(x: u32, row: u32) @on(group) {\n        \
+         let tile = x\n        var sum: u32 = row + sum\n        let y = `square`(`zeros`)\n    \
          }\n}\n"
     );
+}
+
+/// A bare name means the language's where the language has a meaning for it; an item of
+/// the module of that name, of a kind that stands there, is written between backticks
+/// at its declaration and at every use (R50). A failure's name compared with a reason
+/// is the failure's though a local has its name.
+const KINDS_MODULE: &str = "module kinds
+
+tile [32, 32]
+format f32
+
+func `square`(x: tile<f32>) -> tile<f32> {
+    return x * x * x
+}
+
+combine `sum`(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return maximum(a, b)
+}
+
+program P {
+    handler zip(s: tensor<f32>, t: tensor<f32>, tiles: u32) @on(group) {
+        let part = partition(s.tiles(0, tiles), worker.rank, group.size)
+        var `zeros`: tile<f32> = zeros
+        for tile in stream(part, block = 1) {
+            `zeros` += square(tile) + `square`(tile)
+        }
+        let whole = reduce(`zeros`, with = sum)
+        let most = reduce(`zeros`, with = `sum`)
+        if worker.is_leader {
+            store t.tiles(0, 1) <- whole + most
+        }
+    }
+
+    handler work(x: tensor<f32>, n: u32) @on(group) {
+        let part = partition(x.tiles(0, n), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+}
+
+control careful(x: tensor<f32>) -> u32 {
+    let capacity: u32 = 3
+    let a = invoke(P.work(x, 64), on = group(0, 8))
+    let o = outcome(a)
+    if o.failed && o.reason == capacity {
+        return capacity
+    }
+    return 0
+}
+";
+
+#[test]
+fn a_bare_name_of_the_language_is_the_languages_and_one_between_backticks_the_modules() {
+    use komorebi_ir::bytecode::{decode, encode};
+    use komorebi_ir::program::print::print;
+    let tree = parse(KINDS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(write(&tree), KINDS_MODULE, "canonical");
+    let module = komorebi_ir::api::build(KINDS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(
+        (module.funcs[0].name.as_str(), module.funcs[1].name.as_str()),
+        ("square", "sum")
+    );
+    let text = print(&module);
+    let has = |what: &str| text.lines().filter(|l| l.contains(what)).count();
+    // `square(tile)` the language's, `` `square`(tile) `` the module's function f0
+    assert_eq!((has("Unary Square"), has("CallFunc f0 ")), (1, 1), "{text}");
+    // `with = sum` the language's, `` with = `sum` `` the module's combine f1
+    assert_eq!((has("with Sum,"), has("with f1,")), (1, 1), "{text}");
+    // the bare `zeros` is the language's, the local is `` `zeros` ``
+    assert_eq!(has("= Zeros"), 1, "{text}");
+    // the reason compared with `capacity` is the failure, the local beside it no matter
+    assert_eq!(has("= FailureName capacity"), 1, "{text}");
+    // text to byte code and back: the same module, the same bytes
+    let bytes = encode(&module);
+    let back = decode(&bytes).unwrap_or_else(|r| panic!("{r:?}"));
+    assert_eq!(back, module);
+    assert_eq!(encode(&back), bytes);
+    // the writer that drops a needed pair changes what the text means: the round trip
+    // through the text catches it
+    let bare = KINDS_MODULE.replace("`square`", "square");
+    let refused = komorebi_ir::api::build(&bare).expect_err("a bare `func square`");
+    assert_eq!(refused[0].code, "K120");
 }

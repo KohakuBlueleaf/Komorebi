@@ -112,7 +112,7 @@ fn what_the_row_forms_trace_would_not_make_is_refused_by_name() {
         \x20   return x * rsqrt(reduce_sum(x * x, axis = row)).col() * g.row()\n}\n\n\
         func scalar(x: tile<f32>[2], k: f32) -> tile<f32>[2] {\n\
         \x20   return x * reduce_sum(x, axis = row).col() * k\n}\n\n\
-        func square(x: tile<f32>[2, 2]) -> tile<f32>[2, 2] {\n\
+        func `square`(x: tile<f32>[2, 2]) -> tile<f32>[2, 2] {\n\
         \x20   return x * reduce_sum(x, axis = row).col()\n}\n";
     let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
     let named = |f: &str, count: Option<u64>, resident: &[bool]| {

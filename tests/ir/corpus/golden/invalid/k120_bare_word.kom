@@ -1,0 +1,19 @@
+// refused: an item declared by a bare name that is the language's where its kind stands (R50)
+module bare
+
+tile [32, 32]
+format f32
+
+func square(x: tile<f32>) -> tile<f32> {
+    return x
+}
+
+record u32 { a: u32 }
+
+program P {
+    // a handler and a value named `zip`, `sum` or `row` are no words where they stand
+    handler zip(s: tensor<f32>, tiles: u32, row: u32) @on(group) {
+        var zeros: tile<f32> = zeros
+        var sum: u32 = row
+    }
+}

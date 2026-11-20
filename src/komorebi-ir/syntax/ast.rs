@@ -12,6 +12,9 @@ pub struct Ident {
     pub name: String,
     /// Where it is written.
     pub span: Span,
+    /// Written between backticks: the author's item of that name, never the language's
+    /// (R50).
+    pub quoted: bool,
 }
 
 /// A `//` comment. `text` holds it from the `//` to the end of its line, with trailing

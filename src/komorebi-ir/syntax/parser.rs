@@ -530,14 +530,12 @@ impl<'s> Builder<'s> {
 
     fn ident(&self, pair: Pair<'_, Rule>) -> Ident {
         let written = pair.as_str();
-        // a name between backticks (a word of the text, R50) is the name inside them
-        let name = written
-            .strip_prefix('`')
-            .and_then(|w| w.strip_suffix('`'))
-            .unwrap_or(written);
+        // a name between backticks (R50) is the name inside them, and the author's
+        let inside = written.strip_prefix('`').and_then(|w| w.strip_suffix('`'));
         Ident {
-            name: name.to_string(),
+            name: inside.unwrap_or(written).to_string(),
             span: span_of(&pair),
+            quoted: inside.is_some(),
         }
     }
 
@@ -725,6 +723,7 @@ impl<'s> Builder<'s> {
             path.push(Ident {
                 name: part.to_string(),
                 span: Span::new(at, at + part.len()),
+                quoted: false,
             });
             at += part.len() + 1;
         }

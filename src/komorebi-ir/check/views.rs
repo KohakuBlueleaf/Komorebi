@@ -108,10 +108,10 @@ impl Checker<'_> {
             ExprKind::Call { callee, args } => {
                 let first = args.values().next().map(|a| &a.value);
                 match &callee.kind {
-                    ExprKind::Name(f) if f.name == "stream" || f.name == "sink" => {
+                    ExprKind::Name(f) if !f.quoted && (f.name == "stream" || f.name == "sink") => {
                         self.view_key(cx, first?)
                     }
-                    ExprKind::Name(f) if f.name == "partition" => {
+                    ExprKind::Name(f) if !f.quoted && f.name == "partition" => {
                         let inner = self.view_key(cx, first?)?;
                         let rest: Vec<String> =
                             args.values().skip(1).map(|a| render(&a.value)).collect();

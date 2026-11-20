@@ -15,6 +15,18 @@ layout (`komo fmt`) writes them exactly where they are needed and takes the othe
 backticks are not part of the name: the byte code, a backend and a message use the name itself
 (`` handler `store` `` is the handler `store`).
 
+A bare name means the language's wherever the language has a meaning for it in that place, so no
+line changes its meaning with the module's names: `zip(stream(a), stream(b))` is the language's
+`zip` in every module. An item of the module takes backticks, at its declaration and at every use,
+only where its kind stands beside a language name of the same spelling: a function (`func`,
+`combine`, `extern func`) named by one of the language's calls, a conversion (`u32`) or a
+combination (`sum max min and or`) is `` func `square` `` and is called `` `square`(x) ``; a
+value (a local, a parameter, a loop's name, a state member, a module constant) named `zeros`,
+`worker`, `group` or `island`; a record or a message named by a type's word. A name between
+backticks is the module's item only. A handler, a run, a chain, a program, a field and a message
+member stand where only an author's name does, so `handler zip`, `var sum` and a parameter `row`
+are written bare. Such an item declared bare is refused (`K120`).
+
 Each operation has one form, the one the lessons write; another spelling is refused (`K111` in
 [the IR's checks](checks.md)). An operand is either **by position**, in the order given, or **by
 name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left

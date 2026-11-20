@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use super::ty::{Count, Shape, Ty};
+use crate::syntax;
 use crate::syntax::ast::{Arg, Expr, ExprKind, Ident, List, Span};
 use crate::types::{Axis, Format, ScalarType};
 
@@ -123,7 +124,7 @@ impl Checker<'_> {
             return;
         };
         match as_name(e) {
-            Some(n) if words.contains(&n.name.as_str()) => {
+            Some(n) if !n.quoted && words.contains(&n.name.as_str()) => {
                 self.note_word(n);
             }
             _ => self.error(
@@ -147,7 +148,7 @@ impl Checker<'_> {
             );
             return;
         };
-        if PROVIDED.contains(&n.name.as_str()) {
+        if !n.quoted && PROVIDED.contains(&n.name.as_str()) {
             self.note_word(n);
             return;
         }
@@ -210,11 +211,15 @@ impl Checker<'_> {
 
     pub(super) fn free_call(&mut self, cx: &mut Cx, n: &Ident, args: &List<Arg>, span: Span) -> Ty {
         let what = n.name.as_str();
-        if cx.lookup(what).is_some() || cx.state(what).is_some() {
+        // a bare name of the language's calls is the language's; one between backticks
+        // is the module's only (R50)
+        let language =
+            !n.quoted && (syntax::CALLS.contains(&what) || syntax::CONVERSIONS.contains(&what));
+        if !language && (cx.lookup(what).is_some() || cx.state(what).is_some()) {
             self.error(codes::WRONG_TYPE, format!("`{what}` is not called"), n.span);
             return Ty::Unknown;
         }
-        if let Some(sig) = cx.env.funcs.get(what).cloned() {
+        if let Some(sig) = cx.env.funcs.get(what).filter(|_| !language).cloned() {
             if !self.allowed(cx, Family::Compute, what, span) {
                 return Ty::Unknown;
             }
@@ -229,6 +234,10 @@ impl Checker<'_> {
                 (Ty::Tile(f), Some(shape)) => Ty::Block(f, shape),
                 (ret, _) => ret,
             };
+        }
+        if n.quoted {
+            self.unknown(n);
+            return Ty::Unknown;
         }
         if let Some(target) = ScalarType::from_name(what) {
             if !self.allowed(cx, Family::Value, what, span) {
@@ -1683,6 +1692,9 @@ fn spread(what: &str) -> OpKind {
 /// the provided ones.
 fn combiner(cx: &Cx, e: &Expr) -> Option<Combiner> {
     let n = as_name(e)?;
+    if n.quoted {
+        return Some(Combiner::Func(FuncId(*cx.env.ix.funcs.get(&n.name)?)));
+    }
     Some(match n.name.as_str() {
         "sum" => Combiner::Sum,
         "max" => Combiner::Max,

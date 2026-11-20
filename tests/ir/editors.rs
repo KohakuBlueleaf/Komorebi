@@ -419,6 +419,37 @@ fn the_textmate_grammar_names_every_word_of_the_language() {
 /// A name between backticks (a word of the text as a name, R50) is coloured as a name:
 /// no word's pattern matches inside backticks, and each pattern that names a declared
 /// name or a name in an expression takes the backticked form too.
+/// The sets of the text's names (`syntax::CALLS`, `CONVERSIONS`, `COMBINATIONS`), which
+/// the writer and `K120` read, are the checker's: the calls of its family match and its
+/// compute functions, the scalar types, the provided combinations (R50).
+#[test]
+fn the_texts_sets_of_the_languages_names_are_the_checkers() {
+    use komorebi_ir::syntax;
+    let set = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<BTreeSet<_>>();
+    let ops = read("src/komorebi-ir/check/ops.rs");
+    let body = read("src/komorebi-ir/check/body.rs");
+    let mut calls = quoted_words(region(
+        &ops,
+        "check/ops.rs",
+        "let family = match what {",
+        "self.unknown(n);",
+    ));
+    calls.extend(quoted_words(region(
+        &body,
+        "check/body.rs",
+        "UNARY: [&str;",
+        "];",
+    )));
+    assert_eq!(calls, set(&syntax::CALLS));
+    let provided = quoted_words(region(&body, "check/body.rs", "PROVIDED: [&str;", "];"));
+    assert_eq!(provided, set(&syntax::COMBINATIONS));
+    let scalars: Vec<&str> = komorebi_ir::types::ScalarType::ALL
+        .iter()
+        .map(|s| s.name())
+        .collect();
+    assert_eq!(set(&scalars), set(&syntax::CONVERSIONS));
+}
+
 #[test]
 fn the_textmate_grammar_colours_a_name_between_backticks_as_a_name() {
     let mut res = Vec::new();

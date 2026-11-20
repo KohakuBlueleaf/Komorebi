@@ -53,6 +53,9 @@ pub const INTEGER_WITH_FLOAT: &str = "K117";
 pub const TILE_NOT_DECLARED: &str = "K118";
 /// Two scalars of different types in one operation or comparison.
 pub const MIXED_SCALARS: &str = "K119";
+/// An item of the module declared by a bare name that is the language's where its kind
+/// stands (R50).
+pub const BARE_WORD: &str = "K120";
 /// A `func` that takes a view.
 pub const FUNC_TAKES_VIEW: &str = "K201";
 /// A function body that uses more than the compute family.

@@ -5,6 +5,7 @@
 //! the closing bracket on its own line); attributes after the head they mark.
 
 use super::ast::*;
+use super::{function_word, type_word, value_word};
 
 /// The widest line the writer makes where the form can be broken.
 pub const WIDTH: usize = 88;
@@ -96,6 +97,17 @@ fn named(name: &Ident) -> String {
         format!("`{}`", name.name)
     } else {
         name.name.clone()
+    }
+}
+
+/// The name of an item of the module of one kind, at its declaration and at every use:
+/// between backticks also when written so and one of the language's names where the
+/// kind stands (`kind`, R50); needless ones are taken away.
+fn named_as(name: &Ident, kind: fn(&str) -> bool) -> String {
+    if name.quoted && kind(&name.name) {
+        format!("`{}`", name.name)
+    } else {
+        named(name)
     }
 }
 
@@ -216,7 +228,10 @@ impl Writer {
                 });
             }
             Item::Param(param) => {
-                let mut pieces = vec![text(format!("param {}: ", named(&param.name)))];
+                let mut pieces = vec![text(format!(
+                    "param {}: ",
+                    named_as(&param.name, value_word)
+                ))];
                 pieces.extend(ty(&param.ty));
                 pieces.push(text(" = "));
                 match &param.value {
@@ -231,7 +246,10 @@ impl Writer {
             Item::Func(func) => self.func("func", func, indent, trailing),
             Item::Combine(func) => self.func("combine", func, indent, trailing),
             Item::Extern(ext) => {
-                let mut head = vec![text(format!("extern func {}", named(&ext.name)))];
+                let mut head = vec![text(format!(
+                    "extern func {}",
+                    named_as(&ext.name, function_word)
+                ))];
                 head.push(params(&ext.params));
                 head.push(text(" -> "));
                 head.extend(ty(&ext.ret));
@@ -264,7 +282,10 @@ impl Writer {
     }
 
     fn message(&mut self, message: &Message, indent: usize, trailing: Option<&str>) {
-        let mut pieces = vec![text(format!("message {}", named(&message.name)))];
+        let mut pieces = vec![text(format!(
+            "message {}",
+            named_as(&message.name, type_word)
+        ))];
         pieces.extend(attrs(&message.attrs));
         pieces.push(text(" "));
         pieces.push(fields(&message.fields));
@@ -273,14 +294,17 @@ impl Writer {
 
     fn record(&mut self, record: &Record, indent: usize, trailing: Option<&str>) {
         let pieces = vec![
-            text(format!("record {} ", named(&record.name))),
+            text(format!("record {} ", named_as(&record.name, type_word))),
             fields(&record.fields),
         ];
         self.emit(&pieces, indent, "", trailing);
     }
 
     fn func(&mut self, word: &str, func: &Func, indent: usize, trailing: Option<&str>) {
-        let mut head = vec![text(format!("{word} {}", named(&func.name)))];
+        let mut head = vec![text(format!(
+            "{word} {}",
+            named_as(&func.name, function_word)
+        ))];
         head.push(params(&func.params));
         head.push(text(" -> "));
         head.extend(ty(&func.ret));
@@ -296,7 +320,7 @@ impl Writer {
                 let mut head = vec![text("state")];
                 head.extend(attrs(&state.attrs));
                 self.lines_block(head, &state.members, indent, trailing, |w, m, i, t| {
-                    let mut pieces = vec![text(format!("{}: ", named(&m.name)))];
+                    let mut pieces = vec![text(format!("{}: ", named_as(&m.name, value_word)))];
                     pieces.extend(ty(&m.ty));
                     pieces.extend(attrs(&m.attrs));
                     w.emit(&pieces, i, "", t);
@@ -324,7 +348,11 @@ impl Writer {
                     |w, part, i, t| match part {
                         RunPart::Seed(body) => w.blocky(vec![text("seed")], &[("", body)], i, t),
                         RunPart::On(on) => {
-                            let head = format!("on {}({})", named(&on.message), named(&on.binding));
+                            let head = format!(
+                                "on {}({})",
+                                named(&on.message),
+                                named_as(&on.binding, value_word)
+                            );
                             w.blocky(vec![text(head)], &[("", &on.body)], i, t);
                         }
                     },
@@ -436,7 +464,7 @@ fn comment_text(comment: &Option<Comment>) -> Option<&str> {
 }
 
 fn for_head(vars: &[Ident], iter: &Expr, a: &[Attr]) -> Vec<Piece> {
-    let names: Vec<String> = vars.iter().map(named).collect();
+    let names: Vec<String> = vars.iter().map(|v| named_as(v, value_word)).collect();
     let mut head = vec![text(format!("for {} in ", names.join(", ")))];
     head.extend(expr(iter));
     head.extend(attrs(a));
@@ -452,7 +480,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             value,
             attrs: a,
         } => {
-            p.push(text(format!("let {}", named(name))));
+            p.push(text(format!("let {}", named_as(name, value_word))));
             if let Some(t) = t {
                 p.push(text(": "));
                 p.extend(ty(t));
@@ -462,7 +490,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             p.extend(attrs(a));
         }
         Stmt::Var { name, ty: t, value } => {
-            p.push(text(format!("var {}: ", named(name))));
+            p.push(text(format!("var {}: ", named_as(name, value_word))));
             p.extend(ty(t));
             p.push(text(" = "));
             p.extend(expr(value));
@@ -478,7 +506,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             p.push(text(" <- "));
             p.extend(expr(value));
         }
-        Stmt::Consume(name) => p.push(text(format!("consume {}", named(name)))),
+        Stmt::Consume(name) => p.push(text(format!("consume {}", named_as(name, value_word)))),
         Stmt::Return(None) => p.push(text("return")),
         Stmt::Return(Some(value)) => {
             p.push(text("return "));
@@ -537,7 +565,7 @@ fn list_doc<T>(
 
 fn params(list: &List<ParamDecl>) -> Piece {
     Piece::List(list_doc(list, "(", ")", false, |p| {
-        let mut pieces = vec![text(format!("{}: ", named(&p.name)))];
+        let mut pieces = vec![text(format!("{}: ", named_as(&p.name, value_word)))];
         pieces.extend(ty(&p.ty));
         pieces.extend(attrs(&p.attrs));
         pieces
@@ -558,7 +586,13 @@ fn args(list: &List<Arg>, in_attr: bool) -> Piece {
         if let Some(name) = &a.name {
             pieces.push(text(format!("{} = ", named(name))));
         }
-        pieces.extend(expr(&a.value));
+        match (&a.name, &a.value.kind) {
+            // a `with =` names a function, or one of the language's combinations
+            (Some(n), ExprKind::Name(f)) if n.name == "with" => {
+                pieces.push(text(named_as(f, function_word)));
+            }
+            _ => pieces.extend(expr(&a.value)),
+        }
         pieces
     });
     doc.in_attr = in_attr;
@@ -609,7 +643,7 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
         ExprKind::Int(s) | ExprKind::Float(s) => p.push(text(s.clone())),
         ExprKind::Str(s) => p.push(text(format!("\"{s}\""))),
         ExprKind::Bool(b) => p.push(text(if *b { "true" } else { "false" })),
-        ExprKind::Name(name) => p.push(text(named(name))),
+        ExprKind::Name(name) => p.push(text(named_as(name, value_word))),
         ExprKind::Paren(inner) => {
             p.push(text("("));
             push_expr(p, inner);
@@ -632,7 +666,10 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
             p.push(text(format!(".{}", named(name))));
         }
         ExprKind::Call { callee, args: a } => {
-            push_expr(p, callee);
+            match &callee.kind {
+                ExprKind::Name(f) => p.push(text(named_as(f, function_word))),
+                _ => push_expr(p, callee),
+            }
             p.push(args(a, false));
         }
         ExprKind::Index { base, index } => {
@@ -666,8 +703,8 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
             p.push(text(format!(" {} ", op.text())));
             push_expr(p, rhs);
         }
-        ExprKind::Await(name) => p.push(text(format!("await {}", named(name)))),
-        ExprKind::Past(name) => p.push(text(format!("past({})", named(name)))),
+        ExprKind::Await(name) => p.push(text(format!("await {}", named_as(name, value_word)))),
+        ExprKind::Past(name) => p.push(text(format!("past({})", named_as(name, value_word)))),
     }
 }
 

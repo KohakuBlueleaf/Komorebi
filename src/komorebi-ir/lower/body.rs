@@ -4,11 +4,12 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{refuse, source_span, Cx, Res};
+use crate::check::Name;
 use crate::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, Hint, Named};
 use crate::program::BodyRef;
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{BinOp, ConstValue, Failure, MessageId, ProgramId, ScalarType, Type};
+use crate::types::{BinOp, ConstValue, MessageId, ProgramId, ScalarType, Type};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
@@ -403,6 +404,11 @@ impl B<'_, '_> {
     }
 
     fn name(&mut self, n: &ast::Ident) -> Res<ValueId> {
+        // a failure's name where the checker read one (`o.reason == capacity`), whatever
+        // the module names: one decision, the checker's (R50)
+        if let Some(Name::Failure(f)) = self.cx.checked.binding(n.span) {
+            return Ok(self.emit(Op::FailureName(*f), Type::Reason, n.span));
+        }
         match self.lookup(&n.name) {
             Some(Slot::Value(v)) => return Ok(v),
             Some(Slot::Local(l)) => {
@@ -416,9 +422,6 @@ impl B<'_, '_> {
                 Some(c) => self.constant(c, n.span),
                 None => self.emit(Op::Param(p), Type::Scalar(ty), n.span),
             });
-        }
-        if let Some(f) = Failure::from_name(&n.name) {
-            return Ok(self.emit(Op::FailureName(f), Type::Reason, n.span));
         }
         refuse(n.span, format!("the name {} as a value", n.name))
     }

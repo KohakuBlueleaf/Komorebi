@@ -31,7 +31,7 @@ fn is_forward_of(expr: &Expr, m: &str) -> bool {
     let ExprKind::Call { callee, args } = &expr.kind else {
         return false;
     };
-    let is_forward = matches!(&callee.kind, ExprKind::Name(n) if n.name == "forward");
+    let is_forward = matches!(&callee.kind, ExprKind::Name(n) if n.name == "forward" && !n.quoted);
     let first = args.values().next().map(|a| &a.value.kind);
     is_forward && matches!(first, Some(ExprKind::Name(n)) if n.name == m)
 }

@@ -13,7 +13,7 @@ use crate::types::{Axis, Failure, Format, ScalarType};
 
 use super::attrs::{named_args, on_grid};
 use super::codes;
-use super::env::{is_named, parse_int, Env, Names, Place};
+use super::env::{is_named, parse_int, Declared, Env, Names, Place};
 use super::op::OpKind;
 use super::views::peers_of;
 use super::{Checker, LocalKind, Name, Word};
@@ -266,7 +266,7 @@ fn call_part(call: &Call, chain: &[Attr], build: &HashSet<String>) -> Option<(St
     };
     let items: Vec<&IndexItem> = index.values().collect();
     let (true, [IndexItem::Slice { lo, hi, step: None }]) = (
-        matches!(&base.kind, ExprKind::Name(n) if n.name == "group"),
+        matches!(&base.kind, ExprKind::Name(n) if n.name == "group" && !n.quoted),
         items.as_slice(),
     ) else {
         return Some((form, arg.span));
@@ -439,7 +439,7 @@ pub(super) fn as_int(expr: &Expr) -> Option<u64> {
 pub(super) fn is_word_member(expr: &Expr, word: &str, name: &str) -> bool {
     match &expr.kind {
         ExprKind::Member { base, name: n } => {
-            n.name == name && as_name(base).is_some_and(|b| b.name == word)
+            n.name == name && as_name(base).is_some_and(|b| b.name == word && !b.quoted)
         }
         ExprKind::Paren(inner) => is_word_member(inner, word, name),
         _ => false,
@@ -673,6 +673,7 @@ impl Checker<'_> {
                     );
                     Ty::Unknown
                 };
+                self.bare_word(&on.binding, Declared::Value);
                 cx.bind(&on.binding.name, local(ty, Name::Arrived, false));
                 self.message_once(on);
             }
@@ -1044,6 +1045,7 @@ impl Checker<'_> {
                 name, ty, value, ..
             } => {
                 names.declare(self, name);
+                self.bare_word(name, Declared::Value);
                 let got = self.expr(cx, value);
                 let ty = match ty {
                     Some(t) => {
@@ -1075,9 +1077,11 @@ impl Checker<'_> {
             }
             Stmt::Var { name, ty, value } => {
                 names.declare(self, name);
+                self.bare_word(name, Declared::Value);
                 let got = self.expr(cx, value);
                 // `var v: tile<F>[n] = zeros`: a block of one row of zeros (R48)
-                let zeros = matches!(&value.kind, ExprKind::Name(n) if n.name == "zeros");
+                let zeros =
+                    matches!(&value.kind, ExprKind::Name(n) if n.name == "zeros" && !n.quoted);
                 let place = if zeros {
                     Place::VarOfZeros
                 } else {
@@ -1388,6 +1392,7 @@ impl Checker<'_> {
         let mut names = Names::default();
         for (i, var) in vars.iter().enumerate() {
             names.declare(self, var);
+            self.bare_word(var, Declared::Value);
             let ty = elems.get(i).cloned().unwrap_or(Ty::Unknown);
             let binding = Name::Local {
                 decl: var.span,
@@ -1666,6 +1671,16 @@ impl Checker<'_> {
 
     /// A name read as a value.
     pub(super) fn name(&mut self, cx: &mut Cx, n: &Ident) -> Ty {
+        // a bare `zeros` is the language's, whatever the module names (R50)
+        if n.name == "zeros" && !n.quoted {
+            if !self.allowed(cx, Family::Compute, "zeros", n.span) {
+                return Ty::Unknown;
+            }
+            self.note_name(n.span, Name::Word(Word::Zeros));
+            self.note_op(n.span, OpKind::Zeros, &[]);
+            // a tile of the format its place gives
+            return Ty::Tile(None);
+        }
         if let Some(l) = cx.lookup(&n.name).cloned() {
             self.note_name(n.span, l.binding);
             return l.ty;
@@ -1687,15 +1702,6 @@ impl Checker<'_> {
                 self.note_name(n.span, Name::ModuleParam(param));
             }
             return ty.clone();
-        }
-        if n.name == "zeros" {
-            if !self.allowed(cx, Family::Compute, "zeros", n.span) {
-                return Ty::Unknown;
-            }
-            self.note_name(n.span, Name::Word(Word::Zeros));
-            self.note_op(n.span, OpKind::Zeros, &[]);
-            // a tile of the format its place gives
-            return Ty::Tile(None);
         }
         self.unknown(n);
         Ty::Unknown
@@ -1962,7 +1968,7 @@ impl Checker<'_> {
     /// The name after `o.reason ==`: one of the failures.
     pub(super) fn failure_name(&mut self, rhs: &Expr) -> Ty {
         match as_name(rhs) {
-            Some(n) if FAILURES.contains(&n.name.as_str()) => {
+            Some(n) if !n.quoted && FAILURES.contains(&n.name.as_str()) => {
                 if let Some(failure) = Failure::from_name(&n.name) {
                     self.note_name(n.span, Name::Failure(failure));
                 }
@@ -1994,7 +2000,8 @@ impl Checker<'_> {
 
     pub(super) fn member(&mut self, cx: &mut Cx, base: &Expr, name: &Ident, span: Span) -> Ty {
         if let Some(word) = as_name(base) {
-            if cx.lookup(&word.name).is_none() && cx.state(&word.name).is_none() {
+            // a bare `worker`, `group` or `island` is the language's (R50)
+            if !word.quoted {
                 match word.name.as_str() {
                     "worker" => return self.worker(cx, word, name, span),
                     "group" => {
