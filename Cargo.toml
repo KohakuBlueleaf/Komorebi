@@ -70,6 +70,10 @@ path = "tests/ir/origin.rs"
 name = "frontend"
 path = "tests/ir/frontend.rs"
 
+[[test]]
+name = "tensix_tile"
+path = "tests/ir/tensix_tile.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

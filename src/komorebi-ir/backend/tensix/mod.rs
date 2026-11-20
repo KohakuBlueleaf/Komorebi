@@ -13,6 +13,7 @@ pub mod chip;
 pub mod load;
 pub mod origin;
 pub mod plan;
+pub mod tile;
 pub mod unit;
 
 use crate::backend::{
