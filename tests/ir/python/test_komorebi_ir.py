@@ -141,3 +141,55 @@ def test_an_origin_is_refused_by_what_is_wrong():
     unknown = ORIGIN._replace(renames=[("nothing", "x")])
     with pytest.raises(ir.IrError, match="`nothing` names no value"):
         ir.check(T1, unknown)
+
+
+def test_emit_gives_the_tensix_output_as_data():
+    out = ir.emit(T1)
+    assert out == ir.emit(ir.compile(T1), "tensix")
+    names = [name for name, _ in out.files]
+    assert names == ["compute.cpp", "movement.cpp", "scale.h"] + [
+        "tile_times.hpp",
+        "tile_times.txt",
+    ]
+    assert all(isinstance(data, bytes) for _, data in out.files)
+    (entry,) = out.entries
+    assert (entry.name, entry.kind, entry.number) == ("Scale.run", "handler", 1)
+    assert entry.words == [("address", 0), ("address", 1)] + [
+        ("word", i) for i in (2, 3, 4)
+    ]
+    assert entry.bounds == [(t, ("word", 2), ("word", 3)) for t in (0, 1)]
+    layouts = [("layout", 0), ("layout", 1)]
+    assert [(k.source, k.processor, k.args) for k in out.kernels] == [
+        ("movement.cpp", "reader", layouts),
+        ("movement.cpp", "writer", layouts),
+        ("compute.cpp", "compute", []),
+    ]
+    assert {b.format for b in out.buffers} == {"bf16"} and len(out.buffers) == 4
+    assert out.steps == []
+
+
+def test_emit_prints_the_origin_a_frontend_gives():
+    plain = dict(ir.emit(T1).files)["scale.h"].decode()
+    placed = dict(ir.emit(ir.compile(T1, ORIGIN)).files)["scale.h"].decode()
+    assert plain.startswith("// Scale, made by komorebi-ir:")
+    assert placed.startswith("// Scale, made by komorebi.dsl from t1_class.py:")
+    assert ir.emit(ir.compile(T1, ORIGIN)).key != ir.emit(T1).key
+
+
+def test_emit_gives_the_cpu_output_as_steps():
+    out = ir.emit(T1, "cpu")
+    assert "module.cpp" in [name for name, _ in out.files]
+    assert [step.program for step in out.steps] == ["c++", "c++"]
+    assert out.kernels == [] and out.buffers == []
+    assert [(e.name, e.number) for e in out.entries] == [("Scale.run", 0)]
+    assert out.key != ir.emit(T1).key
+
+
+def test_emit_refuses_by_name():
+    with pytest.raises(ir.IrError, match='no backend is named "gpu"'):
+        ir.emit(T1, "gpu")
+    with pytest.raises(ir.IrError) as refused:
+        ir.emit(T1, "tensix", target="wormhole")
+    assert [d.code for d in ir.diagnostics(refused.value)] == ["K964"]
+    with pytest.raises(ir.IrError, match="K964: .*grid"):
+        ir.emit(T6)

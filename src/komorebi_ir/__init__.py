@@ -1,7 +1,7 @@
 """Komorebi IR from Python, a thin face over the Rust core (``komorebi_ir._rs``): a
 module's text (``str``) or byte-code file (``bytes``) checked, formatted, compiled,
-hashed and run on the interpreter. A refusal raises ``IrError`` with its diagnostics.
-A frontend's text is checked and compiled with its ``Origin`` beside it.
+hashed, run on the interpreter and emitted by a backend. A refusal raises ``IrError``
+with its diagnostics. A frontend's text is compiled with its ``Origin`` beside it.
 """
 
 from typing import NamedTuple
@@ -114,16 +114,95 @@ def run(program: str | bytes, script: str) -> str:
     return _rs.run(program, script)
 
 
+class EntryPoint(NamedTuple):
+    """What a host invokes: ``Program.handler``, its kind, number, symbol, parameters'
+    kinds, argument words (``("address" | "tiles" | "word", parameter)``) and the
+    ranges a host checks before sending it, ``(tensor, first, count)``, each end
+    ``("word", i)``, ``("const", n)`` or ``("add", a, b)``."""
+
+    name: str
+    kind: str
+    number: int
+    symbol: str
+    params: list[str]
+    words: list[tuple[str, int]]
+    bounds: list[tuple]
+
+
+class Kernel(NamedTuple):
+    """A kernel the machine's runtime compiles at load: its source (a file of the
+    output), its processor, defines, compile-time arguments (``("word", n)``, or
+    ``("layout", parameter)`` filled at load) and compile options."""
+
+    source: str
+    processor: str
+    defines: list[tuple[str, str]]
+    args: list[tuple[str, int]]
+    options: list[tuple[str, str]]
+
+
+class Buffer(NamedTuple):
+    """A buffer of each core's memory the kernels pass tiles through."""
+
+    index: int
+    format: str
+    page_bytes: int
+    pages: int
+
+
+class Step(NamedTuple):
+    """A program run to build the output, in the folder its files are written to."""
+
+    program: str
+    args: list[str]
+
+
+class Emitted(NamedTuple):
+    """A backend's output: its cache key (hex), its files ``(name, bytes)``, its entry
+    points, and how it is built: kernels and buffers for the machine's runtime, or
+    steps run here."""
+
+    key: str
+    files: list[tuple[str, bytes]]
+    entries: list[EntryPoint]
+    kernels: list[Kernel]
+    buffers: list[Buffer]
+    steps: list[Step]
+
+
+def emit(
+    program: str | bytes, backend: str = "tensix", target: str | None = None
+) -> Emitted:
+    """The output of a module on a backend (``"tensix"`` or ``"cpu"``); ``target`` its
+    architecture, by default the backend's (no chip for ``"tensix"``, the host's for
+    ``"cpu"``). Nothing is written or run."""
+    key, files, entries, kernels, buffers, steps = _rs.emit(program, backend, target)
+    return Emitted(
+        key,
+        [(name, data) for name, data in files],
+        [EntryPoint(*e[:4], list(e[4]), list(e[5]), list(e[6])) for e in entries],
+        [Kernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
+        [Buffer(*b) for b in buffers],
+        [Step(p, list(a)) for p, a in steps],
+    )
+
+
 __all__ = [
+    "Buffer",
     "Diagnostic",
+    "Emitted",
+    "EntryPoint",
     "Hashes",
     "IrError",
+    "Kernel",
     "Origin",
     "Place",
     "Requirement",
+    "Step",
     "check",
     "compile",
     "diagnostics",
+    "emit",
     "format",
     "hashes",
     "requirements",

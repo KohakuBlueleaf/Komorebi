@@ -100,3 +100,23 @@ compiler.
 The test `tests/ir/tensix.rs` runs today's emitter on the lesson's script (`python3`, else
 `KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails
 without Python unless `KOMO_IR_NO_PYTHON=1` skips it.
+
+## From Python
+
+`komorebi_ir.emit(program, backend="tensix", target=None)` gives a backend's output for a
+module's text or byte-code file, as plain data. Nothing is written and nothing is run. The backend
+is `"tensix"` or `"cpu"`. With no `target`, the Tensix backend compiles for its target with no
+chip, `tensix`, and the CPU backend for the host's architecture.
+
+The result, `Emitted`, holds:
+- the cache key, in hex;
+- the files, each its name and bytes;
+- the entry points, each with its number, argument words and the ranges a host checks;
+- how the output is built:
+  - for the Tensix backend, the kernels (source, processor, defines, compile-time arguments,
+    options) and the buffers (index, format, page bytes, pages) the machine's runtime compiles
+    and makes at load;
+  - for the CPU backend, the steps run in the folder of the files.
+
+A backend's refusal raises `IrError` with each refusal's code, and so does a backend name that
+is not one of these two.

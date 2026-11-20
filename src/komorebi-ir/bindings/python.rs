@@ -13,6 +13,7 @@ use pyo3::types::{PyBytes, PyList};
 
 use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
+use crate::backend::{ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Processor};
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
 use crate::errors::{Diagnostic, Severity};
@@ -312,6 +313,159 @@ fn run(py: Python<'_>, program: &Bound<'_, PyAny>, script: &str) -> PyResult<Str
         .map_err(|e| error(py, &format!("the run script is refused: {e}"), Vec::new()))
 }
 
+/// The data of an argument expression: `("word", i)`, `("const", n)`, `("add", a, b)`.
+fn expr<'py>(py: Python<'py>, e: &Expr) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match e {
+        Expr::Word(i) => ("word", *i).into_pyobject(py)?.into_any(),
+        Expr::Const(n) => ("const", *n).into_pyobject(py)?.into_any(),
+        Expr::Add(a, b) => ("add", expr(py, a)?, expr(py, b)?)
+            .into_pyobject(py)?
+            .into_any(),
+    })
+}
+
+fn arg_kind(k: &ArgKind) -> String {
+    match k {
+        ArgKind::Tensor(f) => format!("tensor<{}>", f.name()),
+        ArgKind::Scalar(t) => t.name().to_string(),
+        ArgKind::Bool => "bool".into(),
+    }
+}
+
+fn arg_word(w: &ArgWord) -> (&'static str, usize) {
+    match w {
+        ArgWord::TensorAddress(i) => ("address", *i),
+        ArgWord::TensorTiles(i) => ("tiles", *i),
+        ArgWord::Word(i) => ("word", *i),
+    }
+}
+
+/// One entry point as data: (name, kind, number, symbol, params, words, bounds).
+fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAny>> {
+    let kind = match e.entry {
+        Entry::Handler(..) => "handler",
+        Entry::Run(..) => "run",
+        Entry::Chain(..) => "chain",
+    };
+    let params: Vec<String> = e.params.iter().map(arg_kind).collect();
+    let words: Vec<(&str, usize)> = e.words.iter().map(arg_word).collect();
+    let mut bounds = Vec::new();
+    for b in &e.bounds {
+        bounds.push((b.tensor, expr(py, &b.first)?, expr(py, &b.count)?));
+    }
+    let row = (
+        e.name.clone(),
+        kind,
+        e.number,
+        e.symbol.clone(),
+        params,
+        words,
+        bounds,
+    );
+    Ok(row.into_pyobject(py)?.into_any())
+}
+
+/// One kernel as data: (source, processor, defines, args, options); an argument is
+/// `("word", n)` or `("layout", parameter)`.
+fn kernel(k: &Kernel) -> KernelRow {
+    let processor = match k.processor {
+        Processor::Reader => "reader",
+        Processor::Writer => "writer",
+        Processor::Compute => "compute",
+    };
+    let args = k
+        .args
+        .iter()
+        .map(|a| match a {
+            CompileArg::Word(n) => ("word", u64::from(*n)),
+            CompileArg::TensorLayout { param } => ("layout", *param as u64),
+        })
+        .collect();
+    (
+        k.source.clone(),
+        processor,
+        k.defines.clone(),
+        args,
+        k.options.clone(),
+    )
+}
+
+type KernelRow = (
+    String,
+    &'static str,
+    Vec<(String, String)>,
+    Vec<(&'static str, u64)>,
+    Vec<(String, String)>,
+);
+
+/// A module's output on a backend (`api::emit`), as data: (key, files, entries,
+/// kernels, buffers, steps); a backend that builds by steps has no kernels and no
+/// buffers, one whose machine compiles kernels has no steps.
+#[pyfunction]
+#[pyo3(signature = (program, backend="tensix", target=None))]
+fn emit<'py>(
+    py: Python<'py>,
+    program: &Bound<'py, PyAny>,
+    backend: &str,
+    target: Option<&str>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let m = module(py, program)?;
+    let output = match api::emit::emit(&m, backend, target) {
+        Ok(output) => output,
+        Err(api::emit::Refused::NoBackend(name)) => {
+            let names = api::emit::BACKENDS.join(", ");
+            return Err(error(
+                py,
+                &format!("no backend is named {name:?}: one of {names}"),
+                Vec::new(),
+            ));
+        }
+        Err(api::emit::Refused::Backend(refusals)) => {
+            let rows = refusals
+                .iter()
+                .map(|r| {
+                    let at = r.at.map(|a| format!(" (at {a:?})")).unwrap_or_default();
+                    let message = format!("{}{at}", r.what);
+                    (r.code.to_string(), message, None, None, "error", None, None)
+                })
+                .collect();
+            return Err(error(py, "the backend refuses the module", rows));
+        }
+    };
+    let files: Vec<(String, Bound<'py, PyBytes>)> = output
+        .files
+        .iter()
+        .map(|(name, bytes)| (name.clone(), PyBytes::new(py, bytes)))
+        .collect();
+    let mut entries = Vec::new();
+    for e in &output.entries {
+        entries.push(entry_point(py, e)?);
+    }
+    let (kernels, buffers, steps) = match &output.build {
+        Build::Kernels { kernels, buffers } => (
+            kernels.iter().map(kernel).collect(),
+            buffers
+                .iter()
+                .map(|b| (b.index, b.format.name(), b.page_bytes, b.pages))
+                .collect(),
+            Vec::new(),
+        ),
+        Build::Steps(steps) => (
+            Vec::new(),
+            Vec::new(),
+            steps
+                .iter()
+                .map(|s| (s.program.clone(), s.args.clone()))
+                .collect(),
+        ),
+    };
+    let kernels: Vec<KernelRow> = kernels;
+    let buffers: Vec<(u32, &str, u64, u64)> = buffers;
+    let steps: Vec<(String, Vec<String>)> = steps;
+    let row = (output.key.hex(), files, entries, kernels, buffers, steps);
+    Ok(row.into_pyobject(py)?.into_any())
+}
+
 /// The extension module.
 #[pymodule]
 fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -322,5 +476,6 @@ fn _rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hashes, m)?)?;
     m.add_function(wrap_pyfunction!(requirements, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(emit, m)?)?;
     Ok(())
 }

@@ -479,3 +479,27 @@ fn a_losing_build_leaves_the_winners_directory_whole() {
         .collect();
     assert_eq!(left, ["built"], "no staging directory is left");
 }
+
+#[test]
+fn a_backend_is_named_and_compiles_for_its_default_target() {
+    use komorebi_ir::api::emit::{default_arch, emit, Refused, BACKENDS};
+    let t01 = lesson("t01_scale");
+    assert_eq!(BACKENDS, ["cpu", "tensix"]);
+    assert_eq!(default_arch("tensix"), "tensix");
+    assert_eq!(default_arch("cpu"), std::env::consts::ARCH);
+    for name in BACKENDS {
+        let out = emit(&t01, name, None).unwrap_or_else(|r| panic!("{name}: {r:?}"));
+        assert_eq!(
+            out,
+            emit(&t01, name, Some(default_arch(name))).expect("the same")
+        );
+    }
+    assert_eq!(
+        emit(&t01, "gpu", None),
+        Err(Refused::NoBackend("gpu".into()))
+    );
+    match emit(&t01, "tensix", Some("wormhole")) {
+        Err(Refused::Backend(r)) => assert_eq!(r[0].code, "K964"),
+        other => panic!("not refused: {other:?}"),
+    }
+}

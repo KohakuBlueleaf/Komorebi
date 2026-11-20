@@ -23,7 +23,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("backend", &["program", "types", "bytecode"]),
     (
         "bindings",
-        &["api", "bytecode", "deep", "errors", "program", "types"],
+        &[
+            "api", "backend", "bytecode", "deep", "errors", "program", "types",
+        ],
     ),
 ];
 

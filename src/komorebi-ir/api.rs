@@ -1,6 +1,7 @@
 //! The core's entry points. Each runs its work on the stack the depth limit needs
 //! (`crate::deep`), whatever thread calls it.
 
+pub mod emit;
 pub mod origin;
 pub mod script;
 
