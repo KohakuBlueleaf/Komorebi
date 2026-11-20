@@ -1593,16 +1593,16 @@ fn the_report_shows_tensors_and_exported_state_on_request() {
     assert_eq!(
         printed,
         "state Spread.seen\n\
-         \x20 worker 0: 0:u32*4 (not filled)\n\
-         \x20 worker 1: 0:u32*4 (not filled)\n\
-         \x20 worker 2: 0:u32*4 (not filled)\n\
-         \x20 worker 3: 0:u32*4 (not filled)\n\
+         \x20 worker 0: _*4\n\
+         \x20 worker 1: _*4\n\
+         \x20 worker 2: _*4\n\
+         \x20 worker 3: _*4\n\
          #0 Spread.locate group(0, 4): completed\n\
          state Spread.seen\n\
-         \x20 worker 0: 2:u32, 0:u32*3 (not filled)\n\
-         \x20 worker 1: 2:u32, 0:u32, 1:u32*2 (not filled)\n\
-         \x20 worker 2: 2:u32, 1:u32, 0:u32*2 (not filled)\n\
-         \x20 worker 3: 2:u32, 1:u32*3 (not filled)\n\
+         \x20 worker 0: 2:u32, 0:u32*3\n\
+         \x20 worker 1: 2:u32, 0:u32, 1:u32*2\n\
+         \x20 worker 2: 2:u32, 1:u32, 0:u32*2\n\
+         \x20 worker 3: 2:u32, 1:u32*3\n\
          #1 Spread.learn group(0, 4): completed\n\
          tensor w copy 0 f32 [128, 32]\n\
          \x20 tile 0: 1.0*1024\n\

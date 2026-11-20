@@ -13,7 +13,7 @@ combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
 
 program Spread {
     state @scope(worker) @lifetime(program) {
-        seen: u32[4] @export
+        seen: u32[4] @filled(element) @export
     }
 
     handler locate() @on(group) {
