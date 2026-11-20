@@ -768,6 +768,18 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 `kmr prebuild --arch wormhole_b0 <script>` builds a script's kernels for Wormhole on a
 machine with no Wormhole chip.
 
+## Komorebi IR (work in progress)
+
+`src/komorebi-ir/` is a Rust crate being built: a language for Komorebi programs (`.kom`
+files), its checker, a byte code (`.komc`) and a reference interpreter, with the command
+`komo` (`komo check`, `komo fmt`, `komo compile`, `komo run`). It is not finished and not
+released: the language still changes, some constructs it names are refused as not built,
+and nothing in the `komorebi-tt` package depends on it. The backends
+(`src/komorebi-ir/backend/`) and the frontend that writes IR from the Python classes
+(`src/komorebi/dsl/ir/`) are early reference code, not a supported path: a Python class
+is compiled as before. The pages under [docs/ir](docs/ir/operations.md) describe the
+language as it stands, and `examples/ir/` holds a few modules.
+
 ## Limits
 
 Fixed sizes of the runtime and limits of the card; a program is written to fit them.
@@ -814,6 +826,8 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
   into islands and the other writers whose resident code is over the second
   data-movement CPU's 16 KiB; pages into another island's DRAM; the raster stages and
   the ray tracer
+- The Komorebi IR: finishing the language and its interpreter; then a frontend and
+  backends on it
 
 ## Repository map
 
@@ -823,6 +837,8 @@ src/komorebi/                  the Python package: Program, Session, Run, layout
                                simulators; the host-fed executor
   program/thread.py            X280 threads: declaration, regions, results, host fallback
   manifest/                    reserved: a program's commands and handlers declared
+src/komorebi-ir/               work in progress: the Komorebi IR (Rust): text, checker, byte
+                               code, interpreter, `komo`
 src/komorebi_native/
   include/komorebi/abi/        the command, the event and the stream format, shared by all
   include/komorebi/device/     the persistent kernel, groups, ports, groups, broadcasts, dynamic
@@ -856,6 +872,7 @@ docs/                          concepts, references, measured, install, developm
 | [the chain](docs/reference/chain.md) | calls written once as records and run as one command, each input waiting for marks, not for the host |
 | [measured](docs/measured.md) | every program's tables, with conditions and where the time goes |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |
+| [the IR's operations](docs/ir/operations.md), [checks](docs/ir/checks.md), [run scripts](docs/ir/run-scripts.md) | work in progress: the Komorebi IR and `komo` |
 | [install](docs/install.md), [development](docs/development.md) | building from a clone; layout, checks, conventions |
 
 ## Contributing

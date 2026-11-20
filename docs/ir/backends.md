@@ -1,5 +1,9 @@
 # Backends
 
+!!! note "Being built"
+    The Komorebi IR and its command `komo` are work in progress: the language still changes
+    and nothing here is a released interface.
+
 A backend turns a checked module into something a machine runs. Each backend says which parts of
 a [byte-code file](bytecode.md) its output depends on: the program and its hints (S and H), or
 also the positions and names (P), as a backend must whose text carries a script's names and lines.

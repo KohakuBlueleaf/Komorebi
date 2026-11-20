@@ -1,5 +1,7 @@
 # IR examples
 
+Work in progress: the Komorebi IR is being built, and these files change with it.
+
 Each `.kom` file is the Komorebi IR module the DSL frontend writes for a program it takes end to
 end: the first lesson (T1) and the corpus's programs 1 to 7. Its first line names the Python class
 it comes from, in `tests/ir/tensix/`. The files are what `komorebi.dsl.ir.built.module` writes

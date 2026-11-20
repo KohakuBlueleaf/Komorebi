@@ -1,5 +1,9 @@
 # Run scripts
 
+!!! note "Being built"
+    The Komorebi IR and its command `komo` are work in progress: the language still changes
+    and nothing here is a released interface.
+
 A run script is what a host does with a loaded module, as plain text: the tensors it makes, the
 invocations and control programs it runs, and the tensors it reads. The same script is the input of
 `komo run module script`, which runs it on the interpreter, and of a backend's driver. Both print
