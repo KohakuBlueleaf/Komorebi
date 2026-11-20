@@ -827,10 +827,9 @@ impl Writer {
                 t(self, "ForStream");
                 self.u32(stream.0);
             }
-            Op::ForZip { a, b } => {
+            Op::ForZip { streams } => {
                 t(self, "ForZip");
-                self.u32(a.0);
-                self.u32(b.0);
+                self.values(streams);
             }
             Op::ForArrive { broadcast } => {
                 t(self, "ForArrive");

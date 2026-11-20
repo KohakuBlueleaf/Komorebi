@@ -184,15 +184,24 @@ tensor of any width. A tensor a rectangle walks given no shape is refused by nam
 is a rectangle whose rows or columns, where the compile knows their end, do not fit its tensor.
 The ends that read the rank or a word are checked at submit (the entry's bounds).
 
-It also emits the corpus's program 7's `SwiGLU.down`. The `var` is a block of one row of `f32`
-tiles, `[1, c]`, and the function gives that block from `[1, k]` by `[k, c]`. The var is today's
-field of sums (`kField<Name>`, c pages, unpacked as `float32`). Each block's product is packed
-into the field with the packer's L1 accumulation, the first block overwriting; the sub-columns
-are as wide as divides c and fits Dst's half (`stream_field_product`). After the loop the field
-is copied to Dst and packed into rows of c tiles (`kOutRows<c>`), and mover B writes them into
-the rectangle the var is stored to, one row of tiles (`write_sums`). Mover B counts the loop's
-blocks as compute does, and writes nothing when there were none. With buffers of more than one
-format, compute sets the formats again before each unpack and pack (`mixed_formats`).
+It also emits the corpus's program 7 (`SwiGLU.up` and `SwiGLU.down`). Each `var` is a block of
+one row of `f32` tiles, `[1, c]`. Two or three `bf16` streams are zipped: the first a row in
+blocks of `[1, k]`, the others rectangles in blocks of `[k, c]`. In the loop, each var adds the
+product of the row's block by another stream's, a function that is `matmul` of a `[1, k]` and a
+`[k, c]`. Each var is today's field of sums (`kField<Name>`, c pages, unpacked as `float32`,
+after the handlers' out buffers). Each block's product is packed into its field with the
+packer's L1 accumulation, the first block overwriting; the sub-columns are as wide as divides c
+and fits Dst's half (`stream_field_product`), and a product other than the first sets the
+matrix unit for its own streams and back. After the loop one store goes into a rectangle of one
+row of c tiles: a var, its field copied to Dst and packed into rows of c tiles (`kOutRows<c>`,
+`write_sums`); or a function on one tile of the vars (`gate(h, g)`), each tile of their fields
+copied to Dst tiles in the function's order, its unit run and its tile packed
+(`write_function_of_sums`). Rows of one width and another format are `kOutRows<c>b`. Mover B
+counts the loop's blocks of each var as compute does, and writes the rows when there were some.
+With buffers of more than one format, compute sets the formats again before each unpack and pack
+(`mixed_formats`). The kernels' layout arguments are the program's tensors in the order the
+handlers first take them, one chain of `km::Tensor<...>` for all handlers, so a tensor may be at
+a different place in each handler's command.
 
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`

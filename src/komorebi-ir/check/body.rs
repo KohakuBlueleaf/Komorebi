@@ -336,6 +336,22 @@ pub(super) fn count_of(cx: &Cx, e: &Expr) -> Count {
     Count::Unknown
 }
 
+/// Whether `e` names a `var` (a handler's block of one row from `zeros`, R48).
+fn block_var(cx: &Cx, e: &Expr) -> bool {
+    as_name(e)
+        .and_then(|n| cx.lookup(&n.name))
+        .is_some_and(|l| l.mutable && matches!(l.ty, Ty::Block(..)))
+}
+
+/// Whether `a` and `b` are the same name (or the same number).
+fn same_name(a: &Expr, b: &Expr) -> bool {
+    match (as_name(a), as_name(b), as_int(a), as_int(b)) {
+        (Some(x), Some(y), _, _) => x.name == y.name,
+        (_, _, Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// The integer an expression is, if it is a literal.
 pub(super) fn as_int(expr: &Expr) -> Option<u64> {
     match &expr.kind {
@@ -688,18 +704,25 @@ impl Checker<'_> {
             let ty = self.expr(cx, &arg.value);
             tile_given |= matches!((want, &ty), (Ty::Tile(_), Ty::Tile(_)));
             match (want, &ty) {
-                // a function on tiles in a function on blocks: on each tile of one shape
-                (Ty::Tile(_), Ty::Block(_, shape)) if self.on_blocks && on_tiles => match lifted {
-                    Some(first) if !first.agrees(*shape) => self.error(
-                        codes::WRONG_TYPE,
-                        format!(
-                            "`{what}` is given blocks of two shapes, {first} and {shape}: \
+                // a function on tiles in a function on blocks, or in a handler on its
+                // vars of a block of one row (R48): on each tile of one shape
+                (Ty::Tile(_), Ty::Block(_, shape))
+                    if on_tiles
+                        && (self.on_blocks
+                            || shape.rows == Count::Known(1) && block_var(cx, &arg.value)) =>
+                {
+                    match lifted {
+                        Some(first) if !first.agrees(*shape) => self.error(
+                            codes::WRONG_TYPE,
+                            format!(
+                                "`{what}` is given blocks of two shapes, {first} and {shape}: \
                                  a function on tiles runs on each tile of blocks of one shape"
+                            ),
+                            arg.value.span,
                         ),
-                        arg.value.span,
-                    ),
-                    _ => lifted = Some(*shape),
-                },
+                        _ => lifted = Some(*shape),
+                    }
+                }
                 (Ty::Tile(_), Ty::Block(..)) => self.error(
                     codes::BLOCK_TO_TILE,
                     format!("a block of several tiles is given to `{what}`, declared on one tile"),
@@ -1340,6 +1363,27 @@ impl Checker<'_> {
             Ty::Unknown => {}
             // a block of one row (R48): its tiles in the view's order, as many as it holds
             Ty::Block(f, shape) if shape.rows == Count::Known(1) => {
+                // both counts known at compile: the view's tiles are the block's
+                if let (
+                    Ty::View {
+                        tiles: Count::Known(t),
+                        ..
+                    },
+                    Count::Known(c),
+                ) = (&want, shape.cols)
+                {
+                    if *t != c {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            format!(
+                                "a store of a block of {c} tiles into a view of {t}: the view \
+                                 holds as many tiles as the block"
+                            ),
+                            span,
+                        );
+                        return;
+                    }
+                }
                 if let (
                     Ty::View {
                         format: Some(want), ..
@@ -2053,6 +2097,33 @@ impl Checker<'_> {
                 );
                 return Ty::Unknown;
             }
+            // its tiles, where the compile knows each side: `a:b` of two counts, or
+            // `a:a + n`
+            let side = |item: &IndexItem| match item {
+                IndexItem::Slice { lo, hi, step: None } => {
+                    match (count_of(cx, lo), count_of(cx, hi), &hi.kind) {
+                        (Count::Known(a), Count::Known(b), _) if b >= a => Some(b - a),
+                        (
+                            _,
+                            _,
+                            ExprKind::Binary {
+                                op: BinOp::Add,
+                                lhs,
+                                rhs,
+                            },
+                        ) if same_name(lhs, lo) => match count_of(cx, rhs) {
+                            Count::Known(n) => Some(n),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let tiles = match (side(items[0]), side(items[1])) {
+                (Some(r), Some(c)) => Count::Known(r * c),
+                _ => Count::Unknown,
+            };
             if let ExprKind::Member { base: tensor, .. } = &base.kind {
                 let mut parts = vec![Some(&**tensor)];
                 for item in &items {
@@ -2062,10 +2133,7 @@ impl Checker<'_> {
                 }
                 self.note_op(span, OpKind::Rect, &parts);
             }
-            return Ty::View {
-                format,
-                tiles: Count::Unknown,
-            };
+            return Ty::View { format, tiles };
         }
         if let Ty::Tensor { .. } = ty {
             self.error(

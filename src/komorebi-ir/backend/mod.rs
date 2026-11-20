@@ -297,9 +297,10 @@ pub enum Processor {
 pub enum CompileArg {
     /// A word known at compile.
     Word(u32),
-    /// The layout of the tensor passed as parameter `param`, filled at load.
+    /// The layout of the program's tensor `param`, filled at load: the tensors in
+    /// the order the handlers first take them, as the load is given them.
     TensorLayout {
-        /// The parameter.
+        /// The tensor's place among the program's.
         param: usize,
     },
 }

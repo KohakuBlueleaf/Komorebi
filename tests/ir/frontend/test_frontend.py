@@ -172,12 +172,12 @@ class Thrice(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
         out = km.Stream(y.pages(0, tiles), write=True)
-        for a, b, c in zip(
+        for a, b in zip(
             km.Stream(x.pages(0, tiles)),
             km.Stream(x.pages(0, tiles)),
             km.Stream(x.pages(0, tiles)),
         ):
-            out.push(plus(a, b) + c)
+            out.push(plus(a, b))
 
 
 class IntoWritten(km.Program):
@@ -281,7 +281,7 @@ def test_a_name_that_is_an_ir_word_is_renamed():
         (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
         (Led, "pages(self.leader", "self.leader as a number is not written"),
         (Ranked, "self.rank == 1", "an if other than `if self.rank == self.leader:`"),
-        (Thrice, "for a, b, c", "names other than one a stream"),
+        (Thrice, "for a, b in", "names other than one a stream"),
         (IntoWritten, "for a, b", "a loop over what is not a read stream"),
     ],
 )
@@ -633,16 +633,20 @@ def swiglu_script(folder, monkeypatch, text=None):
     return p7
 
 
-def test_program_7s_down_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+def test_program_7s_handlers_built_through_the_ir_are_todays(tmp_path, monkeypatch):
     p7 = swiglu_script(tmp_path, monkeypatch)
     given = p7.made_with()
     today = p7.SwiGLU(log=lambda line: None, **given)
     ours = program(p7.SwiGLU, log=lambda line: None, **given)
-    # self.out is down's var of a block of one row (R48), kept in today's field
-    # buffer kFieldOut; the movement source is the load's (its rectangles in rows)
+    # self.h, self.g and self.out are vars of a block of one row (R48), kept in
+    # today's field buffers; up stores gate(h, g), a function on one tile of them
     m = module(p7.SwiGLU, l1=1 << 20, **given)
-    assert "var out: tile<f32>[WIDTH] = zeros" in m.text
-    assert ("out", "self.out") in m.renames
+    for name in ("h", "g", "out"):
+        assert f"var {name}: tile<f32>[WIDTH] = zeros" in m.text
+        assert (name, f"self.{name}") in m.renames
+    assert "func gate(\n    h: tile<f32>,\n    g: tile<f32>,\n) -> tile<f32>" in m.text
+    assert "for xb, w1b, w3b in zip(" in m.text
+    assert "<- gate(h, g)" in m.text
     assert "block = [CHUNK, WIDTH]" in m.text
     assert ours.header == today.built.folder / "swiglu.h"
     for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
@@ -680,5 +684,25 @@ def test_program_7s_field_or_block_it_does_not_place_is_refused_by_name(
     source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
     assert source.count(old) == 1
     p7 = swiglu_script(tmp_path, monkeypatch, source.replace(old, new))
+    with pytest.raises(Refused, match=why):
+        module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+
+
+@pytest.mark.parametrize(
+    "old, new, why",
+    [
+        # a field named by an IR word: its var would not read
+        ("out", "store", "a field self.store is named by an IR word: rename it"),
+        # a handler named by an IR word
+        ("def down(", "def zip(", "a handler zip is named by an IR word: rename it"),
+    ],
+)
+def test_program_7s_name_that_is_an_ir_word_is_refused_by_name(
+    tmp_path, monkeypatch, old, new, why
+):
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    for spelled in (f"    {old}:", f"self.{old}", f"    {old}"):
+        source = source.replace(spelled, spelled.replace(old, new))
+    p7 = swiglu_script(tmp_path, monkeypatch, source)
     with pytest.raises(Refused, match=why):
         module(p7.SwiGLU, l1=1 << 20, **p7.made_with())

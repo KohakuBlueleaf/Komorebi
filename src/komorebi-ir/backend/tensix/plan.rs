@@ -196,6 +196,9 @@ pub enum Shape {
     /// `acc += f(x, w)` from `zeros`, f the product of the two streams' blocks, each
     /// rank's result stored (program 6, reading R45).
     Product(Product),
+    /// Products added into vars of a block of one row, a var or a function of them
+    /// stored (program 7, reading R48).
+    Fields(Fields),
 }
 
 /// The products of two streams' blocks added into a tile: `var acc: tile<f32> =
@@ -213,19 +216,70 @@ pub struct Product {
     pub fidelity: String,
     /// The columns of tiles of the result (acc's tiles).
     pub width: u64,
-    /// The var when it is a block of one row (R48: today's field, its sums packed
-    /// into its buffer with the packer's L1 accumulation), stored to a rectangle; none
-    /// for a tile (its sum in Dst, stored to one tile).
-    pub field: Option<Field>,
 }
 
-/// A product's var of a block of one row: today's field of sums.
+/// Products added into vars of a block of one row (R48: today's fields of sums):
+/// `var v: tile<f32>[c] = zeros` for each, `v += f(xb, wb)` in the loop over the zipped
+/// streams, f `matmul` of a `[1, k]` and a `[k, c]`; after the loop, the store of a var,
+/// or of a function on one tile of the vars, into a rectangle of one row of c tiles
+/// (program 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fields {
+    /// Each var's sum, in the order the vars are declared.
+    pub sums: Vec<FieldSum>,
+    /// The store: its tensor and its rectangle, a block of c tiles.
+    pub store: Moved,
+    /// What is stored: a var, by its place in `sums`, or a function of the vars.
+    pub stored: Stored,
+    /// The products' fidelity (`@tensix.fidelity`, else the backend's).
+    pub fidelity: String,
+    /// The columns of tiles of each var.
+    pub width: u64,
+}
+
+/// One var of `Fields`: its zeros, the call added into it, its name, the loop's tiles
+/// the call takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldSum {
+    /// The `zeros` it starts at.
+    pub zeros: InstId,
+    /// The call of f in the loop.
+    pub call: Call,
+    /// The var's names.
+    pub field: Field,
+    /// The loop's tiles the call takes: the row's, then the columns'.
+    pub operands: (usize, usize),
+}
+
+/// A var of a block of one row: today's field of sums.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     /// Its name as the source writes it (the notes' name: `self.out`).
     pub source: String,
     /// The name its C++ names are made of: the source's last part after a dot (`out`).
     pub ident: String,
+}
+
+/// What `Fields` stores after its loop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stored {
+    /// A var, by its place among the sums.
+    Var(usize),
+    /// `f(h, g)`, f a function on one tile run on each tile of the vars.
+    Gate(Gate),
+}
+
+/// A function on one tile of the vars, stored: today's `write(gate(self.h, self.g))`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gate {
+    /// The tile function.
+    pub func: FuncId,
+    /// Its name.
+    pub name: String,
+    /// The vars it takes, in order, by their place among the sums.
+    pub vars: Vec<usize>,
+    /// The call's instruction.
+    pub inst: InstId,
 }
 
 /// A sum of a stream's tiles: `var total: tile<f32> = zeros`, `total += tile` in the
@@ -277,6 +331,7 @@ impl Plan {
             Shape::Mapped { write, .. } => Some(write),
             Shape::Summed(sum) => Some(&sum.store),
             Shape::Product(product) => Some(&product.store),
+            Shape::Fields(fields) => Some(&fields.store),
             Shape::Dropped => None,
         }
     }
@@ -291,6 +346,7 @@ impl Plan {
             Shape::Mapped { push, .. } => *push,
             Shape::Summed(sum) => sum.add,
             Shape::Product(product) => product.call.inst,
+            Shape::Fields(fields) => fields.sums[0].call.inst,
             Shape::Dropped => self.reads[0].inst,
         }
     }
@@ -379,10 +435,15 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
     } = found;
     if let (Some((inst, _)), true) = (
         patterns.first(),
-        matches!(shape, Shape::Summed(_) | Shape::Product(_)),
+        matches!(
+            shape,
+            Shape::Summed(_) | Shape::Product(_) | Shape::Fields(_)
+        ),
     ) {
         let what = match shape {
-            Shape::Product(_) => "a product's stream in a pattern the command gives",
+            Shape::Product(_) | Shape::Fields(_) => {
+                "a product's stream in a pattern the command gives"
+            }
             _ => "a reduce's stream in a pattern the command gives",
         };
         return Err(not_built(what, Anchor::Inst(body, *inst)));
@@ -495,6 +556,14 @@ enum Val {
     /// The loop's tile from read stream `i`.
     Tile(usize),
     Called,
+    /// A product's call in a loop of block vars: its place among the calls.
+    Product(usize),
+    /// A block var read: its place among the vars.
+    Var(usize),
+    /// A product added into a block var: the var's and the call's places.
+    AddedVar(usize, usize),
+    /// The function of the vars, called after the loop.
+    Gated,
     Zeros,
     Total,
     Added,
@@ -533,8 +602,19 @@ struct Summing {
     closed: bool,
     /// The add is of a call's result (a product), not of the loop's tile.
     product: bool,
-    /// The var's tiles when it is a block of one row (R48), not a tile.
-    block: Option<u64>,
+}
+
+/// What the walk found of vars of a block of one row (R48), as it is read.
+#[derive(Default)]
+struct BlockVars {
+    /// Each var: its slot, its zeros, its columns, and the product added into it (the
+    /// call's place among `calls`).
+    vars: Vec<(LocalId, InstId, u64, Option<usize>)>,
+    /// The products in the loop: each call and the loop's tiles it takes.
+    calls: Vec<(Call, (usize, usize))>,
+    /// The function of the vars stored, if any.
+    gate: Option<Gate>,
+    store: Option<(Moved, Stored)>,
 }
 
 /// The body read instruction by instruction: arguments, ints of words, numbers and
@@ -564,6 +644,7 @@ struct Walk<'m> {
     copied: Option<InstId>,
     ended: bool,
     sum: Summing,
+    blocks: BlockVars,
     /// A counted loop around the stream loop: its count; and whether it is closed.
     repeat: Option<Int>,
     repeat_closed: bool,
@@ -587,6 +668,7 @@ impl<'m> Walk<'m> {
             copied: None,
             ended: false,
             sum: Summing::default(),
+            blocks: BlockVars::default(),
             repeat: None,
             repeat_closed: false,
         }
@@ -616,12 +698,97 @@ impl<'m> Walk<'m> {
         }
     }
 
+    /// The place among the block vars of slot `l`, if it is one.
+    fn block_var(&self, l: LocalId) -> Option<usize> {
+        self.blocks.vars.iter().position(|v| v.0 == l)
+    }
+
+    /// The columns of slot `l` when it is a block of one row of `f32` tiles (R48).
+    fn block_cols(&self, l: LocalId) -> Option<u64> {
+        match self.body.locals.get(l.0 as usize) {
+            Some(Type::Block(Format::F32, Count::Const(1), Count::Const(c))) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// A call in a handler of block vars: in the loop, a product of two of the loop's
+    /// tiles (the row's first); after it, a function of the vars, once.
+    fn block_call(&mut self, f: FuncId, args: &[ValueId], id: InstId) -> Result<Val, String> {
+        let func = self
+            .module
+            .funcs
+            .get(f.0 as usize)
+            .filter(|func| func.kind == FuncKind::Plain);
+        let Some(func) = func else {
+            return Err("a call of other than a plain function".into());
+        };
+        let call = |tiles| Call {
+            func: f,
+            name: func.name.clone(),
+            tiles,
+            scalars: Vec::new(),
+            inst: id,
+        };
+        if self.looped && !self.ended {
+            let tiles: Option<Vec<usize>> = args
+                .iter()
+                .map(|a| match self.val(*a) {
+                    Some(Val::Tile(i)) => Some(i),
+                    _ => None,
+                })
+                .collect();
+            let Some([x, w]) = tiles
+                .as_deref()
+                .map(<[usize]>::to_vec)
+                .as_deref()
+                .and_then(|t| <[usize; 2]>::try_from(t).ok())
+            else {
+                return Err("a call in the loop other than f(two of the loop's tiles)".into());
+            };
+            self.blocks.calls.push((call(2), (x, w)));
+            return Ok(Val::Product(self.blocks.calls.len() - 1));
+        }
+        let vars: Option<Vec<usize>> = args
+            .iter()
+            .map(|a| match self.val(*a) {
+                Some(Val::Var(k)) => Some(k),
+                _ => None,
+            })
+            .collect();
+        match vars {
+            Some(vars) if self.ended && self.blocks.gate.is_none() && !vars.is_empty() => {
+                let mut seen = vars.clone();
+                seen.sort_unstable();
+                seen.dedup();
+                if seen.len() != vars.len() {
+                    return Err("a function given one block var twice".into());
+                }
+                self.blocks.gate = Some(Gate {
+                    func: f,
+                    name: func.name.clone(),
+                    vars,
+                    inst: id,
+                });
+                Ok(Val::Gated)
+            }
+            _ => Err("a call after the loop other than f(the block vars), once".into()),
+        }
+    }
+
     fn run(mut self) -> Result<Found, Refusal> {
         for (i, inst) in self.body.insts.iter().enumerate() {
             let id = InstId(i as u32);
             let anchor = Anchor::Inst(self.at, id);
             let closes_repeat = matches!(inst.op, Op::End) && self.repeat.is_some();
-            if self.ended && self.sum.local.is_none() && !(closes_repeat && !self.repeat_closed) {
+            let block_vars = !self.blocks.vars.is_empty();
+            if self.blocks.store.is_some() {
+                return Err(not_built("a handler's lines after its store", anchor));
+            }
+            if self.ended
+                && self.sum.local.is_none()
+                && !block_vars
+                && !(closes_repeat && !self.repeat_closed)
+            {
                 return Err(not_built("a handler's lines after its stream loop", anchor));
             }
             // a counted loop whose body is exactly one stream loop (R46): its stream
@@ -655,6 +822,9 @@ impl<'m> Walk<'m> {
             BodyRef::Handler(p, h) => Anchor::Handler(p, h),
             _ => Anchor::Module,
         };
+        if !self.blocks.vars.is_empty() {
+            return self.fields(at);
+        }
         if self.sum.local.is_some() {
             return self.summed(at);
         }
@@ -878,9 +1048,6 @@ impl<'m> Walk<'m> {
         if self.sum.product {
             return self.product(at);
         }
-        if self.sum.block.is_some() {
-            return Err(not_built("a sum of the loop's tiles into a block var", at));
-        }
         let sum = std::mem::take(&mut self.sum);
         if self.sink.is_some() {
             return Err(not_built("a sink in a handler of a sum", at));
@@ -973,7 +1140,7 @@ impl<'m> Walk<'m> {
             ));
         };
         let (k, width) = self.product_function(call.func, at)?;
-        if width != sum.block.unwrap_or(1) || (width > 1) != sum.block.is_some() {
+        if width != 1 {
             return Err(not_built(
                 "a product whose function's result is not its var's shape",
                 at,
@@ -998,16 +1165,6 @@ impl<'m> Walk<'m> {
                 at,
             ));
         }
-        let field = match (sum.block, sum.local) {
-            (Some(_), Some(l)) => {
-                let source = local_name(self.module, self.at, l)
-                    .unwrap_or("acc")
-                    .to_string();
-                let ident = source.rsplit('.').next().unwrap_or(&source).to_string();
-                Some(Field { source, ident })
-            }
-            _ => None,
-        };
         let range = |o: Over| match o {
             Over::Rect(rect) => Ok(Range::Rect(rect)),
             Over::Tiles(first, n) => Ok(Range::Tiles { first, n }),
@@ -1036,7 +1193,123 @@ impl<'m> Walk<'m> {
                 store,
                 fidelity,
                 width,
-                field,
+            }),
+        })
+    }
+
+    /// The plan of products added into vars of a block of one row (R48): two or three
+    /// zipped streams of bf16 tiles, the first a row in blocks of `[1, k]`, the others
+    /// rectangles in blocks of `[k, c]`; each var one product of the row's block by
+    /// another stream's; after the loop one store, of a var or of a function on one
+    /// tile of the vars, into a rectangle of one row of c tiles.
+    fn fields(mut self, at: Anchor) -> Result<Found, Refusal> {
+        let found = std::mem::take(&mut self.blocks);
+        if self.sink.is_some() || self.sum.local.is_some() || self.call.is_some() {
+            return Err(not_built(
+                "a handler of block vars with a sink, a sum of tiles or another call",
+                at,
+            ));
+        }
+        let (reads, overs) = self.walked_streams();
+        let Some((store, stored)) = found.store else {
+            return Err(not_built(
+                "block vars other than stored after their loop",
+                at,
+            ));
+        };
+        let format = |m: &Moved| self.words.get(m.tensor).and_then(|w| w.format);
+        if reads.len() < 2 || reads.iter().any(|r| format(r) != Some(Format::Bf16)) {
+            return Err(not_built(
+                "products into block vars other than of two or three zipped streams of bf16 \
+                 tiles",
+                at,
+            ));
+        }
+        let mut sums = Vec::new();
+        let mut fidelity: Option<String> = None;
+        let mut width = None;
+        for (l, zeros, c, call) in &found.vars {
+            let Some((call, operands)) = call.and_then(|i| found.calls.get(i)).cloned() else {
+                return Err(not_built("a block var no product is added into", at));
+            };
+            let (k, cols) = self.product_function(call.func, at)?;
+            let (x, w) = (&reads[operands.0], &reads[operands.1]);
+            if operands.0 != 0 || cols != *c || k != x.block || w.block != k * cols {
+                return Err(not_built(
+                    "a product into a block var whose function's shapes are not its \
+                     streams' blocks ([1, k] of the first by [k, c] of another, c the var's)",
+                    at,
+                ));
+            }
+            if width.is_some_and(|w| w != cols) {
+                return Err(not_built("block vars of different columns", at));
+            }
+            width = Some(cols);
+            let f = super::unit::fidelity(self.module, call.func)?;
+            if fidelity.as_ref().is_some_and(|g| *g != f) {
+                return Err(not_built(
+                    "products of different fidelities in one handler",
+                    at,
+                ));
+            }
+            fidelity = Some(f);
+            let source = local_name(self.module, self.at, *l)
+                .unwrap_or("acc")
+                .to_string();
+            let ident = source.rsplit('.').next().unwrap_or(&source).to_string();
+            sums.push(FieldSum {
+                zeros: *zeros,
+                call,
+                field: Field { source, ident },
+                operands,
+            });
+        }
+        if found.calls.len() != sums.len() {
+            return Err(not_built("a product added into no block var", at));
+        }
+        // each var is stored: the one var, or each once in the function stored
+        let every = match &stored {
+            Stored::Var(_) => sums.len() == 1,
+            Stored::Gate(gate) => gate.vars.len() == sums.len(),
+        };
+        if !every {
+            return Err(not_built("a block var its store does not read", at));
+        }
+        let width = width.unwrap_or(0);
+        if store.block != width {
+            return Err(not_built(
+                "a store into a rectangle of other than the vars' tiles",
+                at,
+            ));
+        }
+        let range = |o: Over| match o {
+            Over::Rect(rect) => Ok(Range::Rect(rect)),
+            Over::Tiles(first, n) => Ok(Range::Tiles { first, n }),
+            Over::Part(_) => Err(not_built("a product's stream of a partition", at)),
+        };
+        let reads: Vec<Moved> = reads
+            .into_iter()
+            .zip(overs)
+            .map(|(read, over)| {
+                Ok(Moved {
+                    range: range(over)?,
+                    ..read
+                })
+            })
+            .collect::<Result<_, Refusal>>()?;
+        let moved: Vec<&Moved> = std::iter::once(&store).chain(&reads).collect();
+        self.locals_read(&[], &moved, at)?;
+        Ok(Found {
+            locals: self.locals,
+            parts: Vec::new(),
+            reads,
+            repeat: None,
+            shape: Shape::Fields(Fields {
+                sums,
+                store,
+                stored,
+                fidelity: fidelity.unwrap_or_default(),
+                width,
             }),
         })
     }
@@ -1121,26 +1394,88 @@ impl<'m> Walk<'m> {
                 self.sum.zeros_seen = true;
                 Some(Val::Zeros)
             }
-            Op::Set(l, v) => {
-                let ty = self.body.locals.get(l.0 as usize);
-                let tile = ty == Some(&Type::Tile(Format::F32));
-                let block = match ty {
-                    Some(Type::Block(Format::F32, Count::Const(1), Count::Const(c))) => Some(*c),
-                    _ => None,
+            // a var of a block of one row (R48): from zeros before the loop; a product
+            // added into it in the loop, once
+            Op::Set(l, v) if self.block_var(*l).is_some() || self.block_cols(*l).is_some() => {
+                match (self.val(*v), self.block_var(*l)) {
+                    (Some(Val::Zeros), None) if !self.looped => {
+                        let c = self.block_cols(*l).unwrap_or(0);
+                        self.blocks.vars.push((*l, id, c, None));
+                    }
+                    (Some(Val::AddedVar(k, i)), Some(j))
+                        if k == j && self.blocks.vars[k].3.is_none() && !self.ended =>
+                    {
+                        self.blocks.vars[k].3 = Some(i);
+                    }
+                    _ => {
+                        return Err(
+                            "a block var other than from zeros before its loop, a product \
+                             added into it in the loop once"
+                                .into(),
+                        )
+                    }
+                }
+                None
+            }
+            Op::Get(l) if self.block_var(*l).is_some() => self.block_var(*l).map(Val::Var),
+            Op::Binary(BinOp::Add, a, b)
+                if matches!(self.val(*a), Some(Val::Var(_)))
+                    && matches!(self.val(*b), Some(Val::Product(_))) =>
+            {
+                let (Some(Val::Var(k)), Some(Val::Product(i))) = (self.val(*a), self.val(*b))
+                else {
+                    return Err("an add of other than a product into a block var".into());
                 };
+                Some(Val::AddedVar(k, i))
+            }
+            Op::CallFunc(f, args) if !self.blocks.vars.is_empty() => {
+                return self.block_call(*f, args, id).map(Some);
+            }
+            Op::Store(view, v) if !self.blocks.vars.is_empty() => {
+                let stored = match self.val(*v) {
+                    Some(Val::Var(k)) => Stored::Var(k),
+                    Some(Val::Gated) => match self.blocks.gate.clone() {
+                        Some(gate) => Stored::Gate(gate),
+                        None => return Err("a store of no function of the vars".into()),
+                    },
+                    _ => {
+                        return Err("a store of other than a block var or a function of them".into())
+                    }
+                };
+                let Some(Val::Rect { tensor, rect }) = self.val(*view) else {
+                    return Err("a store of block vars other than into a rectangle".into());
+                };
+                let (rows, cols) = rect.sides();
+                if !self.ended || self.blocks.store.is_some() || rows != Some(1) {
+                    return Err(
+                        "a store other than into a rectangle of one row of the vars' tiles, \
+                         after their loop, once"
+                            .into(),
+                    );
+                }
+                let moved = Moved {
+                    tensor,
+                    block: cols.unwrap_or(0),
+                    inst: id,
+                    range: Range::Rect(rect),
+                    pattern: None,
+                };
+                self.blocks.store = Some((moved, stored));
+                None
+            }
+            Op::Set(l, v) => {
+                let tile = self.body.locals.get(l.0 as usize) == Some(&Type::Tile(Format::F32));
                 match (self.val(*v), self.sum.local) {
-                    (Some(Val::Zeros), None) if (tile || block.is_some()) && !self.looped => {
+                    (Some(Val::Zeros), None) if tile && !self.looped => {
                         self.sum.local = Some(*l);
                         self.sum.zeros = Some(id);
-                        self.sum.block = block;
                     }
                     (Some(Val::Added), Some(local)) if local == *l && !self.sum.summed => {
                         self.sum.summed = true;
                     }
                     _ => {
                         return Err(
-                            "a var other than a tile<f32> (or a block of one row of f32 tiles) \
-                             of zeros the loop adds to"
+                            "a var other than a tile<f32> of zeros the loop adds its tiles to"
                                 .into(),
                         )
                     }
@@ -1177,35 +1512,6 @@ impl<'m> Walk<'m> {
                     );
                 }
                 self.sum.leader = Some(id);
-                None
-            }
-            Op::Store(view, v) if self.sum.product && self.sum.block.is_some() => {
-                // a block var's: into a rectangle of its tiles (R48)
-                let total = matches!(self.val(*v), Some(Val::Total));
-                let Some(Val::Rect { tensor, rect }) = self.val(*view) else {
-                    return Err("a store of a block var other than into a rectangle".into());
-                };
-                let (rows, cols) = rect.sides();
-                if !total
-                    || !self.ended
-                    || self.sum.store.is_some()
-                    || rows != Some(1)
-                    || cols != self.sum.block
-                {
-                    return Err(
-                        "a store other than of the product's var into a rectangle of one row \
-                         of its tiles, after its loop, once"
-                            .into(),
-                    );
-                }
-                self.sum.store = Some(Moved {
-                    tensor,
-                    block: cols.unwrap_or(0),
-                    inst: id,
-                    range: Range::Rect(rect),
-                    pattern: None,
-                });
-                self.sum.closed = true;
                 None
             }
             Op::Store(view, v) if self.sum.product => {
@@ -1402,8 +1708,8 @@ impl<'m> Walk<'m> {
                     pattern: None,
                 };
                 if matches!(op, Op::Stream(..)) {
-                    if self.streams.len() == 2 {
-                        return Err("a third read stream".into());
+                    if self.streams.len() == 3 {
+                        return Err("a fourth read stream".into());
                     }
                     let defined = self
                         .body
@@ -1435,12 +1741,15 @@ impl<'m> Walk<'m> {
                 self.walk_streams(&[*stream], id)?;
                 Some(Val::Tile(0))
             }
-            Op::ForZip { a, b } => {
-                self.walk_streams(&[*a, *b], id)?;
-                // the second tile: the first is the instruction's first value
+            Op::ForZip { streams } => {
+                if streams.len() > 3 {
+                    return Err("a `zip` of more than three streams".into());
+                }
+                self.walk_streams(streams, id)?;
+                // the other tiles: the first is the instruction's first value
                 let defs = &self.body.insts[id.0 as usize].defs;
-                if let Some(v) = defs.get(1) {
-                    self.vals.insert(*v, Val::Tile(1));
+                for (k, v) in defs.iter().enumerate().skip(1) {
+                    self.vals.insert(*v, Val::Tile(k));
                 }
                 Some(Val::Tile(0))
             }

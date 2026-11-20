@@ -197,9 +197,10 @@ fn effects(module: &Module, calls: &[BTreeSet<u32>], bodies: &[(BodyRef, &Body)]
                     }
                 }
                 Op::ForStream { stream } => access(&mut out, of(&origin, stream), Access::Stream),
-                Op::ForZip { a, b } => {
-                    access(&mut out, of(&origin, a), Access::Stream);
-                    access(&mut out, of(&origin, b), Access::Stream);
+                Op::ForZip { streams } => {
+                    for s in streams {
+                        access(&mut out, of(&origin, s), Access::Stream);
+                    }
                 }
                 Op::Push(s, _) => access(&mut out, of(&origin, s), Access::Sink),
                 Op::ReadTile(x, _) => access(&mut out, of(&origin, x), Access::Read),

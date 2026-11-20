@@ -626,10 +626,8 @@ pub struct Stream {
 /// streams of as many blocks.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zip {
-    /// The first stream.
-    pub a: Stream,
-    /// The second stream.
-    pub b: Stream,
+    /// The streams, in order.
+    pub streams: Vec<Stream>,
 }
 
 /// A write stream over a view: each push writes the next block. Only the tiles the

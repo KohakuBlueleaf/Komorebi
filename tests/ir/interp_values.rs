@@ -693,19 +693,31 @@ fn zip_two_streams() {
     let a = ops::tiles(&heap, t, 0, 3).unwrap();
     let b = ops::tiles(&heap, t, 3, 3).unwrap();
     let (sa, sb) = (ops::stream(&a, 1).unwrap(), ops::stream(&b, 1).unwrap());
-    let mut z = ops::zip(sa, sb).unwrap();
+    let mut z = ops::zip(vec![sa, sb]).unwrap();
     let mut pairs = Vec::new();
-    while let Some((x, y)) = ops::next_pair(&heap, &mut z).unwrap() {
-        pairs.push((values(&x.tiles[0])[0], values(&y.tiles[0])[0]));
+    while let Some(blocks) = ops::next_blocks(&heap, &mut z).unwrap() {
+        pairs.push((
+            values(&blocks[0].tiles[0])[0],
+            values(&blocks[1].tiles[0])[0],
+        ));
     }
     assert_eq!(pairs, vec![(0.0, 3.0), (1.0, 4.0), (2.0, 5.0)]);
     // streams of different lengths: out_of_range, when the zip is made
     let c = ops::tiles(&heap, t, 0, 2).unwrap();
     let (sa, sc) = (ops::stream(&a, 1).unwrap(), ops::stream(&c, 1).unwrap());
-    assert_eq!(ops::zip(sa, sc), Err(OUT));
+    assert_eq!(ops::zip(vec![sa, sc]), Err(OUT));
     // the same number of blocks of different sizes walk together
     let (s2, s3) = (ops::stream(&c, 2).unwrap(), ops::stream(&a, 3).unwrap());
-    assert!(ops::zip(s2, s3).is_ok());
+    assert!(ops::zip(vec![s2, s3]).is_ok());
+    // three streams: a block of each
+    let (sa, sb) = (ops::stream(&a, 1).unwrap(), ops::stream(&b, 1).unwrap());
+    let sd = ops::stream(&a, 1).unwrap();
+    let mut z = ops::zip(vec![sa, sb, sd]).unwrap();
+    let first = ops::next_blocks(&heap, &mut z)
+        .unwrap()
+        .expect("a first block");
+    let firsts: Vec<f64> = first.iter().map(|x| values(&x.tiles[0])[0]).collect();
+    assert_eq!(firsts, vec![0.0, 3.0, 0.0]);
 }
 
 #[test]

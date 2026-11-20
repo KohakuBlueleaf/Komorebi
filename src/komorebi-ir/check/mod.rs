@@ -803,9 +803,10 @@ mod tests {
         let refused = |var: &str, y: &str| codes(&text.replace("VAR", var).replace("Y", y));
         let var = "var out: tile<f32>[4] = zeros";
         assert_eq!(refused(var, "f32"), Vec::<&str>::new());
+        // a block of 8 added a block of 4, and stored into a view of 4 tiles
         assert_eq!(
             refused("var out: tile<f32>[8] = zeros", "f32"),
-            vec!["K102"]
+            vec!["K102", "K102"]
         );
         assert_eq!(
             refused("var out: u32[4] = zeros", "f32").first(),
@@ -813,6 +814,61 @@ mod tests {
         );
         // the pack converts: a tensor of another format takes the block too
         assert_eq!(refused(var, "bf16"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_store_of_a_block_into_a_view_of_other_tiles_is_refused_where_both_are_known() {
+        // the view's tiles against the block's, numbers or a parameter bound at build;
+        // where one is not known at compile it is the run's
+        let text =
+            "module m\n\ntile [32, 32]\nformat f32, u32\n\nparam W: u32 = 4 @bind(build)\n\n\
+            program P {\n    handler h(y: tensor<f32>, c: u32) @on(group) {\n        \
+            var out: tile<f32>[W] = zeros\n        store y.tiles[0:1, VIEW] <- out\n    }\n}\n";
+        let refused = |view: &str| codes(&text.replace("VIEW", view));
+        assert_eq!(refused("0:4"), Vec::<&str>::new());
+        assert_eq!(refused("c:c + W"), Vec::<&str>::new());
+        assert_eq!(refused("0:3"), vec!["K102"]);
+        assert_eq!(refused("c:c + 5"), vec!["K102"]);
+        assert_eq!(refused("0:c"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_zip_of_three_streams_walks_as_many_blocks_and_a_tile_function_lifts_over_vars() {
+        // three streams zipped: the same number of blocks where the compile knows each
+        // stream's tiles and block (a rectangle `a:b` or `a:a + n`), K115 otherwise; a
+        // function on one tile given a handler's vars of a block of one row runs on
+        // each of their tiles (R48)
+        let text = "module m\n\ntile [32, 32]\nformat bf16, f32\n\n\
+            func p(x: tile<bf16>[2], w: tile<bf16>[2, 2]) -> tile<f32>[2] {\n    \
+            return matmul(x, w)\n}\n\n\
+            func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {\n    return silu(h) * g\n}\n\n\
+            program P {\n    handler up(x: tensor<bf16>, w: tensor<bf16>, v: tensor<bf16>, \
+            y: tensor<f32>, c: u32) @on(group) {\n        \
+            var h: tile<f32>[2] = zeros\n        var g: tile<f32>[2] = zeros\n        \
+            for xb, wb, vb in zip(stream(x.tiles[0:1, 0:4], block = 2), \
+            stream(w.tiles[0:4, c:c + 2], block = [2, 2]), stream(V, block = [2, 2])) {\n            \
+            h += p(xb, wb)\n            g += p(xb, vb)\n        }\n        \
+            store y.tiles[0:1, 0:2] <- STORED\n    }\n}\n";
+        let refused = |v: &str, stored: &str| {
+            codes(
+                &text
+                    .replace("V,", &format!("{v},"))
+                    .replace("STORED", stored),
+            )
+        };
+        assert_eq!(
+            refused("v.tiles[0:4, 0:2]", "gate(h, g)"),
+            Vec::<&str>::new()
+        );
+        assert_eq!(refused("v.tiles[0:6, 0:2]", "gate(h, g)"), vec!["K115"]);
+        // a side the compile does not know: checked at the run
+        assert_eq!(
+            refused("v.tiles[0:c, 0:2]", "gate(h, g)"),
+            Vec::<&str>::new()
+        );
+        // a block that is no var: a function on one tile is not given it
+        let stored = "gate(p(x.tiles[0:1, 0:2], w.tiles[0:2, 0:2]), g)";
+        assert!(refused("v.tiles[0:4, 0:2]", stored).contains(&"K203"));
     }
 
     const FUNC: &str = "module m\n\ntile [32, 32]\nformat f32, u32\n\n\

@@ -84,7 +84,10 @@ A handler may hold a block of one row in a `var` of `zeros`: `var acc: tile<f32>
 It is that invocation's own value, started at zeros. `acc += e` adds a block of its shape (`K102`
 otherwise), and `store view <- acc` writes its tiles in the view's order; a view of another count
 of tiles fails at the run. A frontend writes a field its handler fills, reads and frees in one
-invocation this way; what one invocation leaves for another is a state member.
+invocation this way; what one invocation leaves for another is a state member. A function on
+one tile given such vars, of one shape, runs on each of their tiles and gives a block of that
+shape (`store t.tiles[0:1, c:c + WIDTH] <- gate(h, g)`); given another block in a handler it is
+`K203`.
 
 Its body is typed on blocks: a parameter is the block it is declared, and a tile `tile<F>` is
 `[1, 1]`. An elementwise operation (the arithmetic, the elementary functions, `where`, a
@@ -121,7 +124,7 @@ is its own statement ([backends](backends.md)).
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
 | `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
-| `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
+| `zip(s1, s2, ...)` | two or more by position | streams of the same number of blocks (`K115` where the compile knows each stream's tiles and block) | a block of each, together | T4 |
 | `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
 | `store view <- value` | a view, a value | a view; a tile, or a block of one row (a store of scalars: `K010`) | writes it, visible at completion; a block's tiles in the view's order | T4 |

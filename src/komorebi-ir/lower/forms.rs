@@ -154,15 +154,20 @@ impl B<'_, '_> {
                 Ok((Op::ForRange { n }, vec![self.ty(n)]))
             }
             OpKind::ForZip => {
-                if p.parts.len() != 2 {
-                    return refuse(iter.span, "a `zip` of other than two streams");
+                if p.parts.len() < 2 {
+                    return refuse(iter.span, "a `zip` of fewer than two streams");
                 }
-                let s = self.part(&p, 0)?;
-                let t = self.part(&p, 1)?;
-                match (one_block(&self.ty(s)), one_block(&self.ty(t))) {
-                    (Some(x), Some(y)) => Ok((Op::ForZip { a: s, b: t }, vec![x, y])),
-                    _ => refuse(iter.span, "`zip` of what is not a stream"),
+                let mut streams = Vec::new();
+                let mut blocks = Vec::new();
+                for i in 0..p.parts.len() {
+                    let s = self.part(&p, i)?;
+                    let Some(block) = one_block(&self.ty(s)) else {
+                        return refuse(iter.span, "`zip` of what is not a stream");
+                    };
+                    streams.push(s);
+                    blocks.push(block);
                 }
+                Ok((Op::ForZip { streams }, blocks))
             }
             OpKind::ForArrive => {
                 let br = self.part(&p, 0)?;

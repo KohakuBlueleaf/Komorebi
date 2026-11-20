@@ -111,12 +111,10 @@ pub enum Op {
         /// The stream.
         stream: ValueId,
     },
-    /// Opens `for a, b in zip(s, t)`; defines `a` and `b`.
+    /// Opens `for a, b in zip(s, t)` (two streams or more); defines a block of each.
     ForZip {
-        /// The first stream.
-        a: ValueId,
-        /// The second stream.
-        b: ValueId,
+        /// The streams, in order.
+        streams: Vec<ValueId>,
     },
     /// Opens `for b, w in br.arrive()`; defines the block and its word.
     ForArrive {

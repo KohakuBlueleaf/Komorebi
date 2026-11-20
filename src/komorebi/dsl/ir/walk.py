@@ -120,6 +120,7 @@ def module(cls, **make):
     class_refusals(cls, methods)
     constants = constant_values(cls, make)
     fields = field_vars(cls, methods, constants)
+    reserved_refusals(cls, methods, constants, fields)
     text = Text()
     walks = [Handler(cls, method, tensors, constants, fields) for method in methods]
     functions = {}
@@ -248,6 +249,20 @@ def class_refusals(cls, methods):
                 raise Refused(
                     f"{name}.{method.name}: {what}= is not written in an IR module yet"
                 )
+
+
+def reserved_refusals(cls, methods, constants, fields):
+    """The names the text writes as the class gives them, refused by name when one is
+    an IR word: its program's, its handlers', its constants' and its fields'."""
+    named = [("the class", cls.__name__), ("the module", cls.__name__.lower())]
+    named += [("a handler", m.name) for m in methods]
+    named += [("a constant", c) for c in constants]
+    named += [("a field", f"self.{f}") for f in fields]
+    for what, name in named:
+        if name.removeprefix("self.") in RESERVED:
+            raise Refused(
+                f"{cls.__name__}: {what} {name} is named by an IR word: rename it"
+            )
 
 
 def field_vars(cls, methods, constants):
@@ -615,6 +630,10 @@ class Handler:
         written to t's tiles."""
         pages = call.func.value
         whole = call.args[0] if len(call.args) == 1 and not call.keywords else None
+        if isinstance(whole, ast.Call) and whole.args:
+            fields = [self.field_of(node, arg) for arg in whole.args]
+            if None not in fields:
+                return self.store_function_of_fields(node, pages, whole, fields)
         field_ = self.field_of(node, whole)
         if field_ is not None:
             if self.rectangle_of(pages) is None:
@@ -643,6 +662,35 @@ class Handler:
                 node, "a write to what is not t.pages(first, count)", "write t's pages"
             )
         return f"store {self.view(node, pages, [])} <- {self.name(whole.id)}"
+
+    def store_function_of_fields(self, node, pages, call, fields):
+        """`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`: f a function on one tile
+        of the fields' vars, each a block of one row (R48), run on each of their tiles
+        (as today's `write_function_of_sums`)."""
+        if self.rectangle_of(pages) is None:
+            self.refuse(
+                node,
+                "a write of a function of fields to what is not a rectangle",
+                "write it to t.tiles[r0:r1, c0:c1]",
+            )
+        func = call.func
+        if not isinstance(func, ast.Name) or call.keywords:
+            self.refuse(
+                node,
+                "a write of what is not a tile function's call on fields",
+                "write f(self.h, self.g), f a km.tile_function",
+            )
+        function = self.globals.get(func.id)
+        if not isinstance(function, front.TileFunction):
+            self.refuse(
+                node,
+                f"{func.id} is not a tile function",
+                "decorate it with km.tile_function",
+            )
+        tiles = [f"tile<{self.fields[f].format}>" for f in fields]
+        self.functions[function.name] = (function, tuple(tiles), tiles[0])
+        operands = ", ".join(self.name(f) for f in fields)
+        return f"store {self.view(node, pages, [])} <- {function.name}({operands})"
 
     def pages_of(self, view):
         """Whether `view` is `t.pages(a, b)` of a tensor parameter t."""
@@ -846,7 +894,7 @@ class Handler:
 
     def loop(self, node):
         """`for b in km.Stream(t[p], block=n):`, or `for x, y in zip(km.Stream(...),
-        km.Stream(...)):`, over its lines."""
+        km.Stream(...)):` (two streams or more), over its lines."""
         zipped = (
             isinstance(node.iter, ast.Call)
             and isinstance(node.iter.func, ast.Name)
@@ -856,11 +904,11 @@ class Handler:
         calls = node.iter.args if zipped else [node.iter]
         targets = node.target.elts if isinstance(node.target, ast.Tuple) else []
         names = targets if zipped else [node.target]
-        if node.orelse or len(names) != len(calls) or zipped and len(calls) != 2:
+        if node.orelse or len(names) != len(calls) or zipped and len(calls) < 2:
             self.refuse(
                 node,
                 "a loop with an else, or names other than one a stream",
-                "loop one name over a stream, or two over zip(a, b)",
+                "loop one name over a stream, or a name each over zip(a, b, ...)",
             )
         if not all(isinstance(n, ast.Name) for n in names):
             self.refuse(node, "a loop's name that is not a name", "loop over names")

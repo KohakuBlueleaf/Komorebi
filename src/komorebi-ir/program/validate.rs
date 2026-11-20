@@ -708,12 +708,19 @@ impl<'m> Validator<'m> {
                 Type::Stream(f, r, c) => exact(&[of_shape(*f, (*r, *c))]),
                 _ => Err("`for` over a value that is not a stream".into()),
             },
-            Op::ForZip { .. } => match (a[0], a[1]) {
-                (Type::Stream(f, rf, cf), Type::Stream(g, rg, cg)) => {
-                    exact(&[of_shape(*f, (*rf, *cf)), of_shape(*g, (*rg, *cg))])
+            Op::ForZip { .. } => {
+                let blocks: Option<Vec<Type>> = a
+                    .iter()
+                    .map(|t| match t {
+                        Type::Stream(f, r, c) => Some(of_shape(*f, (*r, *c))),
+                        _ => None,
+                    })
+                    .collect();
+                match blocks {
+                    Some(blocks) if blocks.len() >= 2 => exact(&blocks),
+                    _ => Err("`zip` of other than two streams or more".into()),
                 }
-                _ => Err("`zip` of values that are not streams".into()),
-            },
+            }
             Op::ForArrive { .. } => need(
                 matches!((a[0], d.first()), (Type::Broadcast(f), Some(Type::Tile(g) | Type::Block(g, ..))) if f == g)
                     && d.len() == 2
@@ -803,7 +810,12 @@ impl<'m> Validator<'m> {
                 Some(func) => {
                     let ok = func.params.len() == a.len()
                         && func.params.iter().zip(a).all(|(p, x)| fits(x, p));
-                    if !ok && ctx.on_blocks && !func.on_blocks() {
+                    // a handler's vars of a block of one row given to it (R48)
+                    let rows_of_one = a.iter().all(|x| {
+                        !matches!(x, Type::Block(..))
+                            || matches!(x, Type::Block(_, Count::Const(1), _))
+                    });
+                    if !ok && (ctx.on_blocks || rows_of_one) && !func.on_blocks() {
                         // a function on tiles on each tile of blocks of one shape (R45)
                         return self.on_each_tile(func, a, d);
                     }
@@ -1413,8 +1425,8 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         ForRange { n } => v.push(*n),
         ForStream { stream } => v.push(*stream),
         ForArrive { broadcast } => v.push(*broadcast),
-        ForZip { a, b }
-        | Binary(_, a, b)
+        ForZip { streams } => v.extend(streams.iter().copied()),
+        Binary(_, a, b)
         | Compare(_, a, b)
         | LogicAnd(a, b)
         | LogicOr(a, b)

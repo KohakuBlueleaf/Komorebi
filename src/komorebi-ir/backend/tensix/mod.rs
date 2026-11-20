@@ -34,7 +34,9 @@ use crate::types::{Entry, Format, IslandGraph, TileShape};
 use crate::types::{FuncId, HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
-use self::plan::{Field, Int, Moved, Part, Plan, Product, Range, Rect, Shape, Sum, WordKind};
+use self::plan::{
+    Fields, Int, Moved, Part, Plan, Product, Range, Rect, Shape, Stored, Sum, WordKind,
+};
 use self::unit::Unit;
 
 /// One indent of the generated text (`program_sources.INDENT`).
@@ -100,9 +102,9 @@ fn needs(plans: &[Plan]) -> Vec<&'static str> {
     for plan in plans {
         let wanted: &[&str] = match &plan.shape {
             Shape::Summed(_) => &["add", "fill", "port", "ask"],
-            // a field's sums start at the first block's product: no fill
-            Shape::Product(p) if p.field.is_some() => &["matmul", "ask"],
             Shape::Product(_) => &["fill", "matmul", "ask"],
+            // a field's sums start at the first block's product: no fill
+            Shape::Fields(_) => &["matmul", "ask"],
             _ => &[],
         };
         for need in wanted {
@@ -222,10 +224,6 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     if plans.is_empty() && refusals.is_empty() {
         refusals.push(refused("a program of no handler", Anchor::Program(p)));
     }
-    // a kernel's layout argument names a tensor by its place, one for all handlers
-    if let Err(r) = tensors_placed(&plans, Anchor::Program(p)) {
-        refusals.push(r);
-    }
     for plan in &plans {
         if let Err(r) = bounds(plan) {
             refusals.push(r);
@@ -233,39 +231,43 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     }
     // the fidelity is the compute kernel's: one for the program's products
     // (`products.stream_product`)
-    let mut fidelity: Option<&Product> = None;
+    let mut fidelity: Option<&str> = None;
     for plan in &plans {
-        let Shape::Product(product) = &plan.shape else {
-            continue;
+        let (func, own) = match &plan.shape {
+            Shape::Product(product) => (product.call.func, product.fidelity.as_str()),
+            Shape::Fields(fields) => (fields.sums[0].call.func, fields.fidelity.as_str()),
+            _ => continue,
         };
         match fidelity {
-            Some(first) if first.fidelity != product.fidelity => {
+            Some(first) if first != own => {
                 let name = |f: FuncId| module.funcs[f.0 as usize].name.clone();
                 refusals.push(Refusal {
                     code: NOT_BUILT,
                     what: format!(
-                        "{}'s fidelity is {} and another product's {}: the fidelity is the \
-                         compute kernel's",
-                        name(product.call.func),
-                        product.fidelity,
-                        first.fidelity
+                        "{}'s fidelity is {own} and another product's {first}: the fidelity \
+                         is the compute kernel's",
+                        name(func),
                     ),
-                    at: Some(Anchor::Func(product.call.func)),
+                    at: Some(Anchor::Func(func)),
                 });
             }
             Some(_) => {}
-            None => fidelity = Some(product),
+            None => fidelity = Some(own),
         }
     }
     let mut units: Vec<Unit> = Vec::new();
     for plan in &plans {
-        let Shape::Mapped {
-            call: Some(call), ..
-        } = &plan.shape
-        else {
-            continue;
+        let func = match &plan.shape {
+            Shape::Mapped {
+                call: Some(call), ..
+            } => call.func,
+            Shape::Fields(Fields {
+                stored: Stored::Gate(gate),
+                ..
+            }) => gate.func,
+            _ => continue,
         };
-        match unit::unit(module, call.func) {
+        match unit::unit(module, func) {
             Ok(u) => units.push(u),
             Err(r) => refusals.push(r),
         }
@@ -446,6 +448,8 @@ struct Other {
     what: String,
     /// A field of sums (a product's block var): its pages stated, unpacked as float32.
     field: bool,
+    /// Its format: an out buffer's is its tensor's, the others' float32.
+    format: Format,
 }
 
 /// The sums' buffers in the order they are made: each reduce's arrival, from index 8,
@@ -458,14 +462,17 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             .unwrap_or(first)
     };
     for plan in plans {
-        if let (Shape::Product(product), Some(field)) = (&plan.shape, &plan_field(plan)) {
-            // the rows the var's sums are packed into, written by mover B; then the
-            // field the sums are added into (`writes.write_sums`, `sums_field`)
+        if let (Shape::Fields(fields), Some(name)) = (&plan.shape, out_rows(plans, plan)) {
+            // the rows the vars' sums are packed into, written by mover B: one buffer a
+            // width and format (`layout.out_buffer`, `writes.write_sums`)
+            let c = fields.width;
+            if let Some(held) = out.iter_mut().find(|o| o.name == name) {
+                held.pages = held.pages.max(c);
+                continue;
+            }
             let body = BodyRef::Handler(plan.program, plan.handler);
-            let c = product.width;
-            let name = format!("kOutRows{c}");
             let what = lines
-                .comment(Anchor::Inst(body, product.store.inst), None)
+                .comment(Anchor::Inst(body, fields.store.inst), None)
                 .unwrap_or_else(|| format!("{name}: a store's"));
             let index = free(&out, FIRST_WRITE);
             out.push(Other {
@@ -475,15 +482,7 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
                 pages: c,
                 what,
                 field: false,
-            });
-            let index = free(&out, FIRST_OTHER);
-            out.push(Other {
-                name: format!("kField{}", camel(&field.ident)),
-                index,
-                slots: None,
-                pages: c,
-                what: format!("field {}: float32, 1 x {c} x 32 x 32", field.ident),
-                field: true,
+                format: store_format(plan, &fields.store),
             });
             continue;
         }
@@ -501,6 +500,7 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
                 pages: WRITE_ITEMS,
                 what,
                 field: false,
+                format: Format::F32,
             });
             continue;
         }
@@ -521,6 +521,7 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             pages: slots,
             what: what("kArrival0"),
             field: false,
+            format: Format::F32,
         });
         let index = free(&out, FIRST_WRITE);
         out.push(Other {
@@ -530,17 +531,67 @@ fn others(plans: &[Plan], lines: &Lines, slots: u64) -> Vec<Other> {
             pages: WRITE_ITEMS,
             what: what("kOut0"),
             field: false,
+            format: Format::F32,
         });
+    }
+    // the fields the vars' sums are added into, after the handlers' (`sums_field`)
+    for plan in plans {
+        let Shape::Fields(fields) = &plan.shape else {
+            continue;
+        };
+        let c = fields.width;
+        for sum in &fields.sums {
+            let index = free(&out, FIRST_OTHER);
+            out.push(Other {
+                name: format!("kField{}", camel(&sum.field.ident)),
+                index,
+                slots: None,
+                pages: c,
+                what: format!("field {}: float32, 1 x {c} x 32 x 32", sum.field.ident),
+                field: true,
+                format: Format::F32,
+            });
+        }
     }
     out
 }
 
-/// A product's block var (R48), when its plan has one.
-fn plan_field(plan: &Plan) -> Option<Field> {
-    match &plan.shape {
-        Shape::Product(product) => product.field.clone(),
-        _ => None,
+/// The format of the tensor `moved` writes, bf16 when it states none.
+fn store_format(plan: &Plan, moved: &Moved) -> Format {
+    plan.words
+        .get(moved.tensor)
+        .and_then(|w| w.format)
+        .unwrap_or(Format::Bf16)
+}
+
+/// The name of the rows buffer a plan of `Fields` packs into (`kOutRows<c>`): one a
+/// width and format, a second format of a width named with a `b` more
+/// (`layout.out_buffer`); none for another plan.
+fn out_rows(plans: &[Plan], plan: &Plan) -> Option<String> {
+    let mut named: Vec<(String, u64, Format)> = Vec::new();
+    for p in plans {
+        let Shape::Fields(fields) = &p.shape else {
+            continue;
+        };
+        let (c, format) = (fields.width, store_format(p, &fields.store));
+        let base = format!("kOutRows{c}");
+        let held = named
+            .iter()
+            .find(|(n, w, f)| n.starts_with(&base) && *w == c && *f == format)
+            .map(|(n, ..)| n.clone());
+        let name = held.unwrap_or_else(|| {
+            let mut name = base.clone();
+            while named.iter().any(|(n, ..)| *n == name) {
+                name.push('b');
+            }
+            named.push((name.clone(), c, format));
+            name
+        });
+        if std::ptr::eq(p, plan) {
+            return Some(name);
+        }
     }
+    None
 }
 
 /// Whether compute unpacks buffers of more than one format, and packs into buffers of
@@ -567,7 +618,7 @@ fn mixed_formats(plans: &[Plan], others: &[Other]) -> (bool, bool) {
             add(&mut unpacked, Format::F32);
         }
         if other.slots.is_none() {
-            add(&mut packed, Format::F32);
+            add(&mut packed, other.format);
         }
     }
     (unpacked.len() > 1, packed.len() > 1)
@@ -726,32 +777,6 @@ pub(crate) fn tensors(plans: &[Plan]) -> Vec<String> {
         }
     }
     out
-}
-
-/// Refuses handlers that take one tensor at two places, or two tensors at one place:
-/// the kernels' layout arguments (`CompileArg::TensorLayout`) name a tensor by its
-/// place, the same in each handler that takes it.
-fn tensors_placed(plans: &[Plan], at: Anchor) -> Result<(), Refusal> {
-    let mut placed: Vec<(usize, &str)> = Vec::new();
-    for plan in plans {
-        for (p, w) in plan.words.iter().enumerate() {
-            if w.kind != WordKind::Tensor {
-                continue;
-            }
-            let clash = placed.iter().any(|(q, n)| (*q == p) != (*n == w.name));
-            if clash {
-                return Err(Refusal {
-                    code: NOT_BUILT,
-                    what: "the Tensix backend does not emit handlers that take one tensor at \
-                           two places, or two at one place, yet"
-                        .to_string(),
-                    at: Some(at),
-                });
-            }
-            placed.push((p, &w.name));
-        }
-    }
-    Ok(())
 }
 
 /// A command word's line, read as its kind is.
@@ -989,17 +1014,19 @@ fn movement_text(
             (reads.rank, reads.group) = (true, true);
         }
         case_head(&mut out, plan, "movement", &reads);
-        if let Some(field) = plan_field(&plan.clone()) {
+        if let Shape::Fields(fields) = &plan.shape {
             // mover B counts the sums its write waits for (`sums_field`)
             out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
-            indented(
-                &mut out,
-                4,
-                &format!(
-                    "uint32_t km_sums_{} = 0;  // {}'s",
-                    field.ident, field.source
-                ),
-            );
+            for sum in &fields.sums {
+                indented(
+                    &mut out,
+                    4,
+                    &format!(
+                        "uint32_t km_sums_{} = 0;  // {}'s",
+                        sum.field.ident, sum.field.source
+                    ),
+                );
+            }
             out.push("#endif".to_string());
         }
         let stream = |kind: &str, var: &str, pair: &str, moved: &Moved| {
@@ -1101,28 +1128,27 @@ fn movement_text(
             indented(&mut out, 4, &text);
         }
         match &plan.shape {
-            Shape::Product(product) => {
-                let width = match &product.store.range {
-                    Range::Rect(rect) => {
-                        let t = &plan.words[product.store.tensor].name;
-                        let shape = shapes.iter().find(|(n, _)| n == t).and_then(|(_, s)| *s);
-                        let at = Anchor::Inst(body, product.store.inst);
-                        let Some(shape) = shape else {
-                            return Err(Refusal {
-                                code: NOT_BUILT,
-                                what: format!(
-                                    "the tensor `{t}` is given with no shape in tiles, and its \
-                                     rectangle is written in rows of its width"
-                                ),
-                                at: Some(at),
-                            });
-                        };
-                        fits(plan, rect, t, shape, at)?;
-                        Some(shape.1)
-                    }
-                    _ => None,
+            Shape::Product(product) => movement_product(&mut out, plan, product, lines),
+            Shape::Fields(fields) => {
+                let Range::Rect(rect) = &fields.store.range else {
+                    unreachable!("a store of block vars is into a rectangle (plan)");
                 };
-                movement_product(&mut out, plan, product, lines, width)
+                let t = &plan.words[fields.store.tensor].name;
+                let shape = shapes.iter().find(|(n, _)| n == t).and_then(|(_, s)| *s);
+                let at = Anchor::Inst(body, fields.store.inst);
+                let Some(shape) = shape else {
+                    return Err(Refusal {
+                        code: NOT_BUILT,
+                        what: format!(
+                            "the tensor `{t}` is given with no shape in tiles, and its \
+                             rectangle is written in rows of its width"
+                        ),
+                        at: Some(at),
+                    });
+                };
+                fits(plan, rect, t, shape, at)?;
+                let rows = out_rows(plans, plan).unwrap_or_default();
+                movement_fields(&mut out, plan, fields, rect, shape.1, &rows, lines);
             }
             Shape::Mapped { .. } => {
                 let moved: Vec<String> = (0..plan.reads.len())
@@ -1185,71 +1211,9 @@ fn fits(plan: &Plan, rect: &Rect, t: &str, shape: (u64, u64), at: Anchor) -> Res
 }
 
 /// A product's movement after its streams (`writes.write_moved`): mover B writes the
-/// tile compute packs of the var, each rank its own; of a block var (`writes.write_sums`),
-/// mover B counts the loop's sums and writes the rectangle a row at a time, in rows of
-/// its tensor's `width`.
-fn movement_product(
-    out: &mut Vec<String>,
-    plan: &Plan,
-    product: &Product,
-    lines: &Lines,
-    width: Option<u64>,
-) {
+/// tile compute packs of the var, each rank its own.
+fn movement_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
     let body = BodyRef::Handler(plan.program, plan.handler);
-    if let (Some(field), Some(width), Range::Rect(rect)) =
-        (&product.field, width, &product.store.range)
-    {
-        let sums = format!("km_sums_{}", field.ident);
-        let (_, _, p) = compute_count(plan);
-        indented(
-            out,
-            4,
-            &format!(
-                "if (!movement.move({})) {{\n    return false;\n}}",
-                (0..plan.reads.len())
-                    .map(|i| format!("km_read{i}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        );
-        out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
-        indented(
-            out,
-            4,
-            &format!("{sums} += ({p} + kRead0Block - 1) / kRead0Block;"),
-        );
-        out.push("#endif".to_string());
-        let store = &product.store;
-        comment(out, 4, lines.comment(Anchor::Inst(body, store.inst), None));
-        out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
-        let t = &plan.words[store.tensor].name;
-        let line = line_of(lines, plan, store.inst);
-        let (rows, cols) = rect.sides();
-        let (rows, c) = (rows.unwrap_or(1), cols.unwrap_or(0));
-        let first = format!(
-            "(({}) * {width} + ({}))",
-            int_text(plan, &rect.rows.0),
-            int_text(plan, &rect.cols.0)
-        );
-        let buffer = format!("kOutRows{}", product.width);
-        // a row's step is the rectangle's columns, as today's (`row_step`): one row only
-        indented(
-            out,
-            4,
-            &format!(
-                "if ({sums} > 0) {{\n    \
-                 for (uint32_t km_row{line} = 0; km_row{line} < {rows}; km_row{line}++) {{\n        \
-                 if (!movement.wait_front({buffer}, {c}) ||\n            \
-                 !km::write_pages(movement, command, {}({t}), {first} + km_row{line} * {c}, {c}, get_read_ptr({buffer}))) {{\n            \
-                 return false;\n        }}\n        \
-                 noc_async_writes_flushed();\n        \
-                 cb_pop_front({buffer}, {c});\n    }}\n}}\n{sums} = 0;",
-                camel(t)
-            ),
-        );
-        out.push("#endif".to_string());
-        return;
-    }
     let moved: Vec<String> = (0..plan.reads.len())
         .map(|i| format!("km_read{i}"))
         .collect();
@@ -1275,6 +1239,84 @@ fn movement_product(
              !km::write_pages(movement, command, {}({t}), {first}, {n}, get_read_ptr(kOut0))) {{\n    \
              return false;\n}}\nnoc_async_writes_flushed();\ncb_pop_front(kOut0, {n});",
             camel(t)
+        ),
+    );
+    out.push("#endif".to_string());
+}
+
+/// The movement of products into block vars after their streams (`writes.write_sums`,
+/// `write_function_of_sums`): mover B counts the loop's sums of each var, and when
+/// there were some writes the rectangle a row at a time from `rows`, the tensor `width`
+/// tiles wide.
+fn movement_fields(
+    out: &mut Vec<String>,
+    plan: &Plan,
+    fields: &Fields,
+    rect: &Rect,
+    width: u64,
+    rows: &str,
+    lines: &Lines,
+) {
+    let body = BodyRef::Handler(plan.program, plan.handler);
+    let (_, _, p) = compute_count(plan);
+    let moved: Vec<String> = (0..plan.reads.len())
+        .map(|i| format!("km_read{i}"))
+        .collect();
+    indented(
+        out,
+        4,
+        &format!(
+            "if (!movement.move({})) {{\n    return false;\n}}",
+            moved.join(", ")
+        ),
+    );
+    let sums: Vec<String> = fields
+        .sums
+        .iter()
+        .map(|s| format!("km_sums_{}", s.field.ident))
+        .collect();
+    out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+    for sum in &sums {
+        indented(
+            out,
+            4,
+            &format!("{sum} += ({p} + kRead0Block - 1) / kRead0Block;"),
+        );
+    }
+    out.push("#endif".to_string());
+    let store = &fields.store;
+    comment(out, 4, lines.comment(Anchor::Inst(body, store.inst), None));
+    out.push("#if !defined(COMPILE_FOR_BRISC)  // mover B".to_string());
+    let stored: Vec<&String> = match &fields.stored {
+        Stored::Var(k) => vec![&sums[*k]],
+        Stored::Gate(gate) => gate.vars.iter().map(|k| &sums[*k]).collect(),
+    };
+    let made: Vec<String> = stored.iter().map(|s| format!("{s} > 0")).collect();
+    let t = &plan.words[store.tensor].name;
+    let line = line_of(lines, plan, store.inst);
+    let (r, cols) = rect.sides();
+    let (r, c) = (r.unwrap_or(1), cols.unwrap_or(0));
+    let first = format!(
+        "(({}) * {width} + ({}))",
+        int_text(plan, &rect.rows.0),
+        int_text(plan, &rect.cols.0)
+    );
+    let resets: Vec<String> = stored.iter().map(|s| format!("{s} = 0;")).collect();
+    // a row's step is the rectangle's columns, as today's (`row_step`): one row only
+    indented(
+        out,
+        4,
+        &format!(
+            "if ({}) {{\n    \
+             for (uint32_t km_row{line} = 0; km_row{line} < {r}; km_row{line}++) {{\n        \
+             if (!movement.wait_front({rows}, {c}) ||\n            \
+             !km::write_pages(movement, command, {}({t}), {first} + km_row{line} * {c}, {c}, get_read_ptr({rows}))) {{\n            \
+             return false;\n        }}\n        \
+             noc_async_writes_flushed();\n        \
+             cb_pop_front({rows}, {c});\n    }}\n}}\n{}",
+            made.join(" && "),
+            camel(t),
+            resets.join("\n")
         ),
     );
     out.push("#endif".to_string());
@@ -1365,12 +1407,9 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
     out.push("void kernel_main() {".to_string());
     indented(&mut out, 1, "km::Compute compute;");
     // the first read and the first written buffer (a sum's out buffer)
-    let rows;
+    let rows = plans.first().and_then(|p| out_rows(plans, p));
     let written = match plans.first().map(|p| &p.shape) {
-        Some(Shape::Product(p)) if p.field.is_some() => {
-            rows = format!("kOutRows{}", p.width);
-            rows.as_str()
-        }
+        Some(Shape::Fields(_)) => rows.as_deref().unwrap_or("kOut0"),
         Some(Shape::Summed(_) | Shape::Product(_)) => "kOut0",
         _ => "kWrite0.mover_a",
     };
@@ -1403,6 +1442,14 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
             }
             Shape::Summed(sum) => compute_sum(&mut out, plan, sum, lines),
             Shape::Product(product) => compute_product(&mut out, plan, product, lines),
+            Shape::Fields(fields) => {
+                let unit = match &fields.stored {
+                    Stored::Gate(_) => called.next(),
+                    Stored::Var(_) => None,
+                };
+                let rows = out_rows(plans, plan).unwrap_or_default();
+                compute_fields(&mut out, plan, fields, unit, &rows, lines);
+            }
             Shape::Dropped => compute_dropped(&mut out, plan, lines),
         }
         indented(&mut out, 4, "break;");
@@ -1440,9 +1487,6 @@ fn compute_count(plan: &Plan) -> (Uses, Option<&Part>, String) {
 /// block by row k of the second's added into it (`matmul_block`); each block freed;
 /// the var packed into the out buffer.
 fn compute_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines: &Lines) {
-    if let Some(field) = &product.field {
-        return compute_field_product(out, plan, product, field, lines);
-    }
     let body = BodyRef::Handler(plan.program, plan.handler);
     let (reads, _, p) = compute_count(plan);
     case_head(out, plan, "compute", &reads);
@@ -1533,45 +1577,48 @@ fn compute_product(out: &mut Vec<String>, plan: &Plan, product: &Product, lines:
     );
 }
 
-/// A product's compute case into a block var (`stream_field_product`,
-/// `writes.write_sums`): each block's product by sub-columns of Dst's half, packed into
-/// the field with the packer's L1 accumulation (the first block overwrites); after the
-/// loop, the field copied to Dst and packed into the rows the movers write.
-fn compute_field_product(
+/// The compute case of products into block vars (`stream_field_product`,
+/// `writes.write_sums`, `write_function_of_sums`): each block's product of each var by
+/// sub-columns of Dst's half, packed into its field with the packer's L1 accumulation
+/// (the first block overwrites); the matrix unit set for each product other than the
+/// first and set back. After the loop, the stored var's field copied to Dst and packed
+/// into `rows`, or each tile of the vars' fields copied to Dst, the function's unit run
+/// on it and its tile packed.
+fn compute_fields(
     out: &mut Vec<String>,
     plan: &Plan,
-    product: &Product,
-    field: &Field,
+    fields: &Fields,
+    unit: Option<&Unit>,
+    rows: &str,
     lines: &Lines,
 ) {
     let body = BodyRef::Handler(plan.program, plan.handler);
     let (reads, _, p) = compute_count(plan);
-    let (c, src) = (product.width, &field.source);
-    let inner = plan.reads[0].block; // the product's k, a number (`stream_field_product`)
-    let buffer = format!("kField{}", camel(&field.ident));
-    let rows = format!("kOutRows{c}");
-    let (sums, room) = (
-        format!("km_sums_{}", field.ident),
-        format!("km_room_sums_{}", field.ident),
-    );
+    let c = fields.width;
+    // the product's k, a number (`stream_field_product`)
+    let inner = plan.reads[0].block;
     // the widest sub-column that divides the field and fits Dst's half
-    let step = (1..=DST_HALF).rev().find(|w| c % w == 0).unwrap_or(1);
-    let (add, store) = (
-        line_of(lines, plan, product.call.inst),
-        line_of(lines, plan, product.store.inst),
-    );
+    let step = (1..=DST_HALF)
+        .rev()
+        .find(|w| c.is_multiple_of(*w))
+        .unwrap_or(1);
+    let buffer = |k: usize| format!("kField{}", camel(&fields.sums[k].field.ident));
+    let sums = |k: usize| format!("km_sums_{}", fields.sums[k].field.ident);
+    let room = |k: usize| format!("km_room_sums_{}", fields.sums[k].field.ident);
     case_head(out, plan, "compute", &reads);
-    indented(
-        out,
-        4,
-        &format!(
-            "bool km_ok = true;
-\
-             uint32_t {sums} = 0;  // {src}'s
-\
-             bool {room} = true;  // pack holds {src}'s pages"
-        ),
-    );
+    indented(out, 4, "bool km_ok = true;");
+    for (k, sum) in fields.sums.iter().enumerate() {
+        let src = &sum.field.source;
+        indented(
+            out,
+            4,
+            &format!(
+                "uint32_t {} = 0;  // {src}'s\nbool {} = true;  // pack holds {src}'s pages",
+                sums(k),
+                room(k)
+            ),
+        );
+    }
     comment(
         out,
         4,
@@ -1580,19 +1627,22 @@ fn compute_field_product(
             head_last(lines, plan),
         ),
     );
+    let init = |w: usize| {
+        format!(
+            "KM_UNPACK_FORMATS(kRead{w}.mover_a, kRead0.mover_a);\n\
+             matmul_block_init(kRead0.mover_a, kRead{w}.mover_a, 0, {step}, 1, {inner});"
+        )
+    };
+    let first = init(fields.sums[0].operands.1);
     indented(
         out,
         4,
         &format!(
-            "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;
-\
-             KM_UNPACK_FORMATS(kRead1.mover_a, kRead0.mover_a);
-\
-             matmul_block_init(kRead0.mover_a, kRead1.mover_a, 0, {step}, 1, {inner});
-\
-             KM_PACK_FORMAT({buffer});
-\
-             for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{"
+            "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;\n\
+             {first}\n\
+             KM_PACK_FORMAT({});\n\
+             for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{",
+            buffer(0)
         ),
     );
     for i in 0..plan.reads.len() {
@@ -1600,13 +1650,9 @@ fn compute_field_product(
             out,
             5,
             &format!(
-                "const uint32_t km_half{i} = km::block_half(kRead{i}, kRead{i}Pattern, km_block0);
-\
-                 km_ok = compute.wait_front(km_half{i}, kRead{i}Block);
-\
-                 if (!km_ok) {{
-    break;
-}}"
+                "const uint32_t km_half{i} = km::block_half(kRead{i}, kRead{i}Pattern, km_block0);\n\
+                 km_ok = compute.wait_front(km_half{i}, kRead{i}Block);\n\
+                 if (!km_ok) {{\n    break;\n}}"
             ),
         );
     }
@@ -1617,142 +1663,188 @@ fn compute_field_product(
             "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;"
         ),
     );
-    comment(
-        out,
-        5,
-        lines.comment(Anchor::Inst(body, product.call.inst), None),
-    );
-    let (column, k) = (format!("km_sub_column{add}"), format!("km_k{add}"));
-    let packs: Vec<String> = (0..step)
-        .map(|j| format!("            pack_tile<true>({j}, {buffer}, {column} + {j});"))
-        .collect();
-    indented(
-        out,
-        5,
-        &format!(
-            "if (km_ok && {sums} == 0) {{  // a new sum: the field's pages held
-    \
-             {room} = {room} && compute.reserve_back({buffer}, {buffer}Pages);
-\
-             }}
-\
-             if (km_ok) {{
-    \
-             if ({room}) {{
-        \
-             pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);
-    \
-             }}
-    \
-             for (uint32_t {column} = 0; {column} < {c}; {column} += {step}) {{
-        \
-             tile_regs_acquire();
-        \
-             for (uint32_t {k} = 0; {k} < km_valid0; {k}++) {{
-            \
-             matmul_block(km_half0, km_half1, {k}, {k} * {c} + {column}, 0, 0, {step}, 1, {inner});
-        \
-             }}
-        \
-             tile_regs_commit();
-        \
-             tile_regs_wait();
-        \
-             if ({room}) {{
-{}
-        }}
-        \
-             tile_regs_release();
-    \
-             }}
-    \
-             if ({room}) {{
-        \
-             pack_reconfig_l1_acc(0);
-    \
-             }}
-    \
-             {sums}++;
-\
-             }}",
-            packs.join("\n")
-        ),
-    );
+    let indent = |text: String| {
+        text.lines()
+            .map(|l| format!("    {l}\n"))
+            .collect::<String>()
+    };
+    for (k, sum) in fields.sums.iter().enumerate() {
+        comment(
+            out,
+            5,
+            lines.comment(Anchor::Inst(body, sum.call.inst), None),
+        );
+        let add = line_of(lines, plan, sum.call.inst);
+        let (column, kk) = (format!("km_sub_column{add}"), format!("km_k{add}"));
+        let w = sum.operands.1;
+        let own = init(w);
+        // a product other than the first sets the matrix unit for its own and back
+        let (own, restore) = if own == first {
+            (String::new(), String::new())
+        } else {
+            (indent(own), indent(first.clone()))
+        };
+        let packs: Vec<String> = (0..step)
+            .map(|j| {
+                format!(
+                    "            pack_tile<true>({j}, {}, {column} + {j});",
+                    buffer(k)
+                )
+            })
+            .collect();
+        let (b, n, r) = (buffer(k), sums(k), room(k));
+        indented(
+            out,
+            5,
+            &format!(
+                "if (km_ok && {n} == 0) {{  // a new sum: the field's pages held\n    \
+                 {r} = {r} && compute.reserve_back({b}, {b}Pages);\n\
+                 }}\n\
+                 if (km_ok) {{\n\
+                 {own}    \
+                 if ({r}) {{\n        \
+                 pack_reconfig_l1_acc({n} > 0 ? 1 : 0);\n    \
+                 }}\n    \
+                 for (uint32_t {column} = 0; {column} < {c}; {column} += {step}) {{\n        \
+                 tile_regs_acquire();\n        \
+                 for (uint32_t {kk} = 0; {kk} < km_valid0; {kk}++) {{\n            \
+                 matmul_block(km_half0, km_half{w}, {kk}, {kk} * {c} + {column}, 0, 0, {step}, 1, {inner});\n        \
+                 }}\n        \
+                 tile_regs_commit();\n        \
+                 tile_regs_wait();\n        \
+                 if ({r}) {{\n{}\n        }}\n        \
+                 tile_regs_release();\n    \
+                 }}\n    \
+                 if ({r}) {{\n        \
+                 pack_reconfig_l1_acc(0);\n    \
+                 }}\n\
+                 {restore}    \
+                 {n}++;\n\
+                 }}",
+                packs.join("\n")
+            ),
+        );
+    }
     for i in 0..plan.reads.len() {
         indented(out, 5, &format!("cb_pop_front(km_half{i}, kRead{i}Block);"));
     }
     indented(out, 4, "}");
-    comment(
-        out,
-        4,
-        lines.comment(Anchor::Inst(body, product.store.inst), None),
-    );
-    let (tile, out_room) = (format!("km_tile{store}"), format!("km_room{store}"));
-    let copies: Vec<String> = (0..step)
-        .map(|j| format!("        copy_tile({buffer}, {tile} + {j}, {j});"))
-        .collect();
-    let row_packs: Vec<String> = (0..step)
-        .map(|j| format!("            pack_tile({j}, {rows});"))
-        .collect();
-    indented(
-        out,
-        4,
-        &format!(
-            "// {src}'s sums, packed again in float32
-\
-             if (km_ok && {sums} > 0) {{
-    \
-             if ({room}) {{  // pack's: its pages held
-        \
-             cb_push_back({buffer}, {buffer}Pages);
-    \
-             }}
-    \
-             km_ok = compute.wait_front({buffer}, {buffer}Pages);
-\
-             }}
-\
-             if (km_ok && {sums} > 0) {{
-    \
-             KM_UNPACK_FORMAT_A({buffer});
-    \
-             copy_init({buffer});
-    \
-             bool {out_room} = true;  // pack's alone: it guards the packs only
-    \
-             for (uint32_t {tile} = 0; km_ok && {tile} < {c}; {tile} += {step}) {{
-        \
-             tile_regs_acquire();
-{}
-        \
-             tile_regs_commit();
-        \
-             tile_regs_wait();
-        \
-             {out_room} = {out_room} && compute.reserve_back({rows}, {step});
-        \
-             if ({out_room}) {{
-            \
-             KM_PACK_FORMAT({rows});
-{}
-            \
-             cb_push_back({rows}, {step});
-        \
-             }}
-        \
-             tile_regs_release();
-    \
-             }}
-    \
-             cb_pop_front({buffer}, {buffer}Pages);
-\
-             }}
-\
-             {sums} = 0;",
-            copies.join("\n"),
-            row_packs.join("\n")
-        ),
-    );
+    let store = fields.store.inst;
+    comment(out, 4, lines.comment(Anchor::Inst(body, store), None));
+    let line = line_of(lines, plan, store);
+    let (tile, out_room) = (format!("km_tile{line}"), format!("km_room{line}"));
+    let held = |k: usize| {
+        let (b, n, r) = (buffer(k), sums(k), room(k));
+        format!(
+            "if (km_ok && {n} > 0) {{\n    \
+             if ({r}) {{  // pack's: its pages held\n        \
+             cb_push_back({b}, {b}Pages);\n    \
+             }}\n    \
+             km_ok = compute.wait_front({b}, {b}Pages);\n\
+             }}"
+        )
+    };
+    match (&fields.stored, unit) {
+        (Stored::Gate(gate), Some(unit)) => {
+            let text = lines.comment(Anchor::Inst(body, store), None);
+            let what = text
+                .as_deref()
+                .and_then(|t| t.split_once(": ").map(|(_, rest)| rest.to_string()))
+                .unwrap_or_default();
+            let mut text = vec![format!("// {what}: {} of the fields' sums", gate.name)];
+            text.extend(gate.vars.iter().map(|k| held(*k)));
+            let made: Vec<String> = gate
+                .vars
+                .iter()
+                .map(|k| format!("{} > 0", sums(*k)))
+                .collect();
+            let firsts = buffer(gate.vars[0]);
+            let copies: Vec<String> = gate
+                .vars
+                .iter()
+                .enumerate()
+                .map(|(dst, k)| format!("        copy_tile({}, {tile}, {dst});", buffer(*k)))
+                .collect();
+            let pops: Vec<String> = gate
+                .vars
+                .iter()
+                .map(|k| format!("    cb_pop_front({b}, {b}Pages);", b = buffer(*k)))
+                .collect();
+            text.push(format!(
+                "if (km_ok && {}) {{\n    \
+                 KM_UNPACK_FORMAT_A({firsts});\n    \
+                 copy_init({firsts});\n    \
+                 MATH((km_tile::{u}_init()));  // {name}'s setup\n    \
+                 bool {out_room} = true;  // pack's alone: it guards the packs only\n    \
+                 for (uint32_t {tile} = 0; km_ok && {tile} < {c}; {tile}++) {{\n        \
+                 tile_regs_acquire();\n{}\n        \
+                 MATH((km_tile::{u}(0)));\n        \
+                 tile_regs_commit();\n        \
+                 tile_regs_wait();\n        \
+                 {out_room} = {out_room} && compute.reserve_back({rows}, 1);\n        \
+                 if ({out_room}) {{\n            \
+                 KM_PACK_FORMAT({rows});\n            \
+                 pack_tile(0, {rows});\n            \
+                 cb_push_back({rows}, 1);\n        \
+                 }}\n        \
+                 tile_regs_release();\n    \
+                 }}\n{}\n\
+                 }}",
+                made.join(" && "),
+                copies.join("\n"),
+                pops.join("\n"),
+                u = unit.name,
+                name = gate.name,
+            ));
+            text.extend(gate.vars.iter().map(|k| format!("{} = 0;", sums(*k))));
+            indented(out, 4, &text.join("\n"));
+        }
+        (Stored::Var(k), _) => {
+            let k = *k;
+            let (b, n) = (buffer(k), sums(k));
+            let src = &fields.sums[k].field.source;
+            let copies: Vec<String> = (0..step)
+                .map(|j| format!("        copy_tile({b}, {tile} + {j}, {j});"))
+                .collect();
+            let row_packs: Vec<String> = (0..step)
+                .map(|j| format!("            pack_tile({j}, {rows});"))
+                .collect();
+            let format = match store_format(plan, &fields.store) {
+                Format::F32 => "float32",
+                Format::Bf16 => "bfloat16",
+                _ => "its format",
+            };
+            indented(
+                out,
+                4,
+                &format!(
+                    "// {src}'s sums, packed again in {format}\n{}\n\
+                     if (km_ok && {n} > 0) {{\n    \
+                     KM_UNPACK_FORMAT_A({b});\n    \
+                     copy_init({b});\n    \
+                     bool {out_room} = true;  // pack's alone: it guards the packs only\n    \
+                     for (uint32_t {tile} = 0; km_ok && {tile} < {c}; {tile} += {step}) {{\n        \
+                     tile_regs_acquire();\n{}\n        \
+                     tile_regs_commit();\n        \
+                     tile_regs_wait();\n        \
+                     {out_room} = {out_room} && compute.reserve_back({rows}, {step});\n        \
+                     if ({out_room}) {{\n            \
+                     KM_PACK_FORMAT({rows});\n{}\n            \
+                     cb_push_back({rows}, {step});\n        \
+                     }}\n        \
+                     tile_regs_release();\n    \
+                     }}\n    \
+                     cb_pop_front({b}, {b}Pages);\n\
+                     }}\n\
+                     {n} = 0;",
+                    held(k),
+                    copies.join("\n"),
+                    row_packs.join("\n")
+                ),
+            );
+        }
+        (Stored::Gate(_), None) => unreachable!("a unit for each function of block vars (planned)"),
+    }
 }
 
 /// A sum's compute case (`dst_tiles`, `reduce.tile_reduce`): the total in Dst tile 0
@@ -2522,8 +2614,8 @@ fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
         let unpacked = other.slots.is_some() || other.field;
         out.push(Buffer {
             index: other.index,
-            format: Format::F32,
-            page_bytes: chip::tile_bytes(Format::F32, chip::TILE),
+            format: other.format,
+            page_bytes: chip::tile_bytes(other.format, chip::TILE),
             pages: other.pages,
             pair: None,
             unpack: unpacked.then_some(Unpack::ToDestFp32),
@@ -2542,19 +2634,13 @@ fn kernels(plans: &[Plan]) -> Vec<Kernel> {
         .iter()
         .find_map(|p| match &p.shape {
             Shape::Product(product) => Some(product.fidelity.clone()),
+            Shape::Fields(fields) => Some(fields.fidelity.clone()),
             _ => None,
         })
         .unwrap_or_else(|| tile::lower::FIDELITY.to_string());
-    let mut params = Vec::new();
-    for plan in plans {
-        for (p, w) in plan.words.iter().enumerate() {
-            if w.kind == WordKind::Tensor && !params.contains(&p) {
-                params.push(p);
-            }
-        }
-    }
-    let layouts: Vec<CompileArg> = params
-        .into_iter()
+    // each tensor of the program, in the order the handlers first take them (today's
+    // `km::Tensor<...>` chain, one for all handlers)
+    let layouts: Vec<CompileArg> = (0..tensors(plans).len())
         .map(|param| CompileArg::TensorLayout { param })
         .collect();
     let mover = |processor| Kernel {

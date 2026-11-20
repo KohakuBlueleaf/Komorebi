@@ -1474,20 +1474,32 @@ fn blocks_of(s: &Stream) -> Result<usize, Fault> {
 
 /// `zip(s1, s2)`: two streams walked together. Streams of different numbers of blocks:
 /// `out_of_range`, found here.
-pub fn zip(a: Stream, b: Stream) -> Result<Zip, Fault> {
-    if blocks_of(&a)? != blocks_of(&b)? {
-        return out_of_range();
+pub fn zip(streams: Vec<Stream>) -> Result<Zip, Fault> {
+    let mut counts = streams.iter().map(blocks_of);
+    if let Some(first) = counts.next().transpose()? {
+        for count in counts {
+            if count? != first {
+                return out_of_range();
+            }
+        }
     }
-    Ok(Zip { a, b })
+    Ok(Zip { streams })
 }
 
-/// The zip's next pair of blocks, or `None` at its end.
-pub fn next_pair(heap: &Heap, z: &mut Zip) -> Result<Option<(Block, Block)>, Fault> {
-    match (next_block(heap, &mut z.a)?, next_block(heap, &mut z.b)?) {
-        (Some(x), Some(y)) => Ok(Some((x, y))),
-        (None, None) => Ok(None),
-        _ => out_of_range(),
+/// The zip's next block of each stream, in order, or `None` at its end.
+pub fn next_blocks(heap: &Heap, z: &mut Zip) -> Result<Option<Vec<Block>>, Fault> {
+    let mut blocks = Vec::new();
+    for s in &mut z.streams {
+        blocks.push(next_block(heap, s)?);
     }
+    if blocks.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    blocks
+        .into_iter()
+        .map(|b| b.ok_or(()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_or_else(|()| out_of_range(), |b| Ok(Some(b)))
 }
 
 /// `sink(view, block = n)`: a write stream over the view.

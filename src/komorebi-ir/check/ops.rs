@@ -536,7 +536,22 @@ impl Checker<'_> {
                 for arg in args.values() {
                     let ty = self.expr(cx, &arg.value);
                     match &ty {
-                        Ty::Stream(_, Count::Known(n)) => counts.push(*n),
+                        // its blocks, where the compile knows its tiles and its block
+                        Ty::Stream(elem, Count::Known(n)) => {
+                            let blocks = match &**elem {
+                                Ty::Block(_, s) => match (s.rows, s.cols) {
+                                    (Count::Known(1), Count::Known(c)) if c > 0 => {
+                                        Some(n.div_ceil(c))
+                                    }
+                                    (Count::Known(r), Count::Known(c)) if r * c > 0 => {
+                                        Some(n / (r * c))
+                                    }
+                                    _ => None,
+                                },
+                                _ => Some(*n),
+                            };
+                            counts.extend(blocks);
+                        }
                         Ty::Stream(_, _) | Ty::Unknown => {}
                         _ => self.error(
                             codes::WRONG_TYPE,
@@ -551,7 +566,7 @@ impl Checker<'_> {
                     self.error(
                         codes::OUT_OF_RANGE,
                         format!(
-                            "`zip` walks streams of different lengths: {} tiles",
+                            "`zip` walks streams of different lengths: {} blocks",
                             counts.join(", ")
                         ),
                         span,

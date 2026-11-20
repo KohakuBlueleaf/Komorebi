@@ -86,7 +86,9 @@ mod tests {
             Op::Else,
             Op::ForRange { n: x(8) },
             Op::ForStream { stream: x(9) },
-            Op::ForZip { a: x(1), b: x(2) },
+            Op::ForZip {
+                streams: vec![x(1), x(2), x(3)],
+            },
             Op::ForArrive { broadcast: x(3) },
             Op::While,
             Op::WhileTest { cond: x(4) },

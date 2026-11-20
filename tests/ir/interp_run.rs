@@ -2221,3 +2221,63 @@ program SwiGLU {
         );
     }
 }
+
+#[test]
+fn program_7s_up_zips_three_streams_and_stores_a_function_of_two_block_vars() {
+    // SwiGLU.up (reading R48): x's row by W1's and W3's columns, three streams zipped,
+    // added into two vars of a block of one row; `gate(h, g)`, the function on one
+    // tile run on each tile of the two, stored to the rectangle
+    let m = module(
+        "module swiglu
+
+tile [32, 32]
+format bf16, f32
+
+param D: u32 = 2 @bind(build)
+param WIDTH: u32 = 2 @bind(build)
+param CHUNK: u32 = 2 @bind(build)
+
+func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {
+    return h * g + h
+}
+
+func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
+    return matmul(x, w)
+}
+
+program SwiGLU {
+    handler up(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, hidden: tensor<f32>) @on(group) {
+        var h: tile<f32>[WIDTH] = zeros
+        var g: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for xb, w1b, w3b in zip(stream(x.tiles[0:1, 0:D], block = CHUNK), stream(w1.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]), stream(w3.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH])) {
+            h += project(xb, w1b)
+            g += project(xb, w3b)
+        }
+        store hidden.tiles[0:1, first:first + WIDTH] <- gate(h, g)
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    // x's tiles hold 1/32 and 2/32; W1's tile (k, j) holds j + 1, W3's 2
+    let x = tensor(&mut run, Format::Bf16, (1, 2), |i, _| (i + 1) as f64 / 32.0);
+    let w1 = tensor(&mut run, Format::Bf16, (2, 4), |i, _| (i % 4 + 1) as f64);
+    let w3 = tensor(&mut run, Format::Bf16, (2, 4), |_, _| 2.0);
+    let hidden = tensor(&mut run, Format::F32, (1, 4), |_, _| -1.0);
+    let args = [x, w1, w3, hidden].map(Arg::Tensor);
+    assert_eq!(
+        run.invoke("SwiGLU.up", &args, (0, 2), &[]),
+        End::Completed(None)
+    );
+    // By hand: h's tile j holds 32 (1/32 + 2/32)(j + 1) = 3 (j + 1), g's 32 (3/32) 2
+    // = 6; the gate gives h g + h = 21 (j + 1): 21, 42, 63, 84
+    for (j, want) in [21.0, 42.0, 63.0, 84.0].into_iter().enumerate() {
+        let got = tile_f64(&run, hidden, j);
+        assert!(
+            got.iter().all(|v| *v == want),
+            "tile {j}: {} for {want}",
+            got[0]
+        );
+    }
+}

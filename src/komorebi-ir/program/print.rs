@@ -236,7 +236,10 @@ pub fn op_text(op: &Op) -> String {
         Else => "Else".into(),
         ForRange { n } => format!("ForRange {{ n {} }}", v(n)),
         ForStream { stream } => format!("ForStream {{ stream {} }}", v(stream)),
-        ForZip { a, b } => format!("ForZip {{ a {}, b {} }}", v(a), v(b)),
+        ForZip { streams } => format!(
+            "ForZip {{ {} }}",
+            streams.iter().map(v).collect::<Vec<_>>().join(", ")
+        ),
         ForArrive { broadcast } => format!("ForArrive {{ broadcast {} }}", v(broadcast)),
         While => "While".into(),
         WhileTest { cond } => format!("WhileTest {{ cond {} }}", v(cond)),

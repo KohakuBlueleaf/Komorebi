@@ -620,17 +620,19 @@ fn program_6_through_the_frontend_is_todays_text_byte_for_byte() {
 }
 
 #[test]
-fn program_7s_down_through_the_frontend_is_todays_text_byte_for_byte() {
+fn program_7s_handlers_through_the_frontend_are_todays_text_byte_for_byte() {
     if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
         eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
         return;
     }
-    // SwiGLU.down: the field self.out the handler's var of a block of one row from
-    // zeros (reading R48), each [1, CHUNK] block of the hidden's row by the [CHUNK,
-    // WIDTH] block of W2's columns added into it, stored to a rectangle of y; at the
-    // class's CHUNK, 2, and at 3 (both divide H, 96). The stand-ins: hidden [1, 96]
-    // and W2 [96, 32] tiles of bfloat16 pages of 2048 B, y [1, 32] of float32 pages of
-    // 4096 B.
+    // SwiGLU.up and SwiGLU.down: the fields self.h, self.g and self.out each the
+    // handler's var of a block of one row from zeros (reading R48). up zips three
+    // streams, a [1, CHUNK] block of x's row by the [CHUNK, WIDTH] blocks of W1's and
+    // W3's columns added into h and g, and stores gate(h, g) to the hidden's rectangle;
+    // down adds the hidden's row by W2's columns into out, stored to y's. At the
+    // class's CHUNK, 2, and at 4 (both divide D, 32, and H, 96). The stand-ins: x [1,
+    // 32], W1 and W3 [32, 96], the hidden [1, 96] and W2 [96, 32] tiles of bfloat16
+    // pages of 2048 B, y [1, 32] of float32 pages of 4096 B.
     let tensor = |pages: u64, bytes: u64, shape: (u64, u64)| LoadTensor {
         pages,
         layout: vec![2, bytes],
@@ -638,11 +640,14 @@ fn program_7s_down_through_the_frontend_is_todays_text_byte_for_byte() {
         shape: Some(shape),
     };
     let stand_ins = [
+        tensor(32, 2048, (1, 32)),
+        tensor(3072, 2048, (32, 96)),
+        tensor(3072, 2048, (32, 96)),
         tensor(96, 2048, (1, 96)),
         tensor(3072, 2048, (96, 32)),
         tensor(32, 4096, (1, 32)),
     ];
-    for (name, chunk) in [("swiglu", 2), ("swiglu3", 3)] {
+    for (name, chunk) in [("swiglu", 2), ("swiglu4", 4)] {
         let made = made_given(name, "swiglu_class", "SwiGLU", None, &[("CHUNK", chunk)]);
         let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
         let target = Target {

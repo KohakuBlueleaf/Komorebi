@@ -936,8 +936,7 @@ impl<'b> Reader<'b> {
                 stream: self.value()?,
             },
             "ForZip" => Op::ForZip {
-                a: self.value()?,
-                b: self.value()?,
+                streams: self.values()?,
             },
             "ForArrive" => Op::ForArrive {
                 broadcast: self.value()?,

@@ -176,7 +176,10 @@ renamed back in the origin), its tiles the field's columns. A field today keeps 
 handler and read by another) is a state member, which the IR module does not write yet, and is
 refused by name, as is a field with a value. A stream's block over a rectangle of several rows
 and columns is written `[A, C]` from its declaration `W_BLOCK = A * C`, C the rectangle's
-columns (`c : c + self.C`); any other is refused by name (program 7, `SwiGLU.down`).
+columns (`c : c + self.C`); any other is refused by name. A loop zips two streams or more, and
+`t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of fields, stores `f(h, g)`
+of the vars (program 7, `SwiGLU.up` and `SwiGLU.down`). The class, a handler, a constant or a
+field named by an IR word is refused by name, not renamed: the text writes those names as given.
 
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past

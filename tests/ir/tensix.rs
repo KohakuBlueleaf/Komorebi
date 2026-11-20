@@ -812,11 +812,13 @@ fn a_zip_other_than_program_3s_is_refused_by_name() {
     );
     let swapped = refused("plus(x, y)", "plus(y, x)");
     assert!(swapped.contains("the loop's tiles in order"), "{swapped}");
-    let third = refused(
+    // a zip of three is built (program 7's up), of four not until a program needs it
+    let fourth = refused(
         "let results = sink(",
-        "let c = stream(a.tiles(first, width), block = 1)\n        let results = sink(",
+        "let c = stream(a.tiles(first, width), block = 1)\n        \
+         let d = stream(b.tiles(first, width), block = 1)\n        let results = sink(",
     );
-    assert!(third.contains("a third read stream"), "{third}");
+    assert!(fourth.contains("a fourth read stream"), "{fourth}");
     // reading R45: a stream in blocks of several rows of tiles is not built here
     let rows = refused(
         "let results = sink(",

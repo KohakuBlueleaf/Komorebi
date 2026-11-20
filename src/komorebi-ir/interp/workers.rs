@@ -1540,15 +1540,21 @@ fn step(
             }
             return Ok(Next::Go);
         }
-        Op::ForZip { a, b } => {
-            let mut z = ops::zip(stream(frame, *a)?.clone(), stream(frame, *b)?.clone())?;
-            read_next(cx, place.rank, here, &z.a)?;
-            read_next(cx, place.rank, here, &z.b)?;
-            match ops::next_pair(cx.heap, &mut z)? {
+        Op::ForZip { streams } => {
+            let opened: Result<Vec<_>, Fault> = streams
+                .iter()
+                .map(|s| Ok(stream(frame, *s)?.clone()))
+                .collect();
+            let mut z = ops::zip(opened?)?;
+            for s in &z.streams {
+                read_next(cx, place.rank, here, s)?;
+            }
+            match ops::next_blocks(cx.heap, &mut z)? {
                 None => frame.pc = end_of(pc)? + 1,
-                Some((x, y)) => {
-                    def(frame, 0, block_value(x, def_ty(0)))?;
-                    def(frame, 1, block_value(y, def_ty(1)))?;
+                Some(blocks) => {
+                    for (k, b) in blocks.into_iter().enumerate() {
+                        def(frame, k, block_value(b, def_ty(k)))?;
+                    }
                     frame.loops.push(Loop::Zip { opener: pc, zip: z });
                 }
             }
@@ -1613,12 +1619,14 @@ fn step(
                             }
                         }
                         Some(Loop::Zip { opener: o, mut zip }) if o == opener => {
-                            read_next(cx, place.rank, here, &zip.a)?;
-                            read_next(cx, place.rank, here, &zip.b)?;
-                            match ops::next_pair(cx.heap, &mut zip)? {
-                                Some((x, y)) => {
-                                    set(frame, 0, block_value(x, ty(0)))?;
-                                    set(frame, 1, block_value(y, ty(1)))?;
+                            for s in &zip.streams {
+                                read_next(cx, place.rank, here, s)?;
+                            }
+                            match ops::next_blocks(cx.heap, &mut zip)? {
+                                Some(blocks) => {
+                                    for (k, b) in blocks.into_iter().enumerate() {
+                                        set(frame, k, block_value(b, ty(k)))?;
+                                    }
                                     frame.loops.push(Loop::Zip { opener: o, zip });
                                     true
                                 }
