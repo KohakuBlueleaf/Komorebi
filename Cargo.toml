@@ -95,3 +95,10 @@ pyo3 = { version = "=0.30.1", optional = true, features = ["abi3-py313"] }
 [features]
 # The extension module `komorebi_ir._rs`, built by maturin (packaging/ir/).
 python = ["dep:pyo3"]
+
+# the tests built a little optimized (the tile identities run long at opt-level 0),
+# their debug assertions and overflow checks kept
+[profile.test]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
