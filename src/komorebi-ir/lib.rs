@@ -7,6 +7,8 @@
 
 pub mod api;
 pub mod backend;
+#[cfg(feature = "python")]
+pub mod bindings;
 pub mod bytecode;
 pub mod check;
 pub mod deep;

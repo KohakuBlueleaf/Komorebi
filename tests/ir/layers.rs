@@ -21,6 +21,10 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("verify", &["program", "types"]),
     ("bytecode", &["program", "types"]),
     ("backend", &["program", "types", "bytecode"]),
+    (
+        "bindings",
+        &["api", "bytecode", "deep", "errors", "program", "types"],
+    ),
 ];
 
 /// The modules that read everything.

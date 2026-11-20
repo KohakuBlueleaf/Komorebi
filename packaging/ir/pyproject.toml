@@ -1,0 +1,26 @@
+# The komorebi-ir wheel: the Rust core (the repository's Cargo.toml, with the feature
+# `python`) as the extension module komorebi_ir._rs, and the package src/komorebi_ir/.
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[project]
+name = "komorebi-ir"
+version = "0.1.0"
+description = "Komorebi IR: the text form of a Komorebi program, its checks, byte code and interpreter"
+license = "Apache-2.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.maturin]
+manifest-path = "../../Cargo.toml"
+features = ["python"]
+bindings = "pyo3"
+module-name = "komorebi_ir._rs"
+python-source = "../../src"
+# maturin leaves out a package's Python files when python-source is outside this
+# directory unless they are named: these patterns are relative to python-source.
+include = [
+    { path = "komorebi_ir/**/*.py", format = "wheel" },
+    { path = "komorebi_ir/**/*.pyi", format = "wheel" },
+]
