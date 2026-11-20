@@ -1,0 +1,7 @@
+# the json files here are the tool's own; what `tree-sitter generate` writes is not kept
+!*.json
+src/
+node_modules/
+build/
+*.wasm
+*.dylib

@@ -15,6 +15,7 @@ them only on a `v*` tag push or when it is started by hand with `publish: true` 
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
 | `runtime/` | The `komorebi-runtime` wheel: its metadata, build number, patches and the scripts that build tt-metal and the wheel ([runtime](runtime/README.md)). |
 | `vscode/` | `komorebi-ir/`: the VS Code extension that colours the IR's text files (`.kom`), a TextMate grammar and no code ([README](vscode/komorebi-ir/README.md)). |
+| `tree-sitter-komorebi-ir/` | A tree-sitter grammar for the same files, with its highlight queries; the parser is generated, not kept ([README](tree-sitter-komorebi-ir/README.md)). |
 
 The tt-metal build itself is a second package of this repository, `komorebi-runtime`
 ([runtime](runtime/README.md)): a platform wheel with the pinned tt-metal libraries,

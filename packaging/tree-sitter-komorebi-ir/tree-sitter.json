@@ -1,0 +1,17 @@
+{
+  "grammars": [
+    {
+      "name": "komorebi_ir",
+      "camelcase": "KomorebiIr",
+      "scope": "source.komorebi-ir",
+      "path": ".",
+      "file-types": ["kom"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "description": "Tree-sitter grammar for the text form of a Komorebi IR module (.kom)"
+  }
+}

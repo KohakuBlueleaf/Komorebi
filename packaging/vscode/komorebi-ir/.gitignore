@@ -1,0 +1,2 @@
+# the json files here are the extension's own, which the repository's rule would skip
+!*.json
