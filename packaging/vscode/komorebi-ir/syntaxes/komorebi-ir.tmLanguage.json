@@ -1,0 +1,620 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Komorebi IR",
+  "scopeName": "source.komorebi-ir",
+  "fileTypes": [
+    "kom"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#declaration"
+    },
+    {
+      "include": "#requires"
+    },
+    {
+      "include": "#attribute"
+    },
+    {
+      "include": "#field"
+    },
+    {
+      "include": "#expression"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.komorebi-ir",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.komorebi-ir",
+      "begin": "\"",
+      "end": "\"|$",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.komorebi-ir"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.komorebi-ir"
+        }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.komorebi-ir",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "^\\s*(module)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.module.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.namespace.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(tile)\\s*(?=\\[)",
+          "captures": {
+            "1": {
+              "name": "storage.type.tile.komorebi-ir"
+            }
+          }
+        },
+        {
+          "begin": "^\\s*(format)\\b(?!\\s*[:=])",
+          "end": "$",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.format.komorebi-ir"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comment"
+            },
+            {
+              "match": "[A-Za-z_]\\w*",
+              "name": "entity.name.type.format.komorebi-ir"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.comma.komorebi-ir"
+            }
+          ]
+        },
+        {
+          "match": "^\\s*(param)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.param.komorebi-ir"
+            },
+            "2": {
+              "name": "variable.other.constant.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(message|record|program)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.$1.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.type.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(extern)\\s+(func)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.extern.komorebi-ir"
+            },
+            "2": {
+              "name": "storage.type.function.komorebi-ir"
+            },
+            "3": {
+              "name": "entity.name.function.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(func|combine)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.function.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(handler|control|chain|run)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.function.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(state)\\b(?=\\s*[{@])",
+          "captures": {
+            "1": {
+              "name": "storage.type.state.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(seed)\\b(?=\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.seed.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(on)\\s+([A-Za-z_]\\w*)\\s*(\\()\\s*([A-Za-z_]\\w*)\\s*(\\))",
+          "captures": {
+            "1": {
+              "name": "keyword.control.on.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.function.komorebi-ir"
+            },
+            "3": {
+              "name": "punctuation.definition.parameters.begin.komorebi-ir"
+            },
+            "4": {
+              "name": "variable.parameter.komorebi-ir"
+            },
+            "5": {
+              "name": "punctuation.definition.parameters.end.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(call)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.call.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.function.call.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "(?<![\\w.])(fallback)\\b(?=\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.fallback.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "(?<![=!<>])(=)\\s*(fit)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.assignment.komorebi-ir"
+            },
+            "2": {
+              "name": "constant.language.fit.komorebi-ir"
+            }
+          }
+        }
+      ]
+    },
+    "requires": {
+      "begin": "^\\s*(requires)\\s*(\\{)",
+      "end": "\\}",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.requires.komorebi-ir"
+        },
+        "2": {
+          "name": "punctuation.section.block.begin.komorebi-ir"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.block.end.komorebi-ir"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "name": "keyword.other.requirement.komorebi-ir",
+          "match": "\\b(local_state|group|islands|impl)\\b"
+        },
+        {
+          "name": "constant.language.requirement.komorebi-ir",
+          "match": "\\b(tiles|bytes|line|grid|dynamic)\\b"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#operator"
+        },
+        {
+          "include": "#parens"
+        },
+        {
+          "include": "#brackets"
+        }
+      ]
+    },
+    "attribute": {
+      "patterns": [
+        {
+          "name": "meta.attribute.komorebi-ir",
+          "begin": "(@)([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*)\\s*(\\()",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.attribute.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.other.attribute-name.komorebi-ir"
+            },
+            "3": {
+              "name": "punctuation.section.parens.begin.komorebi-ir"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.komorebi-ir"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#named_argument"
+            },
+            {
+              "name": "constant.other.attribute-argument.komorebi-ir",
+              "match": "(?<![\\w.])[A-Za-z_]\\w*(?!\\w)(?!\\s*[(.=])"
+            },
+            {
+              "include": "#expression"
+            }
+          ]
+        },
+        {
+          "name": "meta.attribute.komorebi-ir",
+          "match": "(@)([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.definition.attribute.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.other.attribute-name.komorebi-ir"
+            }
+          }
+        }
+      ]
+    },
+    "expression": {
+      "patterns": [
+        {
+          "include": "#comment"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#attribute"
+        },
+        {
+          "include": "#number"
+        },
+        {
+          "include": "#keyword"
+        },
+        {
+          "include": "#type"
+        },
+        {
+          "include": "#builtin"
+        },
+        {
+          "include": "#member"
+        },
+        {
+          "include": "#call"
+        },
+        {
+          "include": "#parens"
+        },
+        {
+          "include": "#brackets"
+        },
+        {
+          "include": "#operator"
+        },
+        {
+          "include": "#punctuation"
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.komorebi-ir",
+          "match": "(?<![\\w.])0x[0-9A-Fa-f]+(?!\\w)"
+        },
+        {
+          "name": "constant.numeric.float.komorebi-ir",
+          "match": "(?<![\\w.])\\d+(?:\\.\\d+(?:[eE][+-]?\\d+)?|[eE][+-]?\\d+)(?!\\w)"
+        },
+        {
+          "name": "constant.numeric.integer.decimal.komorebi-ir",
+          "match": "(?<![\\w.])\\d+(?!\\w)"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.komorebi-ir",
+          "match": "(?<![\\w.])(true|false)(?!\\w)"
+        },
+        {
+          "name": "keyword.control.komorebi-ir",
+          "match": "(?<![\\w.])(if|else|for|in|while|return|await)(?!\\w)"
+        },
+        {
+          "name": "storage.type.komorebi-ir",
+          "match": "(?<![\\w.])(let|var)(?!\\w)"
+        },
+        {
+          "name": "keyword.other.komorebi-ir",
+          "match": "(?<![\\w.])(store|consume)(?!\\w)"
+        },
+        {
+          "name": "keyword.other.past.komorebi-ir",
+          "match": "(?<![\\w.])(past)(?=\\s*\\()"
+        }
+      ]
+    },
+    "type": {
+      "patterns": [
+        {
+          "match": "(?<![\\w.])(tile|tensor)\\s*(<)\\s*([A-Za-z_]\\w*)\\s*(>)",
+          "captures": {
+            "1": {
+              "name": "storage.type.komorebi-ir"
+            },
+            "2": {
+              "name": "punctuation.definition.typeparameters.begin.komorebi-ir"
+            },
+            "3": {
+              "name": "support.type.format.komorebi-ir"
+            },
+            "4": {
+              "name": "punctuation.definition.typeparameters.end.komorebi-ir"
+            }
+          }
+        },
+        {
+          "name": "storage.type.komorebi-ir",
+          "match": "(?<![\\w.])(tile|tensor|view|bool)(?!\\w)"
+        },
+        {
+          "name": "support.type.primitive.komorebi-ir",
+          "match": "(?<![\\w.])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?!\\w)(?!\\s*\\()"
+        },
+        {
+          "name": "support.type.format.komorebi-ir",
+          "match": "(?<![\\w.])(bf16|bfp8|bfp4|bfp2)(?!\\w)"
+        }
+      ]
+    },
+    "builtin": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.komorebi-ir",
+          "match": "(?<![\\w.])(min|max|range|where|maximum|minimum|matmul|reduce_sum|reduce_max|reduce_min|neg|abs|relu|square|floor|exp|exp2|tanh|erf|log|sigmoid|silu|sqrt|rsqrt|reciprocal|partition|stream|sink|zip|reduce|gather|broadcast|sync|all_reduce|all_gather|send|forward|offer|invoke|outcome|group|reduce_to|broadcast_from)(?=\\s*\\()"
+        },
+        {
+          "name": "support.function.builtin.convert.komorebi-ir",
+          "match": "(?<![\\w.])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?=\\s*\\()"
+        },
+        {
+          "name": "support.variable.komorebi-ir",
+          "match": "(?<![\\w.])(worker|group|island)(?=\\s*\\.)"
+        },
+        {
+          "name": "support.constant.komorebi-ir",
+          "match": "(?<![\\w.])(zeros|row|col|sum|max|min|and|or|grid)(?!\\w)"
+        },
+        {
+          "name": "support.constant.failure.komorebi-ir",
+          "match": "(?<![\\w.])(view_end|empty_state|send_refused|capacity|given_up|dependency|not_a_peer|over_bound|divide_by_zero|out_of_range)(?!\\w)"
+        }
+      ]
+    },
+    "member": {
+      "patterns": [
+        {
+          "match": "(\\.)\\s*(rank|is_leader|id|row|col|size|count|is_sender|failed|reason|value|T|tiles|items|words|records|put|push|fill|zero|bump|split|leaders|of|crosses|hops|cast|arrive)(?!\\w)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.komorebi-ir"
+            },
+            "2": {
+              "name": "support.function.member.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*(rank|is_leader|id|row|col|size|count|is_sender|failed|reason|value|T|tiles|items|words|records|put|push|fill|zero|bump|split|leaders|of|crosses|hops|cast|arrive)(?!\\w)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.komorebi-ir"
+            },
+            "2": {
+              "name": "support.variable.property.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([A-Za-z_]\\w*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.komorebi-ir"
+            },
+            "2": {
+              "name": "entity.name.function.call.komorebi-ir"
+            }
+          }
+        },
+        {
+          "match": "(\\.)\\s*([A-Za-z_]\\w*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.komorebi-ir"
+            },
+            "2": {
+              "name": "variable.other.property.komorebi-ir"
+            }
+          }
+        }
+      ]
+    },
+    "call": {
+      "match": "(?<![\\w.])([A-Za-z_]\\w*)(?=\\s*\\()",
+      "name": "entity.name.function.call.komorebi-ir"
+    },
+    "parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.parens.begin.komorebi-ir"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.parens.end.komorebi-ir"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#named_argument"
+        },
+        {
+          "include": "#field"
+        },
+        {
+          "include": "#expression"
+        }
+      ]
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.komorebi-ir",
+          "match": "->|<-"
+        },
+        {
+          "name": "keyword.operator.logical.komorebi-ir",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.comparison.komorebi-ir",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.assignment.komorebi-ir",
+          "match": "\\+=|-=|="
+        },
+        {
+          "name": "keyword.operator.bitwise.komorebi-ir",
+          "match": "<<|>>|\\||\\^|&"
+        },
+        {
+          "name": "keyword.operator.arithmetic.komorebi-ir",
+          "match": "\\+|-|\\*|/|%"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.komorebi-ir",
+          "match": ","
+        },
+        {
+          "name": "punctuation.separator.colon.komorebi-ir",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.section.block.komorebi-ir",
+          "match": "[{}]"
+        }
+      ]
+    },
+    "named_argument": {
+      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(?==(?!=))",
+      "captures": {
+        "1": {
+          "name": "variable.parameter.named.komorebi-ir"
+        }
+      }
+    },
+    "field": {
+      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(:)(?!:)",
+      "captures": {
+        "1": {
+          "name": "variable.other.declaration.komorebi-ir"
+        },
+        "2": {
+          "name": "punctuation.separator.colon.komorebi-ir"
+        }
+      }
+    },
+    "brackets": {
+      "begin": "\\[",
+      "end": "\\]",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.brackets.begin.komorebi-ir"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.brackets.end.komorebi-ir"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#expression"
+        }
+      ]
+    }
+  }
+}

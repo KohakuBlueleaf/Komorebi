@@ -1,0 +1,33 @@
+{
+  "name": "komorebi-ir",
+  "displayName": "Komorebi IR",
+  "description": "Syntax highlighting for the text form of a Komorebi IR module (.kom).",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "komorebi-ir",
+        "aliases": [
+          "Komorebi IR"
+        ],
+        "extensions": [
+          ".kom"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "komorebi-ir",
+        "scopeName": "source.komorebi-ir",
+        "path": "./syntaxes/komorebi-ir.tmLanguage.json"
+      }
+    ]
+  }
+}

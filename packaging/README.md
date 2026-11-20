@@ -14,6 +14,7 @@ them only on a `v*` tag push or when it is started by hand with `publish: true` 
 | `ci/` | What the release workflow runs: `build_wheels.sh` (tt-metal, then both wheels), `wheel_info.py` (names, versions and requirements read from the wheels, the version checks), `check_paths.py` (no binary names a path of the build machine). |
 | `version.py` | Reads, stamps and bumps the version in `pyproject.toml` and `komorebi.__version__`. |
 | `runtime/` | The `komorebi-runtime` wheel: its metadata, build number, patches and the scripts that build tt-metal and the wheel ([runtime](runtime/README.md)). |
+| `vscode/` | `komorebi-ir/`: the VS Code extension that colours the IR's text files (`.kom`), a TextMate grammar and no code ([README](vscode/komorebi-ir/README.md)). |
 
 The tt-metal build itself is a second package of this repository, `komorebi-runtime`
 ([runtime](runtime/README.md)): a platform wheel with the pinned tt-metal libraries,

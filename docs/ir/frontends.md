@@ -12,6 +12,9 @@ The text does not say where it came from: a `.kom` text has no syntax for an ori
 gives its **origin** beside the text, and the core puts it in the module's notes (P in
 [the byte-code program](bytecode.md)). There it changes only the full hash.
 
+A `.kom` file is coloured in VS Code by the extension in `packaging/vscode/komorebi-ir/` (copy or
+link the folder into `~/.vscode/extensions/`).
+
 ## What the origin holds
 
 | Part | What it is |
