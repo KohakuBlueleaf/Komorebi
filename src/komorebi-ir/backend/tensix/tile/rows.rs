@@ -2,8 +2,8 @@
 //! in Dst, one exact reduction along the row, a per-row value computed from it, and the
 //! stored row computed from the row, that value broadcast with `.col()` and a resident
 //! row broadcast with `.row()`. Layout rule: a per-row value is lanes of one tile.
-//! `row_program` and its levels (`level_program`) are ported; the chunk form and the
-//! band are refused by name.
+//! `row_program`, its levels (`level_program`) and the chunk form of a wider row
+//! (`chunk_program`, `chunk_cost`) are ported; the band is refused by name.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,9 +14,10 @@ use super::lower::{
     allocate, call, fold_negation, fuse_mad, hoist, insn, items, maximum, minimum, pass,
     plan_error, sync, value, Body, Read, Reads, NOT_CHECKED, TILE_DTYPES,
 };
+use super::py::round1;
 use super::schedule::interleave;
 use super::unit::{
-    Arg, Check, Insn, Item, UnitError, UnitProgram, MATH, PACK, PROGRAMMABLE, UNPACK,
+    Arg, Check, Insn, Item, UnitError, UnitProgram, MATH, PACK, PRICES, PROGRAMMABLE, UNPACK,
 };
 use super::vector::{FnResult, VId, Vs};
 
@@ -67,14 +68,17 @@ impl Layout {
     }
 }
 
-/// The layouts of a row: the row's (`copy`), each per-row value's slot (`bcast_col`)
-/// and each resident row's per-column vectors (`bcast_row`).
+/// The layouts of a row: the row's (`copy`), each per-row value's slot (`bcast_col`),
+/// each sum's slot (the chunk form's) and each resident row's per-column vectors
+/// (`bcast_row`).
 #[derive(Clone, Debug)]
 pub struct Layouts {
     /// The row's.
     pub copy: Layout,
     /// The per-row slots', one a value.
     pub rows: Vec<Layout>,
+    /// The sums' slots, one a sum (the chunk form's; none in the others).
+    pub sums: Vec<Layout>,
     /// The per-column vectors', one a resident row.
     pub cols: Vec<Layout>,
 }
@@ -427,14 +431,15 @@ fn listed(set: &BTreeSet<i64>) -> String {
     format!("[{}]", parts.join(", "))
 }
 
-/// broadcast: every stored row vector was computed from the row vector at its own
-/// address, the per-row slot of its row group and the per-column vector of its columns
-/// (before allocation).
+/// broadcast: every stored row vector (the row's, or a result's from a Dst tile of
+/// `bases`) was computed from the row vector at its own address, the per-row slot of
+/// its row group and the per-column vector of its columns (before allocation).
 pub fn check_broadcast(
     unit: &mut UnitProgram,
     code: &[Insn],
     layouts: &Layouts,
     width: i64,
+    bases: &[i64],
 ) -> Result<(), UnitError> {
     let mut sources: HashMap<Arg, BTreeSet<i64>> = HashMap::new();
     let (mut checked, mut depth) = (0, 0);
@@ -448,12 +453,16 @@ pub fn check_broadcast(
             }
         } else if x.op.name == "SFPSTORE" {
             let address = num(x, "dest_reg_addr");
-            let Some(at) = index(address, width) else {
+            let Some(at) = bases
+                .iter()
+                .find_map(|base| index(address - TILE * base, width))
+            else {
                 continue;
             };
             let mut want = BTreeSet::from([layouts.copy.address(at)]);
             let slots: BTreeSet<i64> = layouts.rows.iter().map(|l| l.address(at)).collect();
             want.extend(&slots);
+            want.extend(layouts.sums.iter().map(|l| l.address(at)));
             want.extend(layouts.cols.iter().map(|l| l.address(at)));
             let got = sources
                 .get(&reg(x, "lreg_ind"))
@@ -498,15 +507,22 @@ pub fn check_broadcast(
     Ok(())
 }
 
-/// lanes: a value stored into the per-row tile is complete, every lane of a lane row
-/// holding the sum of all 8 (a + a turned by its span doubles the span; values the same
-/// in every lane have span 8). Before register allocation.
-pub fn check_lanes(unit: &mut UnitProgram, code: &[Insn], rows: Layout) -> Result<(), UnitError> {
+/// lanes: a value stored into the per-row tile (or the chunk form's sums tile, `sums`)
+/// is complete, every lane of a lane row holding the sum of all 8 (a + a turned by its
+/// span doubles the span; values the same in every lane have span 8). Before register
+/// allocation.
+pub fn check_lanes(
+    unit: &mut UnitProgram,
+    code: &[Insn],
+    rows: Layout,
+    sums: Option<i64>,
+) -> Result<(), UnitError> {
     let Layout::Rows(tile, _) = rows else {
         return Err(UnitError(
             "lanes: the per-row values are not in slots".into(),
         ));
     };
+    let tiles: Vec<i64> = [Some(tile), sums].into_iter().flatten().collect();
     let mut span: HashMap<Arg, i64> = HashMap::new();
     let mut turned: HashMap<Arg, (Arg, i64)> = HashMap::new();
     let mut copied: HashMap<Arg, Arg> = HashMap::new();
@@ -519,7 +535,7 @@ pub fn check_lanes(unit: &mut UnitProgram, code: &[Insn], rows: Layout) -> Resul
             .collect();
         if x.op.name == "SFPLOAD" {
             // a per-row slot holds complete values
-            let whole = num(x, "dest_reg_addr").div_euclid(TILE) == tile;
+            let whole = tiles.contains(&num(x, "dest_reg_addr").div_euclid(TILE));
             if let Some(w) = x.writes()?.into_iter().next() {
                 span.insert(w, if whole { 8 } else { 1 });
             }
@@ -527,7 +543,7 @@ pub fn check_lanes(unit: &mut UnitProgram, code: &[Insn], rows: Layout) -> Resul
         }
         if x.op.name == "SFPSTORE" {
             let address = num(x, "dest_reg_addr");
-            if address.div_euclid(TILE) == tile {
+            if tiles.contains(&address.div_euclid(TILE)) {
                 let got = span.get(&reg(x, "lreg_ind")).copied().unwrap_or(8);
                 if got != 8 {
                     return Err(UnitError(format!(
@@ -713,6 +729,7 @@ pub fn row_program(
     let layouts = Layouts {
         copy: Layout::Tile(0),
         rows: vec![Layout::Rows(rows_tile, 0)],
+        sums: Vec::new(),
         cols: vec![Layout::Cols(cols_tile)],
     };
     for c in [&reduced, &stored] {
@@ -754,7 +771,7 @@ pub fn row_program(
             4 * width
         )],
     ));
-    check_lanes(&mut unit, &body.code, rows)?;
+    check_lanes(&mut unit, &body.code, rows, None)?;
     let mut moved = 0;
     for &(start, end) in &pairs {
         let at: Vec<usize> = (0..body.code.len())
@@ -770,7 +787,7 @@ pub fn row_program(
         "interleave",
         vec![format!("{moved} instructions moved in {}", pairs.len())],
     ));
-    check_broadcast(&mut unit, &body.code, &layouts, width)?;
+    check_broadcast(&mut unit, &body.code, &layouts, width, &[0])?;
     let mut copies: Vec<String> = (0..width)
         .map(|t| format!("copy_tile(x, {t}, dst + {t})"))
         .collect();
@@ -1126,10 +1143,18 @@ fn level_program(
             made: &made,
             slot: &slot,
             cols: &cols,
+            sums: None,
         };
         pairs.extend(phase.run(&mut body, &mine, &done, width)?);
     }
-    pairs.extend(apply_slots(&mut body, &stored, &slot, &cols, width)?);
+    pairs.extend(apply_slots(
+        &mut body,
+        &[&stored],
+        &slot,
+        &cols,
+        width,
+        &[0],
+    )?);
     // each word marked, so that a pair's words are found again after the passes
     for (i, x) in body.code.iter_mut().enumerate() {
         x.mark = i + 1;
@@ -1149,7 +1174,7 @@ fn level_program(
             held.len()
         )],
     ));
-    check_lanes(&mut unit, &body.code, Layout::Rows(rows_tile, 0))?;
+    check_lanes(&mut unit, &body.code, Layout::Rows(rows_tile, 0), None)?;
     let mut moved = 0;
     for &(start, end) in &pairs {
         let at: Vec<usize> = (0..body.code.len())
@@ -1167,9 +1192,10 @@ fn level_program(
     let layouts = Layouts {
         copy: Layout::Tile(0),
         rows: slot.iter().map(|(_, l)| *l).collect(),
+        sums: Vec::new(),
         cols: cols.iter().map(|(_, l)| *l).collect(),
     };
-    check_broadcast(&mut unit, &body.code, &layouts, width)?;
+    check_broadcast(&mut unit, &body.code, &layouts, width, &[0])?;
     let mut copies: Vec<String> = (0..width)
         .map(|t| format!("copy_tile(x, {t}, dst + {t})"))
         .collect();
@@ -1184,6 +1210,9 @@ struct Level<'a> {
     made: &'a [(NodeId, Chain)],
     slot: &'a [(NodeId, Layout)],
     cols: &'a [(NodeId, Layout)],
+    /// The chunk form's sums' slots: each sum of a chunk added into its slot (today's
+    /// `_chunk_sums`), no per-row value made; none in the levels.
+    sums: Option<&'a [(NodeId, Layout)]>,
 }
 
 impl Level<'_> {
@@ -1276,13 +1305,21 @@ impl Level<'_> {
                 };
                 let acc = lanes(b, op, accs[i].1.clone())?;
                 accs[i].1 = acc.clone();
+                if let Some(sums) = self.sums {
+                    let at = layout_of(sums, r)?.address((0, h, 0, q, 0));
+                    let note = format!("sum so far, group {h} {q}");
+                    let so_far = b.load(at, &note)?;
+                    let total = fold(b, op, so_far, acc, "sum +=")?;
+                    b.store(total, at, &note)?;
+                    continue;
+                }
                 // read by .col() itself, or by a later level's value
                 if let Ok(slot) = layout_of(self.slot, r) {
                     let note = format!("per-row sum, group {h} {q}");
                     b.store(acc, slot.address((0, h, 0, q, 0)), &note)?;
                 }
             }
-            for &p in done {
+            for &p in done.iter().filter(|_| self.sums.is_none()) {
                 let Ok(chain) = chain_of(self.made, p) else {
                     continue; // a sum read by .col() itself: stored above
                 };
@@ -1312,17 +1349,21 @@ impl Level<'_> {
 }
 
 /// Per vector column (t, c, p) and pair of row groups: each per-row value loaded from
-/// its slot once a group, each per-column vector once a vector column, the stored
-/// result written over the row (today's `_apply_slots` of one result at tile 0).
-/// Returns each pair's words (their range in the code as made).
+/// its slot once a group, each per-column vector once a vector column, stored result k
+/// written at Dst tile `bases[k]` (today's `_apply_slots`). Returns each pair's words
+/// (their range in the code as made).
 fn apply_slots(
     b: &mut Body,
-    stored: &Chain,
+    stored: &[&Chain],
     slot: &[(NodeId, Layout)],
     cols: &[(NodeId, Layout)],
     width: i64,
+    bases: &[i64],
 ) -> Result<Vec<(usize, usize)>, ChainError> {
-    let (vs, result) = result_of(stored)?;
+    let mut made = Vec::new();
+    for c in stored {
+        made.push((result_of(c)?, *c));
+    }
     let mut pairs = Vec::new();
     for h in 0..2 {
         for (t, c, p) in vectors(width) {
@@ -1332,37 +1373,548 @@ fn apply_slots(
                 for q in pair {
                     let at = (t, h, c, q, p);
                     let address = Layout::Tile(0).address(at);
-                    let mut reads = Vec::new();
-                    for leaf in &stored.operands {
-                        reads.push(match leaf.kind {
-                            "bcast_col" => {
-                                let n = source(leaf)?;
-                                Read::Load(
-                                    format!("slot{}", n.0),
-                                    layout_of(slot, n)?.address(at),
-                                    format!("per-row slot {h} {q}"),
-                                )
-                            }
-                            "bcast_row" => {
-                                let n = source(leaf)?;
-                                Read::Load(
-                                    format!("col{}", n.0),
-                                    layout_of(cols, n)?.address(at),
-                                    format!("per-column {t} {c} {p}"),
-                                )
-                            }
-                            _ => Read::Load("row".into(), address, format!("row {}", tuple(at))),
-                        });
+                    // each result from the one load of the row vector
+                    let mut values = Vec::new();
+                    for ((vs, result), chain) in &made {
+                        let mut reads = Vec::new();
+                        for leaf in &chain.operands {
+                            reads.push(match leaf.kind {
+                                "bcast_col" => {
+                                    let n = source(leaf)?;
+                                    Read::Load(
+                                        format!("slot{}", n.0),
+                                        layout_of(slot, n)?.address(at),
+                                        format!("per-row slot {h} {q}"),
+                                    )
+                                }
+                                "bcast_row" => {
+                                    let n = source(leaf)?;
+                                    Read::Load(
+                                        format!("col{}", n.0),
+                                        layout_of(cols, n)?.address(at),
+                                        format!("per-column {t} {c} {p}"),
+                                    )
+                                }
+                                _ => {
+                                    Read::Load("row".into(), address, format!("row {}", tuple(at)))
+                                }
+                            });
+                        }
+                        values.push(read_value(
+                            b,
+                            vs,
+                            *result,
+                            reads,
+                            &mut cache,
+                            &mut Vec::new(),
+                        )?);
                     }
-                    let made = read_value(b, &vs, result, reads, &mut cache, &mut Vec::new());
                     drop_scope(&mut cache, "row");
                     drop_scope(&mut cache, "slot");
-                    let note = format!("row {} of tile 0", tuple(at));
-                    b.store(made?, Layout::Tile(0).address(at), &note)?;
+                    for (base, value) in bases.iter().zip(values) {
+                        let note = format!("row {} of tile {base}", tuple(at));
+                        b.store(value, Layout::Tile(*base).address(at), &note)?;
+                    }
                 }
                 pairs.push((start, b.code.len()));
             }
         }
     }
     Ok(pairs)
+}
+
+/// Tiles of a wide row a call takes (a per-column tile holds 2).
+pub const CHUNK: i64 = 2;
+/// The chunk form's Dst tiles: the per-row values', the sums', the first per-column.
+const CHUNK_ROWS: i64 = 2;
+const CHUNK_SUMS: i64 = 3;
+const CHUNK_COLS: i64 = 4;
+
+/// A reduction's start: 0 for a sum, -inf for the largest value, inf for the smallest.
+fn start_of(op: &str) -> f64 {
+    match op {
+        "max" => f64::NEG_INFINITY,
+        "min" => f64::INFINITY,
+        _ => 0.0,
+    }
+}
+
+/// The value under `key` in `cache`, else loaded from `at` (noted `note`) and kept.
+fn cached_load(
+    b: &mut Body,
+    cache: &mut Vec<(String, Arg)>,
+    key: String,
+    at: i64,
+    note: &str,
+) -> Result<Arg, ChainError> {
+    if let Some((_, v)) = cache.iter().find(|(k, _)| *k == key) {
+        return Ok(v.clone());
+    }
+    let v = b.load(at, note)?;
+    cache.push((key, v.clone()));
+    Ok(v)
+}
+
+/// Part finish<L>, per row group: the per-row values level L completes (`done`), from
+/// the sums' slots and the earlier values' slots, stored to their slots (today's
+/// `_chunk_finish`).
+fn chunk_finish(
+    b: &mut Body,
+    ir: &KernelIR,
+    done: &[NodeId],
+    made: &[(NodeId, Chain)],
+    slot: &[(NodeId, Layout)],
+    sums: &[(NodeId, Layout)],
+) -> Result<(), ChainError> {
+    for (h, q) in GROUPS {
+        let mut cache = Vec::new();
+        let read_of = |n: NodeId| -> Result<Read, ChainError> {
+            let reduce = node(ir, n)?.kind == "reduce";
+            let at = layout_of(if reduce { sums } else { slot }, n)?.address((0, h, 0, q, 0));
+            let what = if reduce { "sum" } else { "per-row value" };
+            Ok(Read::Load(
+                format!("v{}", n.0),
+                at,
+                format!("{what} {h} {q}"),
+            ))
+        };
+        for &p in done {
+            let value = match made.iter().find(|(k, _)| *k == p) {
+                // a sum read by .col() itself
+                None if node(ir, p)?.kind == "reduce" => {
+                    let Read::Load(key, at, note) = read_of(p)? else {
+                        return Err(ChainError::NotPorted("a sum of no slot".into()));
+                    };
+                    cached_load(b, &mut cache, key, at, &note)?
+                }
+                None => return Err(ChainError::NotPorted("a per-row value of no chain".into())),
+                Some((_, chain)) => {
+                    let mut reads = Vec::new();
+                    for leaf in &chain.operands {
+                        reads.push(read_of(source(leaf)?)?);
+                    }
+                    let (vs, result) = result_of(chain)?;
+                    read_value(b, &vs, result, reads, &mut cache, &mut Vec::new())?
+                }
+            };
+            let at = layout_of(slot, p)?.address((0, h, 0, q, 0));
+            b.store(value, at, &format!("per-row value {h} {q}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// The row form over `width` tiles (over 2) in chunks of 2 (Dst 0, 1): part `start`
+/// zeroes the sums (Dst 3), `sum<L>` adds a chunk's share of level L's sums,
+/// `finish<L>` makes level L's per-row values (Dst 2); the body writes a chunk with
+/// resident row k's chunk in Dst 4 + k; an odd row's last tile: parts `*_one` (today's
+/// `chunk_program`). The start values of a largest and a smallest value together are
+/// refused by name (today makes them in a set's order).
+pub fn chunk_program(ir: &KernelIR, width: i64) -> Result<UnitProgram, ChainError> {
+    if width <= CHUNK {
+        return Err(plan_error(format!(
+            "a wide row is more than {CHUNK} tiles: {width} tiles given"
+        )));
+    }
+    let typed = ir
+        .tensors
+        .iter()
+        .all(|t| t.dtype.as_deref().is_some_and(|d| TILE_DTYPES.contains(&d)));
+    if !typed {
+        return Err(plan_error(format!(
+            "{}: tensors are fp32 or of the B family ({})",
+            ir.name,
+            TILE_DTYPES[1..].join(", ")
+        )));
+    }
+    let shapes = row_shapes(ir)?;
+    let nodes = ir.nodes();
+    let mut reduces: Vec<NodeId> = Vec::new();
+    let mut col_nodes: Vec<NodeId> = Vec::new();
+    let mut residents: Vec<NodeId> = Vec::new();
+    for &n in &nodes {
+        match node(ir, n)?.kind.as_str() {
+            "reduce" => reduces.push(n),
+            "col" => col_nodes.push(n),
+            "resident" if !residents.contains(&n) => residents.push(n),
+            _ => {}
+        }
+    }
+    if reduces.is_empty() {
+        return Err(plan_error(format!(
+            "{}: the row form takes a reduction",
+            ir.name
+        )));
+    }
+    let mut ops = Vec::new();
+    for &r in &reduces {
+        ops.push((r, reduced(node(ir, r)?)?));
+    }
+    let mut stats: Vec<NodeId> = Vec::new();
+    for &c in &col_nodes {
+        let Some(&a) = node(ir, c)?.args.first() else {
+            return Err(ChainError::NotPorted("a .col() of no operand".into()));
+        };
+        if shapes.get(a.0).copied().flatten() != Some("col") {
+            return Err(plan_error(
+                "a per-row value meets the row through .col()".into(),
+            ));
+        }
+        if !stats.contains(&a) {
+            stats.push(a);
+        }
+    }
+    let mut tensors: Vec<&str> = Vec::new();
+    for &n in &nodes {
+        let x = node(ir, n)?;
+        if x.kind == "load" && view_kind(x) == Some("row") {
+            if let Some(Attr::View(v)) = attr(x, "view") {
+                if !tensors.contains(&v.tensor.as_str()) {
+                    tensors.push(&v.tensor);
+                }
+            }
+        }
+    }
+    let (Some(&row), 1) = (tensors.first(), tensors.len()) else {
+        return Err(plan_error(
+            "the row form reads one row tensor (loaded once)".into(),
+        ));
+    };
+    let level = level_of(ir, &nodes, &reduces, &stats)?;
+    let at = |n: NodeId| level.get(&n).copied().unwrap_or(0);
+    let slots = ROW_SLOTS.len();
+    for (what, count, most) in [
+        ("per-row values read by .col()", stats.len(), slots),
+        ("sums along the row", reduces.len(), slots),
+        (
+            "resident rows",
+            residents.len(),
+            (DST_TILES - CHUNK_COLS) as usize,
+        ),
+    ] {
+        if count > most {
+            return Err(plan_error(format!(
+                "{}: {count} {what}; a wide row's call holds {most} (the chunk, the values' \
+                 tile and the sums' tile take {CHUNK_COLS} of Dst's {DST_TILES} fp32 tiles; \
+                 a tile holds {slots} slots)",
+                ir.name
+            )));
+        }
+    }
+    let slot: Vec<(NodeId, Layout)> = stats
+        .iter()
+        .zip(ROW_SLOTS)
+        .map(|(&v, offset)| (v, Layout::Rows(CHUNK_ROWS, offset)))
+        .collect();
+    let sums: Vec<(NodeId, Layout)> = reduces
+        .iter()
+        .zip(ROW_SLOTS)
+        .map(|(&r, offset)| (r, Layout::Rows(CHUNK_SUMS, offset)))
+        .collect();
+    let cols: Vec<(NodeId, Layout)> = residents
+        .iter()
+        .zip(CHUNK_COLS..)
+        .map(|(&r, tile)| (r, Layout::Cols(tile)))
+        .collect();
+    let fields = residents.len() as i64;
+    let results = ir.stores.len() as i64;
+    // result k > 0: its own 2 tiles from past the residents
+    let free = CHUNK_COLS + fields;
+    let mut bases = vec![0];
+    bases.extend((1..results).map(|k| free + CHUNK * (k - 1)));
+    if free + CHUNK * (results - 1) > DST_TILES {
+        return Err(plan_error(format!(
+            "{}: {results} results; a wide row's call holds {} with {fields} resident \
+             row(s) (result 0 over the chunk, each other {CHUNK} tiles of Dst's \
+             {DST_TILES} past the residents)",
+            ir.name,
+            1 + (DST_TILES - free).div_euclid(CHUNK)
+        )));
+    }
+    let mut leaves = reduces.clone();
+    leaves.extend(&stats);
+    let limit = SLOTS + residents.len() + stats.len();
+    let mut compiler = Compiler::rows(ir, shapes, leaves, limit);
+    let mut summed = Vec::new();
+    for &r in &reduces {
+        let Some(&a) = node(ir, r)?.args.first() else {
+            return Err(ChainError::NotPorted("a reduction of no operand".into()));
+        };
+        summed.push((r, compiler.chain(a)?));
+    }
+    let mut made = Vec::new();
+    for &p in &stats {
+        if node(ir, p)?.kind != "reduce" {
+            made.push((p, compiler.chain(p)?));
+        }
+    }
+    let mut stored = Vec::new();
+    for s in &ir.stores {
+        stored.push(compiler.chain(s.value)?);
+    }
+    for (_, c) in &summed {
+        if c.operands.iter().any(|l| !SUMMED.contains(&l.kind)) {
+            return Err(plan_error(format!(
+                "{}: a sum along the row reads the row, per-row values and resident rows",
+                ir.name
+            )));
+        }
+    }
+    for c in summed.iter().chain(&made).map(|(_, c)| c).chain(&stored) {
+        if !c.values.is_empty() || c.prev.is_some() {
+            return Err(plan_error(format!(
+                "{}: the row form takes no runtime scalars and one stage",
+                ir.name
+            )));
+        }
+        for leaf in &c.operands {
+            let resident = node(ir, source(leaf)?)?.kind == "resident";
+            if leaf.kind == "copy" && resident || leaf.kind == "bcast_row" && !resident {
+                return Err(plan_error(
+                    ".row() broadcasts a resident row (a weight)".into(),
+                ));
+            }
+        }
+    }
+    let mut starts: Vec<&str> = Vec::new();
+    for &(_, op) in &ops {
+        if op != "sum" && !starts.contains(&op) {
+            starts.push(op);
+        }
+    }
+    if starts.len() > 1 {
+        return Err(ChainError::NotPorted(
+            "the chunk form's start values of a largest and a smallest value together \
+             (today makes them in a set's order)"
+                .into(),
+        ));
+    }
+    let mut b = Body::default();
+    let mut marks: Vec<String> = Vec::new();
+    let mut pairs = Vec::new();
+    let part = |b: &mut Body, marks: &mut Vec<String>, name: String| {
+        marks.push(name.clone());
+        // a marker, cut out below
+        b.word("SFPNOP", &format!("part {name}"), &[]).map(|_| ())
+    };
+    part(&mut b, &mut marks, "start".into())?;
+    let mut first = vec![("sum", b.constant_noted(0.0, "0")?)];
+    for op in starts {
+        let start = b.constant_noted(start_of(op), &format!("{op} start"))?;
+        first.push((op, start));
+    }
+    for (h, q) in GROUPS {
+        for &(r, op) in &ops {
+            let Some((_, value)) = first.iter().find(|(o, _)| *o == op) else {
+                return Err(ChainError::NotPorted("a reduction of no start".into()));
+            };
+            let note = if op == "sum" {
+                format!("sum := 0, {h} {q}")
+            } else {
+                format!("{op} := its start")
+            };
+            let to = layout_of(&sums, r)?.address((0, h, 0, q, 0));
+            b.store(value.clone(), to, &note)?;
+        }
+    }
+    let levels = 1 + level.values().copied().max().unwrap_or(0);
+    let phase = Level {
+        summed: &summed,
+        made: &made,
+        slot: &slot,
+        cols: &cols,
+        sums: Some(&sums),
+    };
+    let tails = [("", CHUNK), ("_one", 1)];
+    for l in 0..levels {
+        let mine: Vec<(NodeId, &'static str)> =
+            ops.iter().copied().filter(|&(r, _)| at(r) == l).collect();
+        let done: Vec<NodeId> = stats.iter().copied().filter(|&p| at(p) == l).collect();
+        for (tail, tiles) in tails.iter().take(1 + (width % CHUNK) as usize) {
+            // an odd row's last chunk: one tile
+            part(&mut b, &mut marks, format!("sum{l}{tail}"))?;
+            pairs.extend(phase.run(&mut b, &mine, &[], *tiles)?);
+        }
+        part(&mut b, &mut marks, format!("finish{l}"))?;
+        chunk_finish(&mut b, ir, &done, &made, &slot, &sums)?;
+    }
+    let all: Vec<&Chain> = stored.iter().collect();
+    part(&mut b, &mut marks, "apply".into())?;
+    pairs.extend(apply_slots(&mut b, &all, &slot, &cols, CHUNK, &bases)?);
+    if width % CHUNK != 0 {
+        part(&mut b, &mut marks, "apply_one".into())?;
+        pairs.extend(apply_slots(&mut b, &all, &slot, &cols, 1, &bases)?);
+    }
+    if let [only] = &stored[..] {
+        if only.operands.iter().all(|l| l.kind == "bcast_col") {
+            // a per-row value alone: one tile of it, for a field
+            part(&mut b, &mut marks, "value".into())?;
+            pairs.extend(apply_slots(&mut b, &all, &slot, &cols, 1, &[0])?);
+        }
+    }
+    let mut unit = UnitProgram::new(&ir.name, "fp32");
+    unit.results = results;
+    unit.chunk_results = bases.clone();
+    unit.chunk_fields_in_sums = summed
+        .iter()
+        .any(|(_, c)| c.operands.iter().any(|l| l.kind == "bcast_row"));
+    unit.operands = vec![Some(row.to_string())];
+    // each word marked, so that a pair's words are found again after the passes
+    for (i, x) in b.code.iter_mut().enumerate() {
+        x.mark = i + 1;
+    }
+    let done = fold_negation(&mut b.code)?;
+    unit.passes.push(pass("algebra", "fold_negation", done));
+    let done = fuse_mad(&mut b.code)?;
+    unit.passes.push(pass("algebra", "fuse_mad", done));
+    unit.passes.push(pass(
+        "layout",
+        "chunks",
+        vec![format!(
+            "a row of {width} tiles in {} chunks of {CHUNK}; {} sum(s) in {levels} pass(es) \
+             over the chunks, in slots of tile {CHUNK_SUMS}; {} per-row value(s) in slots of \
+             tile {CHUNK_ROWS}; {fields} per-column chunk(s) from tile {CHUNK_COLS}",
+            width.div_euclid(CHUNK),
+            reduces.len(),
+            stats.len()
+        )],
+    ));
+    check_lanes(
+        &mut unit,
+        &b.code,
+        Layout::Rows(CHUNK_ROWS, 0),
+        Some(CHUNK_SUMS),
+    )?;
+    let mut moved = 0;
+    for &(start, end) in &pairs {
+        let at: Vec<usize> = (0..b.code.len())
+            .filter(|&i| (start + 1..=end).contains(&b.code[i].mark))
+            .collect();
+        if let (Some(&first), Some(&last)) = (at.first(), at.last()) {
+            moved += interleave(&mut b.code, first, last + 1)?;
+        }
+    }
+    unit.passes.push(pass(
+        "schedule",
+        "interleave",
+        vec![format!("{moved} instructions moved in {}", pairs.len())],
+    ));
+    let layouts = Layouts {
+        copy: Layout::Tile(0),
+        rows: slot.iter().map(|(_, l)| *l).collect(),
+        sums: sums.iter().map(|(_, l)| *l).collect(),
+        cols: cols.iter().map(|(_, l)| *l).collect(),
+    };
+    check_broadcast(&mut unit, &b.code, &layouts, CHUNK, &bases)?;
+    let (mut setup, mut set11, mut tail) = (Vec::new(), Vec::new(), Vec::new());
+    let done = hoist(&mut b.code, &mut setup, &mut set11, &mut tail)?;
+    if !set11.is_empty() {
+        return Err(ChainError::NotPorted(
+            "LReg 11 set by the row form's body".into(),
+        ));
+    }
+    unit.passes.push(pass("schedule", "hoist", done));
+    let done = allocate(&mut b.code, &b.prog, &[])?;
+    unit.passes.push(pass("layout", "allocate", done));
+    allocate(&mut setup, &b.prog, &[])?;
+    unit.constants = b
+        .prog
+        .iter()
+        .zip(PROGRAMMABLE)
+        .map(|((_, v), r)| (r, v.clone()))
+        .collect();
+    let mut init = vec![Item::Insn(insn(
+        "SFPCONFIG",
+        &[("imm16_math", 0), ("config_dest", 15), ("instr_mod1", 1)],
+        "lane configuration",
+    )?)];
+    init.extend(items(setup));
+    unit.init[MATH] = init;
+    let head = vec![
+        call(
+            "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(dst)",
+            "Dst base of tile dst (RISC-V writes)",
+        ),
+        Item::Insn(insn(
+            "STALLWAIT",
+            &[("stall_res", STALL_SFPU), ("wait_res", WAIT_MATH)],
+            "SFPU waits for the matrix unit",
+        )?),
+    ];
+    let mut code = items(std::mem::take(&mut b.code));
+    unit.tile[MATH] = head.iter().cloned().chain(code.iter().cloned()).collect();
+    hazard_checks_on(&mut unit, &mut code)?;
+    let cuts: Vec<usize> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| {
+            matches!(x, Item::Insn(w) if w.op.name == "SFPNOP" && w.note.starts_with("part "))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    for (k, (name, &at)) in marks.iter().zip(&cuts).enumerate() {
+        let end = cuts.get(k + 1).copied().unwrap_or(code.len());
+        let mut part = head.clone();
+        part.extend(code.get(at + 1..end).unwrap_or_default().iter().cloned());
+        if name == "apply" {
+            unit.tile[MATH] = part;
+        } else {
+            unit.parts.push((name.clone(), part));
+        }
+    }
+    unit.tile[UNPACK] = vec![
+        sync(
+            "unpack",
+            "reader",
+            "cb_wait_front(x, width)",
+            "the row's tiles",
+        ),
+        call("copy_tile(x, 2 c + t, dst + t)", "chunk c into Dst (fp32)"),
+    ];
+    unit.tile[PACK] = vec![
+        sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        call("pack_tile(dst + t, out)", "the chunk's tile t"),
+        sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
+    ];
+    unit.not_checked = NOT_CHECKED
+        .iter()
+        .filter(|r| !r.contains("load-macro"))
+        .map(|r| r.to_string())
+        .collect();
+    check_dst_window(&mut unit, DST_TILES)?;
+    Ok(unit)
+}
+
+/// (instructions, cycles, copies) of a wide row on the math CPU: the sum parts and the
+/// body once a chunk, the others once, and the float32 copies of the row's tiles into
+/// Dst, a pass over the row each (its `residents` fields' tiles beside them in the apply
+/// pass, and in every pass when the sums read them); `cycles` holds them (today's
+/// `chunk_cost`).
+pub fn chunk_cost(
+    unit: &UnitProgram,
+    width: i64,
+    residents: i64,
+) -> Result<(i64, f64, f64), UnitError> {
+    let chunks = width.div_euclid(CHUNK);
+    let (mut count, mut cycles, mut passes) = (0, 0.0, 0);
+    let apply = ("apply".to_string(), unit.tile[MATH].clone());
+    for (name, items) in std::iter::once(&apply).chain(&unit.parts) {
+        let mut probe = UnitProgram::new(&unit.name, &unit.dest);
+        probe.tile[MATH] = items.clone();
+        let cost = probe.cost(MATH, 32)?;
+        let Some(c) = cost.cycles else {
+            return Err(UnitError(format!("part {name}: no priced word")));
+        };
+        let full = name == "apply" || name.starts_with("sum") && !name.contains('_');
+        let times = if full { chunks } else { 1 };
+        passes += i64::from(full);
+        count += cost.instructions * times;
+        cycles += c * times as f64;
+    }
+    let fields = residents * if unit.chunk_fields_in_sums { passes } else { 1 };
+    let Some(&(_, dst_copy, _)) = PRICES.iter().find(|(n, _, _)| *n == "dst_copy") else {
+        return Err(UnitError("no price of a tile copied into Dst".into()));
+    };
+    let copies = (passes + fields) as f64 * width as f64 * dst_copy;
+    Ok((count, round1(cycles + copies), round1(copies)))
 }

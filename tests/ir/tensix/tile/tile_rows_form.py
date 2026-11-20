@@ -1,7 +1,7 @@
 """Today's trace and row form of tile functions on a row of n tiles, the port's
 reference (in the IR's text in tile_rows_form.kom). Writes each KernelIR, the cases,
-each 2-tile unit's listing, header and emitted listing (`<case>.rows.*`) or refusal,
-and the refusal of a reduction on one tile. Usage: <this> <folder>."""
+each unit's listing, header and emitted listing (`<case>.rows.*` at 2 tiles, else
+`<case>.chunk.*` and its cost) or refusal, and a reduction on one tile's refusal."""
 
 import inspect
 import sys
@@ -15,6 +15,8 @@ from komorebi.dsl.tile.forms.rows import (
     Layout,
     _check_broadcast,
     _check_lanes,
+    chunk_cost,
+    chunk_program,
     row_program,
 )
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
@@ -171,6 +173,35 @@ def two_weights(x, w, v):
     return x - km.reduce_sum(x * w.row() * v.row(), exact=True).col()
 
 
+def rms_eight(x, w):
+    """rms_norm over 8 tiles: four chunks."""
+    ms = km.reduce_sum(x * x, exact=True) * 0.00390625
+    return x * km.rsqrt(ms + 1e-6).col() * w.row()
+
+
+def softmax_five(x):
+    """softmax_rows over 5 tiles: an odd row's last chunk of one tile."""
+    top = km.reduce_max(x, exact=True)
+    e = km.exp(x - top.col())
+    return e * km.reciprocal(km.reduce_sum(e, exact=True)).col()
+
+
+def extremes(x):
+    """A largest and a smallest value over 4 tiles: two starts, in a set's order."""
+    return x - km.reduce_max(x, exact=True).col() + km.reduce_min(x, exact=True).col()
+
+
+def wide_weighted(x, w):
+    """A sum that reads the resident row by .row() over 4 tiles."""
+    return x * km.reduce_sum(x * w.row(), exact=True).col()
+
+
+def wide_mixed(x, w):
+    """Two sums over 4 tiles, one reading the resident row by .row(), one not."""
+    a = km.reduce_sum(x * w.row(), exact=True)
+    return x * a.col() - km.reduce_max(x, exact=True).col()
+
+
 def five_values(x):
     """Five per-row values: more than the rows tile's slots."""
     a = x * km.reduce_sum(x, exact=True).col() + km.reduce_max(x, exact=True).col()
@@ -214,6 +245,11 @@ CASES = [
     ("three_plain", three_plain, [F], 2, 0),
     ("kept_through", kept_through, [F], 2, 0),
     ("two_weights", two_weights, [F, F, F], 2, 2),
+    ("rms_eight", rms_eight, [F, F], 8, 1),
+    ("softmax_five", softmax_five, [F], 5, 0),
+    ("extremes", extremes, [F], 4, 0),
+    ("wide_weighted", wide_weighted, [F, F], 4, 1),
+    ("wide_mixed", wide_mixed, [F, F], 4, 1),
     ("five_values", five_values, [F], 2, 0),
     ("five_fields", five_fields, [F] * 6, 2, 5),
 ]
@@ -402,29 +438,156 @@ def one_tile():
 def main(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    cases, refused = [], []
+    cases, refused, costs = [], [], []
     for case, function, formats, width, fields in CASES:
         cases.append(f"{case}\t{width}\t{fields}")
         ir = traced(case, function, formats, fields)
         (folder / f"{case}.ir").write_text(ir.dump() + "\n")
-        if width != 2:
-            continue
-        try:  # as tile_unit calls it on a row of 2 tiles
-            unit = row_program(ir, width, width, 2 * width)
+        form = "rows" if width == 2 else "chunk"
+        try:  # as tile_unit calls it on a row of 2 tiles, or of more
+            if width == 2:
+                unit = row_program(ir, width, width, 2 * width)
+            else:
+                unit = chunk_program(ir, width)
+                costs.append(
+                    f"{case}\t" + "\t".join(map(str, chunk_cost(unit, width, fields)))
+                )
             text = unit.dump()
             words = emit(unit)
         except (PlanError, UnitError) as error:
             refused.append(f"{case}\t{error}")
             continue
-        (folder / f"{case}.rows.txt").write_text(text + "\n")
-        (folder / f"{case}.rows.hpp").write_text(words)
-        (folder / f"{case}.rows.emitted.txt").write_text(unit.dump() + "\n")
+        (folder / f"{case}.{form}.txt").write_text(text + "\n")
+        lines = dst_lines(width, formats, fields)
+        (folder / f"{case}.dst").write_text("\n".join(lines) + "\n")
+        (folder / f"{case}.{form}.hpp").write_text(words)
+        (folder / f"{case}.{form}.emitted.txt").write_text(unit.dump() + "\n")
+        if form == "chunk":
+            (folder / f"{case}.chunk.fields").write_text(chunk_fields(unit))
     (folder / "cases.txt").write_text("".join(f"{c}\n" for c in cases))
     (folder / "one_tile.refused").write_text(one_tile() + "\n")
     (folder / "rows_refused.txt").write_text("".join(f"{r}\n" for r in refused))
     (folder / "branches.txt").write_text("".join(f"{b}\n" for b in branches(folder)))
     (folder / "checks.txt").write_text("".join(f"{c}\n" for c in checks(folder)))
     (folder / "band.txt").write_text(band() + "\n")
+    (folder / "chunk_costs.txt").write_text("".join(f"{c}\n" for c in costs))
+    (folder / "chunk_branches.txt").write_text(
+        "".join(f"{b}\n" for b in chunks(folder))
+    )
+
+
+def results(name, functions, formats, fields):
+    """The KernelIR of `functions` of one row, each stored to a result of its own (the
+    chunk form's several results, which the IR's trace does not make)."""
+    names = list(inspect.signature(functions[0]).parameters)
+    tensors = [TensorParam(p, False, f) for p, f in zip(names, formats, strict=True)]
+    outs = [TensorParam(f"result{k}", True, F32) for k in range(len(functions))]
+    ir = KernelIR(name, [*tensors, *outs], [], {})
+    held = len(names) - fields
+    with trace.Tracer(ir):
+        proxies = [trace.TensorProxy(t) for t in tensors]
+        stores = [trace.TensorProxy(o) for o in outs]
+        rows = [trace.resident(p.tiles[0, :]) for p in proxies[held:]]
+        for t in trace.grid(trace.num_tile_rows(proxies[0])):
+            loads = [trace.load(p.tiles[t, :]) for p in proxies[:held]]
+            for out, function in zip(stores, functions, strict=True):
+                trace.store(out.tiles[t, :], function(*loads, *rows))
+    return ir
+
+
+def _sum(x):
+    return km.reduce_sum(x, exact=True)
+
+
+# chunk_program's branches the corpus does not reach: case, KernelIR, width
+CHUNKS = [
+    ("narrow", lambda: traced("narrow", centred, [F], 0), 2),
+    (
+        "two_results",
+        lambda: results(
+            "two_results",
+            [lambda x, w: x * _sum(x).col() * w.row(), lambda x, w: x - _sum(x).col()],
+            [F, F],
+            1,
+        ),
+        4,
+    ),
+    (
+        "three_results",
+        lambda: results(
+            "three_results",
+            [lambda x, w, v: x * w.row() * _sum(x).col()] * 3,
+            [F, F, F],
+            2,
+        ),
+        4,
+    ),
+    (
+        "five_sums",
+        lambda: traced(
+            "five_sums",
+            lambda x: x
+            * (
+                _sum(x) + _sum(x * x) + _sum(x * 2.0) + _sum(x * 3.0) + _sum(x * 4.0)
+            ).col(),
+            [F],
+            0,
+        ),
+        4,
+    ),
+    (
+        "five_wide_fields",
+        lambda: traced("five_wide_fields", five_fields, [F] * 6, 5),
+        4,
+    ),
+    (
+        "value_alone",
+        lambda: traced("value_alone", lambda x: (_sum(x) * 0.25).col(), [F], 0),
+        3,
+    ),
+]
+
+
+def dst_lines(width, formats, fields):
+    """Today's handler's Dst layout of a row form's call (compile/tiles/functions.py):
+    the row in Dst 0 .. width - 1 and field k in 2 width + k, packed from the row's
+    tiles; past 2 tiles, row_chunks: a chunk in Dst 0 and 1, field k in 4 + k."""
+    tiles, first = (width, 2 * width) if width <= 2 else (2, 4)
+    held = len(formats) - fields
+    lines = [
+        "param\t" + ",".join(map(str, range(tiles))) if k == 0 else "param\t"
+        for k in range(held)
+    ]
+    lines += [f"param\t{first + k}" for k in range(fields)]
+    return [*lines, "result\t" + ",".join(map(str, range(tiles)))]
+
+
+def chunk_fields(unit):
+    """What the handler reads of a chunk unit that its listing does not print."""
+    return (
+        f"results\t{unit.results}\n"
+        f"chunk_results\t{','.join(map(str, unit.chunk_results))}\n"
+        f"fields_in_sums\t{int(unit.chunk_fields_in_sums)}\n"
+    )
+
+
+def chunks(folder):
+    """Today's chunk_program on CHUNKS: each case's width and verdict (`made`, or its
+    refusal's text), its KernelIR in `chunk_<case>.ir` and its unit in
+    `chunk_<case>.chunk.txt`."""
+    lines = []
+    for case, make, width in CHUNKS:
+        ir = make()
+        (folder / f"chunk_{case}.ir").write_text(ir.dump() + "\n")
+        try:
+            unit = chunk_program(ir, width)
+            (folder / f"chunk_{case}.chunk.txt").write_text(unit.dump() + "\n")
+            (folder / f"chunk_{case}.chunk.fields").write_text(chunk_fields(unit))
+            verdict = "made"
+        except (PlanError, UnitError) as error:
+            verdict = str(error)
+        lines.append(f"{case}\t{width}\t{verdict}")
+    return lines
 
 
 def band():

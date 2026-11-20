@@ -29,9 +29,10 @@ use komorebi_ir::backend::tensix::tile::lower::{
     common_values, drop_copies, per_row_prepass, stream_chain, unit_program, FIDELITY,
 };
 use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
+use komorebi_ir::backend::tensix::tile::py::float_repr;
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
 use komorebi_ir::backend::tensix::tile::rows::{
-    check_broadcast, check_lanes, row_program, Layout, Layouts,
+    check_broadcast, check_lanes, chunk_cost, chunk_program, row_program, Layout, Layouts,
 };
 use komorebi_ir::backend::tensix::tile::schedule::interleave;
 use komorebi_ir::backend::tensix::tile::unit::{
@@ -39,7 +40,7 @@ use komorebi_ir::backend::tensix::tile::unit::{
     Runtime, Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
 };
 use komorebi_ir::backend::tensix::tile::wormhole::forms;
-use komorebi_ir::backend::tensix::unit::fidelity;
+use komorebi_ir::backend::tensix::unit::{fidelity, row_layout, unit as tile_unit, DstLayout};
 use komorebi_ir::program::body::{InstId, Op};
 use komorebi_ir::program::notes::{Anchor, Origin};
 use komorebi_ir::program::BodyRef;
@@ -1495,6 +1496,199 @@ fn the_row_forms_branches_the_corpus_does_not_reach_are_todays() {
     assert_eq!(banded.refusal(None).code, "K962");
 }
 
+/// A call's Dst layout as today's scripts write it.
+fn dst_text(layout: &DstLayout) -> String {
+    let list = |tiles: &[usize]| {
+        let t: Vec<String> = tiles.iter().map(usize::to_string).collect();
+        t.join(",")
+    };
+    let mut lines: Vec<String> = layout
+        .params
+        .iter()
+        .map(|p| format!("param\t{}", list(p)))
+        .collect();
+    lines.push(format!("result\t{}", list(&layout.result)));
+    lines.join("\n") + "\n"
+}
+
+#[test]
+fn a_units_dst_layout_is_todays_handlers() {
+    // the stream form: each unit `unit()` makes of the corpus, against the layout
+    // today's handler takes from today's unit
+    let Some(folder) = today() else { return };
+    let module = corpus();
+    let mut made = Vec::new();
+    for (i, f) in module.funcs.iter().enumerate() {
+        let Some(case) = f.name.strip_prefix("t_") else {
+            continue;
+        };
+        let Ok(unit) = tile_unit(&module, komorebi_ir::types::FuncId(i as u32)) else {
+            continue;
+        };
+        let want = std::fs::read_to_string(folder.join(format!("{case}.dst")))
+            .unwrap_or_else(|e| panic!("{case}.dst: {e}"));
+        assert_eq!(dst_text(unit.dst_layout()), want, "{case}");
+        made.push(case);
+    }
+    assert!(made.len() >= 20, "{made:?}");
+    // the row form, at 2 tiles and in chunks, as today's handler lays out its call
+    let Some(folder) = today_rows() else { return };
+    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
+    let mut rows = 0;
+    for line in cases.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let case = f[0];
+        let width: usize = f[1].parse().expect("a width");
+        let fields: usize = f[2].parse().expect("the fields");
+        let Ok(want) = std::fs::read_to_string(folder.join(format!("{case}.dst"))) else {
+            continue;
+        };
+        let ir = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
+        let params = parse_ir(&ir).tensors.iter().filter(|t| !t.output).count();
+        let resident: Vec<bool> = (0..params).map(|k| k + fields >= params).collect();
+        assert_eq!(dst_text(&row_layout(&resident, width)), want, "{case}");
+        rows += 1;
+    }
+    assert!(rows >= 20, "{rows}");
+}
+
+/// What the handler reads of a chunk unit that its listing does not print, as the
+/// script writes it.
+fn chunk_fields(unit: &UnitProgram) -> String {
+    let bases: Vec<String> = unit.chunk_results.iter().map(i64::to_string).collect();
+    format!(
+        "results\t{}\nchunk_results\t{}\nfields_in_sums\t{}\n",
+        unit.results,
+        bases.join(","),
+        i64::from(unit.chunk_fields_in_sums)
+    )
+}
+
+#[test]
+fn each_wide_row_gets_todays_chunk_unit_and_cost_from_its_kernel_ir() {
+    let Some(folder) = today_rows() else { return };
+    let read = |file: &str| std::fs::read_to_string(folder.join(file)).expect(file);
+    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
+    let refused = std::fs::read_to_string(folder.join("rows_refused.txt")).expect("refused");
+    let costs = std::fs::read_to_string(folder.join("chunk_costs.txt")).expect("the costs");
+    let (mut same, mut not_ported) = (Vec::new(), Vec::new());
+    for line in cases.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (case, width) = (f[0], f[1].parse::<i64>().expect("a width"));
+        let fields = f[2].parse::<i64>().expect("the fields");
+        if width <= 2 {
+            continue;
+        }
+        let text = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
+        let ir = parse_ir(&text);
+        assert_eq!(ir.dump() + "\n", text, "{case}: the KernelIR read back");
+        let made = chunk_program(&ir, width);
+        if let Some(today) = refused
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{case}\t")))
+        {
+            let error = made.expect_err(case);
+            assert_eq!(
+                error.text(),
+                today.split(" (at ").next().unwrap_or(today),
+                "{case}"
+            );
+            assert_eq!(error.refusal(None).code, "K962", "{case}");
+            continue;
+        }
+        let mut unit = match made {
+            Ok(unit) => unit,
+            Err(e) => {
+                assert_eq!(e.refusal(None).code, "K964", "{case}: {}", e.text());
+                not_ported.push(format!("{case}: {}", e.text()));
+                continue;
+            }
+        };
+        let (count, cycles, copies) =
+            chunk_cost(&unit, width, fields).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let cost = format!(
+            "{case}\t{count}\t{}\t{}",
+            float_repr(cycles),
+            float_repr(copies)
+        );
+        assert!(costs.lines().any(|l| l == cost), "{case}: {cost}");
+        assert_eq!(
+            chunk_fields(&unit),
+            read(&format!("{case}.chunk.fields")),
+            "{case}"
+        );
+        let listing = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+        let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
+        let emitted = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+        for (file, got) in [("txt", listing), ("hpp", words), ("emitted.txt", emitted)] {
+            let want = std::fs::read_to_string(folder.join(format!("{case}.chunk.{file}")))
+                .unwrap_or_else(|e| panic!("{case}.chunk.{file}: {e}"));
+            assert!(
+                got == want,
+                "{case}'s {file} differs, {}",
+                first_difference(&want, &got)
+            );
+        }
+        same.push(case);
+    }
+    // rms_norm at 3, 4 and 8 tiles (its weight in bf16 at 3), softmax_rows at 3 and 5
+    // (an odd row's last chunk), a row's largest value, layer_norm's two levels and two
+    // resident rows, a sum reading .row() (and with another sum that does not)
+    assert_eq!(
+        same,
+        [
+            "rms_norm_wide",
+            "rms_bf16",
+            "softmax_rows",
+            "row_max",
+            "layer_norm",
+            "rms_eight",
+            "softmax_five",
+            "wide_weighted",
+            "wide_mixed"
+        ]
+    );
+    // a largest and a smallest value together: today starts them in a set's order
+    assert_eq!(
+        not_ported,
+        [
+            "extremes: not ported: the chunk form's start values of a largest and a smallest \
+          value together (today makes them in a set's order)"
+        ]
+    );
+    let lines = std::fs::read_to_string(folder.join("chunk_branches.txt")).expect("branches");
+    let mut verdicts = 0;
+    for line in lines.lines() {
+        let f: Vec<&str> = line.splitn(3, '\t').collect();
+        let (case, width, today) = (f[0], f[1].parse::<i64>().expect("a width"), f[2]);
+        let text = std::fs::read_to_string(folder.join(format!("chunk_{case}.ir"))).expect("IR");
+        match (today, chunk_program(&parse_ir(&text), width)) {
+            ("made", Ok(unit)) => {
+                let want = folder.join(format!("chunk_{case}.chunk.txt"));
+                let want = std::fs::read_to_string(want).expect("today's unit");
+                let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+                assert!(got == want, "{case}: {}", first_difference(&want, &got));
+                let want = read(&format!("chunk_{case}.chunk.fields"));
+                assert_eq!(chunk_fields(&unit), want, "{case}");
+            }
+            ("made", Err(e)) => panic!("{case}: {}", e.text()),
+            (today, Err(e)) => {
+                assert_eq!(
+                    e.text(),
+                    today.split(" (at ").next().unwrap_or(today),
+                    "{case}"
+                );
+                assert_eq!(e.refusal(None).code, "K962", "{case}");
+            }
+            (today, Ok(_)) => panic!("{case}: made, today refuses it: {today}"),
+        }
+        verdicts += 1;
+    }
+    // a row of 2, two results, three (more than Dst holds), five sums, five resident
+    // rows, a per-row value alone (part `value`)
+    assert_eq!(verdicts, 6);
+}
+
 #[test]
 fn the_row_forms_checks_are_todays_on_a_few_words() {
     let Some(folder) = today_rows() else { return };
@@ -1502,6 +1696,7 @@ fn the_row_forms_checks_are_todays_on_a_few_words() {
     let layouts = Layouts {
         copy: Layout::Tile(0),
         rows: vec![Layout::Rows(2, 0)],
+        sums: Vec::new(),
         cols: vec![Layout::Cols(4)],
     };
     let mut cases = 0;
@@ -1513,9 +1708,9 @@ fn the_row_forms_checks_are_todays_on_a_few_words() {
         let code: Vec<Insn> = words.lines().map(row_word).collect();
         let mut unit = UnitProgram::new("c", "fp32");
         let made = if check == "lanes" {
-            check_lanes(&mut unit, &code, layouts.rows[0])
+            check_lanes(&mut unit, &code, layouts.rows[0], None)
         } else {
-            check_broadcast(&mut unit, &code, &layouts, 2)
+            check_broadcast(&mut unit, &code, &layouts, 2, &[0])
         };
         let got = match made {
             Ok(()) => unit

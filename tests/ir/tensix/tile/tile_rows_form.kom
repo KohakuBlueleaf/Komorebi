@@ -129,6 +129,30 @@ func t_two_weights(x: tile<f32>[2], w: tile<f32>[2], v: tile<f32>[2]) -> tile<f3
     return x - reduce_sum(x * w.row() * v.row(), axis = row).col()
 }
 
+func t_rms_eight(x: tile<f32>[8], w: tile<f32>[8]) -> tile<f32>[8] {
+    let ms = reduce_sum(x * x, axis = row) * 0.00390625
+    return x * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func t_softmax_five(x: tile<f32>[5]) -> tile<f32>[5] {
+    let top = reduce_max(x, axis = row)
+    let e = exp(x - top.col())
+    return e * reciprocal(reduce_sum(e, axis = row)).col()
+}
+
+func t_extremes(x: tile<f32>[4]) -> tile<f32>[4] {
+    return x - reduce_max(x, axis = row).col() + reduce_min(x, axis = row).col()
+}
+
+func t_wide_weighted(x: tile<f32>[4], w: tile<f32>[4]) -> tile<f32>[4] {
+    return x * reduce_sum(x * w.row(), axis = row).col()
+}
+
+func t_wide_mixed(x: tile<f32>[4], w: tile<f32>[4]) -> tile<f32>[4] {
+    let a = reduce_sum(x * w.row(), axis = row)
+    return x * a.col() - reduce_max(x, axis = row).col()
+}
+
 func t_five_values(x: tile<f32>[2]) -> tile<f32>[2] {
     let a = x * reduce_sum(x, axis = row).col() + reduce_max(x, axis = row).col()
     let b = a - reduce_min(x, axis = row).col()

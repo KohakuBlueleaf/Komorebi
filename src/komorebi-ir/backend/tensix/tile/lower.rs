@@ -184,7 +184,7 @@ impl Body {
     }
 
     /// `op` as `op` appends it, a word that may write no value (none returned).
-    fn word(
+    pub(crate) fn word(
         &mut self,
         op: &str,
         note: &str,
@@ -367,9 +367,13 @@ impl Body {
     /// `value` (fp32) into a new value: one SFPLOADI when bf16 or fp16 holds it
     /// exactly, else the low then the high half.
     fn constant(&mut self, value: f64) -> Result<Arg, ChainError> {
+        self.constant_noted(value, &py::float_repr(value))
+    }
+
+    /// `constant` with the note `note` on its words (today's `const(value, note)`).
+    pub(crate) fn constant_noted(&mut self, value: f64, note: &str) -> Result<Arg, ChainError> {
         let bits = i64::from((value as f32).to_bits());
         let out = name(&self.fresh());
-        let note = py::float_repr(value);
         let word = |b: &mut Body, mode: i64, imm: i64| {
             let args = [
                 ("lreg_ind", out.clone()),
@@ -378,7 +382,7 @@ impl Body {
             ];
             // a new value counted for its written field, as `op` counts it
             b.fresh();
-            Insn::new("SFPLOADI", &args, &note).map(|w| b.code.push(w))
+            Insn::new("SFPLOADI", &args, note).map(|w| b.code.push(w))
         };
         if bits & 0xFFFF == 0 {
             word(self, 0, bits >> 16)?;

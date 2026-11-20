@@ -279,6 +279,15 @@ def encodings():
     return lines
 
 
+def dst_lines(function, unit):
+    """Today's handler's Dst layout of a call (compile/tiles/functions.py, tile_unit):
+    Dst tile k holds the parameter unit.operands[k] names; result k is in Dst tile k."""
+    names = list(inspect.signature(function).parameters)
+    taken = [[k for k, o in enumerate(unit.operands) if o == n] for n in names]
+    lines = ["param\t" + ",".join(map(str, tiles)) for tiles in taken]
+    return [*lines, "result\t" + ",".join(map(str, range(unit.results)))]
+
+
 def fields(unit):
     """What a caller reads of a unit that its listing does not print."""
     products = [f"{p.dst}:{p.a}:{p.w}" for p in unit.products]
@@ -313,6 +322,7 @@ def main(folder):
         (folder / f"{case}.unit").write_text("\n".join(unit_lines(unit)) + "\n")
         (folder / f"{case}.txt").write_text(text + "\n")
         (folder / f"{case}.fields").write_text("\n".join(fields(unit)) + "\n")
+        (folder / f"{case}.dst").write_text("\n".join(dst_lines(function, unit)) + "\n")
         try:
             words = emit(unit)  # as the class's files are written (program.write)
         except UnitError as error:

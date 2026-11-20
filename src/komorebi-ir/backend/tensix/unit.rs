@@ -3,8 +3,9 @@
 //! DSL makes them for a call on one tile at a time: the function traced, its unit
 //! program lowered with a load macro, emitted, and listed with the emit's checks.
 
+use crate::backend::tensix::plan::param_name;
 use crate::backend::{Refusal, NOT_BUILT, OVER_LIMIT};
-use crate::program::notes::{Anchor, HintArg};
+use crate::program::notes::{Anchor, HintArg, Owner};
 use crate::program::Module;
 use crate::types::FuncId;
 
@@ -13,6 +14,7 @@ use super::tile::emit::emit;
 use super::tile::ir::{kernel_ir, KernelIR};
 use super::tile::lower::{unit_program, A_DTYPES, FIDELITY};
 use super::tile::matrix::phases;
+use super::tile::rows::CHUNK;
 use super::tile::unit::UnitProgram;
 
 /// A tile function's two files: its words and its listing.
@@ -28,6 +30,8 @@ pub struct Unit {
     operands: usize,
     /// Its unit program's results.
     results: usize,
+    /// Where a call's parameters and result sit in Dst.
+    layout: DstLayout,
 }
 
 impl Unit {
@@ -35,6 +39,74 @@ impl Unit {
     /// a batch of calls is the Dst half's tiles over this.
     pub fn dst_tiles(&self) -> usize {
         self.operands.max(self.results)
+    }
+
+    /// Where a call's parameters and result sit in Dst, from the call's first tile:
+    /// the tiles the caller copies each parameter into and packs the result from.
+    pub fn dst_layout(&self) -> &DstLayout {
+        &self.layout
+    }
+}
+
+/// Where a call of a unit holds its parameters and its result in Dst, counted from the
+/// call's first Dst tile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DstLayout {
+    /// The Dst tiles of each parameter, in the function's order: none for a parameter
+    /// not read as a tile (a run-time scalar), several for one read in several ways.
+    pub params: Vec<Vec<usize>>,
+    /// The Dst tiles the result is packed from, in order.
+    pub result: Vec<usize>,
+}
+
+/// The stream form's layout (today's handler, a call on one tile): Dst tile k holds the
+/// parameter its unit's operand k names, and result k is in Dst tile k.
+fn stream_layout(names: &[&str], unit: &UnitProgram) -> DstLayout {
+    let params = names
+        .iter()
+        .map(|name| {
+            (unit.operands.iter().enumerate())
+                .filter(|(_, o)| o.as_deref() == Some(*name))
+                .map(|(k, _)| k)
+                .collect()
+        })
+        .collect();
+    let results = usize::try_from(unit.results).unwrap_or(0);
+    DstLayout {
+        params,
+        result: (0..results).collect(),
+    }
+}
+
+/// The row form's layout on a row of `width` tiles (today's handler): the first
+/// streamed parameter's row in Dst 0 .. width - 1 (a chunk of 2, Dst 0 and 1, when the
+/// row is wider than 2), resident row k (the `resident` parameters, the last ones) in
+/// Dst 2 width + k (4 + k in the chunk form), the result over the row's tiles. The
+/// compute loop does not call the row form yet; this says where it will put them.
+pub fn row_layout(resident: &[bool], width: usize) -> DstLayout {
+    let chunk = usize::try_from(CHUNK).unwrap_or(2);
+    let (tiles, fields) = if width > chunk {
+        (chunk, 4)
+    } else {
+        (width, 2 * width)
+    };
+    let first = resident.iter().position(|r| !r);
+    let mut k = 0;
+    let params = (resident.iter().enumerate())
+        .map(|(i, &r)| {
+            if r {
+                k += 1;
+                vec![fields + k - 1]
+            } else if Some(i) == first {
+                (0..tiles).collect()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    DstLayout {
+        params,
+        result: (0..tiles).collect(),
     }
 }
 
@@ -146,11 +218,15 @@ pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
     let refused = |e| ChainError::from(e).refusal(at);
     let words = emit(&mut made).map_err(refused)?;
     let listing = made.dump().map_err(refused)? + "\n";
+    let names: Vec<&str> = (0..func.params.len())
+        .map(|i| param_name(module, Owner::Func(f), i as u32).unwrap_or(""))
+        .collect();
     Ok(Unit {
         name,
         words,
         listing,
         operands: made.operands.len(),
         results: usize::try_from(made.results).unwrap_or(0),
+        layout: stream_layout(&names, &made),
     })
 }
