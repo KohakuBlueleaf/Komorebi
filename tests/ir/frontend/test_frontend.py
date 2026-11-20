@@ -297,7 +297,11 @@ def test_a_name_the_walk_makes_is_none_the_class_uses():
         (TwoPatterns, "for a, b", "the streams of one loop in different patterns"),
         (RepeatedBody, "for a in", "a repeat of a loop with a body"),
         (RepeatedZip, "for _a, _b", "a repeat of a loop over two streams"),
-        (Unblocked, "for a in", "a stream's block that is not a number or a constant"),
+        (
+            Unblocked,
+            "for a in",
+            "a stream's block that is not a number, a module's int",
+        ),
         (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
         (Led, "pages(self.leader", "self.leader as a number is not written"),
         (Ranked, "self.rank == 1", "an if other than `if self.rank == self.leader:`"),
@@ -327,6 +331,30 @@ def gate_script(folder, monkeypatch, name="gate_class", folder_copy=True):
     monkeypatch.setitem(sys.modules, name, gate)
     spec.loader.exec_module(gate)
     return gate
+
+
+def test_a_streams_block_of_a_modules_int_is_its_number(tmp_path, monkeypatch):
+    # program 4 with its block a module's int, as a script's `CT = 4` at its top
+    source = (ROOT / "tests" / "ir" / "tensix" / "gate_class.py").read_text()
+    pairs = [
+        (
+            "    BLOCK = km.constant(8)  # tiles a block, as the hand program's kBlock",
+            "",
+        ),
+        ("CORES, TILES = 12, 64", "BLOCK = 4  # tiles a block\nCORES, TILES = 12, 64"),
+        ("block=self.BLOCK", "block=BLOCK"),
+    ]
+    for old, new in pairs:
+        assert old in source, old
+        source = source.replace(old, new)
+    (tmp_path / "gate_class.py").write_text(source)
+    gate = gate_script(tmp_path, monkeypatch, folder_copy=False)
+    given = gate.made_with()
+    m = module(gate.Gate, **given)
+    assert "param " not in m.text and m.text.count("block = 4") == 3
+    today = gate.Gate(log=lambda line: None, **given)
+    ours = program(gate.Gate, log=lambda line: None, **given)
+    assert ours.sources() == today.sources()
 
 
 @pytest.mark.parametrize("operands", [2, 3])

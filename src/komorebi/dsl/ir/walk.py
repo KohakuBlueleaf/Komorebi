@@ -840,12 +840,17 @@ class Handler:
 
     def block_of(self, node, call):
         """A stream's block as the text writes it and its tiles: a number (1 when not
-        given, as today's `stream_options`, row=1), or `self.<constant>` of the class,
-        the module parameter of its name."""
+        given, as today's `stream_options`, row=1), a module's int as its number (as
+        `int_text` writes one), or `self.<constant>` of the class, the module parameter
+        of its name."""
         keywords = {k.arg: k.value for k in call.keywords}
         block = keywords.get(spelling("block"), ast.Constant(1))
         if isinstance(block, ast.Constant) and type(block.value) is int:
             return str(block.value), block.value
+        if isinstance(block, ast.Name) and block.id not in self.scope:
+            known = self.globals.get(block.id)
+            if type(known) is int and known > 0:
+                return str(known), known
         if (
             isinstance(block, ast.Attribute)
             and isinstance(block.value, ast.Name)
@@ -855,8 +860,9 @@ class Handler:
             return quoted(block.attr), self.constants[block.attr]
         self.refuse(
             node,
-            "a stream's block that is not a number or a constant of the class",
-            "write block=<n> or block=self.<constant>",
+            "a stream's block that is not a number, a module's int or a constant of "
+            "the class",
+            "write block=<n>, block=<a module's int> or block=self.<constant>",
         )
 
     def pattern_of(self, node, calls):

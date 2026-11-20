@@ -131,7 +131,8 @@ A stream with no `block=` is of one tile a block, as today's. A class's int cons
 (`BLOCK = km.constant(8)`) is written as a module parameter fixed at build,
 `param BLOCK: u32 = 8 @bind(build)`, its value the make's (`BLOCK=4` at the make writes 4). It
 reaches `compile` in the text: a parameter's value is a compile input. `block=self.BLOCK` is
-written `block = BLOCK`. A constant of another kind is refused by name.
+written `block = BLOCK`. A module's int (`block=CT`, `CT = 4` at the module's top) is written as
+its number, `block = 4`, as a word's is. A constant of another kind is refused by name.
 
 A `km.Pattern` parameter is written as a `u32` parameter. A stream's `pattern=` naming it is
 written as the hint `@tensix.pattern(p)`: on the loop for its read streams (which must give the
