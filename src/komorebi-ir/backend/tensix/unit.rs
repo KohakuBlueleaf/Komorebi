@@ -68,7 +68,7 @@ fn not_printed(unit: &UnitProgram) -> Option<&'static str> {
 }
 
 /// The fidelity of function `f`'s tile products: its hint `@tensix.fidelity(<name>)`,
-/// one of today's names (another is refused with today's text, `K962`), or with no
+/// one of today's names (another is refused with today's whole text, `K962`), or with no
 /// hint today's default (`HiFi4`). A second such hint, or one not of one name, is
 /// refused by name (`K964`).
 pub fn fidelity(module: &Module, f: FuncId) -> Result<String, Refusal> {
@@ -94,12 +94,30 @@ pub fn fidelity(module: &Module, f: FuncId) -> Result<String, Refusal> {
     };
     match phases(name) {
         Ok(_) => Ok(name.clone()),
-        Err(e) => Err(Refusal {
-            code: OVER_LIMIT,
-            what: e.0,
-            at,
-        }),
+        Err(e) => {
+            // today's unit_program refuses it at its entry, by `fail`: the prefix, the
+            // function's name and a line (today's caller's; here the function's own)
+            let func = module
+                .funcs
+                .get(f.0 as usize)
+                .map_or("", |x| x.name.as_str());
+            let line = func_line(module, f).map_or(String::new(), |l| format!(" (at {l})"));
+            Err(Refusal {
+                code: OVER_LIMIT,
+                what: format!("komorebi.dsl.tile: {func}: {}{line}", e.0),
+                at,
+            })
+        }
     }
+}
+
+/// `file:line` of function `f`'s place in the module's origin, when it has one.
+fn func_line(module: &Module, f: FuncId) -> Option<String> {
+    let origin = module.notes.origin.as_ref()?;
+    let &(_, file, first, _) = origin.places.iter().find(|p| p.0 == Anchor::Func(f))?;
+    let path = origin.files.get(file as usize)?;
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    Some(format!("{base}:{first}"))
 }
 
 /// The unit of function `f` called on one tile at a time, as today's `tile_unit` makes

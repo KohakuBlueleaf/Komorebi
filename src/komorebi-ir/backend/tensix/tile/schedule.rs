@@ -7,7 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::unit::{Arg, Insn, Kind, UnitError, WORK};
+use super::chain::ChainError;
+use super::unit::{Arg, Insn, Kind, WORK};
 
 /// Each instruction's (reads, writes), by its place in the code before the pass.
 type Uses = Vec<(Vec<Arg>, Vec<Arg>)>;
@@ -19,8 +20,10 @@ fn work(value: &Arg) -> bool {
 
 /// Schedule: reorders `code[start..end]` (a run under lane flags moves as one) so a
 /// reader of the MAD result issued just before it waits behind another ready word; a
-/// constant's loads go in front of its first reader. Returns how many moved.
-pub fn interleave(code: &mut Vec<Insn>, start: usize, end: usize) -> Result<usize, UnitError> {
+/// constant's loads go in front of its first reader. Returns how many moved. A run
+/// that two or more constants are loaded in front of is refused by name: today takes
+/// their order from a set, which no case pins yet.
+pub fn interleave(code: &mut Vec<Insn>, start: usize, end: usize) -> Result<usize, ChainError> {
     let end = end.min(code.len());
     let start = start.min(end);
     let mut uses = Uses::new();
@@ -28,14 +31,20 @@ pub fn interleave(code: &mut Vec<Insn>, start: usize, end: usize) -> Result<usiz
         uses.push((x.reads(), x.writes()?));
     }
     let mut order: Vec<usize> = (0..code.len()).collect();
-    let moved = schedule(code, &uses, &mut order, start, end);
+    let moved = schedule(code, &uses, &mut order, start, end)?;
     let before = code.clone();
     *code = order.iter().map(|&i| before[i].clone()).collect();
     Ok(moved)
 }
 
 /// The pass on `order` (the code's instructions by their place before it).
-fn schedule(code: &[Insn], uses: &Uses, order: &mut Vec<usize>, start: usize, end: usize) -> usize {
+fn schedule(
+    code: &[Insn],
+    uses: &Uses,
+    order: &mut Vec<usize>,
+    start: usize,
+    end: usize,
+) -> Result<usize, ChainError> {
     let reads = |i: usize| &uses[i].0;
     let writes = |i: usize| &uses[i].1;
     let whole: Vec<usize> = order[start..end].to_vec();
@@ -88,7 +97,7 @@ fn schedule(code: &[Insn], uses: &Uses, order: &mut Vec<usize>, start: usize, en
         .filter(|x| !held.contains(x))
         .collect();
     let Some(units) = units_of(code, &block) else {
-        return 0;
+        return Ok(0);
     };
     let mut preds: Vec<HashSet<usize>> = Vec::new();
     for (i, unit) in units.iter().enumerate() {
@@ -154,7 +163,16 @@ fn schedule(code: &[Insn], uses: &Uses, order: &mut Vec<usize>, start: usize, en
         for &i in &issued {
             // a constant read under lane flags and outside them: loaded in front of
             // the run (loaded in it, the lanes the run leaves off keep stale values)
-            for v in read_outside(&units[i], &consts, order, uses) {
+            let ahead: Vec<&Arg> = read_outside(&units[i], &consts, order, uses)
+                .into_iter()
+                .filter(|v| !placed.contains(v))
+                .collect();
+            if ahead.len() > 1 {
+                return Err(ChainError::NotPorted(
+                    "the order of the constants before a run is not pinned yet".into(),
+                ));
+            }
+            for v in ahead {
                 if !placed.contains(&v) {
                     if let Some((c, ws)) = consts.iter().find(|(c, _)| c == v) {
                         out.extend_from_slice(ws);
@@ -187,10 +205,10 @@ fn schedule(code: &[Insn], uses: &Uses, order: &mut Vec<usize>, start: usize, en
         }
         order.splice(start..end_now, whole.iter().copied());
     }
-    match picked {
+    Ok(match picked {
         Some(issued) => issued.iter().enumerate().filter(|(k, i)| k != *i).count(),
         None => 0,
-    }
+    })
 }
 
 /// What the issue order reads besides the units.

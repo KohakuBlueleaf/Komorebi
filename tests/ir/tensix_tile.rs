@@ -841,7 +841,10 @@ fn a_fidelity_hint_is_read_and_an_unknown_one_refused() {
         today,
         "no fidelity 'HiFi5': one of LoFi, HiFi2, HiFi3, HiFi4"
     );
-    assert_eq!(given(" @tensix.fidelity(HiFi5)"), Err(("K962", today)));
+    // today's unit_program refuses it at its entry with its prefix and the name (a
+    // module of no origin: no line)
+    let whole = format!("komorebi.dsl.tile: p: {today}");
+    assert_eq!(given(" @tensix.fidelity(HiFi5)"), Err(("K962", whole)));
     let named = |what: &str| {
         Err((
             "K964",
@@ -1053,4 +1056,32 @@ fn the_per_row_passes_are_todays_on_a_few_words() {
             first_difference(&want, &got)
         );
     }
+}
+
+/// Two constants read in a run under lane flags and outside it: today loads them in
+/// front of the run in a set's order, which no case pins, so the port refuses it by
+/// name; one such constant is today's (`outside` in `tile_rows.py`).
+#[test]
+fn two_constants_before_a_run_are_refused_by_name() {
+    let mut code: Vec<Insn> = [
+        "SFPLOADI lreg_ind=v1 instr_mod0=0 imm16=16128 ; const",
+        "SFPLOADI lreg_ind=v4 instr_mod0=0 imm16=16256 ; const",
+        "SFPLOAD lreg_ind=v2 instr_mod0=0 sfpu_addr_mode=0 dest_reg_addr=0 ; Dst + 0",
+        "SFPGT imm12_math=0 lreg_c=zero lreg_dest=v2 instr_mod1=1 ; a gt b",
+        "SFPMAD lreg_src_a=v1 lreg_src_b=v4 lreg_src_c=zero lreg_dest=v2 instr_mod1=0 ; a b",
+        "SFPENCC imm12_math=3 lreg_c=0 lreg_dest=0 instr_mod1=10 ; every lane on",
+        "SFPMAD lreg_src_a=v2 lreg_src_b=v1 lreg_src_c=v4 lreg_dest=v3 instr_mod1=0 ; a b + c",
+        "SFPSTORE lreg_ind=v3 instr_mod0=0 sfpu_addr_mode=0 dest_reg_addr=0 ; store",
+    ]
+    .iter()
+    .map(|l| row_word(l))
+    .collect();
+    let before: Vec<String> = code.iter().map(row_line).collect();
+    let end = code.len();
+    let refused = interleave(&mut code, 0, end).expect_err("refused");
+    assert_eq!(
+        refused.text(),
+        "not ported: the order of the constants before a run is not pinned yet"
+    );
+    assert_eq!(code.iter().map(row_line).collect::<Vec<_>>(), before);
 }
