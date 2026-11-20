@@ -8,13 +8,9 @@
 //! does. Today's `tile_wormhole.py`, `tile_checks.py`, `tile_matrix.py` and
 //! `tile_rows.py` give the Wormhole forms, the emit and its checks, the hazard checks,
 //! the matrix unit's words and the per-row passes, on code of a few words that the
-//! corpus does not reach. Today's `tile_rows_form.py` traces functions on a row of n
-//! tiles (the row form), written in the IR on blocks in `tile_rows_form.kom`, and
-//! makes the row form's unit of each row of 2 tiles from its KernelIR, which the port
-//! reads back from today's text.
+//! corpus does not reach. The row form is `tensix_rows.rs` and `tensix_chunks.rs`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 
 use komorebi_ir::backend::tensix::tile::chain::{Chain, Source};
@@ -22,28 +18,24 @@ use komorebi_ir::backend::tensix::tile::checks::{
     check_config_nop, check_dst_window, check_mad_readers, check_saved, not_held,
 };
 use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
-use komorebi_ir::backend::tensix::tile::ir::{
-    kernel_ir, row_kernel_ir, Attr, Grid, Int, KernelIR, NodeId, Store, TensorParam, View,
-};
+use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::lower::{
-    common_values, drop_copies, per_row_prepass, stream_chain, unit_program, FIDELITY,
+    common_values, drop_copies, per_row_prepass, stream_chain, unit_program,
 };
 use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
-use komorebi_ir::backend::tensix::tile::py::float_repr;
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
-use komorebi_ir::backend::tensix::tile::rows::{
-    check_broadcast, check_lanes, chunk_cost, chunk_program, row_program, Layout, Layouts,
-};
 use komorebi_ir::backend::tensix::tile::schedule::interleave;
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, insns, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product,
     Runtime, Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
 };
 use komorebi_ir::backend::tensix::tile::wormhole::forms;
-use komorebi_ir::backend::tensix::unit::{fidelity, row_layout, unit as tile_unit, DstLayout};
-use komorebi_ir::program::body::{InstId, Op};
-use komorebi_ir::program::notes::{Anchor, Origin};
-use komorebi_ir::program::BodyRef;
+use komorebi_ir::backend::tensix::unit::{fidelity, unit as tile_unit};
+
+#[allow(dead_code)] // each target takes a part of the shared helpers
+#[path = "tile_common.rs"]
+mod common;
+use common::*;
 
 /// Between the items of a list in one field.
 const SEP: char = '\x1f';
@@ -64,29 +56,6 @@ fn today_words() -> Option<PathBuf> {
     FOLDER
         .get_or_init(|| run_today("tile_wormhole.py", "tensix-tile-words"))
         .clone()
-}
-
-/// Today's compiler run by `script` into the folder `name`.
-fn run_today(script: &str, name: &str) -> Option<PathBuf> {
-    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
-        eprintln!("the tile identity skipped: KOMO_IR_NO_PYTHON=1");
-        return None;
-    }
-    let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    let python = std::env::var("KOMO_IR_PYTHON").unwrap_or_else(|_| "python3".into());
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new(&python)
-        .arg(root.join("tests/ir/tensix/tile").join(script))
-        .arg(&folder)
-        .env("PYTHONPATH", root.join("src"))
-        .output()
-        .unwrap_or_else(|e| panic!("{python}: {e} (KOMO_IR_NO_PYTHON=1 skips this test)"));
-    assert!(
-        out.status.success(),
-        "today's tile compiler failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Some(folder)
 }
 
 /// An argument from the data: `i<int>` or `s<name>`.
@@ -268,20 +237,6 @@ fn unit(text: &str) -> UnitProgram {
     u
 }
 
-/// The first line where `a` and `b` differ.
-fn first_difference(a: &str, b: &str) -> String {
-    for (i, (x, y)) in a.lines().zip(b.lines()).enumerate() {
-        if x != y {
-            return format!("line {}:\n  today: {x}\n  rust:  {y}", i + 1);
-        }
-    }
-    format!(
-        "{} lines today, {} ported",
-        a.lines().count(),
-        b.lines().count()
-    )
-}
-
 #[test]
 fn each_unit_programs_listing_and_costs_are_todays() {
     let Some(folder) = today() else { return };
@@ -370,12 +325,6 @@ fn corpus() -> komorebi_ir::program::Module {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile/tile_units.kom");
     let text = std::fs::read_to_string(path).expect("tile_units.kom");
     komorebi_ir::api::build(&text).unwrap_or_else(|e| panic!("{e:?}"))
-}
-
-/// The number of the function named `name`.
-fn func(module: &komorebi_ir::program::Module, name: &str) -> komorebi_ir::types::FuncId {
-    let at = module.funcs.iter().position(|f| f.name == name);
-    komorebi_ir::types::FuncId(at.unwrap_or_else(|| panic!("no func {name}")) as u32)
 }
 
 #[test]
@@ -998,23 +947,6 @@ fn row_line(x: &Insn) -> String {
     format!("{} {} ; {}", x.op.name, fields.join(" "), x.note)
 }
 
-/// A word from its line (a field's value a number, else a name).
-fn row_word(line: &str) -> Insn {
-    let (head, note) = line.split_once(" ; ").unwrap_or((line, ""));
-    let mut parts = head.split(' ');
-    let op = parts.next().expect("an operation");
-    let args: Vec<(&str, Arg)> = parts
-        .map(|f| {
-            let (name, value) = f.split_once('=').expect("a field");
-            let value = value
-                .parse::<i64>()
-                .map_or_else(|_| Arg::Name(value.to_string()), Arg::Num);
-            (name, value)
-        })
-        .collect();
-    Insn::new(op, &args, note).unwrap_or_else(|e| panic!("{line}: {e}"))
-}
-
 #[test]
 fn the_per_row_passes_are_todays_on_a_few_words() {
     let Some(folder) = run_today("tile_rows.py", "tensix-tile-rows") else {
@@ -1098,421 +1030,8 @@ fn two_constants_before_a_run_are_refused_by_name() {
     assert_eq!(code.iter().map(row_line).collect::<Vec<_>>(), before);
 }
 
-/// Today's trace of the row form's corpus (`tile_rows_form.py`), once for all the tests.
-fn today_rows() -> Option<PathBuf> {
-    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    FOLDER
-        .get_or_init(|| run_today("tile_rows_form.py", "tensix-tile-rows-form"))
-        .clone()
-}
-
-/// The row form's corpus, `tile_rows_form.kom`.
-fn rows_corpus() -> komorebi_ir::program::Module {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile/tile_rows_form.kom");
-    let text = std::fs::read_to_string(path).expect("tile_rows_form.kom");
-    komorebi_ir::api::build(&text).unwrap_or_else(|e| panic!("{e:?}"))
-}
-
 #[test]
-fn each_function_on_a_row_traces_to_todays_kernel_ir() {
-    let Some(folder) = today_rows() else { return };
-    let module = rows_corpus();
-    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
-    let mut names: Vec<&str> = Vec::new();
-    for line in cases.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        let (case, width, fields) = (f[0], f[1].parse().ok(), f[2].parse::<usize>());
-        let fields = fields.expect("the fields");
-        names.push(case);
-        let at = func(&module, &format!("t_{case}"));
-        let params = module.funcs[at.0 as usize].params.len();
-        let resident: Vec<bool> = (0..params).map(|k| k >= params - fields).collect();
-        let want = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
-        let ir = row_kernel_ir(&module, at, case, width, &resident)
-            .unwrap_or_else(|r| panic!("{case}: {}", r.what));
-        let got = ir.dump() + "\n";
-        assert!(
-            got == want,
-            "{case} differs, {}",
-            first_difference(&want, &got)
-        );
-    }
-    names.sort();
-    let mut funcs: Vec<&str> = module
-        .funcs
-        .iter()
-        .filter_map(|f| f.name.strip_prefix("t_"))
-        .collect();
-    funcs.sort();
-    assert_eq!(funcs, names, "a func `t_<case>` for each case and no other");
-}
-
-#[test]
-fn a_reduction_on_one_tile_is_refused_with_todays_text_and_line() {
-    let Some(folder) = today_rows() else { return };
-    let today = std::fs::read_to_string(folder.join("one_tile.refused")).expect("the text");
-    let today = today.trim_end();
-    // today's line is the reduction's, in the script: the reduction's instruction is
-    // placed there and every other one elsewhere
-    let line: u32 = today
-        .rsplit(':')
-        .next()
-        .and_then(|l| l.strip_suffix(')'))
-        .and_then(|l| l.parse().ok())
-        .expect("the line");
-    let mut module = rows_corpus();
-    let f = func(&module, "one");
-    let body = module.funcs[f.0 as usize].body.as_ref().expect("a body");
-    let places = (0..body.insts.len())
-        .map(|i| {
-            let op = &body.insts[i].op;
-            let at = if matches!(op, Op::Reduce(..)) {
-                line
-            } else {
-                1000 + i as u32
-            };
-            let inst = Anchor::Inst(BodyRef::Func(f), InstId(i as u32));
-            (inst, 0, at, at)
-        })
-        .collect();
-    module.notes.origin = Some(Origin {
-        files: vec!["tests/ir/tensix/tile/tile_rows_form.py".into()],
-        lines: Vec::new(),
-        places,
-    });
-    let ir = row_kernel_ir(&module, f, "one", Some(1), &[false]).expect("the trace");
-    let refused = unit_program(&ir, "fp32", true, false, FIDELITY).expect_err("refused");
-    let refusal = refused.refusal(Some(Anchor::Func(f)));
-    assert_eq!((refusal.code, refusal.what.as_str()), ("K962", today));
-}
-
-#[test]
-fn what_the_row_forms_trace_would_not_make_is_refused_by_name() {
-    let text = "module refused\n\ntile [32, 32]\nformat f32\n\n\
-        func streamed(x: tile<f32>[2], g: tile<f32>[2]) -> tile<f32>[2] {\n\
-        \x20   return x * rsqrt(reduce_sum(x * x, axis = row)).col() * g.row()\n}\n\n\
-        func scalar(x: tile<f32>[2], k: f32) -> tile<f32>[2] {\n\
-        \x20   return x * reduce_sum(x, axis = row).col() * k\n}\n\n\
-        func square(x: tile<f32>[2, 2]) -> tile<f32>[2, 2] {\n\
-        \x20   return x * reduce_sum(x, axis = row).col()\n}\n";
-    let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
-    let named = |f: &str, count: Option<u64>, resident: &[bool]| {
-        let refusal = row_kernel_ir(&module, func(&module, f), f, count, resident).expect_err(f);
-        assert_eq!(refusal.code, "K964", "{f}");
-        refusal.what
-    };
-    let not = |what: &str| format!("the Tensix backend's tile compiler does not take {what} yet");
-    let both = [false, false];
-    assert_eq!(
-        named("streamed", Some(2), &both),
-        not("the row form's .row() of a streamed operand")
-    );
-    assert_eq!(
-        named("streamed", None, &both),
-        not("a block whose count is not bound at compile")
-    );
-    assert_eq!(
-        named("streamed", Some(4), &both),
-        not("a block of 2 tiles called on a row of 4")
-    );
-    assert_eq!(
-        named("streamed", Some(2), &[true, false]),
-        not("a resident operand before a streamed one (today's fields are the last parameters)")
-    );
-    assert_eq!(
-        named("streamed", Some(2), &[true, true]),
-        not("a row form of no streamed operand")
-    );
-    assert_eq!(
-        named("streamed", Some(2), &[false]),
-        not("a call whose operands' sources are not one a parameter")
-    );
-    assert_eq!(
-        named("scalar", Some(2), &both),
-        not("a parameter or result of the row form that is not a block of one row")
-    );
-    assert_eq!(
-        named("square", Some(2), &[false]),
-        not("a parameter or result of the row form that is not a block of one row")
-    );
-    // the 1-tile trace takes a row reduction only where every block is of one tile
-    let one = kernel_ir(&module, func(&module, "streamed"), "streamed").expect_err("one");
-    assert_eq!(
-        one.what,
-        not("a function on blocks with a product or a reduction (not element by element)")
-    );
-}
-
-/// Top-level pieces of `text` split at `, ` outside brackets.
-fn pieces(text: &str) -> Vec<&str> {
-    let (mut out, mut depth, mut start) = (Vec::new(), 0i32, 0);
-    let bytes = text.as_bytes();
-    for i in 0..bytes.len() {
-        match bytes[i] {
-            b'[' | b'(' => depth += 1,
-            b']' | b')' => depth -= 1,
-            b',' if depth == 0 && bytes.get(i + 1) == Some(&b' ') => {
-                out.push(&text[start..i]);
-                start = i + 2;
-            }
-            _ => {}
-        }
-    }
-    if start < text.len() {
-        out.push(&text[start..]);
-    }
-    out
-}
-
-/// An integer of a view or a grid as today writes it: a number, `unit`, or
-/// `tile_rows(x)` / `tiles(x)`.
-fn int_of(text: &str) -> Int {
-    if let Ok(n) = text.parse() {
-        return Int::Const(n);
-    }
-    if text == "unit" {
-        return Int::Unit(None);
-    }
-    let (what, name) = text
-        .strip_suffix(')')
-        .and_then(|t| t.split_once('('))
-        .unwrap_or_else(|| panic!("an integer {text}"));
-    Int::Size {
-        what: what.into(),
-        name: name.into(),
-        dim: None,
-    }
-}
-
-/// A view as today writes it: `x.tiles[i]` or `x.tiles[i, :]`.
-fn view_of(text: &str) -> View {
-    let (tensor, rest) = text.split_once(".tiles[").expect("a view");
-    let index = rest.strip_suffix(']').expect("a view's end");
-    let (index, kind) = match index.strip_suffix(", :") {
-        Some(i) => (i, "row"),
-        None => (index, "tile"),
-    };
-    View {
-        tensor: tensor.into(),
-        kind: kind.into(),
-        index: int_of(index),
-        cols: None,
-    }
-}
-
-/// A KernelIR read back from today's dump (the forms the row form's corpus prints):
-/// its nodes made in the dump's order, which `nodes` gives again.
-fn parse_ir(text: &str) -> KernelIR {
-    let mut lines = text.lines();
-    let name = lines
-        .next()
-        .and_then(|l| l.strip_prefix("kernel "))
-        .expect("kernel");
-    let mut ir = KernelIR::new(name, Vec::new(), Vec::new());
-    for line in lines {
-        let line = line.trim_start();
-        if let Some((side, rest)) = line
-            .split_once(' ')
-            .filter(|(s, _)| ["in", "out"].contains(s))
-        {
-            let (tensor, dtype) = rest.trim_start().split_once(": ").expect("a tensor");
-            ir.tensors.push(TensorParam {
-                name: tensor.into(),
-                output: side == "out",
-                dtype: Some(dtype.into()),
-            });
-        } else if let Some(rest) = line.strip_prefix("grid unit < ") {
-            let (count, block) = rest.split_once(", block ").expect("a grid");
-            ir.grid = Some(Grid {
-                count: int_of(count),
-                block: block.parse().expect("a block"),
-                cols: None,
-            });
-        } else if let Some(rest) = line.strip_prefix("store ") {
-            let (view, value) = rest.split_once(" = %").expect("a store");
-            ir.stores.push(Store {
-                view: view_of(view),
-                value: NodeId(value.parse().expect("a node")),
-            });
-        } else {
-            let (_, made) = line.split_once(" = ").expect("a node");
-            let (kind, inner) = made.split_once('(').expect("a node's kind");
-            let inner = inner.strip_suffix(')').expect("a node's end");
-            let (mut args, mut attrs) = (Vec::new(), Vec::new());
-            for piece in pieces(inner) {
-                if let Some(n) = piece.strip_prefix('%') {
-                    args.push(NodeId(n.parse().expect("an operand")));
-                    continue;
-                }
-                let (k, v) = piece.split_once('=').expect("a field");
-                let attr = match (k, v) {
-                    (_, "None") => Attr::None,
-                    ("view", v) => Attr::View(view_of(v)),
-                    ("value", v) => Attr::Float(v.parse().expect("a float")),
-                    ("dim", v) => Attr::Int(Int::Const(v.parse().expect("a dim"))),
-                    (_, v) => Attr::Text(v.into()),
-                };
-                attrs.push((k, attr));
-            }
-            ir.node(kind, args, attrs);
-        }
-    }
-    ir
-}
-
-#[test]
-fn each_row_of_two_tiles_gets_todays_unit_from_its_kernel_ir() {
-    let Some(folder) = today_rows() else { return };
-    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
-    let refused = std::fs::read_to_string(folder.join("rows_refused.txt")).expect("refused");
-    let (mut same, mut not_ported) = (Vec::new(), Vec::new());
-    for line in cases.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f[1] != "2" {
-            continue;
-        }
-        let case = f[0];
-        let text = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
-        let ir = parse_ir(&text);
-        assert_eq!(ir.dump() + "\n", text, "{case}: the KernelIR read back");
-        let made = row_program(&ir, 2, 2, 4, "fp32", false);
-        if let Some(today) = refused
-            .lines()
-            .find_map(|l| l.strip_prefix(&format!("{case}\t")))
-        {
-            // refused today: the same text, but for the place it names (K962)
-            let error = made.expect_err(case);
-            assert_eq!(
-                error.text(),
-                today.split(" (at ").next().unwrap_or(today),
-                "{case}"
-            );
-            assert_eq!(error.refusal(None).code, "K962", "{case}");
-            continue;
-        }
-        let mut unit = match made {
-            Ok(unit) => unit,
-            Err(e) => {
-                assert_eq!(e.refusal(None).code, "K964", "{case}: {}", e.text());
-                not_ported.push(format!("{case}: {}", e.text()));
-                continue;
-            }
-        };
-        let listing = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-        let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
-        let emitted = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-        for (file, got) in [("txt", listing), ("hpp", words), ("emitted.txt", emitted)] {
-            let want = std::fs::read_to_string(folder.join(format!("{case}.rows.{file}")))
-                .unwrap_or_else(|e| panic!("{case}.rows.{file}: {e}"));
-            assert!(
-                got == want,
-                "{case}'s {file} differs, {}",
-                first_difference(&want, &got)
-            );
-        }
-        same.push(case);
-    }
-    // one reduction, with and without a resident row (f32 and bf16), a centred row,
-    // a row's largest and smallest values (of a product too, folded by max), a sum of
-    // exponentials (the mad-reader's repairs taken back into the tile program), a
-    // reciprocal's constant register; the levels: two and three passes, two resident
-    // rows, a sum kept for a later level (read directly, or through a value a later
-    // sum reads), a sum and a largest value reading .row() (of two resident rows too)
-    assert_eq!(
-        same,
-        [
-            "rms_norm",
-            "centred",
-            "row_min",
-            "rms_plain",
-            "peak",
-            "weighted_bf16",
-            "softmax_pair",
-            "weighted_sum",
-            "peak_square",
-            "exp_sum",
-            "recip_centred",
-            "layer_pair",
-            "kept_sum",
-            "max_weighted",
-            "three_plain",
-            "kept_through",
-            "two_weights"
-        ]
-    );
-    // two row tensors, more live values than the work registers, more constants than
-    // the programmable registers, 5 per-row values, 5 resident rows: today's refusals
-    // (K962)
-    assert_eq!(refused.lines().count(), 5);
-    assert_eq!(not_ported, Vec::<String>::new());
-}
-
-#[test]
-fn the_row_forms_branches_the_corpus_does_not_reach_are_todays() {
-    let Some(folder) = today_rows() else { return };
-    let lines = std::fs::read_to_string(folder.join("branches.txt")).expect("the branches");
-    let mut not_ported = Vec::new();
-    for line in lines.lines() {
-        let f: Vec<&str> = line.splitn(4, '\t').collect();
-        let (case, width, dest, today) = (f[0], f[1].parse::<i64>().expect("a width"), f[2], f[3]);
-        let text = std::fs::read_to_string(folder.join(format!("branch_{case}.ir"))).expect("IR");
-        let ir = parse_ir(&text);
-        let made = row_program(&ir, width, width, 2 * width, dest, false);
-        match (today, made) {
-            ("made", Ok(unit)) => {
-                let want = folder.join(format!("branch_{case}.rows.txt"));
-                let want = std::fs::read_to_string(want).expect("today's unit");
-                let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-                assert!(got == want, "{case}: {}", first_difference(&want, &got));
-            }
-            (_, Err(e)) if e.refusal(None).code == "K964" => {
-                not_ported.push(format!("{case}: {}", e.text()));
-            }
-            ("made", Err(e)) => panic!("{case}: {}", e.text()),
-            (today, Err(e)) => {
-                // today's text, but for the place it names (K962)
-                assert_eq!(
-                    e.text(),
-                    today.split(" (at ").next().unwrap_or(today),
-                    "{case}"
-                );
-                assert_eq!(e.refusal(None).code, "K962", "{case}");
-            }
-            (today, Ok(_)) => panic!("{case}: made, today refuses it: {today}"),
-        }
-    }
-    assert_eq!(not_ported, Vec::<String>::new());
-    // the band of the row form (today's `band_groups`) is the last slice; the levels
-    // refuse it today
-    let text = std::fs::read_to_string(folder.join("rms_norm.ir")).expect("the IR");
-    let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
-    assert_eq!(banded.text(), "not ported: the row form's band");
-    let text = std::fs::read_to_string(folder.join("softmax_pair.ir")).expect("the IR");
-    let banded = row_program(&parse_ir(&text), 2, 2, 4, "fp32", true).expect_err("band");
-    let today = std::fs::read_to_string(folder.join("band.txt")).expect("today's band");
-    let today = today.trim_end();
-    assert_eq!(banded.text(), today.split(" (at ").next().unwrap_or(today));
-    assert_eq!(banded.refusal(None).code, "K962");
-}
-
-/// A call's Dst layout as today's scripts write it.
-fn dst_text(layout: &DstLayout) -> String {
-    let list = |tiles: &[usize]| {
-        let t: Vec<String> = tiles.iter().map(usize::to_string).collect();
-        t.join(",")
-    };
-    let mut lines: Vec<String> = layout
-        .params
-        .iter()
-        .map(|p| format!("param\t{}", list(p)))
-        .collect();
-    lines.push(format!("result\t{}", list(&layout.result)));
-    lines.join("\n") + "\n"
-}
-
-#[test]
-fn a_units_dst_layout_is_todays_handlers() {
+fn a_stream_units_dst_layout_is_todays_handlers() {
     // the stream form: each unit `unit()` makes of the corpus, against the layout
     // today's handler takes from today's unit
     let Some(folder) = today() else { return };
@@ -1531,197 +1050,4 @@ fn a_units_dst_layout_is_todays_handlers() {
         made.push(case);
     }
     assert!(made.len() >= 20, "{made:?}");
-    // the row form, at 2 tiles and in chunks, as today's handler lays out its call
-    let Some(folder) = today_rows() else { return };
-    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
-    let mut rows = 0;
-    for line in cases.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        let case = f[0];
-        let width: usize = f[1].parse().expect("a width");
-        let fields: usize = f[2].parse().expect("the fields");
-        let Ok(want) = std::fs::read_to_string(folder.join(format!("{case}.dst"))) else {
-            continue;
-        };
-        let ir = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
-        let params = parse_ir(&ir).tensors.iter().filter(|t| !t.output).count();
-        let resident: Vec<bool> = (0..params).map(|k| k + fields >= params).collect();
-        assert_eq!(dst_text(&row_layout(&resident, width)), want, "{case}");
-        rows += 1;
-    }
-    assert!(rows >= 20, "{rows}");
-}
-
-/// What the handler reads of a chunk unit that its listing does not print, as the
-/// script writes it.
-fn chunk_fields(unit: &UnitProgram) -> String {
-    let bases: Vec<String> = unit.chunk_results.iter().map(i64::to_string).collect();
-    format!(
-        "results\t{}\nchunk_results\t{}\nfields_in_sums\t{}\n",
-        unit.results,
-        bases.join(","),
-        i64::from(unit.chunk_fields_in_sums)
-    )
-}
-
-#[test]
-fn each_wide_row_gets_todays_chunk_unit_and_cost_from_its_kernel_ir() {
-    let Some(folder) = today_rows() else { return };
-    let read = |file: &str| std::fs::read_to_string(folder.join(file)).expect(file);
-    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
-    let refused = std::fs::read_to_string(folder.join("rows_refused.txt")).expect("refused");
-    let costs = std::fs::read_to_string(folder.join("chunk_costs.txt")).expect("the costs");
-    let (mut same, mut not_ported) = (Vec::new(), Vec::new());
-    for line in cases.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        let (case, width) = (f[0], f[1].parse::<i64>().expect("a width"));
-        let fields = f[2].parse::<i64>().expect("the fields");
-        if width <= 2 {
-            continue;
-        }
-        let text = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
-        let ir = parse_ir(&text);
-        assert_eq!(ir.dump() + "\n", text, "{case}: the KernelIR read back");
-        let made = chunk_program(&ir, width);
-        if let Some(today) = refused
-            .lines()
-            .find_map(|l| l.strip_prefix(&format!("{case}\t")))
-        {
-            let error = made.expect_err(case);
-            assert_eq!(
-                error.text(),
-                today.split(" (at ").next().unwrap_or(today),
-                "{case}"
-            );
-            assert_eq!(error.refusal(None).code, "K962", "{case}");
-            continue;
-        }
-        let mut unit = match made {
-            Ok(unit) => unit,
-            Err(e) => {
-                assert_eq!(e.refusal(None).code, "K964", "{case}: {}", e.text());
-                not_ported.push(format!("{case}: {}", e.text()));
-                continue;
-            }
-        };
-        let (count, cycles, copies) =
-            chunk_cost(&unit, width, fields).unwrap_or_else(|e| panic!("{case}: {e}"));
-        let cost = format!(
-            "{case}\t{count}\t{}\t{}",
-            float_repr(cycles),
-            float_repr(copies)
-        );
-        assert!(costs.lines().any(|l| l == cost), "{case}: {cost}");
-        assert_eq!(
-            chunk_fields(&unit),
-            read(&format!("{case}.chunk.fields")),
-            "{case}"
-        );
-        let listing = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-        let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
-        let emitted = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-        for (file, got) in [("txt", listing), ("hpp", words), ("emitted.txt", emitted)] {
-            let want = std::fs::read_to_string(folder.join(format!("{case}.chunk.{file}")))
-                .unwrap_or_else(|e| panic!("{case}.chunk.{file}: {e}"));
-            assert!(
-                got == want,
-                "{case}'s {file} differs, {}",
-                first_difference(&want, &got)
-            );
-        }
-        same.push(case);
-    }
-    // rms_norm at 3, 4 and 8 tiles (its weight in bf16 at 3), softmax_rows at 3 and 5
-    // (an odd row's last chunk), a row's largest value, layer_norm's two levels and two
-    // resident rows, a sum reading .row() (and with another sum that does not)
-    assert_eq!(
-        same,
-        [
-            "rms_norm_wide",
-            "rms_bf16",
-            "softmax_rows",
-            "row_max",
-            "layer_norm",
-            "rms_eight",
-            "softmax_five",
-            "wide_weighted",
-            "wide_mixed"
-        ]
-    );
-    // a largest and a smallest value together: today starts them in a set's order
-    assert_eq!(
-        not_ported,
-        [
-            "extremes: not ported: the chunk form's start values of a largest and a smallest \
-          value together (today makes them in a set's order)"
-        ]
-    );
-    let lines = std::fs::read_to_string(folder.join("chunk_branches.txt")).expect("branches");
-    let mut verdicts = 0;
-    for line in lines.lines() {
-        let f: Vec<&str> = line.splitn(3, '\t').collect();
-        let (case, width, today) = (f[0], f[1].parse::<i64>().expect("a width"), f[2]);
-        let text = std::fs::read_to_string(folder.join(format!("chunk_{case}.ir"))).expect("IR");
-        match (today, chunk_program(&parse_ir(&text), width)) {
-            ("made", Ok(unit)) => {
-                let want = folder.join(format!("chunk_{case}.chunk.txt"));
-                let want = std::fs::read_to_string(want).expect("today's unit");
-                let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
-                assert!(got == want, "{case}: {}", first_difference(&want, &got));
-                let want = read(&format!("chunk_{case}.chunk.fields"));
-                assert_eq!(chunk_fields(&unit), want, "{case}");
-            }
-            ("made", Err(e)) => panic!("{case}: {}", e.text()),
-            (today, Err(e)) => {
-                assert_eq!(
-                    e.text(),
-                    today.split(" (at ").next().unwrap_or(today),
-                    "{case}"
-                );
-                assert_eq!(e.refusal(None).code, "K962", "{case}");
-            }
-            (today, Ok(_)) => panic!("{case}: made, today refuses it: {today}"),
-        }
-        verdicts += 1;
-    }
-    // a row of 2, two results, three (more than Dst holds), five sums, five resident
-    // rows, a per-row value alone (part `value`)
-    assert_eq!(verdicts, 6);
-}
-
-#[test]
-fn the_row_forms_checks_are_todays_on_a_few_words() {
-    let Some(folder) = today_rows() else { return };
-    let lines = std::fs::read_to_string(folder.join("checks.txt")).expect("the checks");
-    let layouts = Layouts {
-        copy: Layout::Tile(0),
-        rows: vec![Layout::Rows(2, 0)],
-        sums: Vec::new(),
-        cols: vec![Layout::Cols(4)],
-    };
-    let mut cases = 0;
-    for line in lines.lines() {
-        let f: Vec<&str> = line.splitn(3, '\t').collect();
-        let (case, check, today) = (f[0], f[1], f[2]);
-        let words =
-            std::fs::read_to_string(folder.join(format!("check_{case}.in"))).expect("the words");
-        let code: Vec<Insn> = words.lines().map(row_word).collect();
-        let mut unit = UnitProgram::new("c", "fp32");
-        let made = if check == "lanes" {
-            check_lanes(&mut unit, &code, layouts.rows[0], None)
-        } else {
-            check_broadcast(&mut unit, &code, &layouts, 2, &[0])
-        };
-        let got = match made {
-            Ok(()) => unit
-                .checks
-                .last()
-                .map(|c| c.verdict.clone())
-                .unwrap_or_default(),
-            Err(e) => e.0,
-        };
-        assert_eq!(got, today, "{case}");
-        cases += 1;
-    }
-    assert_eq!(cases, 12);
 }

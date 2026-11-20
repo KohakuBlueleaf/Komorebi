@@ -84,6 +84,10 @@ fn stream_layout(names: &[&str], unit: &UnitProgram) -> DstLayout {
 /// Dst 2 width + k (4 + k in the chunk form), the result over the row's tiles. The
 /// compute loop does not call the row form yet; this says where it will put them.
 pub fn row_layout(resident: &[bool], width: usize) -> DstLayout {
+    // unlike the stream form's, read off the unit, this restates today's handler: the
+    // unit of the row form names only the row's tensor, and today's compute loop puts
+    // the rest where compile/tiles/functions.py writes it (the row's copies and field k
+    // at 2 width + k in tile_unit's call; row_chunks' chunk in 0 and 1, field k at 4 + k)
     let chunk = usize::try_from(CHUNK).unwrap_or(2);
     let (tiles, fields) = if width > chunk {
         (chunk, 4)

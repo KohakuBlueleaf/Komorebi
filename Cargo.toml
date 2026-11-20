@@ -75,6 +75,14 @@ name = "tensix_tile"
 path = "tests/ir/tensix_tile.rs"
 
 [[test]]
+name = "tensix_rows"
+path = "tests/ir/tensix_rows.rs"
+
+[[test]]
+name = "tensix_chunks"
+path = "tests/ir/tensix_chunks.rs"
+
+[[test]]
 name = "editors"
 path = "tests/ir/editors.rs"
 
