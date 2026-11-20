@@ -11,8 +11,11 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use komorebi_ir::bytecode::{self, decode, encode, hashes, hex, version, Hashes};
+use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::derive::Cause;
-use komorebi_ir::program::{print, Module};
+use komorebi_ir::program::notes::{Anchor, Origin};
+use komorebi_ir::program::{print, BodyRef, Module};
+use komorebi_ir::types::{HandlerId, ProgramId};
 
 fn golden_dir() -> PathBuf {
     match std::env::var_os("KOMO_IR_CORPUS") {
@@ -210,7 +213,13 @@ fn another_version_is_refused_by_name() {
     );
     let older = refusal(&with_version(&bytes, version::VERSION - 1));
     assert_eq!(older.code, version::OLDER);
-    assert!(older.what.contains("version 0"), "{older:?}");
+    assert!(
+        older
+            .what
+            .contains(&format!("version {}", version::VERSION - 1)),
+        "{older:?}"
+    );
+    assert_eq!(refusal(&with_version(&bytes, 0)).code, version::OLDER);
 }
 
 #[test]
@@ -436,5 +445,119 @@ fn a_module_verify_refuses_is_refused_with_its_findings() {
             refusals.iter().any(|r| r.code == code),
             "{case}: {refusals:?}"
         );
+    }
+}
+
+/// T1 with an origin as a frontend records one: a class script's lines, the handler on
+/// its `def` line, two instructions on the statement they were made from. The file is a
+/// name, not a path of a machine.
+fn with_origin() -> Module {
+    let mut module = built(&lesson("t01_scale"));
+    assert!(
+        module.notes.origin.is_none(),
+        "a module of .kom text has no origin"
+    );
+    let body = BodyRef::Handler(ProgramId(0), HandlerId(0));
+    module.notes.origin = Some(Origin {
+        files: vec!["t1_class.py".into()],
+        lines: vec![
+            (
+                0,
+                23,
+                "    def run(self, x: km.Tensor, y: km.Tensor, first: int, tiles: int, k: float):"
+                    .into(),
+            ),
+            (
+                0,
+                24,
+                "        src = self.partition(x.pages(first, tiles))".into(),
+            ),
+            (
+                0,
+                25,
+                "        out = km.Stream(y[src], write=True, block=1)  # one partition".into(),
+            ),
+        ],
+        places: vec![
+            (Anchor::Handler(ProgramId(0), HandlerId(0)), 0, 23, 23),
+            (Anchor::Inst(body, InstId(5)), 0, 24, 24),
+            (Anchor::Inst(body, InstId(6)), 0, 24, 25),
+        ],
+    });
+    module
+}
+
+#[test]
+fn an_origin_changes_the_full_hash_only() {
+    let plain = hashes(&built(&lesson("t01_scale")));
+    let module = with_origin();
+    assert!(decode(&encode(&module)).is_ok(), "the origin validates");
+    let traced = hashes(&module);
+    assert_eq!(plain.semantic, traced.semantic);
+    assert_eq!(plain.build, traced.build);
+    assert_ne!(plain.full, traced.full);
+}
+
+#[test]
+fn a_module_with_an_origin_round_trips_byte_for_byte() {
+    let module = with_origin();
+    let bytes = encode(&module);
+    let read = decode(&bytes).expect("read back");
+    assert_eq!(read.notes.origin, module.notes.origin);
+    assert_eq!(read, module);
+    assert_eq!(encode(&read), bytes);
+}
+
+/// A case of a bad origin: its name, the edit that makes it, what the refusal says.
+type OriginCase = (&'static str, fn(&mut Origin), &'static str);
+
+#[test]
+fn an_origin_that_does_not_hold_is_refused_by_name() {
+    let cases: Vec<OriginCase> = vec![
+        (
+            "a file past the files",
+            |o| o.places[0].1 = 1,
+            "past the files",
+        ),
+        ("a line of no file", |o| o.lines[2].0 = 3, "past the files"),
+        ("line 0", |o| o.lines[0].1 = 0, "lines count from 1"),
+        ("first after last", |o| o.places[2].2 = 26, "first to last"),
+        (
+            "a line not held",
+            |o| o.places[2].3 = 27,
+            "line 26 of file 0, which is not held",
+        ),
+        (
+            "a range of every line",
+            |o| o.places[2].3 = u32::MAX,
+            "line 26 of file 0, which is not held",
+        ),
+        (
+            "lines out of order",
+            |o| o.lines.swap(0, 1),
+            "(file, number) order",
+        ),
+        (
+            "an anchor twice",
+            |o| o.places[2].0 = o.places[1].0,
+            "or one twice",
+        ),
+        (
+            "an anchor of nothing",
+            |o| {
+                o.places[2].0 =
+                    Anchor::Inst(BodyRef::Handler(ProgramId(0), HandlerId(0)), InstId(9999))
+            },
+            "an anchor that names nothing",
+        ),
+    ];
+    for (case, edit, said) in cases {
+        let mut module = with_origin();
+        if let Some(origin) = module.notes.origin.as_mut() {
+            edit(origin);
+        }
+        let r = refusal(&encode(&module));
+        assert_eq!(r.code, version::INVALID, "{case}: {r:?}");
+        assert!(r.what.contains(said), "{case}: {}", r.what);
     }
 }

@@ -10,7 +10,7 @@ use crate::program::body::{Body, Inst, LocalId, Op, Range, ValueId};
 use crate::program::derive::{
     Access, Cause, ChainDeps, ChainEdge, Effects, Requirement, StateAccess, StateUse, TensorAccess,
 };
-use crate::program::notes::{Anchor, Hint, HintArg, Named, Notes, Owner, SourceSpan};
+use crate::program::notes::{Anchor, Hint, HintArg, Named, Notes, Origin, Owner, SourceSpan};
 use crate::program::{
     validate, BodyRef, Call, CallArg, Chain, Control, Func, FuncKind, Handler, Lifetime, Member,
     MemberKind, Message, Module, Param, Program, Record, Run, Scope,
@@ -159,6 +159,13 @@ pub(super) fn read(bytes: &[u8]) -> Result<Module, Refusal> {
         }
     })?;
     let param_names = r.list(|r| Ok((r.anchor()?, r.string()?)))?;
+    let origin = r.opt(|r| {
+        Ok(Origin {
+            files: r.list(Reader::string)?,
+            lines: r.list(|r| Ok((r.u32()?, r.u32()?, r.string()?)))?,
+            places: r.list(|r| Ok((r.anchor()?, r.u32()?, r.u32()?, r.u32()?)))?,
+        })
+    })?;
     r.finish()?;
 
     module.notes = Notes {
@@ -166,6 +173,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Module, Refusal> {
         spans,
         names,
         param_names,
+        origin,
     };
     Ok(module)
 }

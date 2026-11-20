@@ -16,11 +16,11 @@ A header, then three parts, in this order:
 | Bytes | Holds |
 |---|---|
 | 4 | The magic `KOMC` |
-| 4 | The version, a u32: `1` |
+| 4 | The version, a u32: `2` |
 | 8, 8, 8 | The length in bytes of each part, S, H and P, each a u64 |
 | S | The program: everything but the notes |
 | H | The hints |
-| P | The source positions, and the names the source gives values, slots and parameters |
+| P | The source positions, the names the source gives values, slots and parameters, and the origin of a frontend's module |
 
 A reader can hash a part, or skip the positions, without reading the others.
 
@@ -70,7 +70,10 @@ Each part is one walk of the program structure, each list in its one order:
       (member, body, use, instruction), the collectives (body, instruction), the functions called.
 - **H**: the hints, each its anchor, its dotted name, its arguments.
 - **P**: the positions (anchor, first byte, end byte); the names of values and slots; the names of
-  parameters (anchor, name).
+  parameters (anchor, name); the origin, an option: the source files (strings), the lines a place
+  covers (file, line number, the line as written), and the places (anchor, file, first line, last
+  line). A module read from `.kom` text has no origin; a frontend's module (today's Python classes)
+  records where each handler and statement was written, for a backend that prints it.
 
 ## The hashes
 
@@ -96,7 +99,7 @@ the module it read. No input makes it panic.
 | `K951` | A newer version than the build reads, by name: both versions are given |
 | `K952` | An older version, by name: compile it again from its `.kom` |
 | `K953` | Bytes that are not a byte-code program of this version: the parts' lengths do not sum to the file; a part cut short, or whose walk does not end at its length; a number that is no variant of its enum; a `bool` or an option byte other than `0` and `1`; a string that is not UTF-8; a count above the bytes left; a type or a hint nested deeper than 256; an integer constant with bits above its type's width; a float constant that is a NaN |
-| `K954` | A module that reads whole and does not validate |
+| `K954` | A module that reads whole and does not validate, its notes included: an origin's place on an anchor that names nothing, or on a file past its files, on line 0, from a line after its last, on a line its lines do not hold; places not in the order of their anchors or one twice; lines not in (file, number) order or one twice |
 | `K955` | A module whose derived parts (a body's effects, a chain's dependencies, the requirement set) are not the ones Derive gives it again |
 
 Loading a byte-code program to run it goes further: the module is accepted only where its text would

@@ -736,6 +736,7 @@ impl<'c> Cx<'c> {
             spans: std::mem::take(&mut self.spans),
             names: std::mem::take(&mut self.names),
             param_names: std::mem::take(&mut self.param_names),
+            origin: None,
         };
         notes.hints.sort_by_key(|h| h.anchor);
         notes.spans.sort_by_key(|(a, _)| *a);

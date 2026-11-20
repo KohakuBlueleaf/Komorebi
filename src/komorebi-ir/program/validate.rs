@@ -1143,6 +1143,69 @@ impl<'m> Validator<'m> {
                 self.fail(None, None, "a parameter's name not on a parameter");
             }
         }
+        self.origin();
+    }
+
+    /// The origin: every place names an anchor that exists, once and in their order, a
+    /// file of the list, and lines from 1, first to last, each held in `lines`; the lines
+    /// in (file, number) order, each once, of a file of the list.
+    fn origin(&mut self) {
+        let Some(origin) = &self.module.notes.origin else {
+            return;
+        };
+        let files = origin.files.len();
+        let mut faults = Vec::new();
+        for (file, number, _) in &origin.lines {
+            if *file as usize >= files {
+                faults.push(format!("origin: a line of file {file}, past the files"));
+            }
+            if *number == 0 {
+                faults.push(format!("origin: line 0 of file {file}: lines count from 1"));
+            }
+        }
+        if origin
+            .lines
+            .windows(2)
+            .any(|w| (w[0].0, w[0].1) >= (w[1].0, w[1].1))
+        {
+            faults.push("origin: lines not in (file, number) order, or a line twice".into());
+        }
+        for (anchor, file, first, last) in &origin.places {
+            if !self.anchor_exists(*anchor) {
+                faults.push(format!("origin: an anchor that names nothing: {anchor:?}"));
+            }
+            if *file as usize >= files {
+                faults.push(format!("origin: {anchor:?} in file {file}, past the files"));
+            }
+            if *first == 0 || first > last {
+                faults.push(format!(
+                    "origin: {anchor:?} on lines {first} to {last}: lines count from 1, first to last"
+                ));
+                continue;
+            }
+            let held = |n: u32| {
+                origin
+                    .lines
+                    .binary_search_by(|(f, k, _)| (*f, *k).cmp(&(*file, n)))
+                    .is_ok()
+            };
+            // Of more consecutive lines than are held, one is not: the walk stops there,
+            // so a hostile range is not walked whole.
+            let missing = (*first..=*last)
+                .take(origin.lines.len() + 1)
+                .find(|n| !held(*n));
+            if let Some(n) = missing {
+                faults.push(format!(
+                    "origin: {anchor:?} covers line {n} of file {file}, which is not held"
+                ));
+            }
+        }
+        if origin.places.windows(2).any(|w| w[0].0 >= w[1].0) {
+            faults.push("origin: places not in the order of their anchors, or one twice".into());
+        }
+        for what in faults {
+            self.fail(None, None, what);
+        }
     }
 }
 

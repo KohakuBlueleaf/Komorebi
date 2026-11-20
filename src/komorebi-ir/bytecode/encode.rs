@@ -78,6 +78,20 @@ pub fn parts(module: &Module) -> Parts {
         w.anchor(anchor);
         w.str(name);
     });
+    p.opt(module.notes.origin.as_ref(), |w, origin| {
+        w.list(&origin.files, |w, f| w.str(f));
+        w.list(&origin.lines, |w, (file, number, text)| {
+            w.u32(*file);
+            w.u32(*number);
+            w.str(text);
+        });
+        w.list(&origin.places, |w, (anchor, file, first, last)| {
+            w.anchor(anchor);
+            w.u32(*file);
+            w.u32(*first);
+            w.u32(*last);
+        });
+    });
     Parts {
         program: s.out,
         hints: h.out,
