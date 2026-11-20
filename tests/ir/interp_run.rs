@@ -1766,16 +1766,35 @@ fn a_function_on_blocks_runs_on_each_tile_and_a_last_block_is_shorter() {
 }
 
 #[test]
-fn a_tile_against_a_block_in_a_function_on_blocks_says_its_body_is_on_one_tile() {
-    let text = "module blocks\n\ntile [32, 32]\nformat f32\n\n\
-                func twice(x: tile<f32>[4]) -> tile<f32>[4] {\n    return x * 2.0\n}\n\n\
-                func many(x: tile<f32>[4]) -> tile<f32>[4] {\n    return twice(x)\n}\n";
-    let found = komorebi_ir::check(text).expect_err("refused");
-    let why = "(in a function on blocks the body is on one tile)";
-    assert!(!found.is_empty(), "{found:?}");
-    for d in &found {
-        assert_eq!(d.code, "K102", "{d:?}");
-        assert!(d.message.ends_with(why), "{d:?}");
+fn a_function_on_blocks_calls_functions_on_blocks_of_their_shapes_and_on_tiles() {
+    // R45: in a function on blocks a function on blocks takes blocks of its shapes, and
+    // a function on tiles runs on each tile of blocks of one shape
+    let text = |call: &str| {
+        format!(
+            "module blocks\n\ntile [32, 32]\nformat f32\n\n\
+             func twice(x: tile<f32>[4]) -> tile<f32>[4] {{\n    return x * 2.0\n}}\n\n\
+             func one(x: tile<f32>) -> tile<f32> {{\n    return x + 1.0\n}}\n\n\
+             func many(x: tile<f32>[4], t: tile<f32>) -> tile<f32>[4] {{\n    return {call}\n}}\n"
+        )
+    };
+    for call in ["twice(x)", "one(x)", "twice(one(x)) - x"] {
+        komorebi_ir::check(&text(call)).unwrap_or_else(|d| panic!("{call}: {d:?}"));
+    }
+    let why = "(in a function on blocks a tile is `[1, 1]` and a block is of its shape)";
+    for (call, what) in [
+        ("twice(t)", why),
+        ("one(t)", why),
+        (
+            "x + t",
+            "takes operands of one shape, element by element: [4] and [1]",
+        ),
+    ] {
+        let found = komorebi_ir::check(&text(call)).expect_err(call);
+        assert!(!found.is_empty(), "{call}");
+        for d in &found {
+            assert_eq!(d.code, "K102", "{call}: {d:?}");
+            assert!(d.message.contains(what), "{call}: {d:?}");
+        }
     }
 }
 
@@ -1883,7 +1902,6 @@ fn in_a_function_on_blocks_what_works_on_a_whole_tile_but_a_row_is_not_built() {
             "return (x * 2.0).row()",
             "`.row()` of other than a tile parameter",
         ),
-        ("return matmul(x, y)", "`matmul`"),
         ("return x.T", "`.T`"),
     ];
     for (line, what) in refused {
@@ -1895,4 +1913,171 @@ fn in_a_function_on_blocks_what_works_on_a_whole_tile_but_a_row_is_not_built() {
             "{line}: {found:?}"
         );
     }
+}
+
+/// A handler that pushes `f(x, w)`, the stream of `a`'s first two tiles in blocks of
+/// `[1, 2]` zipped with the stream of the tiles `[0:2, 0:c]` of `w` in blocks of
+/// `[2, c]` (reading R45: a block is a matrix of tiles).
+fn product_of_blocks(func: &str, c: usize, out: usize) -> String {
+    format!(
+        "module product
+
+tile [32, 32]
+format f32
+
+{func}
+
+program Product {{
+    handler run(a: tensor<f32>, w: tensor<f32>, out: tensor<f32>) @on(group) {{
+        let results = sink(out.tiles(0, {out}), block = {out})
+        let rows = stream(a.tiles(0, 2), block = 2)
+        let cols = stream(w.tiles[0:2, 0:{c}], block = [2, {c}])
+        for x, y in zip(rows, cols) {{
+            results.push(f(x, y))
+        }}
+    }}
+}}
+"
+    )
+}
+
+/// `product_of_blocks` run: `a`'s tile 0 holds 1 and its tile 1 holds the element's
+/// row; `w`, a grid of 2 x `c` tiles, is `w(i, j)` at its tile (i, j), element (k, c).
+/// The result's tiles.
+fn product_run(text: &str, c: usize, out: usize, w: impl Fn(usize, usize) -> f64) -> Vec<Vec<f64>> {
+    let m = module(text);
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let a = tensor(&mut run, Format::F32, (1, 2), |i, k| {
+        if i == 0 {
+            1.0
+        } else {
+            (k / 32) as f64
+        }
+    });
+    let w = tensor(&mut run, Format::F32, (2, c), w);
+    let o = tensor(&mut run, Format::F32, (1, out), |_, _| -1.0);
+    let args = [Arg::Tensor(a), Arg::Tensor(w), Arg::Tensor(o)];
+    assert_eq!(
+        run.invoke("Product.run", &args, (0, 1), &[]),
+        End::Completed(None)
+    );
+    (0..out).map(|i| tile_f64(&run, o, i)).collect()
+}
+
+#[test]
+fn a_product_of_a_row_of_two_tiles_by_a_column_of_two_is_the_sum_of_the_tiles_products() {
+    let func = "func f(x: tile<f32>[1, 2], w: tile<f32>[2, 1]) -> tile<f32> {\n    \
+                return matmul(x, w)\n}";
+    // w's tile 0 holds its element's row k, its tile 1 holds 1. By hand: x0 w0 at
+    // (r, c) is the sum over k of 1 * k, 496; x1 w1 is the sum over k of r * 1, 32 r.
+    // The other pairing (x0 w1 + x1 w0) would give 32 + 496 r.
+    let w = |i: usize, k: usize| if i == 0 { (k / 32) as f64 } else { 1.0 };
+    let tiles = product_run(&product_of_blocks(func, 1, 1), 1, 1, w);
+    for (k, got) in tiles[0].iter().enumerate() {
+        let r = (k / 32) as f64;
+        assert_eq!(*got, 496.0 + 32.0 * r, "element {k}");
+    }
+}
+
+#[test]
+fn a_product_of_a_row_of_two_tiles_by_two_rows_of_three_is_a_row_of_three() {
+    let func = "func f(x: tile<f32>[1, 2], w: tile<f32>[2, 3]) -> tile<f32>[1, 3] {\n    \
+                return matmul(x, w)\n}";
+    // w's tile (0, j) holds j + 1, its tile (1, j) holds 1 (tile i of the grid is row
+    // i / 3, column i % 3). By hand, out tile j at (r, c): the sum over k of
+    // 1 * (j + 1), 32 (j + 1), and of r * 1, 32 r.
+    let w = |i: usize, _: usize| if i < 3 { (i + 1) as f64 } else { 1.0 };
+    let tiles = product_run(&product_of_blocks(func, 3, 3), 3, 3, w);
+    for (j, tile) in tiles.iter().enumerate() {
+        for (k, got) in tile.iter().enumerate() {
+            let r = (k / 32) as f64;
+            assert_eq!(
+                *got,
+                32.0 * (j + 1) as f64 + 32.0 * r,
+                "tile {j}, element {k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_reduction_along_a_row_of_a_block_of_two_rows_runs_along_each_row() {
+    // `f(y: [1, 2], x: [2, 2])`: x's two rows of tiles reduced along a row each and
+    // spread back, then y times that (reading R45)
+    let func = "func f(y: tile<f32>[1, 2], x: tile<f32>[2, 2]) -> tile<f32>[1, 2] {\n    \
+                return matmul(y, reduce_sum(x, axis = row).col())\n}";
+    let text = product_of_blocks(func, 2, 2);
+    // x's tiles hold 1, 2 (row 0) and 3, 4 (row 1); y's tile 0 holds 1, its tile 1
+    // the element's row. By hand: row 0 of the block sums to 32 (1 + 2) = 96 at every
+    // element of its tiles, row 1 to 32 (3 + 4) = 224. Out tile j at (r, c): the sum
+    // over k of 1 * 96 and of r * 224, 3072 + 7168 r. One reduction along the whole
+    // block (320 everywhere) would give 10240 + 10240 r.
+    let x = |i: usize, _: usize| (i + 1) as f64;
+    let tiles = product_run(&text, 2, 2, x);
+    for (j, tile) in tiles.iter().enumerate() {
+        for (k, got) in tile.iter().enumerate() {
+            let r = (k / 32) as f64;
+            assert_eq!(*got, 3072.0 + 7168.0 * r, "tile {j}, element {k}");
+        }
+    }
+}
+
+#[test]
+fn the_shapes_of_blocks_are_checked_and_their_rows_are_a_number_written() {
+    // R45: `matmul` of blocks takes the left's columns of tiles as the right's rows;
+    // the rows of a block are a literal; a sink of several rows is not built (K010)
+    let func = |sig: &str, body: &str| {
+        format!(
+            "module shapes\n\ntile [32, 32]\nformat f32\n\nparam n: u32 = 2 @bind(build)\n\n\
+             func f({sig} {{\n    return {body}\n}}\n"
+        )
+    };
+    let built = [
+        (
+            "x: tile<f32>[1, 2], w: tile<f32>[2, 1]) -> tile<f32>",
+            "matmul(x, w)",
+        ),
+        (
+            "x: tile<f32>[2, 2], w: tile<f32>[2, 3]) -> tile<f32>[2, 3]",
+            "matmul(x, w) + 1.0",
+        ),
+        (
+            "x: tile<f32>[2, 3]) -> tile<f32>[2, 3]",
+            "reduce_sum(x, axis = row).col() * x",
+        ),
+    ];
+    for (sig, body) in built {
+        komorebi_ir::check(&func(sig, body)).unwrap_or_else(|d| panic!("{body}: {d:?}"));
+    }
+    let refused = [
+        (
+            "x: tile<f32>[1, 2], w: tile<f32>[3, 1]) -> tile<f32>",
+            "matmul(x, w)",
+            "the left's columns of tiles are the right's rows",
+        ),
+        (
+            "x: tile<f32>[2, 2], w: tile<f32>[1, 4]) -> tile<f32>[2, 2]",
+            "x + w",
+            "takes operands of one shape, element by element: [2, 2] and [4]",
+        ),
+        (
+            "x: tile<f32>[n, 2]) -> tile<f32>[n, 2]",
+            "x",
+            "the rows of a block `[r, c]` are a number written in the text",
+        ),
+    ];
+    for (sig, body, what) in refused {
+        let found = komorebi_ir::check(&func(sig, body)).expect_err(body);
+        assert!(
+            found
+                .iter()
+                .any(|d| d.code == "K102" && d.message.contains(what)),
+            "{body}: {found:?}"
+        );
+    }
+    let sink = "module shapes\n\ntile [32, 32]\nformat f32\n\n\
+                program P {\n    handler run(out: tensor<f32>) @on(group) {\n        \
+                let s = sink(out.tiles(0, 4), block = [2, 2])\n    }\n}\n";
+    let found = komorebi_ir::check(sink).expect_err("a sink of two rows");
+    assert!(found.iter().any(|d| d.code == "K010"), "{found:?}");
 }

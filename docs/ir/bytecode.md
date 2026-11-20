@@ -16,13 +16,17 @@ A header, then three parts, in this order:
 | Bytes | Holds |
 |---|---|
 | 4 | The magic `KOMC` |
-| 4 | The version, a u32: `2` |
+| 4 | The version, a u32: `3` |
 | 8, 8, 8 | The length in bytes of each part, S, H and P, each a u64 |
 | S | The program: everything but the notes |
 | H | The hints |
 | P | The source positions, the names the source gives values, slots and parameters, and the origin of a frontend's module |
 
 A reader can hash a part, or skip the positions, without reading the others.
+
+Version 3 gives a block, a stream, a sink and a reduction's values the rows and the columns of their
+tiles (a block is a matrix of tiles): each writes its rows before its columns. A reader refuses a
+version 2 program with `K952`, naming both versions.
 
 ## How values are written
 

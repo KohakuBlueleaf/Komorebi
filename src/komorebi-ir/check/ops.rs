@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use super::ty::{Count, Ty};
+use super::ty::{Count, Shape, Ty};
 use crate::syntax::ast::{Arg, Expr, ExprKind, Ident, List, Span};
 use crate::types::{Axis, Format, ScalarType};
 
@@ -219,12 +219,16 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
             self.note_func(cx, n);
-            self.positional_call(cx, what, span, args, &sig.params);
+            let lifted = self.positional_call(cx, what, span, args, &sig.params);
             if let Some(&f) = cx.env.ix.funcs.get(what) {
                 let parts: Vec<Option<&Expr>> = args.values().map(|a| Some(&a.value)).collect();
                 self.note_op(span, OpKind::CallFunc(FuncId(f)), &parts);
             }
-            return sig.ret;
+            // a function on tiles run on each tile of blocks of one shape (R45)
+            return match (sig.ret, lifted) {
+                (Ty::Tile(f), Some(shape)) => Ty::Block(f, shape),
+                (ret, _) => ret,
+            };
         }
         if let Some(target) = ScalarType::from_name(what) {
             if !self.allowed(cx, Family::Value, what, span) {
@@ -356,6 +360,9 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::Matmul, &o);
+                if self.on_blocks {
+                    return self.block_product(cx, o[0], o[1], span);
+                }
                 let a = self.operand(cx, o[0], &Ty::Tile(None), "the left operand");
                 let b = self.operand(cx, o[1], &Ty::Tile(None), "the right operand");
                 tile_of(&[a, b])
@@ -364,7 +371,11 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("a"), named("axis")]) else {
                     return Ty::Unknown;
                 };
-                let a = self.operand(cx, o[0], &Ty::Tile(None), "the operand");
+                // in a function on blocks (R45), of a block too: of each of its tiles
+                let a = match o[0] {
+                    Some(e) if self.on_blocks => self.tile_operand(cx, Some(e)),
+                    _ => self.operand(cx, o[0], &Ty::Tile(None), "the operand"),
+                };
                 self.word_operand(o[1], &["row", "col"], "the axis");
                 let axis = match o[1].and_then(as_name).map(|n| n.name.as_str()) {
                     Some("row") => Axis::Row,
@@ -378,7 +389,8 @@ impl Checker<'_> {
                 };
                 self.note_op(span, OpKind::Reduce(op, axis), &o[..1]);
                 match a {
-                    Ty::Tile(f) => Ty::Reduced(f, axis),
+                    Ty::Tile(f) => Ty::Reduced(f, axis, Shape::TILE),
+                    Ty::Block(f, shape) => Ty::Reduced(f, axis, shape),
                     _ => Ty::Unknown,
                 }
             }
@@ -419,6 +431,39 @@ impl Checker<'_> {
                 } else {
                     OpKind::Stream
                 };
+                // `block = [r, c]` (R45): blocks of r rows of c tiles, the parts the
+                // view, c and r; `block = n` is `[1, n]`
+                let (o, rows) = match o[1].map(|b| &b.kind) {
+                    Some(ExprKind::List(ends)) => {
+                        let ends: Vec<&Expr> = ends.values().collect();
+                        let [r, c] = ends[..] else {
+                            self.error(
+                                codes::STREAM_BLOCK,
+                                format!("the block of a `{what}` is `n` or `[rows, columns]`"),
+                                o[1].map_or(span, |b| b.span),
+                            );
+                            return Ty::Unknown;
+                        };
+                        let rows = match as_int(r) {
+                            Some(n) if n > 0 => n,
+                            _ => {
+                                self.error(
+                                    codes::WRONG_TYPE,
+                                    format!(
+                                        "the rows of a `{what}`'s block `[r, c]` are a number \
+                                         written in the text (a module parameter or \
+                                         `group.size` there is not built)"
+                                    ),
+                                    r.span,
+                                );
+                                return Ty::Unknown;
+                            }
+                        };
+                        self.note_type(r, &Ty::Scalar(ScalarType::U32));
+                        (vec![o[0], Some(c), Some(r)], rows)
+                    }
+                    _ => (o, 1),
+                };
                 self.note_op(span, kind, &o);
                 let v = self.operand(cx, o[0], &view, "the view");
                 self.operand(cx, o[1], &Ty::AnyInt, "the block");
@@ -438,12 +483,26 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
+                let shape = Shape {
+                    rows: Count::Known(rows),
+                    cols: block,
+                };
                 if what == "sink" {
-                    return Ty::Sink(format, block);
+                    if rows != 1 {
+                        self.error(
+                            codes::NOT_BUILT,
+                            "a `sink` of blocks of several rows `[r, c]` is named in the \
+                             language and not built yet"
+                                .into(),
+                            span,
+                        );
+                        return Ty::Unknown;
+                    }
+                    return Ty::Sink(format, shape);
                 }
-                let elem = match block {
-                    Count::Known(1) => Ty::Tile(format),
-                    n => Ty::Block(format, n),
+                let elem = match shape {
+                    Shape::TILE => Ty::Tile(format),
+                    shape => Ty::Block(format, shape),
                 };
                 let tiles = match v {
                     Ty::View { tiles, .. } => tiles,
@@ -546,7 +605,7 @@ impl Checker<'_> {
                 };
                 self.note_op(span, OpKind::Gather, &o);
                 match self.operand(cx, o[0], &Ty::Unknown, "the value") {
-                    Ty::Tile(f) => Ty::Block(f, Count::GroupSize),
+                    Ty::Tile(f) => Ty::Block(f, Shape::row(Count::GroupSize)),
                     _ => Ty::Unknown,
                 }
             }
@@ -674,12 +733,58 @@ impl Checker<'_> {
     }
 
     /// An operand that is a tile, or a scalar standing for one.
+    /// `matmul(a, b)` in a function on blocks (R45): the product of the two blocks as
+    /// matrices of tiles, a `[r, k]` by a `[k, c]` giving a `[r, c]` (a tile is
+    /// `[1, 1]`); a's columns other than b's rows are `K102`.
+    fn block_product(&mut self, cx: &mut Cx, a: Option<&Expr>, b: Option<&Expr>, span: Span) -> Ty {
+        let mut operand = |this: &mut Self, e: Option<&Expr>, what: &str| {
+            let ty = this.tile_operand(cx, e);
+            match ty {
+                Ty::Tile(f) => Some((f, Shape::TILE)),
+                Ty::Block(f, s) => Some((f, s)),
+                Ty::Unknown => None,
+                other => {
+                    this.error(
+                        codes::WRONG_TYPE,
+                        format!("{what} of `matmul` is {other}, where a tile or a block is asked"),
+                        e.map_or(span, |e| e.span),
+                    );
+                    None
+                }
+            }
+        };
+        let left = operand(self, a, "the left operand");
+        let right = operand(self, b, "the right operand");
+        let (Some((f, l)), Some((_, r))) = (left, right) else {
+            return Ty::Unknown;
+        };
+        if !Shape::row(l.cols).agrees(Shape::row(r.rows)) {
+            self.error(
+                codes::WRONG_TYPE,
+                format!(
+                    "`matmul` of a block {l} by a block {r}: the left's columns of tiles are the \
+                     right's rows"
+                ),
+                span,
+            );
+            return Ty::Unknown;
+        }
+        match (Shape {
+            rows: l.rows,
+            cols: r.cols,
+        }) {
+            Shape::TILE => Ty::Tile(f),
+            shape => Ty::Block(f, shape),
+        }
+    }
+
     pub(super) fn tile_operand(&mut self, cx: &mut Cx, e: Option<&Expr>) -> Ty {
         let Some(e) = e else {
             return Ty::Unknown;
         };
         let ty = self.expr(cx, e);
-        if !(ty.is_tile_operand() || matches!(ty, Ty::Unknown | Ty::Reduced(..))) {
+        let block = self.on_blocks && matches!(ty, Ty::Block(..));
+        if !(ty.is_tile_operand() || block || matches!(ty, Ty::Unknown | Ty::Reduced(..))) {
             self.error(
                 codes::WRONG_TYPE,
                 format!("a tile operation takes a tile, not {ty}"),
@@ -1268,7 +1373,18 @@ impl Checker<'_> {
                 self.note_op(span, spread(what), &[Some(base)]);
                 Ty::Tile(*f)
             }
-            (Ty::Reduced(format, axis), "col" | "row") => {
+            // in a function on blocks (R45), on each tile of the block
+            (Ty::Block(f, shape), "col" | "row") if self.on_blocks => {
+                if !self.allowed(cx, Family::Compute, what, span) {
+                    return Ty::Unknown;
+                }
+                let Some(_) = self.operands(what, span, args, &[]) else {
+                    return Ty::Unknown;
+                };
+                self.note_op(span, spread(what), &[Some(base)]);
+                Ty::Block(*f, *shape)
+            }
+            (Ty::Reduced(format, axis, shape), "col" | "row") => {
                 if !self.allowed(cx, Family::Compute, what, span) {
                     return Ty::Unknown;
                 }
@@ -1286,7 +1402,12 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
                 self.note_op(span, spread(what), &[Some(base)]);
-                Ty::Tile(*format)
+                // a block's values spread back over the block's shape
+                if *shape == Shape::TILE {
+                    Ty::Tile(*format)
+                } else {
+                    Ty::Block(*format, *shape)
+                }
             }
             (Ty::Broadcast(at), "cast") => {
                 let at = *at;
@@ -1418,7 +1539,13 @@ impl Checker<'_> {
                 }
                 let member = match ty {
                     Ty::Tile(_) => Some(1),
-                    Ty::Block(_, Count::Known(n)) => Some(*n),
+                    Ty::Block(
+                        _,
+                        Shape {
+                            rows: Count::Known(1),
+                            cols: Count::Known(n),
+                        },
+                    ) => Some(*n),
                     _ => None,
                 };
                 if let (Some(member), Ty::Stream(_, Count::Known(n))) = (member, &s) {

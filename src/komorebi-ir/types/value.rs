@@ -51,11 +51,12 @@ pub enum Type {
     Bool,
     /// `tile<F>`.
     Tile(Format),
-    /// A value for each row or each column of a tile of this format: what a
+    /// A value for each row or each column of a tile of this format, or of each tile
+    /// of a block of these rows and columns of tiles (a tile's: 1 and 1): what a
     /// reduction yields. Not a tile: `.col()` or `.row()` spreads it into one.
-    Reduced(Format, Axis),
-    /// `tile<F>[n]`: a block of n tiles.
-    Block(Format, Count),
+    Reduced(Format, Axis, Count, Count),
+    /// `tile<F>[r, c]`: a block of r rows of c tiles (R45); `tile<F>[n]` is `[1, n]`.
+    Block(Format, Count, Count),
     /// `tensor<F>`, and whether it is `@replicated`.
     Tensor(Format, bool),
     /// A view of tiles of a tensor of this format; with none, a view of any format: what
@@ -63,12 +64,12 @@ pub enum Type {
     View(Option<Format>),
     /// A view of items of this many bytes: `t.items(...)`.
     Items(Count),
-    /// A read stream of blocks of this many tiles of this format.
-    Stream(Format, Count),
+    /// A read stream of blocks of this format, of these rows and columns of tiles.
+    Stream(Format, Count, Count),
     /// Two streams walked together: `zip(s1, s2)`.
     Zip(Box<Type>, Box<Type>),
-    /// A write stream of blocks of this many tiles of this format.
-    Sink(Format, Count),
+    /// A write stream of blocks of this format, of these rows and columns of tiles.
+    Sink(Format, Count, Count),
     /// The scalars of one tile: `v.words()`.
     Words(ScalarType),
     /// The records of one tile: `v.records(R, count = c)`.
@@ -93,6 +94,19 @@ pub enum Type {
     Reason,
 }
 
+impl Count {
+    /// The one row of a block written `[n]`.
+    pub const ONE: Count = Count::Const(1);
+}
+
+/// The shape of a block as the text writes it: `[n]` for one row, else `[r, c]`.
+pub fn shape_text(rows: &Count, cols: &Count) -> String {
+    match rows {
+        Count::Const(1) => format!("[{cols}]"),
+        _ => format!("[{rows}, {cols}]"),
+    }
+}
+
 impl fmt::Display for Count {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -109,17 +123,30 @@ impl fmt::Display for Type {
             Type::Scalar(s) => write!(f, "{s}"),
             Type::Bool => f.write_str("bool"),
             Type::Tile(fm) => write!(f, "tile<{fm}>"),
-            Type::Reduced(fm, Axis::Row) => write!(f, "a value of {fm} for each row"),
-            Type::Reduced(fm, Axis::Col) => write!(f, "a value of {fm} for each column"),
-            Type::Block(fm, n) => write!(f, "tile<{fm}>[{n}]"),
+            Type::Reduced(fm, axis, r, c) => {
+                let axis = match axis {
+                    Axis::Row => "row",
+                    Axis::Col => "column",
+                };
+                write!(f, "a value of {fm} for each {axis}")?;
+                match (r, c) {
+                    (Count::Const(1), Count::Const(1)) => Ok(()),
+                    _ => write!(f, " of tile<{fm}>{}", shape_text(r, c)),
+                }
+            }
+            Type::Block(fm, r, c) => write!(f, "tile<{fm}>{}", shape_text(r, c)),
             Type::Tensor(fm, false) => write!(f, "tensor<{fm}>"),
             Type::Tensor(fm, true) => write!(f, "tensor<{fm}> @replicated"),
             Type::View(Some(fm)) => write!(f, "a view of tensor<{fm}>"),
             Type::View(None) => f.write_str("a view"),
             Type::Items(n) => write!(f, "items of {n} bytes"),
-            Type::Stream(fm, n) => write!(f, "a stream of tile<{fm}>, {n} at a time"),
+            Type::Stream(fm, Count::Const(1), n) => {
+                write!(f, "a stream of tile<{fm}>, {n} at a time")
+            }
+            Type::Stream(fm, r, c) => write!(f, "a stream of tile<{fm}>{}", shape_text(r, c)),
             Type::Zip(a, b) => write!(f, "a zip of {a} and {b}"),
-            Type::Sink(fm, n) => write!(f, "a sink of tile<{fm}>, {n} at a time"),
+            Type::Sink(fm, Count::Const(1), n) => write!(f, "a sink of tile<{fm}>, {n} at a time"),
+            Type::Sink(fm, r, c) => write!(f, "a sink of tile<{fm}>{}", shape_text(r, c)),
             Type::Words(s) => write!(f, "the {s} words of a tile"),
             Type::Records(r) => write!(f, "the records of type {}", r.0),
             Type::RecordValue(r) => write!(f, "a record of type {}", r.0),
@@ -143,12 +170,16 @@ mod tests {
     fn written_forms() {
         assert_eq!(Type::Tile(Format::Bf16).to_string(), "tile<bf16>");
         assert_eq!(
-            Type::Block(Format::F32, Count::Const(4)).to_string(),
+            Type::Block(Format::F32, Count::ONE, Count::Const(4)).to_string(),
             "tile<f32>[4]"
         );
         assert_eq!(
-            Type::Block(Format::F32, Count::GroupSize).to_string(),
+            Type::Block(Format::F32, Count::ONE, Count::GroupSize).to_string(),
             "tile<f32>[group.size]"
+        );
+        assert_eq!(
+            Type::Block(Format::Bf16, Count::Const(4), Count::Const(1)).to_string(),
+            "tile<bf16>[4, 1]"
         );
         assert_eq!(Type::Scalar(ScalarType::U32).to_string(), "u32");
     }

@@ -190,7 +190,7 @@ fn label(rule: Rule) -> Option<&'static str> {
         | Rule::view_type
         | Rule::bool_type
         | Rule::scalar_type => "a type",
-        Rule::array | Rule::index | Rule::list_lit => "`[`",
+        Rule::array | Rule::shape | Rule::index | Rule::list_lit => "`[`",
         Rule::block => "`{`",
         Rule::stmt
         | Rule::let_stmt
@@ -1004,6 +1004,7 @@ impl<'s> Builder<'s> {
         Type {
             kind: TypeKind::Scalar(scalar),
             count,
+            rows: None,
             span,
         }
     }
@@ -1031,18 +1032,30 @@ impl<'s> Builder<'s> {
             _ => {
                 let mut inner = kids(p).into_iter();
                 let format = self.ident(next(&mut inner));
-                let count = match inner.next() {
-                    Some(array) => Some(Box::new(self.expr(only(array))?)),
-                    None => None,
+                let (rows, count) = match inner.next() {
+                    Some(shape) if shape.as_rule() == Rule::shape => {
+                        let mut ends = kids(shape).into_iter();
+                        let rows = self.expr(next(&mut ends))?;
+                        let cols = self.expr(next(&mut ends))?;
+                        (Some(Box::new(rows)), Some(Box::new(cols)))
+                    }
+                    Some(array) => (None, Some(Box::new(self.expr(only(array))?))),
+                    None => (None, None),
                 };
                 return Ok(Type {
                     kind: TypeKind::Tile { format },
                     count,
+                    rows,
                     span,
                 });
             }
         };
-        Ok(Type { kind, count, span })
+        Ok(Type {
+            kind,
+            count,
+            rows: None,
+            span,
+        })
     }
 
     fn block(&self, pair: Pair<'_, Rule>) -> Built<Block> {

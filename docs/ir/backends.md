@@ -53,7 +53,8 @@ One invocation is in flight at a time.
 
 At this stage it emits what the first lesson uses: a handler on a group over tensors and scalars,
 views of tiles, a partition by rank, streams and sinks of blocks of one tile, and functions on
-tiles (a function on blocks is refused, its row form too). Everything else is refused with `K964`,
+tiles (a function on blocks is refused, its row form and its products too, and a stream of blocks of
+more than one row). Everything else is refused with `K964`,
 by name.
 
 The output builds into `module.so`, the module behind a C interface (`komo_cpu.h`), and `driver`,
@@ -103,7 +104,8 @@ tiles `t.tiles(first, n)` themselves, its ends `u32` words, numbers, the rank, `
 values of these (`let first = worker.rank * 64`, a line of the movers). A kernel's case reads
 only the rank, size and words its lines use. Partitions of the same values are printed once.
 A tile function may be on blocks, the function applied to each valid tile of the block (today's
-compute loop).
+compute loop), when its body is element by element: a function on blocks with a product or a
+reduction, and a stream of blocks of more than one row, are refused by name.
 
 It also emits the corpus's program 2 (`StepHandlers.sum`). Its loop adds each `f32` tile of a
 stream, one tile a block, to a `var` of `zeros`. After the loop, `reduce(total, with = sum)` sums

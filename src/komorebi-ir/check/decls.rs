@@ -411,11 +411,19 @@ fn count(ix: &Index, e: &ast::Expr) -> Result<Count, Span> {
 /// The type a declaration writes, as `program` sees the names of types.
 fn ty(ix: &Index, t: &ast::Type, attrs: &[Attr], program: Option<&str>) -> Result<Type, Span> {
     let n = t.count.as_deref().map(|c| count(ix, c)).transpose()?;
+    // the rows of `tile<F>[r, c]` (R45): a number the text writes; `[n]` is one row
+    let rows = match t.rows.as_deref() {
+        Some(r) => match count(ix, r)? {
+            Count::Const(r) if r > 0 => Count::Const(r),
+            _ => return Err(r.span),
+        },
+        None => Count::Const(1),
+    };
     Ok(match (&t.kind, n) {
         (TypeKind::Scalar(_), None) => Type::Scalar(scalar(t)?),
         (TypeKind::Bool, None) => Type::Bool,
         (TypeKind::Tile { format: f }, None) => Type::Tile(format(f)?),
-        (TypeKind::Tile { format: f }, Some(n)) => Type::Block(format(f)?, n),
+        (TypeKind::Tile { format: f }, Some(n)) => Type::Block(format(f)?, rows, n),
         (TypeKind::Tensor { format: f }, None) => {
             Type::Tensor(format(f)?, has(attrs, "replicated"))
         }

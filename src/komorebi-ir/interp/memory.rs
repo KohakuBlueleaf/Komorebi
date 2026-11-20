@@ -344,20 +344,39 @@ impl Tile {
 /// not a tile. Elementwise operations apply to it, with a scalar or another of its
 /// kind; `.col()` (for each row) or `.row()` (for each column) makes it a tile. It is
 /// held in a tile: the value of row r in column 0 of row r, of column c in row 0 of
-/// column c; the other elements are never seen.
+/// column c; the other elements are never seen. A block's reduction along a row (R43,
+/// R45) holds one such tile for each row of the block's tiles.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reduced {
     /// The axis it was reduced along: `Row` gives a value for each row.
     pub axis: Axis,
-    /// The tile that holds it.
-    pub tile: Tile,
+    /// The tiles that hold it: one for a tile's; one for each row of a block's.
+    pub tiles: Vec<Tile>,
+    /// Of a block's reduction, the tiles a row of that block: what `.col()` spreads
+    /// it back over. None: a tile's.
+    pub cols: Option<usize>,
 }
 
-/// A block of n tiles, `tile<F>[n]`: what a stream with `block = n` yields.
+/// A block of r rows of c tiles, `tile<F>[r, c]` (R45): what a stream with
+/// `block = [r, c]` yields; `block = n` gives one row of n tiles.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
-    /// The tiles, in the view's order.
+    /// The tiles, row after row, each in the view's order.
     pub tiles: Vec<Tile>,
+    /// The rows of tiles; a ragged last block of one row has fewer tiles.
+    pub rows: usize,
+}
+
+impl Block {
+    /// A block of one row of these tiles.
+    pub fn row(tiles: Vec<Tile>) -> Block {
+        Block { tiles, rows: 1 }
+    }
+
+    /// The tiles a row.
+    pub fn cols(&self) -> usize {
+        self.tiles.len() / self.rows.max(1)
+    }
 }
 
 /// A tensor's place on the heap.
@@ -595,8 +614,10 @@ impl View {
 pub struct Stream {
     /// The view it reads.
     pub view: View,
-    /// The tiles of a block.
+    /// The tiles of a row of a block.
     pub block: usize,
+    /// The rows of a block (R45): more than one, the blocks of a rectangle view.
+    pub rows: usize,
     /// The position in the view of the next tile to read.
     pub next: usize,
 }

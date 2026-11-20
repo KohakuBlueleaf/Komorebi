@@ -39,8 +39,10 @@ fn cpp_type(t: &Type) -> Option<String> {
         Type::Scalar(s) => scalar(*s).map(str::to_string),
         Type::Tile(f) => element(*f).map(|e| format!("Tile<{e}>")),
         Type::View(Some(f)) => element(*f).map(|_| "View".to_string()),
-        Type::Stream(f, Count::Const(1)) => element(*f).map(|_| "Stream".to_string()),
-        Type::Sink(f, Count::Const(1)) => element(*f).map(|_| "Sink".to_string()),
+        Type::Stream(f, Count::Const(1), Count::Const(1)) => {
+            element(*f).map(|_| "Stream".to_string())
+        }
+        Type::Sink(f, Count::Const(1), Count::Const(1)) => element(*f).map(|_| "Sink".to_string()),
         Type::Tensor(f, false) => element(*f).map(|_| "const komo_tensor&".to_string()),
         _ => None,
     }

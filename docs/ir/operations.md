@@ -62,33 +62,42 @@ name (`K010`).
 | `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile; `row` or `col` | a value for each row (`axis = row`) or each column (`axis = col`): not a tile; stored, pushed, given to `matmul` or mixed with a tile, it is refused (`K116`) | T4, Compute functions |
 | `v.col()` | none | a value for each row; or a tile | spread along each row; of a tile, its column 0 spread | T4, Compute functions |
 | `w.row()` | none | a value for each column; or a tile | spread along each column; of a tile, its row 0 spread | T4, Compute functions |
-| `matmul(a, b)` | two by position | tiles | a tile | T4, T13 |
+| `matmul(a, b)` | two by position | tiles; in a function on blocks, blocks `[r, k]` by `[k, c]` (`K102`) | a tile; of blocks, a block `[r, c]` | T4, T13 |
 | `a.T` | none | a tile | the tile turned | T4 |
 | `zeros` | none | | a tile, or the scalars, of zeros | T4, T16 |
 | A number constant, a scalar parameter | | | a scalar | T1, T2 |
-| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`); a block of the declared count for a parameter `tile<F>[n]` (`K102`) | its result | T1, T8 |
+| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`); a block of the declared shape for a parameter `tile<F>[n]` or `tile<F>[r, c]` (`K102`) | its result | T1, T8 |
 
 The function body of a `func` uses only these (`K202`). Operands of different formats may be mixed.
 
 ### A function on blocks
 
-A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. Each of its
-tile parameters and its result is then a block, all of one count n (`K102`); n is a number in the text
-or a module parameter, the block of the stream the blocks come from. Its body is written on one tile
-and works on each tile of the blocks in turn: the elementwise operations above (the arithmetic, the
-elementary functions, `where`, a conversion), a scalar going to every tile. It gives a block of the
-same count; a last block that is shorter gives a shorter result. A function on one tile is never
-given a block (`K203`).
+A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. A block is
+a matrix of tiles: `tile<F>[r, c]` is r rows of c tiles, and `tile<F>[n]` is `[1, n]`, one row of n
+tiles. Its rows are a number written in the text; a module parameter or `group.size` there is
+refused (`K102`). Its columns are a number in the text or a module parameter, the block of the
+stream the blocks come from. A block of more than one row stands only as a parameter or the result
+of a function (`K010` elsewhere).
 
-A reduction along a row (`reduce_sum`, `reduce_max`, `reduce_min` with `axis = row`) runs along the
-whole block: its n tiles side by side, a row of n times the tile's width, combined in order from
-the first tile's first column. It gives one value for each row. `.col()` of those values spreads
-each row's value over every tile of the block, and `.row()` of a tile parameter spreads that tile's
-row 0 down its own tile. On one tile the same body keeps its meaning: the tile's own rows. This is
-how a row wider than one tile is normalised (`x - reduce_max(x, axis = row).col()`). A reduction
-along a column, `.col()` of anything else, `.row()` of anything else, `matmul` and `.T` in its body
-are refused by name (`K010`), as is a `combine` or an `extern func` on blocks. What a backend
-computes of a row is its own statement ([backends](backends.md)).
+Its body is typed on blocks: a parameter is the block it is declared, and a tile `tile<F>` is
+`[1, 1]`. An elementwise operation (the arithmetic, the elementary functions, `where`, a
+conversion) takes operands of one shape, a scalar going to every tile, and gives that shape
+(`K102`). `matmul` takes an `[r, k]` by a `[k, c]` and gives an `[r, c]`, whose tile (i, j) is the
+sum over k, in order, of the products of the left's tile (i, k) and the right's tile (k, j); its
+result may be a tile, `[1, 1]`. A function on one tile called in it, given blocks of one shape, is
+that function on each tile; a function on blocks is given blocks of its shapes. An elementwise body
+runs on each tile of the blocks in turn; a last block that is shorter gives a shorter result. A
+function on one tile is never given a block (`K203`).
+
+A reduction along a row (`reduce_sum`, `reduce_max`, `reduce_min` with `axis = row`) runs along
+each of the block's r rows: its c tiles side by side, a row of c times the tile's width, combined in
+order from the row's first tile's first column. It gives one value for each row of each row of
+tiles, of the block's shape. `.col()` of those values spreads each row's value over every tile of
+its row of tiles, and `.row()` of a tile parameter spreads that tile's row 0 down its own tile. On
+one tile the same body keeps its meaning: the tile's own rows. This is how a row wider than one
+tile is normalised (`x - reduce_max(x, axis = row).col()`). A reduction along a column, `.col()` of
+anything else, `.row()` of anything else and `.T` in its body are refused by name (`K010`), as is a `combine` or an `extern func` on blocks. What a backend computes of a row
+is its own statement ([backends](backends.md)).
 
 ## Views of a tensor
 
@@ -104,9 +113,9 @@ computes of a row is its own statement ([backends](backends.md)).
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
+| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); r a number written in the text (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
 | `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
-| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`) | a write stream | T1 |
+| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
 | `store view <- value` | a view, a value | a view; a tile (a store of scalars: `K010`) | writes it, visible at completion | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
@@ -195,6 +204,6 @@ The language names these and the build does not have them yet. Each is refused b
 - A `store` of scalars.
 - A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
 - Several tile shapes in one module.
-- In a function on blocks: `matmul`, a reduction along a column, `.col()` of other than a reduction
-  along a row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func`
-  on blocks.
+- In a function on blocks: a reduction along a column, `.col()` of other than a reduction along a
+  row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func` on blocks.
+- A block of more than one row other than a function's parameter or result, and a `sink` of one.

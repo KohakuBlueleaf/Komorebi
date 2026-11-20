@@ -45,9 +45,10 @@ pub fn validate(module: &Module) -> Vec<Violation> {
 
 /// What a body may refer to.
 struct Ctx<'m> {
-    /// The owner's parameters, as its body reads them (a function on blocks: a tile of
-    /// each block).
+    /// The owner's parameters, as its body reads them.
     params: std::borrow::Cow<'m, [Type]>,
+    /// Whether the body is a function on blocks, typed on blocks (R45).
+    on_blocks: bool,
     /// The result `return` gives: `None` for none.
     ret: Option<Type>,
     /// The program the body belongs to.
@@ -95,15 +96,77 @@ pub fn fits(got: &Type, want: &Type) -> bool {
         // a view of a format may be given where a view of no format is declared
         (T::View(_), T::View(None)) => true,
         (T::View(Some(f)), T::View(Some(g))) => format_fits(*f, *g),
-        (T::Reduced(f, a), T::Reduced(g, b)) => a == b && format_fits(*f, *g),
-        (T::Block(f, c), T::Block(g, d))
-        | (T::Stream(f, c), T::Stream(g, d))
-        | (T::Sink(f, c), T::Sink(g, d)) => c == d && format_fits(*f, *g),
+        (T::Reduced(f, a, r, c), T::Reduced(g, b, s, d)) => {
+            a == b && (r, c) == (s, d) && format_fits(*f, *g)
+        }
+        (T::Block(f, r, c), T::Block(g, s, d))
+        | (T::Stream(f, r, c), T::Stream(g, s, d))
+        | (T::Sink(f, r, c), T::Sink(g, s, d)) => (r, c) == (s, d) && format_fits(*f, *g),
         (T::Tensor(f, r), T::Tensor(g, s)) => r == s && format_fits(*f, *g),
         (T::Zip(a, b), T::Zip(c, d)) => fits(a, c) && fits(b, d),
         (T::Handle(a), T::Handle(b)) | (T::Outcome(a), T::Outcome(b)) => opt(a, b),
         _ => got == want,
     }
+}
+
+/// The shape of a tile (`[1, 1]`) or of a block (R45): its rows and columns of tiles.
+fn shape_of(t: &Type) -> Option<(Count, Count)> {
+    match t {
+        Type::Tile(_) => Some((Count::Const(1), Count::Const(1))),
+        Type::Block(_, r, c) => Some((*r, *c)),
+        _ => None,
+    }
+}
+
+/// A tile or a block of this shape: a tile when it is `[1, 1]`.
+fn of_shape(f: Format, (r, c): (Count, Count)) -> Type {
+    match (r, c) {
+        (Count::Const(1), Count::Const(1)) => Type::Tile(f),
+        _ => Type::Block(f, r, c),
+    }
+}
+
+/// Whether an element-by-element operation on `operands` may give `result`: its tiles
+/// (and, in a function on blocks, blocks) or a reduction's values, all of one shape,
+/// beside scalars; the result of that shape, a block when an operand is one. `Some`
+/// tells whether they are a reduction's values; `None` when they do not fit.
+fn elementwise(on_blocks: bool, operands: &[&Type], result: &[&Type]) -> Option<bool> {
+    let mut shape = None;
+    let (mut block, mut tile, mut axis) = (false, false, None);
+    for t in operands {
+        let s = match t {
+            Type::Scalar(_) => continue,
+            Type::Tile(_) => {
+                tile = true;
+                (Count::Const(1), Count::Const(1))
+            }
+            Type::Block(_, r, c) if on_blocks => {
+                block = true;
+                (*r, *c)
+            }
+            Type::Reduced(_, a, r, c) => {
+                if axis.is_some_and(|b| b != *a) {
+                    return None;
+                }
+                axis = Some(*a);
+                (*r, *c)
+            }
+            _ => return None,
+        };
+        if shape.is_some_and(|first| first != s) {
+            return None;
+        }
+        shape = Some(s);
+    }
+    let shape = shape?;
+    let ok = match (axis, result) {
+        (Some(_), _) if tile || block => false,
+        (Some(a), [Type::Reduced(_, b, r, c)]) => a == *b && (*r, *c) == shape,
+        (None, [Type::Block(_, r, c)]) => block && (*r, *c) == shape,
+        (None, [Type::Tile(_)]) => !block && shape == (Count::Const(1), Count::Const(1)),
+        _ => false,
+    };
+    ok.then_some(axis.is_some())
 }
 
 fn is_int(t: &Type) -> bool {
@@ -118,9 +181,10 @@ fn scalar_of(c: &ConstValue) -> Type {
 }
 
 impl<'m> Validator<'m> {
-    /// A function on blocks works on each tile, reduces along a row of the whole block,
-    /// spreads that back with `.col()` and a parameter's row 0 with `.row()` (R43):
-    /// `matmul`, `.T`, a reduction along a column and any other spread are violations.
+    /// A function on blocks works on each tile, reduces along each row of a block,
+    /// spreads that back with `.col()` and a parameter's row 0 with `.row()` (R43), and
+    /// multiplies blocks (R45): `.T`, a reduction along a column and any other spread
+    /// are violations.
     fn on_blocks_body(&mut self, at: BodyRef, body: &Body) {
         let arg = |v: ValueId| {
             body.insts
@@ -129,11 +193,10 @@ impl<'m> Validator<'m> {
         };
         for (k, inst) in body.insts.iter().enumerate() {
             let what = match &inst.op {
-                Op::Matmul(..) => "`matmul`",
                 Op::Transpose(_) => "`.T`",
                 Op::Reduce(_, _, crate::types::Axis::Col) => "a reduction along a column",
                 Op::SpreadCol(v) => match body.values.get(v.0 as usize) {
-                    Some(Type::Reduced(_, crate::types::Axis::Row)) => continue,
+                    Some(Type::Reduced(_, crate::types::Axis::Row, ..)) => continue,
                     _ => "`.col()` of other than a reduction along a row",
                 },
                 Op::SpreadRow(v) if arg(*v) => continue,
@@ -145,6 +208,36 @@ impl<'m> Validator<'m> {
                 Some(InstId(k as u32)),
                 format!("{what} in a function on blocks"),
             );
+        }
+    }
+
+    /// A function on tiles called in a function on blocks (R45): its tile parameters
+    /// given blocks of one shape, its other parameters their own; it gives its result
+    /// on each tile, a block of that shape.
+    fn on_each_tile(&self, func: &super::Func, a: &[&Type], d: &[&Type]) -> Result<(), String> {
+        let mut shape = None;
+        let mut ok = func.params.len() == a.len();
+        for (p, x) in func.params.iter().zip(a) {
+            match (p, x) {
+                (Type::Tile(f), Type::Block(g, r, c)) if format_fits(*g, *f) => {
+                    ok &= shape.is_none_or(|s| s == (*r, *c));
+                    shape = Some((*r, *c));
+                }
+                (Type::Tile(_), _) => ok = false,
+                _ => ok &= fits(x, p),
+            }
+        }
+        let ok = ok
+            && match (shape, &func.ret, d) {
+                (Some((r, c)), Type::Tile(f), [Type::Block(g, s, t)]) => {
+                    f == g && (r, c) == (*s, *t)
+                }
+                _ => false,
+            };
+        if ok {
+            Ok(())
+        } else {
+            Err("a call whose arguments do not fit".into())
         }
     }
 
@@ -166,14 +259,12 @@ impl<'m> Validator<'m> {
         let mut out = Vec::new();
         for (i, f) in m.funcs.iter().enumerate() {
             if let Some(body) = &f.body {
-                let inner: Vec<Type> = (0..f.params.len())
-                    .filter_map(|i| f.inner(Some(i)))
-                    .collect();
                 let ctx = Ctx {
-                    params: std::borrow::Cow::Owned(inner),
-                    ret: f.inner(None),
+                    params: std::borrow::Cow::Borrowed(&f.params),
+                    ret: Some(f.ret.clone()),
                     program: None,
                     arrived: None,
+                    on_blocks: f.on_blocks(),
                 };
                 out.push((BodyRef::Func(FuncId(i as u32)), body, ctx));
             }
@@ -186,6 +277,7 @@ impl<'m> Validator<'m> {
                     ret: handler.ret.map(Type::Scalar),
                     program: Some(pid),
                     arrived: None,
+                    on_blocks: false,
                 };
                 let r = BodyRef::Handler(pid, super::HandlerId(h as u32));
                 out.push((r, &handler.body, ctx));
@@ -197,6 +289,7 @@ impl<'m> Validator<'m> {
                     ret: None,
                     program: Some(pid),
                     arrived: None,
+                    on_blocks: false,
                 };
                 out.push((BodyRef::Seed(pid, rid), &run.seed, seed));
                 for (k, (message, body)) in run.on_message.iter().enumerate() {
@@ -205,6 +298,7 @@ impl<'m> Validator<'m> {
                         ret: None,
                         program: Some(pid),
                         arrived: Some(*message),
+                        on_blocks: false,
                     };
                     out.push((BodyRef::On(pid, rid, k as u32), body, ctx));
                 }
@@ -216,6 +310,7 @@ impl<'m> Validator<'m> {
                 ret: control.ret.map(Type::Scalar),
                 program: None,
                 arrived: None,
+                on_blocks: false,
             };
             out.push((
                 BodyRef::Control(super::ControlId(c as u32)),
@@ -283,29 +378,12 @@ impl<'m> Validator<'m> {
                 self.fail(None, None, format!("function {i} has no body"));
             }
             if f.on_blocks() {
-                // a plain function, its tile parameters and result blocks of one count
-                let tiles: Vec<&Type> = f
-                    .params
-                    .iter()
-                    .chain(std::iter::once(&f.ret))
-                    .filter(|t| matches!(t, Type::Tile(_) | Type::Block(..)))
-                    .collect();
-                let count = |t: &Type| match t {
-                    Type::Block(_, n) => Some(*n),
-                    _ => None,
-                };
-                let first = tiles.first().and_then(|t| count(t));
-                let one = tiles
-                    .iter()
-                    .all(|t| count(t).is_some() && count(t) == first);
-                if f.kind != FuncKind::Plain || !one || count(&f.ret).is_none() {
+                // a plain function; its body typed on blocks, checked by each operation
+                if f.kind != FuncKind::Plain {
                     self.fail(
                         None,
                         None,
-                        format!(
-                            "function {i} on blocks: a plain function whose tile parameters and \
-                             result are blocks of one count"
-                        ),
+                        format!("function {i} on blocks: a plain function"),
                     );
                 }
                 if let Some(body) = &f.body {
@@ -573,25 +651,22 @@ impl<'m> Validator<'m> {
                                 | BinOp::Max
                         ) && matches!(r, Some(Type::Scalar(_)))
                     }
-                    (Type::Reduced(_, p), Type::Reduced(_, q)) => {
-                        p == q && matches!(r, Some(Type::Reduced(_, z)) if z == p)
-                    }
-                    (Type::Reduced(_, p), Type::Scalar(_))
-                    | (Type::Scalar(_), Type::Reduced(_, p)) => {
-                        matches!(r, Some(Type::Reduced(_, z)) if z == p)
-                    }
-                    (Type::Tile(_), t) | (t, Type::Tile(_)) if tile_or_scalar(t) => {
-                        matches!(
-                            op,
-                            BinOp::Add
-                                | BinOp::Sub
-                                | BinOp::Mul
-                                | BinOp::Div
-                                | BinOp::Min
-                                | BinOp::Max
-                        ) && matches!(r, Some(Type::Tile(_)))
-                    }
-                    _ => false,
+                    // a reduction's values with any operation; tiles and blocks, arithmetic
+                    _ => match elementwise(ctx.on_blocks, &[x, y], d) {
+                        Some(reduced) => {
+                            reduced
+                                || matches!(
+                                    op,
+                                    BinOp::Add
+                                        | BinOp::Sub
+                                        | BinOp::Mul
+                                        | BinOp::Div
+                                        | BinOp::Min
+                                        | BinOp::Max
+                                )
+                        }
+                        None => false,
+                    },
                 };
                 need(
                     ok && d.len() == 1,
@@ -624,25 +699,17 @@ impl<'m> Validator<'m> {
                 exact(&[a[0].clone()])
             }
             Op::ForStream { .. } => match a[0] {
-                Type::Stream(f, Count::Const(1)) => exact(&[Type::Tile(*f)]),
-                Type::Stream(f, c) => exact(&[Type::Block(*f, *c)]),
+                Type::Stream(f, r, c) => exact(&[of_shape(*f, (*r, *c))]),
                 _ => Err("`for` over a value that is not a stream".into()),
             },
             Op::ForZip { .. } => match (a[0], a[1]) {
-                (Type::Stream(f, cf), Type::Stream(g, cg)) => {
-                    let one = |f: Format, c: Count| {
-                        if c == Count::Const(1) {
-                            Type::Tile(f)
-                        } else {
-                            Type::Block(f, c)
-                        }
-                    };
-                    exact(&[one(*f, *cf), one(*g, *cg)])
+                (Type::Stream(f, rf, cf), Type::Stream(g, rg, cg)) => {
+                    exact(&[of_shape(*f, (*rf, *cf)), of_shape(*g, (*rg, *cg))])
                 }
                 _ => Err("`zip` of values that are not streams".into()),
             },
             Op::ForArrive { .. } => need(
-                matches!((a[0], d.first()), (Type::Broadcast(f), Some(Type::Tile(g) | Type::Block(g, _))) if f == g)
+                matches!((a[0], d.first()), (Type::Broadcast(f), Some(Type::Tile(g) | Type::Block(g, ..))) if f == g)
                     && d.len() == 2
                     && matches!(d[1], Type::Scalar(_)),
                 "`arrive` of a value that is not a broadcast",
@@ -664,17 +731,21 @@ impl<'m> Validator<'m> {
                 _ => Err("a conversion of what is not a scalar".into()),
             },
             Op::Unary(..) => match (a[0], d) {
-                (Type::Tile(_), [Type::Tile(_)]) => Ok(()),
-                (Type::Reduced(_, p), [Type::Reduced(_, q)]) if p == q => Ok(()),
                 (Type::Scalar(s), [Type::Scalar(t)]) if scalar_fits(*s, *t) => Ok(()),
+                _ if elementwise(ctx.on_blocks, &[a[0]], d).is_some() => Ok(()),
                 _ => Err("a function of one tile on another value".into()),
             },
             Op::Select { .. } => need(
-                a.iter().all(|t| tile_or_scalar(t)) && matches!(d, [Type::Tile(_)]),
+                a.iter()
+                    .all(|t| tile_or_scalar(t) || ctx.on_blocks && shape_of(t).is_some())
+                    && elementwise(ctx.on_blocks, a, d) == Some(false),
                 "`where` on values that are not tiles or scalars",
             ),
             Op::Reduce(_, _, axis) => match a[0] {
-                Type::Tile(f) => exact(&[Type::Reduced(*f, *axis)]),
+                Type::Tile(f) => {
+                    exact(&[Type::Reduced(*f, *axis, Count::Const(1), Count::Const(1))])
+                }
+                Type::Block(f, r, c) if ctx.on_blocks => exact(&[Type::Reduced(*f, *axis, *r, *c)]),
                 _ => Err("a reduction of a value that is not a tile".into()),
             },
             Op::SpreadCol(_) | Op::SpreadRow(_) => {
@@ -685,19 +756,37 @@ impl<'m> Validator<'m> {
                 };
                 match a[0] {
                     Type::Tile(f) => exact(&[Type::Tile(*f)]),
-                    Type::Reduced(f, x) if *x == axis => exact(&[Type::Tile(*f)]),
+                    Type::Block(..) if ctx.on_blocks => exact(&[a[0].clone()]),
+                    Type::Reduced(f, x, r, c) if *x == axis => exact(&[of_shape(*f, (*r, *c))]),
                     _ => Err("`.col()` or `.row()` of a value it does not apply to".into()),
                 }
             }
-            Op::Matmul(..) => need(
-                matches!(
-                    (a[0], a[1], d),
-                    (Type::Tile(_), Type::Tile(_), [Type::Tile(_)])
-                ),
-                "`matmul` of values that are not tiles",
-            ),
+            // of blocks (R45): a `[r, k]` by a `[k, c]` gives a `[r, c]`
+            Op::Matmul(..) => {
+                let shapes = (shape_of(a[0]), shape_of(a[1]), d);
+                let ok = match shapes {
+                    (Some((r, k)), Some((k2, c)), [t]) if ctx.on_blocks => {
+                        let tile = (r, c) == (Count::Const(1), Count::Const(1));
+                        k == k2 && shape_of(t) == Some((r, c)) && matches!(t, Type::Tile(_)) == tile
+                    }
+                    _ => matches!(
+                        (a[0], a[1], d),
+                        (Type::Tile(_), Type::Tile(_), [Type::Tile(_)])
+                    ),
+                };
+                need(
+                    ok,
+                    "`matmul` of values that are not tiles, or blocks that do not fit",
+                )
+            }
             Op::Transpose(_) => need(
-                matches!((a[0], d), (Type::Tile(f), [Type::Tile(g)]) if f == g),
+                match (a[0], d) {
+                    (Type::Tile(f), [Type::Tile(g)]) => f == g,
+                    (Type::Block(f, r, c), [Type::Block(g, s, t)]) => {
+                        ctx.on_blocks && f == g && (r, c) == (t, s)
+                    }
+                    _ => false,
+                },
                 "`.T` of a value that is not a tile",
             ),
             Op::Zeros => need(
@@ -708,6 +797,10 @@ impl<'m> Validator<'m> {
                 Some(func) => {
                     let ok = func.params.len() == a.len()
                         && func.params.iter().zip(a).all(|(p, x)| fits(x, p));
+                    if !ok && ctx.on_blocks && !func.on_blocks() {
+                        // a function on tiles on each tile of blocks of one shape (R45)
+                        return self.on_each_tile(func, a, d);
+                    }
                     need(ok, "a call whose arguments do not fit")?;
                     exact(std::slice::from_ref(&func.ret))
                 }
@@ -780,12 +873,12 @@ impl<'m> Validator<'m> {
                 "a `partition` that does not fit",
             ),
             Op::Stream(..) | Op::Sink(..) => match (a[0], d) {
-                (Type::View(f), [Type::Stream(g, _)])
+                (Type::View(f), [Type::Stream(g, ..)])
                     if matches!(op, Op::Stream(..)) && *f == Some(*g) && int(1) =>
                 {
                     Ok(())
                 }
-                (Type::View(f), [Type::Sink(g, _)])
+                (Type::View(f), [Type::Sink(g, ..)])
                     if matches!(op, Op::Sink(..)) && *f == Some(*g) && int(1) =>
                 {
                     Ok(())
@@ -804,7 +897,7 @@ impl<'m> Validator<'m> {
                 )
             }
             Op::BlockAt(..) => match a[0] {
-                Type::Block(f, _) if int(1) => exact(&[Type::Tile(*f)]),
+                Type::Block(f, Count::Const(1), _) if int(1) => exact(&[Type::Tile(*f)]),
                 _ => Err("`block[i]` of a value that is not a block".into()),
             },
             Op::Fill(mm, _) => need(
@@ -875,7 +968,7 @@ impl<'m> Validator<'m> {
                 exact(&[a[0].clone()])
             }
             Op::Gather(_) => match a[0] {
-                Type::Tile(f) => exact(&[Type::Block(*f, Count::GroupSize)]),
+                Type::Tile(f) => exact(&[Type::Block(*f, Count::Const(1), Count::GroupSize)]),
                 _ => Err("`gather` of a value that is not a tile".into()),
             },
             Op::Broadcast(..) => {
@@ -893,7 +986,7 @@ impl<'m> Validator<'m> {
                 exact(&[Type::Bool])
             }
             Op::Cast(..) => need(
-                matches!((a[0], a[1]), (Type::Broadcast(f), Type::Tile(g) | Type::Block(g, _)) if f == g)
+                matches!((a[0], a[1]), (Type::Broadcast(f), Type::Tile(g) | Type::Block(g, ..)) if f == g)
                     && (a.len() == 2 || matches!(a[2], Type::Scalar(_)))
                     && d.is_empty(),
                 "a `cast` that does not fit",

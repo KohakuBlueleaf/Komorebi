@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{Count, Ty};
+use super::ty::{Count, Shape, Ty};
 use crate::syntax::ast::{
     Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Span, Type, TypeKind,
 };
@@ -343,21 +343,14 @@ impl Checker<'_> {
         out
     }
 
-    /// The rules of a function declared on blocks (`tile<F>[n]`): a `func` only
-    /// (`K010` for a `combine` or an `extern func`), every tile parameter and the
-    /// result a block, all of one count (`K102`). Its body works on each tile.
+    /// The rule of a function declared on blocks (`tile<F>[r, c]`): a `func` only
+    /// (`K010` for a `combine` or an `extern func`). Its body is typed on blocks, each
+    /// operation's shapes checked there (R45).
     fn on_blocks(&mut self, name: &str, kind: FuncKind, params: &[Ty], ret: &Ty, span: Span) {
-        let counts: Vec<Count> = params
-            .iter()
-            .chain(std::iter::once(ret))
-            .filter_map(|t| match t {
-                Ty::Block(_, n) => Some(*n),
-                _ => None,
-            })
-            .collect();
-        let Some(&first) = counts.first() else {
+        let blocks = params.iter().chain(std::iter::once(ret));
+        if !blocks.clone().any(|t| matches!(t, Ty::Block(..))) {
             return;
-        };
+        }
         if kind != FuncKind::Func {
             self.error(
                 codes::NOT_BUILT,
@@ -365,24 +358,6 @@ impl Checker<'_> {
                     "`{name}`: a `combine` or an `extern func` on a block of several tiles is \
                      named in the language and not built yet"
                 ),
-                span,
-            );
-            return;
-        }
-        let tiles = params.iter().chain(std::iter::once(ret));
-        if tiles.clone().any(|t| matches!(t, Ty::Tile(_))) || !matches!(ret, Ty::Block(..)) {
-            self.error(
-                codes::WRONG_TYPE,
-                format!(
-                    "`{name}` is declared on blocks: each of its tile parameters and its result \
-                     is a block `tile<F>[n]`"
-                ),
-                span,
-            );
-        } else if counts.iter().any(|&n| n != first) {
-            self.error(
-                codes::WRONG_TYPE,
-                format!("`{name}`: its blocks and its result have one count"),
                 span,
             );
         }
@@ -517,14 +492,50 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
         };
+        // `tile<F>[r, c]` (R45): r rows of c tiles, r a number the text writes
+        let rows = match ty.rows.as_deref().map(|r| (&r.kind, r.span)) {
+            None => Count::Known(1),
+            Some((crate::syntax::ast::ExprKind::Int(text), span)) => match parse_int(text) {
+                Some(r) if r > 0 => Count::Known(r),
+                _ => {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        "a block has one row or more".into(),
+                        span,
+                    );
+                    return Ty::Unknown;
+                }
+            },
+            Some((_, span)) => {
+                self.error(
+                    codes::WRONG_TYPE,
+                    "the rows of a block `[r, c]` are a number written in the text (a module \
+                     parameter or `group.size` there is not built)"
+                        .into(),
+                    span,
+                );
+                return Ty::Unknown;
+            }
+        };
+        let shape = Shape { rows, cols: n };
+        if rows != Count::Known(1) && !matches!(place, Place::FuncParam | Place::FuncResult) {
+            self.error(
+                codes::NOT_BUILT,
+                "a block of several rows `[r, c]` other than a function's parameter or result \
+                 is named in the language and not built yet"
+                    .into(),
+                ty.span,
+            );
+            return Ty::Unknown;
+        }
         match place {
             Place::StateMember => match base {
-                Ty::Tile(f) => Ty::Block(f, n),
+                Ty::Tile(f) => Ty::Block(f, shape),
                 Ty::Unknown => Ty::Unknown,
                 other => Ty::Scalars(Box::new(other), n),
             },
             Place::FuncParam | Place::FuncResult => match base {
-                Ty::Tile(f) => Ty::Block(f, n),
+                Ty::Tile(f) => Ty::Block(f, shape),
                 Ty::Unknown => Ty::Unknown,
                 _ => {
                     self.error(

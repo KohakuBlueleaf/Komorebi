@@ -596,6 +596,7 @@ impl Gen {
         Type {
             kind: TypeKind::Scalar(*self.rng.pick(&Scalar::ALL)),
             count: None,
+            rows: None,
             span: sp(),
         }
     }
@@ -611,9 +612,13 @@ impl Gen {
             _ => (TypeKind::Named(format), false),
         };
         let count = (countable && self.rng.chance(40)).then(|| Box::new(self.expr(1)));
+        // a tile's block of rows (R45): `tile<F>[r, c]`
+        let tile = matches!(kind, TypeKind::Tile { .. });
+        let rows = (tile && count.is_some() && self.rng.chance(30)).then(|| Box::new(self.expr(1)));
         Type {
             kind,
             count,
+            rows,
             span: sp(),
         }
     }

@@ -809,6 +809,15 @@ fn a_zip_other_than_program_3s_is_refused_by_name() {
         "let c = stream(a.tiles(first, width), block = 1)\n        let results = sink(",
     );
     assert!(third.contains("a third read stream"), "{third}");
+    // reading R45: a stream in blocks of several rows of tiles is not built here
+    let rows = refused(
+        "let results = sink(",
+        "let c = stream(b.tiles(first, width), block = [2, 1])\n        let results = sink(",
+    );
+    assert!(
+        rows.contains("a stream in blocks of more than one row of tiles"),
+        "{rows}"
+    );
     // a pattern's hint names one u32 parameter (here a fifth, `p`), whose word the
     // program then reads no more; on a loop, each stream it walks
     let with_p = |from: &str, to: &str| {
@@ -931,4 +940,30 @@ program Movement {
         pushed.contains("a counted loop around a stream loop that pushes"),
         "{pushed}"
     );
+}
+
+#[test]
+fn the_trace_refuses_a_function_on_blocks_that_is_not_element_by_element_by_name() {
+    // reading R45: a body typed on blocks traces as the one on each tile only when it
+    // holds no product and no reduction
+    let text = "module blocks\n\ntile [32, 32]\nformat bf16, f32\n\n\
+        func project(x: tile<bf16>[1, 4], w: tile<bf16>[4, 1]) -> tile<f32> {\n    \
+        return matmul(x, w)\n}\n\n\
+        func spread(x: tile<f32>[2]) -> tile<f32>[2] {\n    \
+        return reduce_sum(x, axis = row).col()\n}\n";
+    let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
+    for (at, name) in module.funcs.iter().enumerate() {
+        let f = komorebi_ir::types::FuncId(at as u32);
+        let refusal = komorebi_ir::backend::tensix::tile::ir::kernel_ir(&module, f, &name.name)
+            .expect_err(&name.name);
+        assert_eq!(refusal.code, "K964", "{}", name.name);
+        assert!(
+            refusal
+                .what
+                .contains("a function on blocks with a product or a reduction"),
+            "{}: {}",
+            name.name,
+            refusal.what
+        );
+    }
 }

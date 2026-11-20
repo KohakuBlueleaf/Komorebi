@@ -154,16 +154,16 @@ pub struct Func {
 }
 
 impl Func {
-    /// True when the function is declared on blocks (`tile<F>[n]`): its body is the
-    /// one on each tile, a block parameter read as one tile of the block (`Op::Arg`)
-    /// and the result returned as one tile of the result's block; a call on blocks of
-    /// m tiles runs it on each of the m tiles, in order.
+    /// True when the function is declared on blocks (`tile<F>[r, c]`): its body is
+    /// typed on blocks, each parameter of its own type (R45). An element-by-element
+    /// body runs on each tile: a call on blocks of m tiles runs it on each, in order.
     pub fn on_blocks(&self) -> bool {
         self.params.iter().any(|t| matches!(t, Type::Block(..)))
     }
 
-    /// The type the body reads parameter `i` as, or returns (`None`).
-    pub fn inner(&self, i: Option<usize>) -> Option<Type> {
+    /// The type an element-by-element body reads parameter `i` as when it runs on each
+    /// tile, or returns (`None`): a block's tile in a function on blocks, else its own.
+    pub fn per_tile(&self, i: Option<usize>) -> Option<Type> {
         let t = match i {
             Some(i) => self.params.get(i)?,
             None => &self.ret,
@@ -172,11 +172,12 @@ impl Func {
     }
 }
 
-/// `t` as the body of a function of parameters `params` reads or returns it: a block's
-/// tile in a function on blocks, else `t`.
+/// `t` as an element-by-element body of a function of parameters `params` reads or
+/// returns it when it runs on each tile: a block's tile in a function on blocks, else
+/// `t`.
 pub fn per_tile(params: &[Type], t: &Type) -> Type {
     match t {
-        Type::Block(f, _) if params.iter().any(|p| matches!(p, Type::Block(..))) => Type::Tile(*f),
+        Type::Block(f, ..) if params.iter().any(|p| matches!(p, Type::Block(..))) => Type::Tile(*f),
         other => other.clone(),
     }
 }

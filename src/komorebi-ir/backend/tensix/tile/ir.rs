@@ -642,8 +642,22 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
             Anchor::Func(f),
         ));
     }
-    // a function on blocks: the body on one tile of each block (the same unit)
-    if !matches!(func.inner(None), Some(Type::Tile(_))) {
+    // a function on blocks: its body, typed on blocks (R45), read as the one on each
+    // tile when it is element by element (the same unit): no product, no reduction
+    let whole = |op: &Op| matches!(op, Op::Matmul(..) | Op::Reduce(..));
+    if func.on_blocks()
+        && func
+            .body
+            .iter()
+            .flat_map(|b| &b.insts)
+            .any(|i| whole(&i.op))
+    {
+        return Err(refused(
+            "a function on blocks with a product or a reduction (not element by element)".into(),
+            Anchor::Func(f),
+        ));
+    }
+    if !matches!(func.per_tile(None), Some(Type::Tile(_))) {
         return Err(refused(
             "a function whose result is not one tile".into(),
             Anchor::Func(f),
@@ -654,7 +668,7 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
     };
     let (mut tensors, mut values, mut args) = (Vec::new(), Vec::new(), Vec::new());
     for i in 0..func.params.len() {
-        let ty = func.inner(Some(i));
+        let ty = func.per_tile(Some(i));
         let at = Anchor::ParamOf(Owner::Func(f), i as u32);
         let Some(p) = param_name(module, Owner::Func(f), i as u32) else {
             return Err(refused("a parameter with no name".into(), at));

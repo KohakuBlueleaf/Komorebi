@@ -1,6 +1,7 @@
 """The corpus's program 5, `Movement.read` and `Movement.copy` of
 examples/11_movement/as_class/movement_class.py, as today's class DSL writes it: one
-stream both movers carry, dropped (read) or copied to the output (copy)."""
+stream both movers carry, dropped or copied. Its tensors are in tiles, not the example's
+rows, since an IR view is in tiles: today's make writes the same folder from either."""
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

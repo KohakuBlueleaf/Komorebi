@@ -552,8 +552,10 @@ impl Attr {
 pub struct Type {
     /// What type.
     pub kind: TypeKind,
-    /// `[n]` after a scalar or a tile type: n of them.
+    /// `[n]` after a scalar or a tile type: n of them; of `tile<F>[r, c]`, c.
     pub count: Option<Box<Expr>>,
+    /// Of `tile<F>[r, c]`, a block of r rows of c tiles (R45): r. `[n]` writes none.
+    pub rows: Option<Box<Expr>>,
     /// Where it is written.
     pub span: Span,
 }

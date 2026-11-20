@@ -12,7 +12,7 @@ use crate::program::body::{Body, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, HintArg, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
 use crate::types::{
-    BinOp, Combiner, ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type,
+    BinOp, Combiner, ConstValue, Count, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type,
 };
 
 /// How a command word is read.
@@ -993,6 +993,17 @@ impl<'m> Walk<'m> {
                 }
             }
             Op::Sink(view, block) | Op::Stream(view, block) => {
+                let rows = self
+                    .body
+                    .insts
+                    .get(id.0 as usize)
+                    .and_then(|i| i.defs.first())
+                    .and_then(|v| self.body.values.get(v.0 as usize));
+                if let Some(Type::Stream(_, r, _) | Type::Sink(_, r, _)) = rows {
+                    if *r != Count::ONE {
+                        return Err("a stream in blocks of more than one row of tiles".into());
+                    }
+                }
                 let block = match self.int(*block) {
                     Some(Int::Const(b)) => b,
                     _ => return Err("a stream in a block that is not a constant".into()),

@@ -153,7 +153,7 @@ pub fn meet(
                     _ => return Err(Fault::undefined("`gather` of what is not a tile")),
                 }
             }
-            Ok(leader_only(Value::Block(Block { tiles })))
+            Ok(leader_only(Value::Block(Block::row(tiles))))
         }
         Collective::Sync => Ok(vec![None; n]),
     }
