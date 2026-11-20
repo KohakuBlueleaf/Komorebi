@@ -378,7 +378,9 @@ impl CacheKey {
     }
 }
 
-/// A backend: its statement, its check and its compile.
+/// A backend: its statement, its check and its compile. However its output reports
+/// how an invocation ended, a failure is one of the `Failure` numbers of the byte code's
+/// table (`bytecode::version::FAILURE`), the same table on every backend.
 pub trait Backend {
     /// Its name: `cpu`, `tensix`.
     fn name(&self) -> &'static str;
