@@ -9,4 +9,4 @@ Install by copying or linking this folder into `~/.vscode/extensions/` (a remote
     ln -s "$PWD" ~/.vscode/extensions/komorebi-ir
 
 `cargo test --test editors` fails, naming the word, when the grammar misses a word of
-`src/komorebi-ir/syntax/komorebi.pest` or of the checker.
+`src/komorebi-ir/syntax/komorebi.pest` or of the checker (keywords, built-in functions and values, formats, failure names); the member names after a dot (`.rank`, `.tiles`, ...) are listed by hand from `docs/ir/operations.md` and the test does not cover them.
