@@ -79,6 +79,37 @@ class Patterned(km.Program):
             out.push(times(xb, k))
 
 
+class TwoPatterns(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int, p: km.Pattern, q: km.Pattern):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a, b in zip(
+            km.Stream(x.pages(0, tiles), pattern=p),
+            km.Stream(x.pages(0, tiles), pattern=q),
+        ):
+            out.push(plus(a, b))
+
+
+class Unblocked(km.Program):
+    TILES = km.constant(4)
+
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a in km.Stream(x.pages(0, tiles), block=self.size):
+            out.push(times(a, 2.0))
+
+
+class Floated(km.Program):
+    SCALE = km.constant(2.0)
+
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a in km.Stream(x.pages(0, tiles)):
+            out.push(times(a, 2.0))
+
+
 class Owned(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
@@ -225,7 +256,9 @@ def test_a_name_that_is_an_ir_word_is_renamed():
     "cls, text, why",
     [
         (Counted, "n = k * 2.0", "an assignment the IR module does not write yet"),
-        (Patterned, "pattern=", "a stream's pattern= is not written"),
+        (Patterned, "pattern=", "a stream's pattern= that is not a km.Pattern param"),
+        (TwoPatterns, "for a, b", "the streams of one loop in different patterns"),
+        (Unblocked, "for a in", "a stream's block that is not a number or a constant"),
         (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
         (Led, "pages(self.leader", "self.leader as a number is not written"),
         (Ranked, "self.rank == 1", "an if other than `if self.rank == self.leader:`"),
@@ -237,6 +270,35 @@ def test_a_line_it_does_not_know_is_refused_with_the_class_line(cls, text, why):
     with pytest.raises(Refused, match=why) as refused:
         made(cls)
     assert f"line {line_of(cls, text)}," in str(refused.value)
+
+
+def test_a_constant_other_than_an_int_is_refused_by_name():
+    with pytest.raises(Refused, match="its constant SCALE is not an int"):
+        made(Floated)
+
+
+def gate_script(folder, monkeypatch):
+    """Program 4's script, copied into `folder` (today's make writes beside it)."""
+    script = folder / "gate_class.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "gate_class.py", script)
+    spec = importlib.util.spec_from_file_location("gate_class", script)
+    gate = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "gate_class", gate)
+    spec.loader.exec_module(gate)
+    return gate
+
+
+def test_a_class_constant_is_a_module_parameter_the_make_sets(tmp_path, monkeypatch):
+    assert "param " not in made(Scale).text
+    gate = gate_script(tmp_path, monkeypatch)
+    given = gate.made_with()
+    m = module(gate.Gate, **given)
+    assert "param BLOCK: u32 = 8 @bind(build)" in m.text
+    assert "block = BLOCK" in m.text
+    four = module(gate.Gate, BLOCK=4, **given)
+    assert "param BLOCK: u32 = 4 @bind(build)" in four.text
+    assert ir.check(four.text, four.origin) == []
+    assert four.text.count("@tensix.pattern(pattern)") == 2
 
 
 def test_what_the_make_states_beyond_the_module_is_refused_by_name():
@@ -409,6 +471,30 @@ def test_program_3_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     assert list(today.add.args(a, b, out, p3.WIDTH)) == words
     with pytest.raises(km.ProgramError, match=f"at rank {p3.CORES} of {p3.CORES + 1}"):
         ours.entry("add").args(a, b, out, p3.WIDTH, group=more)
+
+
+def test_program_4_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    gate = gate_script(tmp_path, monkeypatch)
+    given = gate.made_with()
+    today = gate.Gate(log=lambda line: None, **given)
+    ours = program(gate.Gate, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "gate.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    a, b, out = given["a"], given["b"], given["out"]
+    group = (0, gate.CORES)
+    # the pattern's word is today's, for a km.Pattern and for its letters
+    for pattern in (km.Pattern("AAAB"), km.Pattern("AB"), "B"):
+        words = ours.entry("gate").args(a, b, out, gate.TILES, pattern, group=group)
+        assert words == list(today.gate.args(a, b, out, gate.TILES, pattern))
+    # a value that is not a valid pattern is never sent: compute would end the case
+    word = km.Pattern("AAAB").word
+    for value in (word, 0, "AXB", None):
+        with pytest.raises(km.ProgramError, match="pattern"):
+            ours.entry("gate").args(a, b, out, gate.TILES, value, group=group)
 
 
 def test_program_2_built_on_islands_is_todays_on_a_session_of_them(

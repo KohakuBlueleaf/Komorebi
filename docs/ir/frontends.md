@@ -76,7 +76,7 @@ class compiler does, and gives a `Made`: the text and `made.origin` for `komoreb
 does not import `komorebi_ir`, and today's make does not call it.
 
 It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`), 2
-(`StepHandlers.sum`) and 3 (`StepHandlers.add`):
+(`StepHandlers.sum`), 3 (`StepHandlers.add`) and 4 (`Gate.gate`):
 - an int value (`first = self.rank * TILES`): int parameters and values, numbers, a module's int
   constant as its number, `self.rank`, `+ - *`, written `let first = worker.rank * 64`;
 - a partition of a tensor's pages;
@@ -96,7 +96,17 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
   result's page write (`t.pages(0, 1).write(whole)`), written `store t.tiles(0, 1) <- whole`.
   `self.leader` as a number is refused by name.
 
-A stream with no `block=` is of one tile a block, as today's.
+A stream with no `block=` is of one tile a block, as today's. A class's int constant
+(`BLOCK = km.constant(8)`) is written as a module parameter fixed at build,
+`param BLOCK: u32 = 8 @bind(build)`, its value the make's (`BLOCK=4` at the make writes 4). It
+reaches `compile` in the text: a parameter's value is a compile input. `block=self.BLOCK` is
+written `block = BLOCK`. A constant of another kind is refused by name.
+
+A `km.Pattern` parameter is written as a `u32` parameter. A stream's `pattern=` naming it is
+written as the hint `@tensix.pattern(p)`: on the loop for its read streams (which must give the
+same one), and on the sink's `let` for the write stream. On the path through the IR, `args(...)`
+takes a `km.Pattern` (or its letters) for it and gives today's word. Any other value is refused
+before anything is sent. A `pattern=` of anything but such a parameter is refused by name.
 
 A tile function is one `return` (a docstring before it writes nothing) of `+ - * /` of its
 parameters and numbers, the tile compiler's functions of one tile by their names (`km.exp(x)` is
@@ -104,6 +114,9 @@ written `exp(x)`; `exp`, `exp2`, `sigmoid`, `silu`, `tanh`, `erf`, `log`, `sqrt`
 `reciprocal`, `relu`, `square`, `floor`), and calls of a plain function of its module on its
 parameters (a helper), which is written as a `func` of its own, its lines its own. A call with a
 keyword (`exp(x, error=...)`) and a helper called on other than parameters are refused by name.
+A tile function's `tolerance=` is taken and writes nothing. The IR states no precision, and
+`tolerance=` changes none of today's files: it is a check of the trace, in `program.txt` alone.
+`fidelity=` is refused by name.
 
 A stream of blocks of n tiles gives the loop `tile<F>[n]`, so its tile function is declared on
 blocks (`tile<F>[n]` for the block and the result). Every other line is refused by name, with the

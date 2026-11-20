@@ -127,6 +127,7 @@ class EntryPoint(NamedTuple):
     params: list[str]
     words: list[tuple[str, int]]
     bounds: list[tuple]
+    patterns: list[int]  # the parameters whose word is a pattern's, sent only valid
 
 
 class Kernel(NamedTuple):
@@ -184,7 +185,10 @@ def emit(
     return Emitted(
         key,
         [(name, data) for name, data in files],
-        [EntryPoint(*e[:4], list(e[4]), list(e[5]), list(e[6])) for e in entries],
+        [
+            EntryPoint(*e[:4], list(e[4]), list(e[5]), list(e[6]), list(e[7]))
+            for e in entries
+        ],
         [Kernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
         [Buffer(*b) for b in buffers],
         [Step(p, list(a)) for p, a in steps],

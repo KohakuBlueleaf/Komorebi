@@ -351,7 +351,8 @@ fn arg_word(w: &ArgWord) -> (&'static str, usize) {
     }
 }
 
-/// One entry point as data: (name, kind, number, symbol, params, words, bounds).
+/// One entry point as data: (name, kind, number, symbol, params, words, bounds,
+/// patterns).
 fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAny>> {
     let kind = match e.entry {
         Entry::Handler(..) => "handler",
@@ -372,6 +373,7 @@ fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAn
         params,
         words,
         bounds,
+        e.patterns.clone(),
     );
     Ok(row.into_pyobject(py)?.into_any())
 }

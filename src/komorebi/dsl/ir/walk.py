@@ -72,6 +72,7 @@ class Value:
     first: str = ""
     count: str = ""
     tiles: int = 1
+    block: str = ""  # a block's count as the text writes it, when not a number
 
 
 @dataclass
@@ -111,8 +112,9 @@ def module(cls, **make):
     tensors = given_tensors(cls, make)
     methods = handler_methods(cls)
     class_refusals(cls, methods)
+    constants = constant_values(cls, make)
     text = Text()
-    walks = [Handler(cls, method, tensors) for method in methods]
+    walks = [Handler(cls, method, tensors, constants) for method in methods]
     functions = {}
     for walk in walks:
         walk.read()
@@ -131,6 +133,12 @@ def module(cls, **make):
     text.line(0, "")
     text.line(0, "tile [32, 32]")
     text.line(0, f"format {', '.join(formats)}")
+    # each constant, as today's thread header prints each (`class_thread`)
+    if constants:
+        text.line(0, "")
+    for name in constants:
+        # fixed when the module is built: the make's value (a compile input)
+        text.line(0, f"param {name}: u32 = {constants[name]} @bind(build)")
     helpers = {}
     for function, kinds in functions.values():
         text.line(0, "")
@@ -165,7 +173,28 @@ def given_tensors(cls, make):
             raise Refused(
                 f"{cls.__name__}: the make's {key}= is not written in an IR module yet"
             )
-    return {k: v for k, v in make.items() if k not in MAKE_OPTIONS}
+    declared = front.constants_of(cls)
+    return {
+        k: v for k, v in make.items() if k not in MAKE_OPTIONS and k not in declared
+    }
+
+
+def constant_values(cls, make):
+    """The class's constants this make gives them, by name: each an int
+    (`BLOCK = km.constant(8)`, a module parameter), its default or the make's keyword
+    of its name; another kind of constant is refused by name."""
+    values = {}
+    for name, declared in front.constants_of(cls).items():
+        if not (isinstance(declared, front.Constant) and declared.kind is int):
+            raise Refused(
+                f"{cls.__name__}: its constant {name} is not an int; a constant other "
+                "than an int is not written in an IR module yet"
+            )
+        value = make.get(name, declared.default)
+        if type(value) is not int or value < 0:
+            raise Refused(f"{cls.__name__}: {name}={value!r} is not a u32")
+        values[name] = value
+    return values
 
 
 def class_refusals(cls, methods):
@@ -174,7 +203,6 @@ def class_refusals(cls, methods):
     annotations = class_annotations(cls).values()
     stated = [
         ("fields", any(isinstance(v, front.Field) for v in annotations)),
-        ("constants", bool(front.constants_of(cls))),
         (spelling("compute_options"), bool(getattr(cls, "compute_given", None))),
         (spelling("defines"), bool(getattr(cls, "defines_given", None))),
         (spelling("startup"), getattr(cls, "startup_given", None) is not None),
@@ -207,8 +235,9 @@ def class_refusals(cls, methods):
 class Handler:
     """One handler's walk: its parameters and lines read, then written."""
 
-    def __init__(self, cls, method, tensors):
+    def __init__(self, cls, method, tensors, constants):
         self.cls, self.method, self.tensors = cls, method, tensors
+        self.constants = constants
         definition, lines, first = source_of(method.function)
         self.definition = definition
         self.file = file_of(method.function)
@@ -259,6 +288,11 @@ class Handler:
             annotation.attr, ("tensor",)
         ):
             return Value("tensor", format=self.tensor_format(parameter))
+        if isinstance(annotation, ast.Attribute) and kind_of(
+            annotation.attr, ("pattern",)
+        ):
+            # a word the program does not read: a stream's hint names it
+            return Value("pattern")
         self.refuse(
             self.definition,
             f"parameter {parameter.arg}: a kind the IR module does not take yet",
@@ -329,7 +363,8 @@ class Handler:
             lines = [self.partition(node, target, value)]
         elif construct == "stream" and write_stream(value):
             lines = self.stream(node, value, write=True)
-            lines[-1] = f"let {self.name(target)} = {lines[-1]}"
+            hint = self.pattern_of(node, [value])
+            lines[-1] = f"let {self.name(target)} = {lines[-1]}{hint}"
             self.scope[target] = Value("sink")
         elif construct == "zeros":
             lines = [self.zeros(node, target, value)]
@@ -522,7 +557,11 @@ class Handler:
         """The lines of `km.Stream(t[p], block=n)` (n 1 when not given), the last one
         the stream itself."""
         keywords = {k.arg: k.value for k in call.keywords}
-        allowed = {spelling("block")} | ({spelling("write_stream")} if write else set())
+        allowed = {
+            spelling("block"),
+            "pattern",
+        }  # the keyword, as page_streams reads it
+        allowed |= {spelling("write_stream")} if write else set()
         for key in keywords:
             if key not in allowed:
                 self.refuse(
@@ -530,19 +569,60 @@ class Handler:
                     f"a stream's {key}= is not written in an IR module yet",
                     "leave it out",
                 )
-        # no block= is a block of one tile, as today's (`stream_options`, row=1)
-        block = keywords.get(spelling("block"), ast.Constant(1))
-        if not (isinstance(block, ast.Constant) and type(block.value) is int):
-            self.refuse(
-                node, "a stream's block that is not a number written", "write block=<n>"
-            )
+        block, _ = self.block_of(node, call)
         if len(call.args) != 1:
             self.refuse(node, "a stream of more than one view", "stream one view")
         lines = []
         view = self.view(node, call.args[0], lines)
         word = "sink" if write else "stream"
-        lines.append(f"{word}({view}, block = {block.value})")
+        lines.append(f"{word}({view}, block = {block})")
         return lines
+
+    def block_of(self, node, call):
+        """A stream's block as the text writes it and its tiles: a number (1 when not
+        given, as today's `stream_options`, row=1), or `self.<constant>` of the class,
+        the module parameter of its name."""
+        keywords = {k.arg: k.value for k in call.keywords}
+        block = keywords.get(spelling("block"), ast.Constant(1))
+        if isinstance(block, ast.Constant) and type(block.value) is int:
+            return str(block.value), block.value
+        if (
+            isinstance(block, ast.Attribute)
+            and isinstance(block.value, ast.Name)
+            and block.value.id == "self"
+            and block.attr in self.constants
+        ):
+            return block.attr, self.constants[block.attr]
+        self.refuse(
+            node,
+            "a stream's block that is not a number or a constant of the class",
+            "write block=<n> or block=self.<constant>",
+        )
+
+    def pattern_of(self, node, calls):
+        """The hint of the streams' `pattern=`: `@tensix.pattern(p)` of a km.Pattern
+        parameter p, which only chooses which mover moves each block; none when no
+        stream gives one. The streams of one loop give the same."""
+        given = []
+        for call in calls:
+            keywords = {k.arg: k.value for k in call.keywords}
+            given.append(keywords.get("pattern"))
+        names = [g.id if isinstance(g, ast.Name) else None for g in given]
+        if all(g is None for g in given):
+            return ""
+        if any(n is None or self.kind(n) != "pattern" for n in names):
+            self.refuse(
+                node,
+                "a stream's pattern= that is not a km.Pattern parameter",
+                "give the handler's km.Pattern parameter, or leave it out",
+            )
+        if len(set(names)) != 1:
+            self.refuse(
+                node,
+                "the streams of one loop in different patterns",
+                "give each stream of the loop the same pattern",
+            )
+        return f" @tensix.pattern({self.name(names[0])})"
 
     def loop(self, node):
         """`for b in km.Stream(t[p], block=n):`, or `for x, y in zip(km.Stream(...),
@@ -578,12 +658,14 @@ class Handler:
             streams.append(made[-1])
         held = ", ".join(self.name(n.id) for n in names)
         walked = f"zip({', '.join(streams)})" if zipped else streams[0]
-        lines.append(f"for {held} in {walked} {{")
+        lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
         for name, call in zip(names, calls):
-            keywords = {k.arg: k.value for k in call.keywords}
-            block = keywords.get(spelling("block"), ast.Constant(1)).value
+            text, block = self.block_of(node, call)
             self.scope[name.id] = Value(
-                "block", format=self.scope_format(call), tiles=block
+                "block",
+                format=self.scope_format(call),
+                tiles=block,
+                block="" if text == str(block) else text,
             )
         children = self.body(node.body)
         return (node, lines, children)
@@ -646,7 +728,9 @@ class Handler:
                 f"{call.func.id} is not a tile function",
                 "decorate it with km.tile_function",
             )
-        if function.tolerance is not None or function.fidelity is not None:
+        # tolerance= is taken and writes nothing: the IR states no precision, and
+        # today's files are the same with it or without (it is a check of the trace)
+        if function.fidelity is not None:
             self.refuse(
                 node,
                 f"{function.name}'s options are not written in an IR module yet",
@@ -673,7 +757,7 @@ class Handler:
                     "pass the loop's block or a float",
                 )
             value = self.scope[name]
-            tiles = f"[{value.tiles}]" if value.tiles > 1 else ""
+            tiles = f"[{value.block or value.tiles}]" if value.tiles > 1 else ""
             kinds.append(
                 f"tile<{value.format}>{tiles}" if value.kind == "block" else "f32"
             )
@@ -742,6 +826,7 @@ class Handler:
         start = text.line(1, f"handler {self.method.name}(")
         for name, value in self.params.items():
             kind = f"tensor<{value.format}>" if value.kind == "tensor" else value.kind
+            kind = "u32" if kind == "pattern" else kind
             text.line(2, f"{self.name(name)}: {kind},")
         text.line(1, ") @on(group) {")
         self.write_body(text, self.statements, 2)

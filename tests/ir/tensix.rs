@@ -625,6 +625,16 @@ fn a_sum_other_than_program_2s_is_refused_by_name() {
         let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
         what.join("; ")
     };
+    // a reduce's stream in a pattern (of a second u32, `p`) is not built
+    let given = source
+        .replacen("tiles: u32,\n", "tiles: u32,\n        p: u32,\n", 1)
+        .replacen("block = 1) {", "block = 1) @tensix.pattern(p) {", 1);
+    let module = komorebi_ir::api::build(&given).unwrap_or_else(|d| panic!("{d:?}"));
+    let patterned = tensix::sources(&module).expect_err("refused");
+    assert!(
+        patterned[0].what.contains("a reduce's stream in a pattern"),
+        "{patterned:?}"
+    );
     // program 2 as written is built, its leader rank 0
     let files = tensix::sources(&built("", "")).unwrap_or_else(|r| panic!("{r:?}"));
     let movement = &files
@@ -799,4 +809,41 @@ fn a_zip_other_than_program_3s_is_refused_by_name() {
         "let c = stream(a.tiles(first, width), block = 1)\n        let results = sink(",
     );
     assert!(third.contains("a third read stream"), "{third}");
+    // a pattern's hint names one u32 parameter (here a fifth, `p`), whose word the
+    // program then reads no more; on a loop, each stream it walks
+    let with_p = |from: &str, to: &str| {
+        let given = source.replacen("width: u32,\n", "width: u32,\n        p: u32,\n", 1);
+        assert!(given.contains(from), "{from}");
+        let module = komorebi_ir::api::build(&given.replacen(from, to, 1))
+            .unwrap_or_else(|d| panic!("{d:?}"));
+        tensix::sources(&module)
+    };
+    let refused_p = |from: &str, to: &str| {
+        let refusals = with_p(from, to).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    let loop_head = "block = 1)) {";
+    let named = refused_p(loop_head, "block = 1)) @tensix.pattern(a) {");
+    assert!(
+        named.contains("other than of one `u32` parameter"),
+        "{named}"
+    );
+    let read = refused_p(
+        "let first = worker.rank * width",
+        "let first = worker.rank * width @tensix.pattern(p)",
+    );
+    assert!(
+        read.contains("on other than a loop over streams or a sink"),
+        "{read}"
+    );
+    let files =
+        with_p(loop_head, "block = 1)) @tensix.pattern(p) {").unwrap_or_else(|r| panic!("{r:?}"));
+    let file = |name: &str| &files.iter().find(|(n, _)| n == name).expect(name).1;
+    assert!(file("compute.cpp").contains("km::Pattern p = km::Pattern::of(command.a4);"));
+    assert!(file("compute.cpp").contains("if (!p.valid()) {"));
+    assert!(file("movement.cpp").contains("kRead1, p\n"));
+    assert!(!file("stephandlers.h").contains("kRead1Pattern"));
+    assert!(file("stephandlers.h").contains("kWrite0Pattern = km::pattern(\"B\")"));
 }

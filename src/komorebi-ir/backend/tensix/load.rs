@@ -11,6 +11,7 @@ use crate::backend::{
     NOT_BUILT,
 };
 use crate::program::Module;
+use crate::types::{Binding, ConstValue};
 
 use super::chip::Chip;
 
@@ -90,7 +91,14 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
             at: None,
         }]);
     }
-    Ok(text(name, &plans, &names, tensors, &lines))
+    // the class's constants: the module's parameters fixed at build, of an int
+    let constants: Vec<(String, u64)> = (module.params.iter())
+        .filter_map(|p| match p.binding {
+            Binding::Build(ConstValue::Int(_, v)) => Some((p.name.clone(), v)),
+            _ => None,
+        })
+        .collect();
+    Ok(text(name, &plans, &names, tensors, &constants, &lines))
 }
 
 /// What a load refuses of `machine`: islands that are not a graph of its workers
@@ -200,6 +208,7 @@ fn text(
     plans: &[Plan],
     names: &[String],
     tensors: &[LoadTensor],
+    constants: &[(String, u64)],
     lines: &Lines,
 ) -> String {
     let (upper, lower) = (name.to_uppercase(), name.to_lowercase());
@@ -250,6 +259,16 @@ fn text(
     out.push("#else".to_string());
     out.push(format!("#define {upper}_PROGRAM 0u"));
     out.push("#endif".to_string());
+    if !constants.is_empty() {
+        out.push(String::new());
+        out.push("/* The class's constants at this make. */".to_string());
+    }
+    for (constant, value) in constants {
+        out.push(format!(
+            "#define {upper}_{} {value}u",
+            constant.to_uppercase()
+        ));
+    }
     if !names.is_empty() {
         tensor_lines(&mut out, &upper, &lower, names, tensors);
         kind_lines(&mut out, &upper, &lower, names, tensors);

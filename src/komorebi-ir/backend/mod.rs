@@ -257,6 +257,9 @@ pub struct EntryPoint {
     pub words: Vec<ArgWord>,
     /// What a host checks before sending it; none on a backend that checks itself.
     pub bounds: Vec<Bound>,
+    /// The parameters whose word is a pattern (`@tensix.pattern`): a host sends only a
+    /// valid pattern's word, and refuses any other value before sending.
+    pub patterns: Vec<usize>,
 }
 
 /// One step of building an output: a program and its arguments, run in the directory

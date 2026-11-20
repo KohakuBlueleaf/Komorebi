@@ -119,7 +119,9 @@ struct Pair {
     name: String,
     index: u32,
     block: u64,
-    pattern: &'static str,
+    /// Its pattern constant's letters; none when every stream of it is in a pattern
+    /// its command gives (today's `buffer.patterns`, which then has none).
+    pattern: Option<&'static str>,
     what: String,
     /// Its pages' format: the stream's tensor's.
     format: Option<Format>,
@@ -307,7 +309,9 @@ fn pairs(plans: &[Plan], lines: &Lines) -> Vec<Pair> {
         for (inst, role, number, moved, pattern, looped) in opened {
             let block = moved.block;
             let name = format!("k{role}{number}");
-            if out.iter().any(|p| p.name == name) {
+            let pattern = moved.pattern.is_none().then_some(pattern);
+            if let Some(pair) = out.iter_mut().find(|p| p.name == name) {
+                pair.pattern = pair.pattern.or(pattern);
                 continue;
             }
             let first = if role == "Read" {
@@ -464,10 +468,12 @@ fn header_text(
             "constexpr uint32_t {}Block = {};",
             pair.name, pair.block
         ));
-        out.push(format!(
-            "constexpr km::Pattern {}Pattern = km::pattern(\"{}\");",
-            pair.name, pair.pattern
-        ));
+        if let Some(pattern) = pair.pattern {
+            out.push(format!(
+                "constexpr km::Pattern {}Pattern = km::pattern(\"{pattern}\");",
+                pair.name
+            ));
+        }
     }
     for other in others {
         out.push(String::new());
@@ -531,7 +537,19 @@ fn word_line(plan: &Plan, i: usize) -> String {
         WordKind::Tensor | WordKind::U32 => {
             format!("const uint32_t {} = command.a{i};", w.name)
         }
+        WordKind::Pattern => format!(
+            "const km::Pattern {} = km::Pattern::of(command.a{i});",
+            w.name
+        ),
     }
+}
+
+/// A stream's pattern as the kernels print it: its pair's constant, or the word of
+/// its `@tensix.pattern`.
+fn pattern_text(plan: &Plan, moved: &Moved, pair: &str) -> String {
+    moved
+        .pattern
+        .map_or_else(|| format!("{pair}Pattern"), |w| plan.words[w].name.clone())
 }
 
 /// An int as the kernels print it: a word's or a value's name, a number, the rank or
@@ -694,6 +712,8 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
         let mut reads = Uses::of(plan, ints);
         reads.words.extend(plan.reads.iter().map(|r| r.tensor));
         reads.words.push(written.tensor);
+        let patterns = plan.reads.iter().chain([written]).filter_map(|m| m.pattern);
+        reads.words.extend(patterns);
         if !plan.parts.is_empty() {
             (reads.rank, reads.size) = (true, true);
         }
@@ -718,8 +738,9 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
                     format!("{}, {}", int_text(plan, first), int_text(plan, n))
                 }
             };
+            let pattern = pattern_text(plan, moved, pair);
             format!(
-                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, 1, {pair}, {pair}Pattern\n);",
+                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, 1, {pair}, {pattern}\n);",
                 camel(t),
             )
         };
@@ -1024,6 +1045,10 @@ fn compute_mapped(
     let f = &call.name;
     let (mut reads, part, count) = compute_count(plan);
     reads.words.extend(&call.scalars);
+    let written = plan.written();
+    reads
+        .words
+        .extend(plan.reads.iter().chain([written]).filter_map(|m| m.pattern));
     case_head(out, plan, "compute", &reads);
     indented(out, 4, "bool km_ok = true;");
     if let Some(part) = part {
@@ -1038,7 +1063,18 @@ fn compute_mapped(
             head_last(lines, plan),
         ),
     );
+    // a pattern the command gives is checked before any block (`page_streams`):
+    // an invalid word ends the case, each read stream's word once, in order
+    let mut checked = Vec::new();
+    for w in plan.reads.iter().filter_map(|m| m.pattern) {
+        if !checked.contains(&w) {
+            checked.push(w);
+            let name = &plan.words[w].name;
+            indented(out, 4, &format!("if (!{name}.valid()) {{\n    return;\n}}"));
+        }
+    }
     let p = &count;
+    let out_pattern = pattern_text(plan, written, "kWrite0");
     let dst = unit.dst_tiles() as u64;
     let slots = DST_HALF / dst;
     let words: String = call
@@ -1057,12 +1093,13 @@ fn compute_mapped(
              for (uint32_t km_block0 = 0; km_ok && km_block0 < km_blocks0; km_block0++) {{"
         ),
     );
-    for i in 0..plan.reads.len() {
+    for (i, read) in plan.reads.iter().enumerate() {
+        let pattern = pattern_text(plan, read, &format!("kRead{i}"));
         indented(
             out,
             5,
             &format!(
-                "const uint32_t km_half{i} = km::block_half(kRead{i}, kRead{i}Pattern, km_block0);\n\
+                "const uint32_t km_half{i} = km::block_half(kRead{i}, {pattern}, km_block0);\n\
                  km_ok = compute.wait_front(km_half{i}, kRead{i}Block);\n\
                  if (!km_ok) {{\n    break;\n}}"
             ),
@@ -1073,7 +1110,7 @@ fn compute_mapped(
         5,
         &format!(
             "const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
-             const uint32_t km_out0 = km::block_half(kWrite0, kWrite0Pattern, km_block0);\n\
+             const uint32_t km_out0 = km::block_half(kWrite0, {out_pattern}, km_block0);\n\
              const bool km_room0 = compute.reserve_back(km_out0, kWrite0Block);\n\
              for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; km_tile0 += {slots}) {{"
         ),
@@ -1352,7 +1389,7 @@ impl Backend for Tensix {
             formats_document: "docs/ir/backends.md",
             tile_shapes: vec![chip::TILE],
             tensor_words: chip::TENSOR_WORDS,
-            hints: Vec::new(),
+            hints: vec!["tensix.pattern"],
             progress: chip::PROGRESS.to_vec(),
         }
     }
@@ -1437,7 +1474,7 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
                 .enumerate()
                 .map(|(p, w)| match w.kind {
                     WordKind::Tensor => ArgWord::TensorAddress(p),
-                    WordKind::U32 | WordKind::F32 => ArgWord::Word(p),
+                    WordKind::U32 | WordKind::F32 | WordKind::Pattern => ArgWord::Word(p),
                 })
                 .collect();
             let bounds = bounds(plan).map_err(|r| vec![r])?;
@@ -1449,6 +1486,10 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
                 params: handler.params.iter().filter_map(ArgKind::of).collect(),
                 words,
                 bounds,
+                patterns: (plan.words.iter().enumerate())
+                    .filter(|(_, w)| w.kind == WordKind::Pattern)
+                    .map(|(p, _)| p)
+                    .collect(),
             })
         })
         .collect()
@@ -1601,6 +1642,7 @@ mod tests {
             block: 1,
             inst: InstId(0),
             range: Range::Part(0),
+            pattern: None,
         };
         let plan = Plan {
             program: ProgramId(0),

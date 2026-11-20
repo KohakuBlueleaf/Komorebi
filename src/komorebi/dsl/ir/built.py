@@ -16,6 +16,7 @@ from komorebi.dsl.ir.walk import given_tensors, module
 from komorebi.dsl.program import BUILD
 from komorebi.errors import ProgramError
 from komorebi.program import description as km_program
+from komorebi.program.movement import Pattern
 
 # a scalar parameter's kind as today's command word takes it (front.word_of)
 WORD_KINDS = {"f32": "float", "u8": "int", "u16": "int", "u32": "int", "i32": "int"}
@@ -78,6 +79,8 @@ class Entry(km_program.Handler):
             return word_of(self.short, name, "tensor", value)
         if kind == "tiles":
             return tiles_of(value) & abi.M32
+        if p in self.point.patterns:
+            return self.pattern_word(name, value)
         scalar = self.point.params[p]
         if scalar == "bool":
             if not isinstance(value, bool):
@@ -89,6 +92,18 @@ class Entry(km_program.Handler):
                 "send yet"
             )
         return word_of(self.short, name, WORD_KINDS[scalar], value)
+
+    def pattern_word(self, name, value):
+        """A pattern's word as today's make gives it (a km.Pattern, or its letters);
+        any other value is refused, so that no word but a valid pattern's is sent."""
+        try:
+            if isinstance(value, Pattern | str):
+                return word_of(self.short, name, "pattern", value)
+        except ValueError as error:
+            raise ProgramError(f"{self.short}: {name}: {error}") from None
+        raise ProgramError(
+            f"{self.short}: {name} is a pattern: give a km.Pattern, got {value!r}"
+        )
 
     def bound_checked(self, tensor, name, first, count, words, at):
         """Refuses a call whose tiles `first` to `first + count - 1` of `tensor` (at

@@ -127,6 +127,7 @@ impl Backend for Cpu {
                     params: handler.params.iter().filter_map(ArgKind::of).collect(),
                     words,
                     bounds: Vec::new(),
+                    patterns: Vec::new(),
                 });
             }
         }

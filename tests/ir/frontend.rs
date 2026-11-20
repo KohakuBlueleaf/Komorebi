@@ -489,3 +489,23 @@ fn a_tile_functions_calls_keep_their_own_lines_as_todays_listing_names_them() {
         assert!(listing.contains(&format!("exp (line {line})")), "{line}");
     }
 }
+
+#[test]
+fn program_4_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // Gate.gate: two streams zipped in blocks of a class constant, in the command's
+    // pattern, a function of two tiles with a template (`silu`) into a sink.
+    let made = made("gate", "gate_class", "Gate");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    // The stand-ins: a, b and out of 768 bfloat16 pages of 2048 B each.
+    let tensor = LoadTensor {
+        pages: 768,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let stand_ins = [tensor.clone(), tensor.clone(), tensor];
+    same_as_today(&made, &module, &stand_ins, "gate");
+}

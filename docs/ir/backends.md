@@ -129,6 +129,20 @@ half's tiles over that: two calls of `plus` an acquire. The call's tiles must be
 order, followed by `f32` words; any other call, a third read stream, or a loop other than one
 over each read stream once is refused by name.
 
+It also emits the corpus's program 4 (`Gate.gate`): program 3's form in blocks of a module
+parameter (`param BLOCK: u32 = 8 @bind(build)`, `block = BLOCK`), its function a template of the
+port (`silu(a) * b`). The Tensix backend reads one hint, `@tensix.pattern(p)`, which names a
+`u32` parameter of the handler: on a loop, it applies to each stream the loop walks; on a
+`let` of a sink, it applies to that sink. Each stream then deals its blocks to the movers
+by the command's word, `km::Pattern::of`, instead of its role's pattern (`AAAB` for a read,
+`B` for a write). That word only chooses the mover of each block. The result is the same for
+every valid pattern, so it is a hint: the program does not read the parameter, and a use of it
+as a number is refused. Compute ends the case on a word that is not a pattern, as today's does, so the entry point
+states the parameter as a pattern (`patterns`, beside the bounds), and a host sends only a valid
+pattern's word. A `@tensix.pattern` naming anything else, on another statement, or on a reduce's
+stream is refused by name (`K964`). The thread header prints each module parameter fixed at
+build, of an int, as a constant of the class (`#define GATE_BLOCK 8u`), as today's does.
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of
@@ -155,7 +169,8 @@ chip, `tensix`, and the CPU backend for the host's architecture.
 The result, `Emitted`, holds:
 - the cache key, in hex;
 - the files, each its name and bytes;
-- the entry points, each with its number, argument words and the ranges a host checks;
+- the entry points, each with its number, argument words, the ranges a host checks and the
+  parameters whose word is a pattern;
 - how the output is built:
   - for the Tensix backend, the kernels (source, processor, defines, compile-time arguments,
     options, each a bool or a text) and the buffers (index, format, page bytes, pages, the

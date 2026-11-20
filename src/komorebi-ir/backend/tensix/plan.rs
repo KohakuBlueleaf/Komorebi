@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::backend::{Refusal, NOT_BUILT};
 use crate::program::body::{Body, InstId, LocalId, Op, ValueId};
-use crate::program::notes::{Anchor, Named, Owner};
+use crate::program::notes::{Anchor, HintArg, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
 use crate::types::{
     BinOp, Combiner, ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type,
@@ -24,6 +24,9 @@ pub enum WordKind {
     U32,
     /// An `f32`: its bits.
     F32,
+    /// A `u32` a stream's `@tensix.pattern` names: a pattern's word, which only
+    /// chooses the mover of each block (`km::Pattern::of`); the body reads it not.
+    Pattern,
 }
 
 /// A handler parameter, one command word.
@@ -115,6 +118,8 @@ pub struct Moved {
     pub inst: InstId,
     /// Its tiles.
     pub range: Range,
+    /// The word of its `@tensix.pattern`; none: the role's pattern.
+    pub pattern: Option<usize>,
 }
 
 /// The loop's body: `out.push(f(x, y, k))`, the loop's tiles in order, then `f32` words.
@@ -267,13 +272,34 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         words.push(Word { name, kind, format });
     }
     let body = BodyRef::Handler(p, h);
+    let patterns = patterns(module, body, &mut words)?;
     let found = Walk::new(module, &handler.body, body, &words).run()?;
     let Found {
         locals,
         parts,
-        reads,
-        shape,
+        mut reads,
+        mut shape,
     } = found;
+    if let (Shape::Summed(_), Some((inst, _))) = (&shape, patterns.first()) {
+        return Err(not_built(
+            "a reduce's stream in a pattern the command gives",
+            Anchor::Inst(body, *inst),
+        ));
+    }
+    // the loop's hint is each stream's it walks (zipped, the loop opens the first)
+    for (inst, word) in &patterns {
+        if reads.iter().any(|r| r.inst == *inst) {
+            reads.iter_mut().for_each(|r| r.pattern = Some(*word));
+        } else if let Shape::Mapped { write, .. } = &mut shape {
+            if write.inst != *inst {
+                return Err(not_built(
+                    "a `@tensix.pattern` on other than a loop over streams or a sink",
+                    Anchor::Inst(body, *inst),
+                ));
+            }
+            write.pattern = Some(*word);
+        }
+    }
     Ok(Plan {
         program: p,
         handler: h,
@@ -284,6 +310,40 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         reads,
         shape,
     })
+}
+
+/// The `@tensix.pattern(p)` hints of a handler's body, (the instruction, p's word):
+/// each names one `u32` parameter, which becomes a pattern's word (the program does
+/// not read it). Any other `@tensix.pattern` is refused by name.
+fn patterns(
+    module: &Module,
+    body: BodyRef,
+    words: &mut [Word],
+) -> Result<Vec<(InstId, usize)>, Refusal> {
+    let mut out = Vec::new();
+    for hint in &module.notes.hints {
+        let Anchor::Inst(at, inst) = hint.anchor else {
+            continue;
+        };
+        if at != body || hint.path != ["tensix", "pattern"] {
+            continue;
+        }
+        let word = match hint.args.as_slice() {
+            [HintArg::Name(name)] => words.iter().position(|w| {
+                &w.name == name && matches!(w.kind, WordKind::U32 | WordKind::Pattern)
+            }),
+            _ => None,
+        };
+        let Some(word) = word else {
+            return Err(not_built(
+                "a `@tensix.pattern` other than of one `u32` parameter of the handler",
+                hint.anchor,
+            ));
+        };
+        words[word].kind = WordKind::Pattern;
+        out.push((inst, word));
+    }
+    Ok(out)
 }
 
 /// The layout rule for partitions (today's DSL writes one partition and indexes both
@@ -769,6 +829,7 @@ impl<'m> Walk<'m> {
                     block: 1,
                     inst: id,
                     range: Range::Tiles { first, n },
+                    pattern: None,
                 });
                 None
             }
@@ -862,6 +923,7 @@ impl<'m> Walk<'m> {
                     block,
                     inst: id,
                     range: Range::Part(0),
+                    pattern: None,
                 };
                 if matches!(op, Op::Stream(..)) {
                     if self.streams.len() == 2 {
