@@ -387,3 +387,32 @@ fn the_cpu_output_of_the_first_lesson_builds() {
     let again = komorebi_ir::backend::cpu::build::build(&out, &cache).expect("found built");
     assert_eq!(built, again, "built once, then found");
 }
+
+/// Two builds of one directory: the first put in place is kept whole; the second's
+/// staging directory, which only it created, is removed, and nothing else is.
+#[test]
+fn a_losing_build_leaves_the_winners_directory_whole() {
+    use komorebi_ir::backend::cpu::build::place;
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("place-{}", std::process::id()));
+    let dir = base.join("built");
+    let write = |name: &'static str| {
+        move |staged: &Path| std::fs::write(staged.join(name), name).map_err(|e| e.to_string())
+    };
+    place(&dir, write("winner")).expect("the first build");
+    place(&dir, write("loser")).expect("the second build finds the first in place");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the directory")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["winner"]);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("winner")).expect("whole"),
+        "winner"
+    );
+    let left: Vec<String> = std::fs::read_dir(&base)
+        .expect("the base")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(left, ["built"], "no staging directory is left");
+}
