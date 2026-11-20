@@ -648,6 +648,17 @@ def test_program_7s_handlers_built_through_the_ir_are_todays(tmp_path, monkeypat
     assert "for xb, w1b, w3b in zip(" in m.text
     assert "<- gate(h, g)" in m.text
     assert "block = [CHUNK, WIDTH]" in m.text
+    # the chain: its calls in order, down on the first four of up's twelve cores
+    assert "        call up(x, w1, w3, hidden)\n" in m.text
+    assert "        call down(hidden, w2, y) @on(group[0:4])\n" in m.text
+    assert m.chains == {"forward": (0, 12)}
+    # a plain submit sends today's words: the handler's own, no mask word after them
+    for name, group in (("up", (0, 12)), ("down", (0, 4))):
+        names = ours.entry(name).names
+        values = [given[n] for n in names]
+        words = ours.entry(name).args(*values, group=group)
+        assert words == list(getattr(today, name).args(*values))
+        assert len(words) == len(names)
     assert ours.header == today.built.folder / "swiglu.h"
     for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
         assert getattr(ours, field) == getattr(today, field), field
@@ -686,6 +697,72 @@ def test_program_7s_field_or_block_it_does_not_place_is_refused_by_name(
     p7 = swiglu_script(tmp_path, monkeypatch, source.replace(old, new))
     with pytest.raises(Refused, match=why):
         module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+
+
+@pytest.mark.parametrize(
+    "cores, calls, span",
+    [
+        # a span that does not start at core 0: its ranks count from its first core
+        (
+            ((4, 12), (6, 4)),
+            ("", " @on(group[2:6])"),
+            (4, 12),
+        ),
+        # no call over the whole span: each names its part
+        (
+            ((2, 12), (0, 4)),
+            (" @on(group[2:14])", " @on(group[0:4])"),
+            (0, 14),
+        ),
+    ],
+)
+def test_program_7s_chain_is_on_the_span_of_its_calls_cores(
+    tmp_path, monkeypatch, cores, calls, span
+):
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    for given, (first, count) in zip(("(0, 12)", "(0, 4)"), cores, strict=True):
+        assert source.count(f"cores={given}") == 1
+        source = source.replace(f"cores={given}", f"cores=({first}, {count})")
+    p7 = swiglu_script(tmp_path, monkeypatch, source)
+    m = module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+    up, down = calls
+    assert f"        call up(x, w1, w3, hidden){up}\n" in m.text
+    assert f"        call down(hidden, w2, y){down}\n" in m.text
+    assert m.chains == {"forward": span}
+
+
+@pytest.mark.parametrize(
+    "old, new, why",
+    [
+        # cores the make does not know: the chain's group is not known
+        (", cores=(0, 4))", ")", "a call without cores=\\(first, count\\)"),
+        (
+            "self.down(hidden, w2, y",
+            "self.down(km.past(hidden), w2, y",
+            "an argument other than a parameter of the chain",
+        ),
+        (
+            "        self.down(hidden, w2, y, cores=(0, 4))\n",
+            "        for _ in range(2):\n"
+            "            self.down(hidden, w2, y, cores=(0, 4))\n",
+            "a chain's line other than a call of a handler",
+        ),
+        (
+            "cores=(0, 4))",
+            "cores=(0, 4), group=2)",
+            "group= is not written in an IR module yet",
+        ),
+    ],
+)
+def test_program_7s_chain_it_does_not_write_is_refused_with_its_line(
+    tmp_path, monkeypatch, old, new, why
+):
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    assert source.count(old) == 1
+    p7 = swiglu_script(tmp_path, monkeypatch, source.replace(old, new))
+    with pytest.raises(Refused, match=why) as refused:
+        module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+    assert "SwiGLU.forward, line " in str(refused.value)
 
 
 @pytest.mark.parametrize(

@@ -449,6 +449,24 @@ impl<'m> Validator<'m> {
                             );
                         }
                     }
+                    if let Some(part) = call.part {
+                        let what = format!("chain {}: the range of call {k}", chain.name);
+                        for end in [part.first, part.end] {
+                            if end == Count::GroupSize {
+                                self.fail(
+                                    None,
+                                    None,
+                                    format!("{what}: an end of the group's size"),
+                                );
+                            }
+                            self.count(end, false, &what);
+                        }
+                        if let (Count::Const(a), Count::Const(b)) = (part.first, part.end) {
+                            if a >= b {
+                                self.fail(None, None, format!("{what}: no rank"));
+                            }
+                        }
+                    }
                 }
             }
         }

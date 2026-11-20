@@ -26,8 +26,10 @@ A reader can hash a part, or skip the positions, without reading the others.
 
 Version 3 gave a block, a stream, a sink and a reduction's values the rows and the columns of their
 tiles (a block is a matrix of tiles): each writes its rows before its columns. Version 4 gives
-`ForZip` its streams as a list (a count, then the values), so a `zip` walks two streams or more. A
-reader refuses a version 3 program with `K952`, naming both versions.
+`ForZip` its streams as a list (a count, then the values), so a `zip` walks two streams or more.
+Version 5 gives each call of a chain its part of the chain's group (R47) after its arguments:
+`Whole`, or `Part` and its two ends, each a `Count`. A reader refuses a version 4 program with
+`K952`, naming both versions.
 
 ## How values are written
 
@@ -64,8 +66,8 @@ Each part is one walk of the program structure, each list in its one order:
       effects.
     - A run: name, parameter types, `@peers`, the seed, the `on M` bodies (message id, body),
       effects.
-    - A chain: name, parameter types, `@on`, the calls (handler id, arguments), the dependency
-      edges (writer, reader, parameter, write, read, `past`).
+    - A chain: name, parameter types, `@on`, the calls (handler id, arguments, the part of the
+      group as `Part`), the dependency edges (writer, reader, parameter, write, read, `past`).
     - A control program: name, parameter types, the result as an option, body.
     - A requirement: the ability, then its causes.
     - A body: the type of each value, the type of each slot, the instructions (the operation, then
@@ -381,6 +383,13 @@ version.
 |---|---|
 | 0 | `Group` |
 | 1 | `Grid` |
+
+### `Part`
+
+| Number | Variant |
+|---|---|
+| 0 | `Whole` |
+| 1 | `Part` |
 
 ### `Peers`
 

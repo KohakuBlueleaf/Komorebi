@@ -203,6 +203,20 @@ With buffers of more than one format, compute sets the formats again before each
 handlers first take them, one chain of `km::Tensor<...>` for all handlers, so a tensor may be at
 a different place in each handler's command.
 
+A program that declares a chain is emitted in the form its kernels need to walk a chain's
+records, as today's class with a `km.chain` method; the module states only the chain's calls in
+their order (R49). Both movers and compute include `km_chain.hpp` and hold one copy of the cases,
+`km_case`, which a plain command and each record of a chain command call (`km::chain_reader` on
+mover A, `km::chain_writer` on mover B, `km::chain_compute`). The header numbers the walk's
+handler after the program's (`kHandlerKmChain`), and the chain's words are buffer 28
+(`kChainArea`, one page of 2816 B of `uint32`). In each movement case, before a line that reads
+a tensor, the record waits for its input's marks unless the record's mask has none of the line's
+tensors. A loop over streams in step holds them by one gate (`km::chain_gate`, `km::Gated`), so
+the streams of tensors the chain does not write go on. The mask is the command word after the
+handler's own (a plain submit sends the handler's words, as today). A case ends with the marks of
+its record on mover B (`km_chain_end`). A chain on islands, a call with `past`, and a call of a
+handler that reduces over its group (a reduce's tree) are refused by name (`K964`).
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of

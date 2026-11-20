@@ -316,10 +316,11 @@ impl Writer {
                 head.push(params(&chain.params));
                 head.extend(attrs(&chain.attrs));
                 self.lines_block(head, &chain.calls, indent, trailing, |w, call, i, t| {
-                    let pieces = vec![
+                    let mut pieces = vec![
                         text(format!("call {}", call.handler.name)),
                         args(&call.args, false),
                     ];
+                    pieces.extend(attrs(&call.attrs));
                     w.emit(&pieces, i, "", t);
                 });
             }

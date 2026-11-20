@@ -1,0 +1,27 @@
+// refused: a call's @on is group[first:end], a range of the chain's group inside it, each end a number or a parameter bound at build (Chains, R47)
+module parts
+
+tile [32, 32]
+format bf16
+
+requires {
+    group = grid
+}
+
+program Parts {
+    handler copy(x: tensor<bf16>, y: tensor<bf16>, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    chain some(x: tensor<bf16>, y: tensor<bf16>, n: u32) @on(grid[2, 4]) {
+        call copy(x, y, n) @on(group[3:1])
+        call copy(x, y, n) @on(group[0:n])
+        call copy(x, y, n) @on(group[4:12])
+        call copy(x, y, n) @on(grid[0:2])
+        call copy(x, y, n) @on(group[0:2:2])
+        call copy(x, y, n) @on(group[2:8])
+    }
+}

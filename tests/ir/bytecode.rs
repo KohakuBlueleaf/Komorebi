@@ -14,8 +14,8 @@ use komorebi_ir::bytecode::{self, decode, encode, hashes, hex, version, Hashes};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::derive::Cause;
 use komorebi_ir::program::notes::{Anchor, Origin};
-use komorebi_ir::program::{print, BodyRef, Module};
-use komorebi_ir::types::{HandlerId, ProgramId};
+use komorebi_ir::program::{print, BodyRef, Module, Part};
+use komorebi_ir::types::{Count, HandlerId, ProgramId};
 
 fn golden_dir() -> PathBuf {
     match std::env::var_os("KOMO_IR_CORPUS") {
@@ -398,6 +398,56 @@ fn every_lesson_loads() {
             komorebi_ir::api::load(&encode(&module)).unwrap_or_else(|r| panic!("{name}: {r:?}"));
         assert!(loaded == module, "{name}: loaded, another module");
     }
+}
+
+/// A chain call's range (R47) is written and read back: one of numbers, one ending at
+/// a module parameter bound at build (its value).
+#[test]
+fn a_call_s_range_of_the_group_loads_as_written() {
+    let text = "module parts
+
+tile [32, 32]
+format f32
+
+param HALF: u32 = 3 @bind(build)
+
+program P {
+    handler copy(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        let out = sink(partition(y.tiles(0, 8), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, 8), worker.rank, group.size), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    chain parts(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        call copy(x, y)
+        call copy(x, y) @on(group[0:4])
+        call copy(x, y) @on(group[1:HALF])
+    }
+}
+";
+    let module = built(text);
+    let parts: Vec<Option<Part>> = module.programs[0].chains[0]
+        .calls
+        .iter()
+        .map(|c| c.part)
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            None,
+            Some(Part {
+                first: Count::Const(0),
+                end: Count::Const(4)
+            }),
+            Some(Part {
+                first: Count::Const(1),
+                end: Count::Const(3)
+            }),
+        ]
+    );
+    let loaded = komorebi_ir::api::load(&encode(&module)).expect("loads");
+    assert!(loaded == module, "loaded, another module");
 }
 
 #[test]

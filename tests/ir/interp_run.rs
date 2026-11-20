@@ -856,6 +856,53 @@ fn a_past_is_proven_worker_by_worker() {
     );
 }
 
+const PARTS: &str = "module parts
+
+tile [32, 32]
+format f32
+
+program P {
+    handler copy(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    chain halves(x: tensor<f32>, y: tensor<f32>, s: tensor<f32>) @on(group) {
+        call copy(x, y, 8)
+        call copy(y, s, 8) @on(group[1:3])
+    }
+}
+";
+
+#[test]
+fn a_call_on_a_range_of_the_chain_s_group_runs_on_it_as_its_group() {
+    let m = module(PARTS);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (8, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let s = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Tensor(s)];
+    assert_eq!(
+        run.invoke("P.halves", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    // the second call's group is ranks 1 and 2: its group.size is 2, so its two
+    // ranks copy all 8 tiles, 4 each (on a group of 4 they would copy 2 to 5)
+    for i in 0..8 {
+        assert!(all(&tile_f64(&run, s, i), (i + 1) as f64), "s {i}");
+    }
+    // on a group of 2 the range 1:3 is past it: refused at the invocation
+    assert_eq!(
+        run.invoke("P.halves", &args, (0, 2), &[]),
+        End::Invalid {
+            what: "the range 1:3 of call 1 is not inside the chain's group of 2".into(),
+            at: None
+        }
+    );
+}
+
 fn scalars(run: &Machine<'_>, worker: usize, member: usize) -> Vec<Scalar> {
     match &run.workers[worker].state[0][member].data {
         komorebi_ir::interp::memory::MemberData::Scalars(v) => v.clone(),

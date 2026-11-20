@@ -52,4 +52,15 @@ program SwiGLU {
         }
         store y.tiles[0:1, first:first + WIDTH] <- out
     }
+    chain forward(
+        x: tensor<bf16>,
+        w1: tensor<bf16>,
+        w3: tensor<bf16>,
+        w2: tensor<bf16>,
+        hidden: tensor<bf16>,
+        y: tensor<f32>,
+    ) @on(group) {
+        call up(x, w1, w3, hidden)
+        call down(hidden, w2, y) @on(group[0:4])
+    }
 }

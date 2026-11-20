@@ -29,9 +29,9 @@ use crate::backend::{
 use crate::bytecode::hash::{hex, sha256};
 use crate::program::body::InstId;
 use crate::program::notes::{Anchor, Origin};
-use crate::program::{BodyRef, Module};
-use crate::types::{Entry, Format, IslandGraph, TileShape};
-use crate::types::{FuncId, HandlerId, ProgramId};
+use crate::program::{BodyRef, CallArg, Module};
+use crate::types::{Ability, Entry, Format, IslandGraph, TileShape};
+use crate::types::{ChainId, FuncId, HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
 use self::plan::{
@@ -208,9 +208,9 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     }
     let p = ProgramId(0);
     let program = &module.programs[0];
-    if !program.state.is_empty() || !program.runs.is_empty() || !program.chains.is_empty() {
+    if !program.state.is_empty() || !program.runs.is_empty() {
         return Err(vec![refused(
-            "a program with state, runs or chains",
+            "a program with state or runs",
             Anchor::Program(p),
         )]);
     }
@@ -224,6 +224,7 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     if plans.is_empty() && refusals.is_empty() {
         refusals.push(refused("a program of no handler", Anchor::Program(p)));
     }
+    refusals.extend(chain_refusals(module, &plans));
     for plan in &plans {
         if let Err(r) = bounds(plan) {
             refusals.push(r);
@@ -278,6 +279,55 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     Ok((plans, units))
 }
 
+/// What a chain of the program asks that today's walk is not emitted for yet, each
+/// refused by name until a program needs it (R49): a chain on islands, an earlier
+/// input (`past`), a call whose handler reduces over its group (a reduce's tree).
+fn chain_refusals(module: &Module, plans: &[Plan]) -> Vec<Refusal> {
+    let p = ProgramId(0);
+    let program = &module.programs[0];
+    let mut out = Vec::new();
+    let refused = |what: String, at: Anchor| Refusal {
+        code: NOT_BUILT,
+        what: format!("the Tensix backend does not emit {what} yet"),
+        at: Some(at),
+    };
+    if !program.chains.is_empty()
+        && module
+            .requirements
+            .iter()
+            .any(|r| matches!(r.ability, Ability::Islands(_)))
+    {
+        out.push(refused("a chain on islands".into(), Anchor::Program(p)));
+    }
+    for (c, chain) in program.chains.iter().enumerate() {
+        let c = ChainId(c as u32);
+        for (k, call) in chain.calls.iter().enumerate() {
+            let at = Anchor::Call(p, c, k as u32);
+            if call.args.iter().any(|a| matches!(a, CallArg::Past(_))) {
+                out.push(refused(
+                    format!(
+                        "a chain's call with an earlier input (`past`), call {k} of `{}`",
+                        chain.name
+                    ),
+                    at,
+                ));
+            }
+            let plan = plans.iter().find(|plan| plan.handler == call.handler);
+            if let Some(Shape::Summed(_)) = plan.map(|plan| &plan.shape) {
+                out.push(refused(
+                    format!(
+                        "a chain's call of a handler that reduces over its group (a reduce's \
+                         tree), call {k} of `{}`",
+                        chain.name
+                    ),
+                    at,
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// The generated files of `module` the compile makes: each name and text, in name
 /// order; or every refusal of what is not built. A file made at load (`at_load`) is
 /// not among them.
@@ -293,11 +343,12 @@ pub fn sources(module: &Module) -> Result<Vec<(String, String)>, Vec<Refusal>> {
         (header.clone(), sized_header(module, &plans, TREE_ROUNDS)),
         (
             "compute.cpp".to_string(),
-            compute_text(name, &header, &plans, &units, &lines),
+            compute_text(name, &header, &plans, &units, &lines, chained(module)),
         ),
     ];
     if !walks_rectangles(&plans) {
-        let movement = movement_text(name, &header, &plans, &lines, &[]).map_err(|r| vec![r])?;
+        let movement = movement_text(name, &header, &plans, &lines, &[], chained(module))
+            .map_err(|r| vec![r])?;
         files.push(("movement.cpp".to_string(), movement));
     }
     for u in units {
@@ -344,8 +395,15 @@ pub fn sources_at_load(
         origin: module.notes.origin.as_ref(),
     };
     let header = format!("{}.h", program.name.to_lowercase());
-    let movement =
-        movement_text(&program.name, &header, &plans, &lines, shapes).map_err(|r| vec![r])?;
+    let movement = movement_text(
+        &program.name,
+        &header,
+        &plans,
+        &lines,
+        shapes,
+        chained(module),
+    )
+    .map_err(|r| vec![r])?;
     Ok(vec![("movement.cpp".to_string(), movement)])
 }
 
@@ -358,7 +416,16 @@ fn sized_header(module: &Module, plans: &[Plan], slots: u64) -> String {
     let name = &module.programs[0].name;
     let pairs = pairs(plans, &lines);
     let others = others(plans, &lines, slots);
-    header_text(name, plans, &pairs, &others, &lines)
+    header_text(name, plans, &pairs, &others, &lines, chained(module))
+}
+
+/// Whether the program declares a chain: its kernels then walk a chain's records
+/// (`km_chain.hpp`), as today's class with a `km.chain` method (R49).
+fn chained(module: &Module) -> bool {
+    module
+        .programs
+        .first()
+        .is_some_and(|p| !p.chains.is_empty())
 }
 
 /// The header (`<program>.h`) and the buffers of `module` on a machine of `islands`
@@ -373,7 +440,7 @@ pub(crate) fn sized(
     let slots = islands.map_or(TREE_ROUNDS, tree_slots);
     let name = format!("{}.h", module.programs[0].name.to_lowercase());
     let header = sized_header(module, &plans, slots);
-    Ok(((name, header), buffers(&plans, slots)))
+    Ok(((name, header), buffers(&plans, slots, chained(module))))
 }
 
 /// The buffer pairs in the order the streams open (`layout.pair`): each handler's
@@ -658,6 +725,7 @@ fn header_text(
     pairs: &[Pair],
     others: &[Other],
     lines: &Lines,
+    chained: bool,
 ) -> String {
     let mut out = vec![
         format!("// {}", lines.made(name)),
@@ -692,6 +760,14 @@ fn header_text(
             "constexpr uint32_t kHandler{} = {};",
             camel(&plan.name),
             number + 1
+        ));
+    }
+    if chained {
+        // the walk's handler, after the program's (`program.chain_prepared`)
+        out.push("// The chain's walk: a chain command's records, each its handler's case.".into());
+        out.push(format!(
+            "constexpr uint32_t kHandlerKmChain = {};",
+            plans.len() + 1
         ));
     }
     for pair in pairs {
@@ -732,6 +808,14 @@ fn header_text(
                 other.name, other.pages
             ));
         }
+    }
+    if chained {
+        out.push(String::new());
+        out.push(format!("// {CHAIN_AREA_WHAT}"));
+        out.push(format!(
+            "constexpr uint32_t kChainArea = {};",
+            chip::CHAIN_BUFFER
+        ));
     }
     let (unpack, pack) = mixed_formats(plans, others);
     let or_none = |mixed: bool, call: &str| if mixed { call } else { "((void)0)" }.to_string();
@@ -948,15 +1032,26 @@ fn movement_text(
     plans: &[Plan],
     lines: &Lines,
     shapes: &[(String, Option<(u64, u64)>)],
+    chained: bool,
 ) -> Result<String, Refusal> {
-    let mut out = vec![
-        format!("// {}", lines.made(name)),
-        "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).".to_string(),
+    let mut out = vec![format!("// {}", lines.made(name))];
+    if chained {
+        out.extend([
+            "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1),".into(),
+            "// with the chain's walk (km_chain.hpp).".into(),
+        ]);
+    } else {
+        out.push(
+            "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1)."
+                .to_string(),
+        );
+    }
+    out.extend([
         "#include <stdint.h>".to_string(),
         String::new(),
         "#include \"api/dataflow/dataflow_api.h\"".to_string(),
         "#include \"komorebi/device/movement/km_movement.hpp\"".to_string(),
-    ];
+    ]);
     let needs = needs(plans);
     if needs.contains(&"port") {
         out.push("#include \"komorebi/device/movement/km_port.hpp\"".to_string());
@@ -964,11 +1059,14 @@ fn movement_text(
     if needs.contains(&"ask") {
         out.push("#include \"komorebi/device/tensors/km_ask.hpp\"".to_string());
     }
-    out.extend([
-        format!("#include \"{header}\""),
-        String::new(),
-        "void kernel_main() {".to_string(),
-    ]);
+    if chained {
+        out.push(format!("#include \"{CHAIN_INCLUDE}\""));
+    }
+    out.extend([format!("#include \"{header}\""), String::new()]);
+    if chained {
+        out.push(CHAIN_HELPERS.to_string());
+    }
+    out.push("void kernel_main() {".to_string());
     let mut previous: Option<String> = None;
     for t in tensors(plans) {
         let offset = previous.map_or("0".to_string(), |p| {
@@ -985,6 +1083,12 @@ fn movement_text(
         previous = Some(camel(&t));
     }
     indented(&mut out, 1, "km::Movement movement;");
+    if chained {
+        out.push("#if defined(COMPILE_FOR_BRISC)  // mover A: the chain's words zero".into());
+        indented(&mut out, 1, "km::chain_start();");
+        out.push("#endif".into());
+    }
+    let cases = out.len();
     indented(
         &mut out,
         1,
@@ -993,6 +1097,7 @@ fn movement_text(
     indented(&mut out, 2, "switch (km::handler(command)) {");
     for plan in plans {
         let body = BodyRef::Handler(plan.program, plan.handler);
+        let start = out.len();
         indented(&mut out, 3, &case_line(plan, lines));
         let written = plan.written();
         let ints = plan
@@ -1173,13 +1278,227 @@ fn movement_text(
         }
         indented(&mut out, 4, "return true;");
         indented(&mut out, 3, "}");
+        if chained {
+            let case = out.split_off(start);
+            out.extend(chain_case(plan, lines, case));
+        }
     }
     indented(&mut out, 3, "default:");
     indented(&mut out, 4, "return true;");
     indented(&mut out, 2, "}");
+    if chained {
+        // one copy of the cases, for a plain command and a chain's records
+        let switch: Vec<String> = out
+            .split_off(cases + 1)
+            .into_iter()
+            .map(|l| l.strip_prefix(INDENT).map_or(l.clone(), str::to_string))
+            .collect();
+        out.truncate(cases);
+        indented(
+            &mut out,
+            1,
+            "const auto km_case = [&](const km_command_t& command)",
+        );
+        indented(&mut out, 3, "__attribute__((noinline)) -> bool {");
+        out.extend(switch);
+        indented(&mut out, 1, "};");
+        indented(
+            &mut out,
+            1,
+            "movement.run([&](const km_command_t& command) {",
+        );
+        indented(
+            &mut out,
+            2,
+            "if (km::handler(command) != kHandlerKmChain) {",
+        );
+        indented(&mut out, 3, "return km_case(command);");
+        indented(&mut out, 2, "}");
+        out.push("#if defined(COMPILE_FOR_BRISC)  // mover A".into());
+        indented(&mut out, 2, "km::chain_reader(movement, command, km_case);");
+        indented(&mut out, 2, "return true;");
+        out.push("#else  // mover B".into());
+        indented(
+            &mut out,
+            2,
+            "return km::chain_writer(km::ChainShape{}, movement, command, km_case);",
+        );
+        out.push("#endif".into());
+    }
     indented(&mut out, 1, "});");
     out.push("}".to_string());
     Ok(out.join("\n") + "\n")
+}
+
+/// The device header of the chain's walk, which both kernels of a chained program
+/// include.
+const CHAIN_INCLUDE: &str = "komorebi/device/movement/km_chain.hpp";
+
+/// The movement source's helpers of the chain's walk (`program_sources.CHAIN_HELPERS`):
+/// a record's wait for its input before a read, and its end's marks on mover B.
+const CHAIN_HELPERS: &str = "namespace {
+
+    bool km_chain_waited = false;  // this record's input waited for
+
+    // Before a line reading tensors `bits` of a chain's record: its input's marks
+    // waited for once, unless `mask` (the chain's written tensors) has none of them.
+    __attribute__((noinline)) bool km_chain_read(
+        km::Movement& movement, uint32_t mask, uint32_t bits
+    ) {
+        if (km_chain_waited || !km::chain_now.on || (mask & bits) == 0) {
+            return true;
+        }
+        km_chain_waited = true;
+        return km::chain_input(km::ChainShape{}, movement);
+    }
+
+    // A record's end: on mover B each group's root marks the next record's cores once
+    // its block is written.
+    __attribute__((noinline)) bool km_chain_end(
+        km::Movement& movement, const km_command_t& command
+    ) {
+        if (!km::chain_now.on) {
+            return true;
+        }
+#if defined(COMPILE_FOR_BRISC)  // mover A
+        return true;
+#else  // mover B
+        const uint32_t size = km::ChainShape{}.size(movement, km::chain_now.now);
+        if ((movement.me() - km::first(command)) % size != 0) {
+            return true;
+        }
+        const km::ChainDirect none = {0, 0, 0, 0};
+        return km::chain_mark(km::ChainShape{}, movement, command, none, false);
+#endif
+    }
+
+}  // namespace
+";
+
+/// A handler's movement case in a chained program (`program_sources.chain_cases`):
+/// the record's flag cleared first; before each line that reads a tensor, the wait
+/// for the record's input, held by one gate over a loop's streams in step
+/// (`chain_gated`), else `km_chain_read`; the end's marks in place of `return true`.
+/// A tensor's bit is its place among the handler's tensor words; the mask word is the
+/// first after the handler's own (none past the tenth: the whole wait).
+fn chain_case(plan: &Plan, lines: &Lines, case: Vec<String>) -> Vec<String> {
+    let tensors: Vec<usize> = (0..plan.words.len())
+        .filter(|&i| plan.words[i].kind == WordKind::Tensor)
+        .collect();
+    let bit = |tensor: usize| 1u32 << tensors.iter().position(|&t| t == tensor).unwrap_or(0);
+    let mask = match plan.words.len() {
+        n if n < 10 => format!("command.a{n}"),
+        _ => "~0u".to_string(),
+    };
+    // each read's statement line: the bits of its tensors, its streams
+    let mut reads: Vec<(u32, u32, Vec<usize>)> = Vec::new();
+    for (i, read) in plan.reads.iter().enumerate() {
+        let line = line_of(lines, plan, read.inst);
+        match reads.iter_mut().find(|r| r.0 == line) {
+            Some(r) => {
+                r.1 |= bit(read.tensor);
+                r.2.push(i);
+            }
+            None => reads.push((line, bit(read.tensor), vec![i])),
+        }
+    }
+    let pad = |text: &str| {
+        let n = text.len() - text.trim_start().len();
+        text[..n].to_string()
+    };
+    let head = case[0].clone();
+    let mut body: Vec<String> = case[1..case.len() - 2].to_vec();
+    let mut out: Vec<String> = Vec::new();
+    let mut found: Vec<u32> = Vec::new();
+    let mut at = 0;
+    while at < body.len() {
+        let text = body[at].clone();
+        out.push(text.clone());
+        let line = text
+            .trim_start()
+            .strip_prefix("// line ")
+            .and_then(|l| l.split(':').next())
+            .and_then(|n| n.parse::<u32>().ok());
+        let read = line.and_then(|l| reads.iter().find(|r| r.0 == l));
+        if let (Some(line), Some((_, bits, streams))) = (line, read) {
+            let indent = pad(&text);
+            found.push(line);
+            let gate = (streams.len() > 1)
+                .then(|| chain_gated(plan, &mut body, at, streams, &mask, *bits, &bit))
+                .flatten();
+            match gate {
+                Some(gate) => out.push(format!("{indent}{gate}")),
+                None => {
+                    out.push(format!(
+                        "{indent}if (!km_chain_read(movement, {mask}, {bits}u)) {{"
+                    ));
+                    out.push(format!("{indent}{INDENT}return false;"));
+                    out.push(format!("{indent}}}"));
+                }
+            }
+        }
+        at += 1;
+    }
+    if reads.iter().any(|r| !found.contains(&r.0)) {
+        // a read's line not seen: the wait first
+        let indent = INDENT.repeat(4);
+        out.splice(
+            0..0,
+            [
+                format!("{indent}if (!km_chain_read(movement, ~0u, ~0u)) {{"),
+                format!("{indent}{INDENT}return false;"),
+                format!("{indent}}}"),
+            ],
+        );
+    }
+    let mut case = vec![head];
+    indented(&mut case, 4, "km_chain_waited = false;");
+    case.extend(out);
+    indented(&mut case, 4, "return km_chain_end(movement, command);");
+    indented(&mut case, 3, "}");
+    case
+}
+
+/// The gate of a loop over `streams` in step whose comment is at `at` in `body`: its
+/// move's read streams each held by it, rewritten in `body`, and the gate's line;
+/// none when the loop's move is not found before the next statement.
+fn chain_gated(
+    plan: &Plan,
+    body: &mut [String],
+    at: usize,
+    streams: &[usize],
+    mask: &str,
+    bits: u32,
+    bit: &dyn Fn(usize) -> u32,
+) -> Option<String> {
+    let gate = format!("km_gate{}", streams[0]);
+    for text in body.iter_mut().skip(at + 1) {
+        if text.trim_start().starts_with("// line ") {
+            return None;
+        }
+        if !text.contains("movement.move(") {
+            continue;
+        }
+        let mut moved = text.clone();
+        for &i in streams {
+            let var = format!("km_read{i}");
+            let held = format!("km::Gated({var}, {gate}, {}u)", bit(plan.reads[i].tensor));
+            let words: Vec<&str> = moved.split(&var).collect();
+            let alone = words.len() == 2
+                && !words[0].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                && !words[1].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+            if !alone {
+                return None;
+            }
+            moved = words.join(&held);
+        }
+        *text = moved;
+        return Some(format!(
+            "km::ChainGate {gate} = km::chain_gate(km::ChainShape{{}}, movement, {mask}, \
+             {bits}u, km_chain_waited);"
+        ));
+    }
+    None
 }
 
 /// Refuses at `at` a rectangle of tensor `t` (rows and columns of tiles `shape`) whose
@@ -1379,7 +1698,14 @@ fn movement_sum(out: &mut Vec<String>, plan: &Plan, sum: &Sum, lines: &Lines) {
 
 /// The compute source (`program.compute_source`): each case's loop over the read
 /// stream's blocks, its tiles `DST_HALF` an acquire, the call on each and the packs.
-fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines: &Lines) -> String {
+fn compute_text(
+    name: &str,
+    header: &str,
+    plans: &[Plan],
+    units: &[Unit],
+    lines: &Lines,
+    chained: bool,
+) -> String {
     let mut out = vec![
         format!("// {}", lines.made(name)),
         "// the compute kernel: the tiles of its streams, in block order.".to_string(),
@@ -1402,6 +1728,9 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
             .iter()
             .map(|u| format!("#include \"tile_{}.hpp\"", u.name)),
     );
+    if chained {
+        out.push(format!("#include \"{CHAIN_INCLUDE}\""));
+    }
     out.push(format!("#include \"{header}\""));
     out.push(String::new());
     out.push("void kernel_main() {".to_string());
@@ -1418,11 +1747,21 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
         1,
         &format!("compute_kernel_hw_startup(kRead0.mover_a, {written});"),
     );
-    indented(
-        &mut out,
-        1,
-        "compute.run([&](const km_command_t& command) {",
-    );
+    if chained {
+        // one copy of the cases, for a plain command and a chain's records
+        indented(
+            &mut out,
+            1,
+            "const auto km_case = [&](const km_command_t& command)",
+        );
+        indented(&mut out, 3, "__attribute__((noinline)) {");
+    } else {
+        indented(
+            &mut out,
+            1,
+            "compute.run([&](const km_command_t& command) {",
+        );
+    }
     indented(&mut out, 2, "switch (km::handler(command)) {");
     // each mapped plan's unit, in order (`planned`)
     let mut called = units.iter();
@@ -1458,6 +1797,23 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
     indented(&mut out, 3, "default:");
     indented(&mut out, 4, "break;");
     indented(&mut out, 2, "}");
+    if chained {
+        indented(&mut out, 1, "};");
+        indented(
+            &mut out,
+            1,
+            "compute.run([&](const km_command_t& command) {",
+        );
+        indented(
+            &mut out,
+            2,
+            "if (km::handler(command) == kHandlerKmChain) {",
+        );
+        indented(&mut out, 3, "km::chain_compute(compute, command, km_case);");
+        indented(&mut out, 2, "} else {");
+        indented(&mut out, 3, "km_case(command);");
+        indented(&mut out, 2, "}");
+    }
     indented(&mut out, 1, "});");
     out.push("}".to_string());
     out.join("\n") + "\n"
@@ -2467,7 +2823,7 @@ impl Backend for Tensix {
             entries: entries(program, &plans)?,
             build: Build::Kernels {
                 kernels: kernels(&plans),
-                buffers: buffers(&plans, TREE_ROUNDS),
+                buffers: buffers(&plans, TREE_ROUNDS, chained(program)),
                 at_load: at_load(program)?,
             },
         })
@@ -2590,7 +2946,7 @@ fn host_expr(plan: &Plan, int: &Int, at: Anchor) -> Result<Expr, Refusal> {
 /// The buffers: each pair's two halves, in the order the pairs are made, a half the
 /// pair's pages of its tensor's tiles (`layout.pair`, `BufferPair.halves`); a float32
 /// read stream's unpacked to Dst as float32 (`page_streams`, `unpack_fp32`).
-fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
+fn buffers(plans: &[Plan], slots: u64, chained: bool) -> Vec<Buffer> {
     let lines = Lines { origin: None };
     let mut out = Vec::new();
     for pair in pairs(plans, &lines) {
@@ -2621,8 +2977,22 @@ fn buffers(plans: &[Plan], slots: u64) -> Vec<Buffer> {
             unpack: unpacked.then_some(Unpack::ToDestFp32),
         });
     }
+    if chained {
+        // the chain's words: one page of `uint32` (`program.chain_prepared`)
+        out.push(Buffer {
+            index: chip::CHAIN_BUFFER,
+            format: Format::U32,
+            page_bytes: chip::CHAIN_PAGE,
+            pages: 1,
+            pair: None,
+            unpack: None,
+        });
+    }
     out
 }
+
+/// The chain's buffer's line in the header, as today's `Buffer.what` gives it.
+const CHAIN_AREA_WHAT: &str = "the chain's words (km_chain.hpp): marks, credits, the records' ring";
 
 /// The three kernels (`session/backend/backend.py`, `describe`): the movement source
 /// on the reader and on the writer, each tensor's layout as its compile arguments in

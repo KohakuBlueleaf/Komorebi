@@ -1,7 +1,7 @@
 """The corpus's program 7, examples/31_swiglu/swiglu_class.py, as today's class DSL
 writes it: `up` (x's row by W1's and W3's columns summed into the fields h and g, their
 gate stored to the hidden) and `down` (the hidden's row by W2's columns into out, stored
-to y). Its chain `forward` comes with its hash."""
+to y), and its chain `forward`: up on twelve cores, then down on four."""
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
@@ -56,6 +56,11 @@ class SwiGLU(km.Program):
         ):
             self.out += self.project(hb, wb)
         y.tiles[0:1, first : first + self.WIDTH].write(self.out)
+
+    @km.chain
+    def forward(self, x, w1, w3, w2, hidden, y):
+        self.up(x, w1, w3, hidden, cores=(0, 12))
+        self.down(hidden, w2, y, cores=(0, 4))
 
 
 class Pages:

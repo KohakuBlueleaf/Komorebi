@@ -639,8 +639,9 @@ impl<'m> Machine<'m> {
     }
 
     /// A chain: one invocation whose calls run in the written order, each on every
-    /// worker of the group and whole before the next. A call that does not complete
-    /// ends the chain with its end, and the later calls do not run.
+    /// worker of the group, or of its range `@on(group[a:b])` (R47), and whole before
+    /// the next. A call that does not complete ends the chain with its end, and the
+    /// later calls do not run.
     fn invoke_chain(
         &mut self,
         p: ProgramId,
@@ -677,16 +678,43 @@ impl<'m> Machine<'m> {
                     None => return invalid("a call's argument that names nothing".into()),
                 }
             }
+            // the call's range is its group: rank 0 is the range's first rank
+            let (from, count) = match call.part {
+                None => (0, group.1),
+                Some(part) => {
+                    let ends = super::workers::count(part.first, &self.params)
+                        .and_then(|a| Ok((a, super::workers::count(part.end, &self.params)?)));
+                    match ends {
+                        Ok((a, b)) if a < b && b <= group.1 => (a, b - a),
+                        Ok((a, b)) => {
+                            return invalid(format!(
+                                "the range {a}:{b} of call {k} is not inside the chain's \
+                                 group of {}",
+                                group.1
+                            ))
+                        }
+                        Err(f) => return invalid(f.to_string()),
+                    }
+                }
+            };
             let mut accesses = Accesses::default();
             let begun = self.races.count();
             let end = self.invoke_here(
                 Entry::Handler(p, call.handler),
                 &call_args,
-                group,
+                (group.0 + from, count),
                 invoke_params,
                 &prior,
                 &mut accesses,
             );
+            // ranks of the chain's group, for the proof of `past`
+            let shift = |set: BTreeSet<(usize, usize, usize)>| {
+                set.into_iter()
+                    .map(|(rank, x, tile)| (rank + from, x, tile))
+                    .collect::<BTreeSet<_>>()
+            };
+            accesses.read = shift(std::mem::take(&mut accesses.read));
+            accesses.opened = shift(std::mem::take(&mut accesses.opened));
             // a call is after every earlier call of the chain
             if self.races.count() > begun {
                 prior.insert(begun);

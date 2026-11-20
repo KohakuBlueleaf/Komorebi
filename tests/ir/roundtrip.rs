@@ -807,6 +807,7 @@ impl Gen {
                         Call {
                             handler: g.ident(),
                             args: g.list(k, |g| g.arg(1)),
+                            attrs: g.attrs(),
                             span: sp(),
                         }
                     }),

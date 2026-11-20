@@ -633,7 +633,7 @@ fn program_6_through_the_frontend_is_todays_text_byte_for_byte() {
 }
 
 #[test]
-fn program_7s_handlers_through_the_frontend_are_todays_text_byte_for_byte() {
+fn program_7s_handlers_and_chain_through_the_frontend_are_todays_text_byte_for_byte() {
     if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
         eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
         return;
@@ -675,5 +675,19 @@ fn program_7s_handlers_through_the_frontend_are_todays_text_byte_for_byte() {
         };
         assert_eq!(at_load, &["movement.cpp"], "the file made at load");
         same_as_today(&made, &module, &stand_ins, "swiglu");
+        // the chain's form (R49), today's with `forward`: the walk in both kernels,
+        // kHandlerKmChain and kChainArea in the header
+        let lines = |n: &str| {
+            let text = std::fs::read_to_string(made.folder.join(n)).expect("today's file");
+            (text.lines().count(), text.contains("kHandlerKmChain"))
+        };
+        assert_eq!(
+            [
+                lines("movement.cpp"),
+                lines("compute.cpp"),
+                lines("swiglu.h")
+            ],
+            [(171, true), (257, true), (56, true)]
+        );
     }
 }

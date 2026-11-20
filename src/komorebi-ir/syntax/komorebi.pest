@@ -124,7 +124,7 @@ seed_block = { kw_seed ~ block }
 on_block   = { kw_on ~ ident ~ "(" ~ ident ~ ")" ~ block }
 
 chain_decl = { kw_chain ~ ident ~ params ~ attr* ~ "{" ~ ogap ~ (call_stmt ~ (gap ~ call_stmt)*)? ~ ogap ~ "}" }
-call_stmt  = { kw_call ~ ident ~ args }
+call_stmt  = { kw_call ~ ident ~ args ~ attr* }
 
 control_decl = { kw_control ~ ident ~ params ~ (arrow ~ scalar_type)? ~ attr* ~ block }
 

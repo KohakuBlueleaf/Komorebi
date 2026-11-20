@@ -959,13 +959,21 @@ impl<'s> Builder<'s> {
                 let span = span_of(&p);
                 let head = self.head(p.clone())?;
                 let calls = self.lines(p, |b, q| {
-                    let span = span_of(&q);
+                    // to its last part: the spaces `attr*` passes over are not the call's
+                    let end = q
+                        .clone()
+                        .into_inner()
+                        .next_back()
+                        .map(|k| k.as_span().end());
+                    let span = Span::new(span_of(&q).start, end.unwrap_or(span_of(&q).end));
                     let mut it = kids(q).into_iter();
                     let handler = b.ident(next(&mut it));
                     let args = b.args(next(&mut it))?;
+                    let attrs = it.map(|a| b.attr(a)).collect::<Built<Vec<_>>>()?;
                     Ok(Call {
                         handler,
                         args,
+                        attrs,
                         span,
                     })
                 })?;

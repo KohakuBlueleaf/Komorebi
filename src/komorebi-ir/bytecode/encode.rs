@@ -7,7 +7,7 @@ use crate::program::body::{Body, Op, Range};
 use crate::program::derive::{Cause, ChainDeps, Effects, Requirement};
 use crate::program::notes::{Anchor, HintArg, Named, Owner};
 use crate::program::{
-    BodyRef, CallArg, Control, Func, FuncKind, Handler, Lifetime, Member, MemberKind, Module,
+    BodyRef, CallArg, Control, Func, FuncKind, Handler, Lifetime, Member, MemberKind, Module, Part,
     Program, Run, Scope,
 };
 use crate::types::{
@@ -234,6 +234,7 @@ impl Writer {
             w.list(&c.calls, |w, call| {
                 w.u32(call.handler.0);
                 w.list(&call.args, Writer::call_arg);
+                w.part(&call.part);
             });
             w.deps(&c.deps);
         });
@@ -594,6 +595,17 @@ impl Writer {
             Binding::Invoke(c) => {
                 self.tag(v::BINDING, "Invoke");
                 self.const_value(c);
+            }
+        }
+    }
+
+    fn part(&mut self, p: &Option<Part>) {
+        match p {
+            None => self.tag(v::PART, "Whole"),
+            Some(p) => {
+                self.tag(v::PART, "Part");
+                self.count(&p.first);
+                self.count(&p.end);
             }
         }
     }

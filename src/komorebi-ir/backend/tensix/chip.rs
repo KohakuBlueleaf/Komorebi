@@ -84,6 +84,13 @@ pub const LIMITS: &[(Limit, u64)] = &[
     (Limit::MessageFields, 62),
 ];
 
+/// The buffer of a chain's words on each core (`abi/km_chain.h`, `kChainBuffer`).
+pub const CHAIN_BUFFER: u32 = 28;
+
+/// The bytes of that buffer's one page (`km_chain.hpp`, `kChainAreaBytes`; today's
+/// `program.CHAIN_PAGE`).
+pub const CHAIN_PAGE: u64 = 2816;
+
 /// The formats a buffer holds (`formats.py`, `DTYPES`), on both chips.
 pub const FORMATS: &[Format] = &[
     Format::Bf16,

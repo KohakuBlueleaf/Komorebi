@@ -487,6 +487,30 @@ impl<'c> Cx<'c> {
         }
     }
 
+    /// A chain call's `@on(group[first:end])` (R47), each end a count.
+    fn part(&self, attrs: &[Attr]) -> Res<Option<pg::Part>> {
+        let Some(arg) = attr_args(attrs, "on").into_iter().next() else {
+            return Ok(None);
+        };
+        if let ExprKind::Index { base, index } = &arg.value.kind {
+            let items: Vec<&ast::IndexItem> = index.values().collect();
+            if let (ExprKind::Name(n), [ast::IndexItem::Slice { lo, hi, step: None }]) =
+                (&base.kind, items.as_slice())
+            {
+                if n.name == "group" {
+                    return Ok(Some(pg::Part {
+                        first: self.count(lo)?,
+                        end: self.count(hi)?,
+                    }));
+                }
+            }
+        }
+        refuse(
+            arg.span,
+            "a call's `@on` that is not a range of the chain's group",
+        )
+    }
+
     fn on(&self, attrs: &[Attr]) -> Res<On> {
         for arg in attr_args(attrs, "on") {
             if let ExprKind::Index { base, index } = &arg.value.kind {
@@ -1022,6 +1046,7 @@ impl<'c> Cx<'c> {
             calls.push(pg::Call {
                 handler: *handler,
                 args,
+                part: self.part(&call.attrs)?,
             });
         }
         Ok(pg::Chain {

@@ -323,6 +323,18 @@ pub struct Call {
     pub handler: HandlerId,
     /// Its arguments, in order.
     pub args: Vec<CallArg>,
+    /// `@on(group[first:end])` (R47): the ranks of the chain's group it runs on, which
+    /// are its own group; `None` runs it on the whole group.
+    pub part: Option<Part>,
+}
+
+/// A range of a chain's group: its first rank, and one past its last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Part {
+    /// The first rank.
+    pub first: Count,
+    /// One past the last rank.
+    pub end: Count,
 }
 
 /// A control program: values, control flow, invocations and their results.

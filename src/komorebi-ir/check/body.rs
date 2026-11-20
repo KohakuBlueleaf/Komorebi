@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::ty::{Count, Lit, Shape, Ty};
 use crate::syntax::ast::{
-    Arg, AssignOp, BinOp, Block, Call, Chain, Control, Expr, ExprKind, Extern, Func, Handler,
+    Arg, AssignOp, Attr, BinOp, Block, Call, Chain, Control, Expr, ExprKind, Extern, Func, Handler,
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
@@ -246,6 +246,80 @@ fn chain_operand(expr: &Expr, params: &[&str], build: &HashSet<String>) -> bool 
         ExprKind::Past(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
         ExprKind::Neg(inner) => matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)),
         _ => false,
+    }
+}
+
+/// What is wrong with a chain call's `@on` (R47): it is `group[first:end]`, each end a
+/// number or a module parameter bound at build, first below end, and end within the
+/// chain's group where its size is stated (`@on(grid[R, C])`).
+fn call_part(call: &Call, chain: &[Attr], build: &HashSet<String>) -> Option<(String, Span)> {
+    let arg = call
+        .attrs
+        .iter()
+        .filter(|a| is_named(a, "on"))
+        .find_map(|a| a.args.as_ref())?
+        .values()
+        .next()?;
+    let form = "a call's `@on` is `group[first:end]`, a range of the chain's group".to_string();
+    let ExprKind::Index { base, index } = &arg.value.kind else {
+        return Some((form, arg.span));
+    };
+    let items: Vec<&IndexItem> = index.values().collect();
+    let (true, [IndexItem::Slice { lo, hi, step: None }]) = (
+        matches!(&base.kind, ExprKind::Name(n) if n.name == "group"),
+        items.as_slice(),
+    ) else {
+        return Some((form, arg.span));
+    };
+    let end = |e: &Expr| match &e.kind {
+        ExprKind::Int(t) => parse_int(t).map(Some),
+        ExprKind::Name(n) if build.contains(&n.name) => Some(None),
+        _ => None,
+    };
+    let (Some(first), Some(last)) = (end(lo), end(hi)) else {
+        return Some((
+            "an end of a call's range is a number or a module parameter bound at build".into(),
+            arg.span,
+        ));
+    };
+    if let (Some(a), Some(b)) = (first, last) {
+        if a >= b {
+            return Some((
+                format!("the range {a}:{b} of a call holds no rank"),
+                arg.span,
+            ));
+        }
+    }
+    let size = chain
+        .iter()
+        .filter(|a| is_named(a, "on"))
+        .filter_map(|a| a.args.as_ref())
+        .flat_map(|args| args.values())
+        .find_map(|a| match &a.value.kind {
+            ExprKind::Index { base, index } if as_name(base).is_some_and(|n| n.name == "grid") => {
+                let dims: Vec<Option<u64>> = index
+                    .values()
+                    .map(|i| match i {
+                        IndexItem::At(Expr {
+                            kind: ExprKind::Int(t),
+                            ..
+                        }) => parse_int(t),
+                        _ => None,
+                    })
+                    .collect();
+                match dims.as_slice() {
+                    [Some(r), Some(c)] => r.checked_mul(*c),
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+    match (last, size) {
+        (Some(b), Some(n)) if b > n => Some((
+            format!("the range of a call ends at rank {b}, past the chain's group of {n}"),
+            arg.span,
+        )),
+        _ => None,
     }
 }
 
@@ -621,6 +695,9 @@ impl Checker<'_> {
                         arg.value.span,
                     );
                 }
+            }
+            if let Some((what, span)) = call_part(call, &c.attrs, &env.ix.build_params) {
+                self.error(codes::CALL_PART, what, span);
             }
             self.chain_call(&mut cx, program, call);
         }

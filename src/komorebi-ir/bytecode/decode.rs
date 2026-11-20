@@ -13,7 +13,7 @@ use crate::program::derive::{
 use crate::program::notes::{Anchor, Hint, HintArg, Named, Notes, Origin, Owner, SourceSpan};
 use crate::program::{
     validate, BodyRef, Call, CallArg, Chain, Control, Func, FuncKind, Handler, Lifetime, Member,
-    MemberKind, Message, Module, Param, Program, Record, Run, Scope,
+    MemberKind, Message, Module, Param, Part, Program, Record, Run, Scope,
 };
 use crate::types::{
     Ability, Axis, BinOp, Binding, ChainId, CmpOp, Combiner, ConstValue, ControlId, Count, Entry,
@@ -457,6 +457,7 @@ impl<'b> Reader<'b> {
                         Ok(Call {
                             handler: HandlerId(r.u32()?),
                             args: r.list(Reader::call_arg)?,
+                            part: r.part()?,
                         })
                     })?,
                     deps: r.deps()?,
@@ -835,6 +836,18 @@ impl<'b> Reader<'b> {
             "Build" => Ok(Binding::Build(self.const_value()?)),
             "Load" => Ok(Binding::Load(self.opt(Reader::const_value)?)),
             "Invoke" => Ok(Binding::Invoke(self.const_value()?)),
+            other => Err(self.unread(at, other)),
+        }
+    }
+
+    fn part(&mut self) -> Read<Option<Part>> {
+        let at = self.at();
+        match self.tag(v::PART)? {
+            "Whole" => Ok(None),
+            "Part" => Ok(Some(Part {
+                first: self.count()?,
+                end: self.count()?,
+            })),
             other => Err(self.unread(at, other)),
         }
     }

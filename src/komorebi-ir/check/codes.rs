@@ -94,6 +94,8 @@ pub const PAST_UNPROVEN: &str = "K601";
 pub const PAST_OUTSIDE_CHAIN: &str = "K602";
 /// An operand of a chain's call other than a chain parameter, `past(y)` or a constant.
 pub const CHAIN_OPERAND: &str = "K603";
+/// A call's `@on` that is not a range of the chain's group inside it.
+pub const CALL_PART: &str = "K604";
 /// A race that program compile can show (waits for the derived effects).
 pub const RACE: &str = "K701";
 /// A control body that uses more than values, control flow, `invoke`, `await` and

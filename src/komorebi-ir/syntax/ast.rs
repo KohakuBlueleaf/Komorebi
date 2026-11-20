@@ -500,13 +500,15 @@ pub struct Chain {
     pub span: Span,
 }
 
-/// `call h(args)`: one of the program's handlers, inside a chain.
+/// `call h(args) {attr}`: one of the program's handlers, inside a chain.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call {
     /// The handler called.
     pub handler: Ident,
     /// Its operands.
     pub args: List<Arg>,
+    /// The attributes (`@on(group[a:b])`, R47).
+    pub attrs: Vec<Attr>,
     /// Where it is written.
     pub span: Span,
 }

@@ -713,7 +713,15 @@ impl Printer {
                             CallArg::Past(i) => format!("past {i}"),
                             CallArg::Const(x) => format!("const {}", const_text(x)),
                         });
-                        format!("h{} {args}", c.handler.0)
+                        match &c.part {
+                            None => format!("h{} {args}", c.handler.0),
+                            Some(p) => format!(
+                                "h{} {args}  part {}..{}",
+                                c.handler.0,
+                                count(&p.first),
+                                count(&p.end)
+                            ),
+                        }
                     })
                     .collect();
                 self.section(3, "calls", calls);

@@ -195,6 +195,18 @@ columns (`c : c + self.C`); any other is refused by name. A loop zips two stream
 of the vars (program 7, `SwiGLU.up` and `SwiGLU.down`). The class, a handler, a constant or a
 field named by an IR word is refused by name, not renamed: the text writes those names as given.
 
+A `km.chain` method is written as a `chain` of the program, its calls in order, each
+`self.h(names..., cores=(first, count))` a `call h(names...)`: R47's form, with nothing of how
+Tensix keeps the order (R49). The chain's group is the span of its calls' cores, from the lowest
+first core to the highest end. A call over the whole span has no `@on`; any other is
+`@on(group[a:b])`, its ranks counted from the span's first core. Program 7's `forward`, `up` on
+`cores=(0, 12)` and `down` on `cores=(0, 4)`, is `call up(x, w1, w3, hidden)` and
+`call down(hidden, w2, y) @on(group[0:4])`. A parameter's type is the one the handlers give it.
+`made.chains` keeps each chain's span, (first core, count), for its entry. A call without
+`cores=`, or with cores the make does not know, a keyword other than `cores=`, an argument that is
+not a parameter of the chain (`km.past`, `km.direct`), and a line other than such a call (a loop,
+`km.all_gather`) are refused by name with the chain's line.
+
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
 its tensor's end before anything is sent; today's make checks only the ranges of `items(...)`.
@@ -210,7 +222,7 @@ it:
 |---|---|---|
 | `dsl/compile/tiles/reduce.py:907` | a reduce over a group of `size` (`island_reduce.group_slots`) | a reduce's `group=` is refused |
 | `dsl/compile/tiles/reduce.py:904` | `reduce_local=True`, every group on one island | a reduce's `reduce_local=` is refused |
-| `dsl/program.py:277` | a chain's K shared by island (`KM_CHAIN_K_ISLANDS`, `KM_CHAIN_BY_ISLAND`) | `chain=` and a class's chains are refused |
+| `dsl/program.py:277` | a chain's K shared by island (`KM_CHAIN_K_ISLANDS`, `KM_CHAIN_BY_ISLAND`) | `chain=` is refused; a class's chain is written as one group (below) |
 | `dsl/program.py:1729` | the link cores' buffer index kept from a direct input (`KM_LINK_CB`) | `direct=` is refused |
 | `dsl/program_sources.py:100` | the island table after a rectangle's grid words | `rect=`, `nocs=` and a rectangle parameter are refused |
 | `dsl/compile/handler/handler_compile.py:365`, `:369` | a rectangle's grid and place on islands (`rect_glue`) | a rectangle parameter is refused |

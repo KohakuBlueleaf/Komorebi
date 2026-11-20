@@ -54,6 +54,8 @@ class Made:
     lines: list = field(default_factory=list)
     map: list = field(default_factory=list)
     renames: list = field(default_factory=list)
+    # each chain's group as today's calls name it: name -> (first core, count)
+    chains: dict = field(default_factory=dict)
 
     @property
     def origin(self):
@@ -133,6 +135,7 @@ def written(cls, **make):
     reserved_refusals(cls, methods, constants, fields)
     text = Text()
     walks = [Handler(cls, method, tensors, constants, fields) for method in methods]
+    chains = [Chain(cls, method, constants) for method in chain_methods(cls)]
     functions = {}
     for walk in walks:
         walk.read()
@@ -173,6 +176,9 @@ def written(cls, **make):
     text.line(0, f"program {cls.__name__} {{")
     for walk in walks:
         walk.write(text)
+    for chain in chains:
+        chain.read({walk.method.name: walk for walk in walks})
+        chain.write(text)
     text.line(0, "}")
     renames = [pair for walk in walks for pair in walk.renames]
     return Made(
@@ -181,6 +187,7 @@ def written(cls, **make):
         held_lines(text),
         text.map,
         renames,
+        {chain.method.name: chain.span for chain in chains},
     )
 
 
@@ -235,14 +242,6 @@ def class_refusals(cls, methods):
         (spelling("compute_options"), bool(getattr(cls, "compute_given", None))),
         (spelling("defines"), bool(getattr(cls, "defines_given", None))),
         (spelling("startup"), getattr(cls, "startup_given", None) is not None),
-        (
-            "chains",
-            any(
-                isinstance(v, kc.ChainMethod)
-                for k in cls.__mro__
-                for v in vars(k).values()
-            ),
-        ),
     ]
     for what, given in stated:
         if given:
@@ -1177,6 +1176,157 @@ class Handler:
             for inner in reversed(range(opened)):
                 text.line(depth + inner, "}")
             text.place(first, self.file, node.lineno, node.end_lineno)
+
+
+def chain_methods(cls):
+    """The class's km.chain methods, a base's first, each name once."""
+    found = {
+        name: value
+        for owner in reversed(cls.__mro__)
+        for name, value in vars(owner).items()
+        if isinstance(value, kc.ChainMethod)
+    }
+    return list(found.values())
+
+
+class Chain:
+    """One km.chain method's walk: its calls of the class's handlers, in order, each on
+    its `cores=(first, count)`. The chain's group is the span of its calls' cores; a
+    call on less of it names its part, its ranks counted from the span's first core."""
+
+    def __init__(self, cls, method, constants):
+        self.cls, self.method, self.constants = cls, method, constants
+        definition, lines, first = source_of(method.function)
+        self.definition = definition
+        self.file = file_of(method.function)
+        self.where = Where(cls.__name__, method.name, lines, first, self.file)
+        self.params, self.calls, self.span = {}, [], (0, 0)
+
+    def refuse(self, node, why, instead):
+        refuse(self.where, node, why, instead)
+
+    def read(self, handlers):
+        """The calls, each checked against its handler's walk; the parameters' types
+        are the ones the handlers give them."""
+        arguments = self.definition.args
+        if arguments.vararg or arguments.kwarg or arguments.kwonlyargs:
+            self.refuse(self.definition, "*args and keywords", "name each parameter")
+        names = [a.arg for a in arguments.args[1:]]
+        for name in names:
+            if name in RESERVED:
+                self.refuse(
+                    self.definition,
+                    f"parameter {name} is named by an IR word",
+                    "rename it",
+                )
+        types = {}
+        for node in self.definition.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                continue  # a docstring
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+                self.refuse(
+                    node,
+                    "a chain's line other than a call of a handler is not written in "
+                    "an IR module yet",
+                    "write self.handler(args..., cores=(first, count))",
+                )
+            call = node.value
+            handler = handlers.get(self_attribute(call.func))
+            if handler is None:
+                self.refuse(
+                    node,
+                    "a call of something other than a handler of the class",
+                    f"call one of {', '.join(handlers)} as self.name(...)",
+                )
+            kinds = [
+                f"tensor<{v.format}>" if v.kind == "tensor" else v.kind
+                for v in handler.params.values()
+            ]
+            if len(call.args) != len(kinds):
+                self.refuse(
+                    node,
+                    f"{handler.method.name} takes {len(kinds)} arguments",
+                    "give each by position",
+                )
+            for arg, kind in zip(call.args, kinds, strict=True):
+                if not (isinstance(arg, ast.Name) and arg.id in names):
+                    self.refuse(
+                        node,
+                        f"`{ast.unparse(arg)}`: an argument other than a parameter of "
+                        "the chain (an earlier input, a direct input) is not written "
+                        "in an IR module yet",
+                        "pass the chain's parameter",
+                    )
+                if types.setdefault(arg.id, kind) != kind:
+                    self.refuse(
+                        node,
+                        f"{arg.id} is {types[arg.id]} to one call and {kind} to this",
+                        "give each handler the same tensor",
+                    )
+            self.calls.append((node, handler.method.name, call, self.cores(node, call)))
+        for name in names:
+            if name not in types:
+                self.refuse(
+                    self.definition,
+                    f"parameter {name} is taken by no call",
+                    "drop it",
+                )
+        self.params = {name: types[name] for name in names}
+        low = min(first for *_, (first, _) in self.calls)
+        high = max(first + count for *_, (first, count) in self.calls)
+        self.span = (low, high - low)
+
+    def cores(self, node, call):
+        """A call's `cores=(first, count)`, two ints known at the make."""
+        named = {k.arg: k.value for k in call.keywords}
+        if set(named) - {"cores"}:
+            self.refuse(
+                node,
+                f"{', '.join(sorted(set(named) - {'cores'}))}= is not written in an IR "
+                "module yet",
+                "drop it",
+            )
+        cores = named.get("cores")
+        if not (isinstance(cores, ast.Tuple) and len(cores.elts) == 2):
+            self.refuse(
+                node,
+                "a call without cores=(first, count): its cores are not known at the "
+                "make",
+                "name its cores",
+            )
+        values = []
+        for element in cores.elts:
+            if isinstance(element, ast.Constant) and type(element.value) is int:
+                values.append(element.value)
+            elif self_attribute(element) in self.constants:
+                values.append(self.constants[self_attribute(element)])
+            else:
+                self.refuse(
+                    node,
+                    f"cores {ast.unparse(cores)} are not known at the make",
+                    "write two ints or constants of the class",
+                )
+        if values[1] < 1:
+            self.refuse(node, "cores of no core", "give a count of 1 or more")
+        return tuple(values)
+
+    def write(self, text):
+        """The chain's lines into `text`, each with its place."""
+        start = text.line(1, f"chain {self.method.name}(")
+        for name, kind in self.params.items():
+            text.line(2, f"{name}: {kind},")
+        text.line(1, ") @on(group) {")
+        low, count = self.span
+        for node, handler, call, (first, cores) in self.calls:
+            args = ", ".join(arg.id for arg in call.args)
+            part = ""
+            if (first, cores) != self.span:
+                part = f" @on(group[{first - low}:{first - low + cores}])"
+            at = text.line(2, f"call {handler}({args}){part}")
+            text.place(at, self.file, node.lineno, node.end_lineno)
+        text.line(1, "}")
+        line = self.definition.lineno
+        text.place(start, self.file, line, line)
 
 
 def one_apart(lower, upper):

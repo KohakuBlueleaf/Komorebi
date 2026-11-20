@@ -659,6 +659,106 @@ fn a_sum_other_than_program_2s_is_refused_by_name() {
     assert!(after.contains("lines after its leader's store"), "{after}");
 }
 
+/// The chain's buffer is the framework's (`abi/km_chain.h`), and its page today's
+/// (`program.CHAIN_PAGE`).
+#[test]
+fn the_chains_buffer_is_the_frameworks() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let abi =
+        std::fs::read_to_string(root.join("src/komorebi_native/include/komorebi/abi/km_chain.h"))
+            .expect("km_chain.h");
+    assert!(abi.contains(&format!(
+        "enum {{ kChainBuffer = {} }};",
+        chip::CHAIN_BUFFER
+    )));
+    let program =
+        std::fs::read_to_string(root.join("src/komorebi/dsl/program.py")).expect("program.py");
+    assert!(program.contains(&format!("CHAIN_PAGE = {}  ", chip::CHAIN_PAGE)));
+}
+
+/// A chain is emitted in the walk's form; what today's walk is not ported for yet is
+/// refused by name: an earlier input, a chain on islands, a call of a reduce's tree.
+#[test]
+fn a_chain_the_walk_is_not_emitted_for_is_refused_by_name() {
+    let refused = |text: &str| {
+        let module = komorebi_ir::api::build(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let refusals = tensix::sources(&module).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    let add = std::fs::read_to_string(here().join("steps_add.kom")).expect("the .kom");
+    let chain = |calls: &str| {
+        format!(
+            "\n    chain twice(a: tensor<f32>, b: tensor<f32>, out: tensor<f32>) @on(group) {{\n\
+             {calls}    }}\n}}\n"
+        )
+    };
+    let chained = |text: &str, calls: &str| {
+        let end = text.rfind("}\n").expect("the program's end");
+        format!("{}{}", &text[..end], chain(calls))
+    };
+    // in order, the second reading what the first wrote: built, in the walk's form
+    let plain = chained(
+        &add,
+        "        call add(a, b, out, 4)\n        call add(out, b, a, 4) @on(group[0:2])\n",
+    );
+    let module = komorebi_ir::api::build(&plain).unwrap_or_else(|d| panic!("{d:?}"));
+    let files = tensix::sources(&module).unwrap_or_else(|r| panic!("{r:?}"));
+    let file = |name: &str| &files.iter().find(|(n, _)| n == name).expect(name).1;
+    assert!(file("compute.cpp").contains("km::chain_compute(compute, command, km_case);"));
+    assert!(file("stephandlers.h").contains("constexpr uint32_t kHandlerKmChain = 2;"));
+    assert!(file("stephandlers.h").contains("constexpr uint32_t kChainArea = 28;"));
+    // with no origin no line is known: the record's whole wait first, as today's when
+    // a read's line is not found (program 7 has its gates, by line)
+    let movement = file("movement.cpp");
+    assert!(
+        movement.contains(
+            "            km_chain_waited = false;\n            \
+             if (!km_chain_read(movement, ~0u, ~0u)) {"
+        ),
+        "{movement}"
+    );
+    assert!(movement.contains("return km_chain_end(movement, command);"));
+    let past = refused(&chained(
+        &add,
+        "        call add(a, b, out, 4)\n        call add(past(out), b, a, 4)\n",
+    ));
+    assert!(
+        past.contains("a chain's call with an earlier input (`past`), call 1 of `twice`"),
+        "{past}"
+    );
+    let islands = refused(&plain.replacen(
+        "format f32\n",
+        "format f32\n\nrequires {\n    islands >= 2\n}\n",
+        1,
+    ));
+    assert!(islands.contains("a chain on islands"), "{islands}");
+    let sum = std::fs::read_to_string(here().join("steps_sum.kom")).expect("the .kom");
+    let at = sum.find("handler sum(").expect("the handler");
+    let head = &sum[at..sum[at..].find('{').map(|e| at + e).expect("its body")];
+    let params: Vec<&str> = head
+        .lines()
+        .filter_map(|l| l.trim().strip_suffix(','))
+        .filter_map(|l| l.split(':').next())
+        .collect();
+    let types: Vec<&str> = head
+        .lines()
+        .filter_map(|l| l.trim().strip_suffix(','))
+        .collect();
+    let end = sum.rfind("}\n").expect("the program's end");
+    let tree = refused(&format!(
+        "{}\n    chain once({}) @on(group) {{\n        call sum({})\n    }}\n}}\n",
+        &sum[..end],
+        types.join(", "),
+        params.join(", ")
+    ));
+    assert!(
+        tree.contains("a chain's call of a handler that reduces over its group (a reduce's tree)"),
+        "{tree}"
+    );
+}
+
 #[test]
 fn a_load_sizes_a_reduces_arrivals_from_the_machines_islands() {
     use komorebi_ir::api::load::load;
