@@ -922,7 +922,9 @@ predictor off from before the first fetch until after the load, 0 of 160 runs at
 slot addresses were given up, where the unchanged kernel beside them was given up in 35
 of 80; with it off only from the cache invalidate on, 6 of 40 still were. What is not
 known: the mechanism inside the core. No stall of a processor that only follows a load
-(the NCRISC, the TRISCs) has been seen, and they are not changed.
+(the NCRISC, the TRISCs) has been seen; as a precaution against the same unknown
+mechanism, their wait for the load (`overlay_follow`) has the predictor off too, from
+before the follower parks until 33 instructions after the go or the give-up.
 
 **The rule.** A reader on Blackhole loads an overlay with the predictor off:
 `load_tile` sets `cfg0.DisBp` (CSR `0x7c0`, bit 1) before its first fetch and clears it
@@ -935,7 +937,10 @@ bit read clear on 119 of 119 cores after a run.
 every round (10.589 to 10.823 µs a round); a program that loads none pays nothing. A
 kernel that loads overlays grows by the window: 336 B and 192 B on the two programs of
 the bounds check (`experiments/language/bounds`), whose kernel buffers went up to the next
-64 B.
+64 B. The followers' window costs no measurable time (example 17 +0.03 percent a round,
+`examples/12_overlays`' calls within 0.01 percent) and 32 to 88 B a processor that
+follows a load (a TRISC or the writer, on examples 12 and 17); the bounds check's
+programs do not grow by it.
 
 ## Tile formats and the matrix unit
 

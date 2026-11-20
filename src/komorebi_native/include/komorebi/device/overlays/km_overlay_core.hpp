@@ -214,6 +214,11 @@ namespace km {
         );
         const uint32_t count = park[1] + 1;
         const uint32_t token = count << 8 | number;
+#if defined(ARCH_BLACKHOLE)
+        // as the reader's load_tile: the predictor off from before the park (the reader
+        // fetches after it) to 33 instructions after the go or the give-up
+        asm volatile("csrrsi zero, 0x7c0, 2" ::: "memory");
+#endif
         park[1] = count;
         park[0] = token;
         code = poll_stop(
@@ -224,6 +229,15 @@ namespace km {
             limit,
             0
         );
+#if defined(ARCH_BLACKHOLE)
+        asm volatile(
+            "li t1, 16\n"
+            "1:\taddi t1, t1, -1\n\t"
+            "bnez t1, 1b\n\t"
+            "csrrci zero, 0x7c0, 2" ::
+                : "t1", "memory"
+        );
+#endif
         if (code != kGaveNone) {
             where = kWhereOverlayMeet;
             return kOverlaySlotsMax;
