@@ -784,9 +784,9 @@ class Handler:
 
     def block_text(self, node, call):
         """A stream's block as the text writes it (`block_of`); of a rectangle of one
-        column, `[n, 1]`: n rows of one tile (a block is a matrix of tiles, R45); of a
-        rectangle of C columns, more than one row, a block `A * C` declared (`W_BLOCK
-        = CHUNK * WIDTH`) is `[A, C]`."""
+        column, `[n, 1]`: n rows of one tile (a block is a matrix of tiles, R45); of
+        several rows of C columns, A * C tiles (A above 1) are `[A, C]`, and a block
+        that divides C stays its number, a row walked after another (`rows_of`)."""
         text, _ = self.block_of(node, call)
         view = call.args[0]
         if self.rectangle_of(view) is None or self.one_row(view):
@@ -794,44 +794,75 @@ class Handler:
         if self.column(view):
             return f"[{text}, 1]"
         rows = self.rows_of(node, call)
-        return f"[{quoted(rows[0])}, {quoted(rows[1])}]"
+        return text if rows is None else f"[{rows[0]}, {rows[1]}]"
 
     def one_row(self, view):
-        """Whether a rectangle is one row of tiles: `r : r + 1`, or two numbers one
-        apart."""
+        """Whether a rectangle is one row of tiles: `r : r + 1`, `r + k : r + k + 1`,
+        or two numbers one apart."""
         return one_apart(*self.rectangle_of(view)[0])
 
     def rows_of(self, node, call):
-        """A block over a rectangle of C columns (not one row, not one column): its
-        declaration `A * C`, C the columns' constant (`c : c + self.C`), as (A, C)
-        texts; any other is refused by name."""
-        lower, upper = self.rectangle_of(call.args[0])[1]
-        keywords = {k.arg: k.value for k in call.keywords}
-        block = self_attribute(keywords.get(spelling("block")))
-        declared = front.constants_of(self.cls).get(block)
-        columns = (
-            self_attribute(upper.right)
-            if isinstance(upper, ast.BinOp)
-            and isinstance(upper.op, ast.Add)
-            and ast.dump(upper.left) == ast.dump(lower)
-            else None
-        )
-        named = {id(c): n for n, c in front.constants_of(self.cls).items()}
-        if (
-            isinstance(declared, front.Derived)
-            and declared.op is operator.mul
-            and columns is not None
-            and named.get(id(declared.right)) == columns
-            and named.get(id(declared.left)) in self.constants
-        ):
-            return named[id(declared.left)], columns
+        """A block of B tiles over a rectangle of C columns (not one row, not one
+        column), both known at the make: `[A, C]` texts when B is A * C, A above 1
+        (A as the block's declaration `A * C` names it, else its number); None when B
+        divides C, the block then within a row; any other is refused by name."""
+        text, tiles = self.block_of(node, call)
+        columns = self.side(*self.rectangle_of(call.args[0])[1])
+        if columns is not None and tiles % columns[1] == 0 and tiles > columns[1]:
+            keywords = {k.arg: k.value for k in call.keywords}
+            declared = front.constants_of(self.cls).get(
+                self_attribute(keywords.get(spelling("block")))
+            )
+            named = {id(c): n for n, c in front.constants_of(self.cls).items()}
+            rows = str(tiles // columns[1])
+            if isinstance(declared, front.Derived) and declared.op is operator.mul:
+                sides = [declared.left, declared.right]
+                for first, other in (sides, sides[::-1]):
+                    side = named.get(id(other), other)
+                    if quoted(side) == columns[0] or str(side) == columns[0]:
+                        rows = quoted(named[id(first)]) if id(first) in named else rows
+                        break
+            return rows, columns[0]
+        if columns is not None and columns[1] % tiles == 0:
+            return None
         self.refuse(
             node,
-            "a stream's block over a rectangle of several rows and columns that is not "
-            "a constant declared A * C, C the rectangle's columns (`c : c + self.C`)",
-            "declare the block W_BLOCK = ROWS * C and stream t.tiles[r0:r1, c:c + "
-            "self.C]",
+            "a stream's block over a rectangle of several rows and columns that is "
+            "neither a whole number of its rows nor a part of one, or of columns not "
+            "known at the make",
+            "stream blocks of A * C tiles or of a divisor of C, C the rectangle's "
+            "columns",
         )
+
+    def known(self, text):
+        """The value of a block side's text: a number, or a constant of the class."""
+        return int(text) if text.isdigit() else self.constants[text.strip("`")]
+
+    def side(self, lower, upper):
+        """A rectangle side `lower : upper` as (text, tiles) when the make knows its
+        length: two numbers, `0 : n` or `a : a + n` with n a number, a module's int or
+        a constant of the class; else None."""
+        if isinstance(lower, ast.Constant) and isinstance(upper, ast.Constant):
+            return str(upper.value - lower.value), upper.value - lower.value
+        if isinstance(lower, ast.Constant) and lower.value == 0:
+            length = upper
+        elif (
+            isinstance(upper, ast.BinOp)
+            and isinstance(upper.op, ast.Add)
+            and ast.dump(upper.left) == ast.dump(lower)
+        ):
+            length = upper.right
+        else:
+            return None
+        if isinstance(length, ast.Constant) and type(length.value) is int:
+            return str(length.value), length.value
+        if isinstance(length, ast.Name) and length.id not in self.scope:
+            known = self.globals.get(length.id)
+            if type(known) is int and known > 0:
+                return str(known), known
+        if self_attribute(length) in self.constants:
+            return quoted(length.attr), self.constants[length.attr]
+        return None
 
     def column(self, view):
         """Whether a rectangle is one column of tiles: `c : c + 1`, or two numbers one
@@ -944,8 +975,7 @@ class Handler:
             elif shaped.startswith("["):  # [A, C]: A rows of C tiles
                 rows, cols = shaped[1:-1].split(", ")
                 value.cols, value.block = cols, rows
-                value.tiles = self.constants[cols.strip("`")]
-                value.rows = self.constants[rows.strip("`")]
+                value.tiles, value.rows = self.known(cols), self.known(rows)
             self.scope[name.id] = value
         children = self.body(node.body)
         return (node, lines, children)
@@ -1309,16 +1339,26 @@ class Chain:
 
 
 def one_apart(lower, upper):
-    """Whether a side `lower : upper` is one tile: `a : a + 1`, or two numbers one
-    apart."""
+    """Whether a side `lower : upper` is one tile: `a : a + 1`, `a + k : a + k + 1`,
+    or two numbers one apart."""
     if isinstance(lower, ast.Constant) and isinstance(upper, ast.Constant):
         return upper.value == lower.value + 1
-    return (
+    if (
         isinstance(upper, ast.BinOp)
         and isinstance(upper.op, ast.Add)
         and ast.dump(upper.left) == ast.dump(lower)
         and isinstance(upper.right, ast.Constant)
         and upper.right.value == 1
+    ):
+        return True
+    return (
+        all(
+            isinstance(s, ast.BinOp) and isinstance(s.op, ast.Add)
+            for s in (lower, upper)
+        )
+        and ast.dump(upper.left) == ast.dump(lower.left)
+        and all(isinstance(s.right, ast.Constant) for s in (lower, upper))
+        and upper.right.value == lower.right.value + 1
     )
 
 

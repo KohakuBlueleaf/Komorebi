@@ -357,6 +357,37 @@ def test_a_streams_block_of_a_modules_int_is_its_number(tmp_path, monkeypatch):
     assert ours.sources() == today.sources()
 
 
+class InRow(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, r: int, k: float):
+        out = km.Stream(y.tiles[r : r + 4, 0:8], write=True, block=4)
+        for xb in km.Stream(x.tiles[r : r + 4, 0:8], block=4):
+            out.push(times(xb, k))
+
+
+class RowAfter(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, r: int, k: float):
+        out = km.Stream(y.tiles[r + 1 : r + 2, 0:8], write=True, block=8)
+        for xb in km.Stream(x.tiles[r + 1 : r + 2, 0:8], block=8):
+            out.push(times(xb, k))
+
+
+@pytest.mark.parametrize(
+    "cls, line",
+    [
+        # 4 tiles a block over 8 columns: within a row, a row walked after another
+        (InRow, "for xb in stream(x.tiles[r:r + 4, 0:8], block = 4) {"),
+        # `r + 1 : r + 2` is one row of tiles
+        (RowAfter, "for xb in stream(x.tiles[r + 1:r + 2, 0:8], block = 8) {"),
+    ],
+)
+def test_a_block_within_a_row_of_a_rectangle_is_its_number(cls, line):
+    m = made(cls)
+    assert line in m.text
+    assert ir.check(m.text, m.origin) == []
+
+
 @pytest.mark.parametrize("operands", [2, 3])
 def test_a_call_batched_only_when_more_than_one_fits_the_dst_half_is_todays(
     tmp_path, monkeypatch, operands
@@ -751,13 +782,35 @@ def test_program_7s_handlers_built_through_the_ir_are_todays(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize(
+    "block, written",
+    [
+        ("WIDTH * CHUNK", "[CHUNK, WIDTH]"),
+        ("2 * WIDTH", "[2, WIDTH]"),
+        ("km.constant(16)", "[2, WIDTH]"),
+    ],
+)
+def test_program_7s_block_of_whole_rows_is_its_rows_by_its_columns(
+    tmp_path, monkeypatch, block, written
+):
+    # W_BLOCK = 16 tiles over WIDTH = 8 columns: two whole rows, however declared
+    p7 = swiglu_named(
+        tmp_path, monkeypatch, ("W_BLOCK = CHUNK * WIDTH", f"W_BLOCK = {block}")
+    )
+    given = p7.made_with()
+    m = module(p7.SwiGLU, l1=1 << 20, **given)
+    assert m.text.count(f"block = {written}") == 3
+    assert_todays(p7, given)
+
+
+@pytest.mark.parametrize(
     "old, new, why",
     [
-        # a block over the rectangle other than A * C
+        # a block over the rectangle neither of whole rows (A * C) nor within a row
         (
             "W_BLOCK = CHUNK * WIDTH",
-            "W_BLOCK = WIDTH * CHUNK",
-            "a stream's block over a rectangle of several rows and columns",
+            "W_BLOCK = CHUNK * WIDTH + CHUNK",
+            "a stream's block over a rectangle of several rows and columns that is "
+            "neither",
         ),
         # self.out filled by one handler and read by down: today keeps it between
         # commands (`kept_field`), a state member

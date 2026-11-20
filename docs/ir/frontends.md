@@ -195,9 +195,11 @@ A field (`self.out: km.L1[km.fp32, 1, WIDTH, 32, 32]`) is placed by today's own 
 handler's `var` of a block of one row from `zeros`, named as the field (`self.out` is `out`,
 renamed back in the origin), its tiles the field's columns. A field today keeps (filled by one
 handler and read by another) is a state member, which the IR module does not write yet, and is
-refused by name, as is a field with a value. A stream's block over a rectangle of several rows
-and columns is written `[A, C]` from its declaration `W_BLOCK = A * C`, C the rectangle's
-columns (`c : c + self.C`); any other is refused by name. A loop zips two streams or more, and
+refused by name, as is a field with a value. A stream's block of B tiles over a rectangle of several rows
+and C columns, both known at the make, is written `[A, C]` when B is A * C, A above 1 (A as its
+declaration names it, `W_BLOCK = CHUNK * WIDTH` is `[CHUNK, WIDTH]`, else its number), and as B
+when B divides C, the rectangle then walked a row after another; any other is refused by name.
+A side `r + k : r + k + 1` is one row, as `r : r + 1` is. A loop zips two streams or more, and
 `t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of fields, stores `f(h, g)`
 of the vars (program 7, `SwiGLU.up` and `SwiGLU.down`). A name is the name the class gives it
 (R50): the class, a handler, a constant, a field, a parameter, a local or a tile function named
