@@ -1128,15 +1128,15 @@ class Handler:
             self.refuse(
                 node,
                 "a word that is not an int parameter or value, a number, the rank, "
-                "a constant of the class, + - * // or %",
+                "the group's size, a constant of the class, + - * // or %",
                 "write it of those",
             )
         return text
 
     def int_text(self, expression):
         """The text of an int expression of int parameters and values, numbers (a
-        module's int constant as its number), `self.rank`, a class's constant (its
-        module parameter), + - * // %; else None."""
+        module's int constant as its number), `self.rank`, `self.size`, a class's
+        constant (its module parameter), + - * // %; else None."""
         if isinstance(expression, ast.Name) and self.kind(expression.id) == "u32":
             return self.name(expression.id)
         if isinstance(expression, ast.Name) and expression.id not in self.scope:
@@ -1152,6 +1152,8 @@ class Handler:
             and expression.attr == spelling("rank")
         ):
             return "worker.rank"
+        if self_attribute(expression) == spelling("size"):
+            return "group.size"
         if self_attribute(expression) in self.constants:
             return quoted(expression.attr)
         operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}

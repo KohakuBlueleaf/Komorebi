@@ -100,7 +100,8 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
 (`StepHandlers.sum`), 3 (`StepHandlers.add`), 4 (`Gate.gate`) and 5 (`Movement.read` and
 `Movement.copy`):
 - an int value (`first = self.rank * TILES`): int parameters and values, numbers, a module's int
-  constant as its number, `self.rank`, `+ - *`, written `let first = worker.rank * 64`;
+  constant as its number, `self.rank`, `self.size` (`group.size`), `+ - * // %`, written
+  `let first = worker.rank * 64`;
 - a partition of a tensor's pages;
 - a write stream and a read loop, each over a partition or over `t.pages(first, count)`, written
   `t.tiles(first, count)`. A view may be named first (`pages = source.pages(a, b)`, written

@@ -357,6 +357,22 @@ def test_a_streams_block_of_a_modules_int_is_its_number(tmp_path, monkeypatch):
     assert ours.sources() == today.sources()
 
 
+def test_the_groups_size_is_a_word(tmp_path, monkeypatch):
+    # program 4 with each core's first page of the group's size: `group.size`
+    source = (ROOT / "tests" / "ir" / "tensix" / "gate_class.py").read_text()
+    old = "        first = self.rank * tiles\n"
+    assert old in source
+    new = "        first = (self.rank + self.size - self.size) * tiles\n"
+    (tmp_path / "gate_class.py").write_text(source.replace(old, new))
+    gate = gate_script(tmp_path, monkeypatch, folder_copy=False)
+    given = gate.made_with()
+    m = module(gate.Gate, **given)
+    assert "let first = ((worker.rank + group.size) - group.size) * tiles" in m.text
+    today = gate.Gate(log=lambda line: None, **given)
+    ours = program(gate.Gate, log=lambda line: None, **given)
+    assert ours.sources() == today.sources()
+
+
 class InRow(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, r: int, k: float):
