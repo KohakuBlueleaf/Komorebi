@@ -263,6 +263,9 @@ pub(crate) struct Compiler<'k> {
     templates: Vec<(String, String)>,
     /// The tile products: register operands as loads are.
     products: Vec<NodeId>,
+    /// The row form's reduction and per-row value, read as register operands as its
+    /// row loads and resident rows are (today's `leaf_of` of `row_program`).
+    row: Option<(NodeId, NodeId)>,
 }
 
 impl<'k> Compiler<'k> {
@@ -280,7 +283,21 @@ impl<'k> Compiler<'k> {
             count: 0,
             templates: Vec::new(),
             products,
+            row: None,
         }
+    }
+
+    /// A compiler of the row form's chains of `ir`: the forms of its nodes `shapes`
+    /// (the row form's), its reduction `red` and per-row value `stat` read as operands.
+    pub(crate) fn rows(
+        ir: &'k KernelIR,
+        shapes: Vec<Option<&'static str>>,
+        red: NodeId,
+        stat: NodeId,
+    ) -> Compiler<'k> {
+        let mut made = Compiler::new(ir, shapes, Vec::new());
+        made.row = Some((red, stat));
+        made
     }
 
     /// The templates chosen so far, in order.
@@ -440,7 +457,16 @@ impl Build {
             .arena
             .get(node.0)
             .map_or("", |n| n.kind.as_str());
-        let read = if compiler.products.contains(&node) {
+        let row_view = || {
+            compiler.ir.arena.get(node.0).is_some_and(|n| {
+                n.attrs
+                    .iter()
+                    .any(|(k, v)| k == "view" && matches!(v, Attr::View(v) if v.kind == "row"))
+            })
+        };
+        let read = if let Some((red, stat)) = compiler.row {
+            ["load", "resident"].contains(&kind) && row_view() || node == red || node == stat
+        } else if compiler.products.contains(&node) {
             how == "copy"
         } else {
             kind == "load" && ["copy", "bcast_col", "bcast_row"].contains(&how)
@@ -504,7 +530,8 @@ impl Build {
             Some((_, count)) => *count += 1,
             None => self.ops.push((k.to_string(), 1)),
         }
-        if k == "load" || compiler.products.contains(&node) {
+        let row_leaf = compiler.row.is_some() && ["resident", "reduce"].contains(&k);
+        if k == "load" || row_leaf || compiler.products.contains(&node) {
             return self.leaf(compiler, node, how);
         }
         let attr = |name: &str| {
@@ -536,6 +563,14 @@ impl Build {
                     return Err(ChainError::NotPorted(format!("the node {k} of no operand")));
                 };
                 let spread = if k == "row" { "bcast_row" } else { "bcast_col" };
+                // a per-row value (the row form's) is read as an operand
+                let ir = compiler.ir;
+                if k == "col"
+                    && compiler.row.is_some()
+                    && shape(ir, a, &mut compiler.shapes)? == "col"
+                {
+                    return self.leaf(compiler, a, spread);
+                }
                 return self.build(compiler, a, spread);
             }
             "resident" | "reduce" | "acc" | "size" | "cast" | "all" | "slice" | "cat" | "even"

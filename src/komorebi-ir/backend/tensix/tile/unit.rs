@@ -600,6 +600,9 @@ pub struct Insn {
     pub runtime: String,
     /// Wormhole's words in its place where it runs this one otherwise.
     pub wormhole: Vec<Insn>,
+    /// A mark the passes keep (0: none): the row form follows a group of words through
+    /// the passes by it, as today follows the words themselves.
+    pub mark: usize,
 }
 
 impl Insn {
@@ -634,6 +637,7 @@ impl Insn {
             uses: Vec::new(),
             runtime: String::new(),
             wormhole: Vec::new(),
+            mark: 0,
         })
     }
 

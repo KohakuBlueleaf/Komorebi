@@ -4,7 +4,8 @@
 //! vector-unit function (`chain`, `vector`), its unit program (`lower`, `macro`,
 //! `schedule`) with its hazard checks (`checks`), the matrix unit's words of a tile
 //! product (`matrix`), the unit program's data (`unit`), Wormhole's forms of its words
-//! (`wormhole`) and its header (`emit`). What is not ported yet is refused by name.
+//! (`wormhole`) and its header (`emit`); the row form's unit program (`rows`). What is
+//! not ported yet is refused by name.
 
 pub mod chain;
 pub mod checks;
@@ -14,6 +15,7 @@ pub mod lower;
 pub mod r#macro;
 pub mod matrix;
 pub mod py;
+pub mod rows;
 pub mod schedule;
 pub mod unit;
 pub mod vector;

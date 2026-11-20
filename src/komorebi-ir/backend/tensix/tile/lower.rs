@@ -85,7 +85,7 @@ pub const NOT_CHECKED: [&str; 8] = [
     "src-banks: an unpack of more faces than Src has banks (2) waits for a release",
 ];
 
-fn plan_error(message: String) -> ChainError {
+pub(crate) fn plan_error(message: String) -> ChainError {
     ChainError::Plan(message, None)
 }
 
@@ -108,7 +108,7 @@ fn listed(values: &[i64]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-fn insn(op: &str, args: &[(&str, i64)], note: &str) -> Result<Insn, UnitError> {
+pub(crate) fn insn(op: &str, args: &[(&str, i64)], note: &str) -> Result<Insn, UnitError> {
     let args: Vec<(&str, Arg)> = args.iter().map(|(n, v)| (*n, Arg::Num(*v))).collect();
     Insn::new(op, &args, note)
 }
@@ -130,6 +130,34 @@ pub struct Body {
     bits: Vec<(i64, String)>,
     /// The per-row form's operand reads, when it is the per-row form.
     rows: Option<Rows>,
+    /// The row form's operand reads, while a phase reads a function's operands.
+    pub(crate) reads: Option<Reads>,
+}
+
+/// How the row form's phases read a function's operands (today's `source`): every
+/// operand one value (`all`), or by its kind (`kinds`, `copy` past its end): a row's
+/// vector loaded once at `address`, a per-row slot loaded once a half (`slot`: its
+/// group, address and note), a per-column vector loaded once a vector column.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Reads {
+    /// The value every operand is.
+    pub all: Option<Arg>,
+    /// Each operand's kind.
+    pub kinds: Vec<&'static str>,
+    /// The row's vector read, and its note.
+    pub address: i64,
+    /// Its note.
+    pub note: String,
+    /// The row's vectors loaded, by operand.
+    pub loaded: Vec<(usize, Arg)>,
+    /// The per-row slot read: (its group q, its address, its note).
+    pub slot: (i64, i64, String),
+    /// The per-row slots loaded, by group.
+    pub slots: Vec<(i64, Arg)>,
+    /// The per-column vector read: its address and note.
+    pub column_at: (i64, String),
+    /// The per-column vector loaded.
+    pub column: Option<Arg>,
 }
 
 /// The per-row form's operand reads: a per-row operand loaded once and held, the
@@ -150,7 +178,12 @@ impl Body {
     /// Appends `name`; a written register argument left out gets a new value, any
     /// other field 0 (a new value is counted for every written field, given or not,
     /// as today's `setdefault` counts it). Returns the value written.
-    fn op(&mut self, op: &str, note: &str, args: &[(&str, Arg)]) -> Result<Arg, ChainError> {
+    pub(crate) fn op(
+        &mut self,
+        op: &str,
+        note: &str,
+        args: &[(&str, Arg)],
+    ) -> Result<Arg, ChainError> {
         self.word(op, note, args)?
             .ok_or_else(|| ChainError::Unit(format!("{op} writes no value")))
     }
@@ -218,7 +251,7 @@ impl Body {
 
     /// ±(a b) ± c, rounded once, into `into` or a new value.
     #[allow(clippy::too_many_arguments)]
-    fn mad_of(
+    pub(crate) fn mad_of(
         &mut self,
         a: Arg,
         b: Arg,
@@ -256,7 +289,7 @@ impl Body {
         self.word("SFPENCC", "every lane on", &args).map(|_| ())
     }
 
-    fn load(&mut self, address: i64, note: &str) -> Result<Arg, ChainError> {
+    pub(crate) fn load(&mut self, address: i64, note: &str) -> Result<Arg, ChainError> {
         let note = if note.is_empty() {
             format!("Dst + {address}")
         } else {
@@ -272,6 +305,51 @@ impl Body {
                 ("dest_reg_addr", Arg::Num(address)),
             ],
         )
+    }
+
+    /// Operand `k` as the row form's phase reads it, or none outside a phase.
+    fn read(&mut self, k: usize) -> Result<Option<Arg>, ChainError> {
+        let Some(r) = &self.reads else {
+            return Ok(None);
+        };
+        if let Some(v) = &r.all {
+            return Ok(Some(v.clone()));
+        }
+        match r.kinds.get(k).copied().unwrap_or("copy") {
+            "bcast_col" => {
+                let (q, address, note) = r.slot.clone();
+                if let Some((_, v)) = r.slots.iter().find(|(g, _)| *g == q) {
+                    return Ok(Some(v.clone()));
+                }
+                let v = self.load(address, &note)?;
+                if let Some(r) = &mut self.reads {
+                    r.slots.push((q, v.clone()));
+                }
+                Ok(Some(v))
+            }
+            "bcast_row" => {
+                if let Some(v) = &r.column {
+                    return Ok(Some(v.clone()));
+                }
+                let (address, note) = r.column_at.clone();
+                let v = self.load(address, &note)?;
+                if let Some(r) = &mut self.reads {
+                    r.column = Some(v.clone());
+                }
+                Ok(Some(v))
+            }
+            _ => {
+                if let Some((_, v)) = r.loaded.iter().find(|(i, _)| *i == k) {
+                    return Ok(Some(v.clone()));
+                }
+                let (address, note) = (r.address, r.note.clone());
+                let v = self.load(address, &note)?;
+                if let Some(r) = &mut self.reads {
+                    r.loaded.push((k, v.clone()));
+                }
+                Ok(Some(v))
+            }
+        }
     }
 
     /// Operand `k` as the per-row form reads it, or none outside that form.
@@ -301,7 +379,7 @@ impl Body {
         Ok(Some(v))
     }
 
-    fn store(&mut self, value: Arg, address: i64, note: &str) -> Result<(), ChainError> {
+    pub(crate) fn store(&mut self, value: Arg, address: i64, note: &str) -> Result<(), ChainError> {
         let args = [
             ("lreg_ind", value),
             ("instr_mod0", Arg::Num(self.mode)),
@@ -373,7 +451,7 @@ impl Body {
         self.op("SFPMUL", note, &args)
     }
 
-    fn add(&mut self, a: Arg, b: Arg, note: &str) -> Result<Arg, ChainError> {
+    pub(crate) fn add(&mut self, a: Arg, b: Arg, note: &str) -> Result<Arg, ChainError> {
         let args = [
             ("lreg_src_a", name("one")),
             ("lreg_src_b", a),
@@ -793,12 +871,12 @@ fn sigmoid(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
 }
 
 /// The larger of x and y in every lane: one SFPSWAP on copies.
-fn maximum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
+pub(crate) fn maximum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
     Ok(swapped(b, x, y, "max")?.0)
 }
 
 /// The smaller of x and y in every lane: the other result of maximum's swap.
-fn minimum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
+pub(crate) fn minimum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
     Ok(swapped(b, x, y, "min")?.1)
 }
 
@@ -901,7 +979,12 @@ fn when(
 
 /// The value of vector node `id` (an operand, a constant, an operation), each node
 /// once (`done`); operand k is a load of Dst tile k.
-fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<Arg, ChainError> {
+pub(crate) fn value(
+    b: &mut Body,
+    vs: &Vs,
+    id: VId,
+    done: &mut Vec<(VId, Arg)>,
+) -> Result<Arg, ChainError> {
     if let Some((_, v)) = done.iter().find(|(k, _)| *k == id) {
         return Ok(v.clone());
     }
@@ -913,6 +996,10 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
     };
     let out = match (node.kind, &node.value) {
         ("operand", VValue::Operand(index, part)) => {
+            if let Some(v) = b.read(*index)? {
+                done.push((id, v.clone()));
+                return Ok(v);
+            }
             if let Some(v) = b.row_operand(*index)? {
                 done.push((id, v.clone()));
                 return Ok(v);
@@ -2214,14 +2301,14 @@ fn dst_base(index: &str) -> Call {
     }
 }
 
-fn call(text: &str, note: &str) -> Item {
+pub(crate) fn call(text: &str, note: &str) -> Item {
     Item::Call(Call {
         text: text.into(),
         note: note.into(),
     })
 }
 
-fn sync(cpu: &str, other: &str, text: &str, note: &str) -> Item {
+pub(crate) fn sync(cpu: &str, other: &str, text: &str, note: &str) -> Item {
     Item::Sync(Sync {
         cpu: cpu.into(),
         other: other.into(),
@@ -2230,7 +2317,7 @@ fn sync(cpu: &str, other: &str, text: &str, note: &str) -> Item {
     })
 }
 
-fn pass(kind: &str, name: &str, done: Vec<String>) -> Pass {
+pub(crate) fn pass(kind: &str, name: &str, done: Vec<String>) -> Pass {
     Pass {
         kind: kind.into(),
         name: name.into(),
@@ -2238,7 +2325,7 @@ fn pass(kind: &str, name: &str, done: Vec<String>) -> Pass {
     }
 }
 
-fn items(code: Vec<Insn>) -> Vec<Item> {
+pub(crate) fn items(code: Vec<Insn>) -> Vec<Item> {
     code.into_iter().map(Item::Insn).collect()
 }
 

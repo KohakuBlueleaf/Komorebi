@@ -256,8 +256,35 @@ fn row_of(tile: &mut [Item]) -> Option<&mut Vec<Item>> {
 /// row loop) not yet replayed (today's `_checks`): each records its verdict, a repair
 /// changes the code, a refusal is an error.
 pub fn hazard_checks(unit: &mut UnitProgram) -> Result<(), UnitError> {
-    let row = row_of(&mut unit.tile[1])
-        .ok_or_else(|| UnitError(format!("{}: no per-row loop", unit.name)))?;
+    if row_of(&mut unit.tile[1]).is_none() {
+        return Err(UnitError(format!("{}: no per-row loop", unit.name)));
+    }
+    checks_of(unit, None)
+}
+
+/// The hazard checks of `unit`'s math program with `code` as its row code (today's
+/// `_checks(unit, code)`, as the row form calls it): the repairs go into `code`, which
+/// the math program holds a copy of.
+pub fn hazard_checks_on(unit: &mut UnitProgram, code: &mut Vec<Item>) -> Result<(), UnitError> {
+    checks_of(unit, Some(code))
+}
+
+/// The row code the checks read: `code`, else the face loop's row loop.
+fn row_in<'a>(
+    unit: &'a mut UnitProgram,
+    code: &'a mut Option<&mut Vec<Item>>,
+) -> Option<&'a mut Vec<Item>> {
+    match code {
+        Some(c) => Some(&mut **c),
+        None => row_of(&mut unit.tile[1]),
+    }
+}
+
+/// `hazard_checks`, on the row code `code` or the face loop's.
+fn checks_of(unit: &mut UnitProgram, mut code: Option<&mut Vec<Item>>) -> Result<(), UnitError> {
+    let name = unit.name.clone();
+    let row =
+        row_in(unit, &mut code).ok_or_else(|| UnitError(format!("{name}: no per-row loop")))?;
     let n = check_mad_readers(row)?;
     let mad = check(
         "mad-reader",
@@ -266,7 +293,7 @@ pub fn hazard_checks(unit: &mut UnitProgram) -> Result<(), UnitError> {
     );
     unit.checks.push(mad);
     let mut n = check_config_nop(&mut unit.init[1])?;
-    if let Some(row) = row_of(&mut unit.tile[1]) {
+    if let Some(row) = row_in(unit, &mut code) {
         n += check_config_nop(row)?;
     }
     let config = check(
@@ -312,7 +339,7 @@ pub fn hazard_checks(unit: &mut UnitProgram) -> Result<(), UnitError> {
         ),
     ));
     let mut depth = 0;
-    if let Some(row) = row_of(&mut unit.tile[1]) {
+    if let Some(row) = row_in(unit, &mut code) {
         for x in insns(row) {
             if x.sets_flags() {
                 depth = if x.op.name == "SFPENCC" { 0 } else { depth + 1 };
