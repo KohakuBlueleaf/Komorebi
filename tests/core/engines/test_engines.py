@@ -10,7 +10,7 @@ from komorebi import abi
 from komorebi.engines import graph as graph_module
 from komorebi.engines import stream as stream_module
 from komorebi.engines.control import codes, offsets
-from komorebi.errors import EngineError, EngineRejected, EngineTimeout
+from komorebi.errors import EngineError, EngineRejected, EngineTimeout, StopTimeout
 from komorebi.session.run import Run
 
 CONSTANTS = codes()
@@ -302,9 +302,12 @@ def test_stop_raises_the_timeout_of_an_unanswered_cancel_and_still_closes():
     run, port = make_run()
     engine = run.start(run.upload(looping_stream()))
     port.deaf = True
-    with pytest.raises(EngineTimeout) as raised:
+    with pytest.raises(
+        StopTimeout, match=r"of its 0\.05 s in the engines' stop"
+    ) as raised:
         run.stop(timeout=0.05)
-    assert raised.value.handle is engine and run.stopped
+    assert isinstance(raised.value.__cause__, EngineTimeout)
+    assert raised.value.__cause__.handle is engine and run.stopped
     assert run.backend.calls == ["abort", "read_back"] and not port.exited
 
 

@@ -31,6 +31,7 @@ from komorebi.errors import (
     ProgramError,
     SlowCodeError,
     StartError,
+    StopTimeout,
     ThreadFailed,
     WaitTimeout,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "Session",
     "SlowCodeError",
     "StartError",
+    "StopTimeout",
     "ThreadFailed",
     "WaitTimeout",
 ]

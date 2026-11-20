@@ -12,6 +12,7 @@ from komorebi.errors import (
     CommandTimeout,
     KernelFailed,
     KomorebiError,
+    StopTimeout,
     WaitTimeout,
 )
 from komorebi.program.description import Program
@@ -469,16 +470,65 @@ class SlowBackend(FakeBackend):
         return super().finish(timeout)
 
 
-def test_stop_ends_within_its_timeout_when_every_part_is_slow(monkeypatch):
+class FullRing(SlowPort):
+    """A SlowPort whose ring takes nothing after the EXIT: the STOP is never stored."""
+
+    def room(self):
+        exit_in = any(row[3] == CONSTANTS["KM_HANDLER_EXIT"] for row in self.submitted)
+        return 0 if exit_in else super().room()
+
+
+def slow_clock(monkeypatch):
     clock = Clock(tick=0.001)  # the host's load cannot move a step past the deadline
     for module in (run_stop, run_events, fake_port):
         monkeypatch.setattr(module, "time", clock)
-    port = SlowPort(delay=0.06, clock=clock)  # drain, EXIT and finish: 0.18 s in all
-    run = Run(SlowBackend(port), GRID)
+    return clock
+
+
+@pytest.mark.parametrize(
+    "timeout, step, pending",
+    [  # each command (EXIT too) and the finish take 0.06 s: drain, EXIT, finish
+        (0.03, "the drain", "command(s) [1] without their event"),
+        (0.09, "the EXIT", "command(s) [2] without their event"),
+        (0.14, "the finish", "the kernel's result block not ready"),
+    ],
+)
+def test_a_stop_that_runs_out_names_its_timeout_and_the_step(
+    monkeypatch, timeout, step, pending
+):
+    clock = slow_clock(monkeypatch)
+    run = Run(SlowBackend(SlowPort(delay=0.06, clock=clock)), GRID)
     run.submit(1, (0, 2))
-    with pytest.raises(KernelFailed, match="never became ready"):
-        run.stop(timeout=0.14)
-    assert clock.now <= 0.14 and run.stopped
+    with pytest.raises(StopTimeout) as caught:
+        run.stop(timeout=timeout)
+    said = f"the stop ran out of its {timeout} s in {step} after "
+    assert str(caught.value).startswith(said) and f"({pending})" in str(caught.value)
+    assert caught.value.step == step and caught.value.timeout == timeout
+    assert caught.value.spent <= timeout + 0.002 and clock.now <= timeout + 0.002
+    assert run.stopped and isinstance(caught.value, WaitTimeout)
+    assert (caught.value.result is not None) == (step == "the finish")
+
+
+def test_a_stop_whose_stop_command_is_never_stored_names_that_step(monkeypatch):
+    clock = slow_clock(monkeypatch)
+    run = Run(SlowBackend(FullRing(delay=0.06, clock=clock)), GRID)
+    run.submit(1, (0, 2))
+    with pytest.raises(StopTimeout) as caught:
+        run.stop(timeout=0.5)
+    said = "the stop ran out of its 0.5 s in the STOP's store after "
+    assert str(caught.value).startswith(said)
+    assert "(the STOP (command 3) not stored)" in str(caught.value)
+    assert caught.value.pending == [3] and 0.5 <= clock.now <= 0.502 and run.stopped
+
+
+def test_a_stop_with_no_time_left_still_tries_each_step_once():
+    run, port, _ = make_run()  # every command completes at the first poll
+    run.wait(run.submit(1, (0, 2)))
+    run.submit(1, (2, 2))
+    result = run.stop(timeout=0.0)
+    assert result["state"] == CONSTANTS["KMD_STATE_DONE"] and run.stopped
+    exits = [row for row in port.submitted if row[3] == CONSTANTS["KM_HANDLER_EXIT"]]
+    assert len(exits) == 1
 
 
 class CardThread:

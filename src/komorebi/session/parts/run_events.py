@@ -489,17 +489,19 @@ class EventsMixin:
             self._hand()
             deadline = time.monotonic() + timeout
             pending = wanted[~self._arrived(wanted)]
+            stepped = False  # one native round at least, also with no time left
             while pending.size:
                 self._check_alive()
                 left = deadline - time.monotonic()
-                if left <= 0:
+                if left <= 0 and stepped:
                     raise WaitTimeout(
                         f"{pending.size} of {wanted.size} handles not done in "
                         f"{timeout} s (first {int(pending[0])}; "
                         f"{self.port.queued} not stored); {self._kernel_report()}",
                         pending.tolist(),
                     )
-                self._step(pending, int(pending[-1]), left)
+                self._step(pending, int(pending[-1]), max(left, 0.0))
+                stepped = True
                 pending = pending[~self._arrived(pending)]
             if self._rejected:
                 for handle in sorted(self._rejected):

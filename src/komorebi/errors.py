@@ -211,6 +211,17 @@ class WaitTimeout(KomorebiError):
         self.pending = list(pending)
 
 
+class StopTimeout(WaitTimeout):
+    """A run's stop ran out of its own `timeout` in `step` (the drain, the EXIT, the
+    STOP's store, the finish, or the engines' stop) after `spent` seconds; the run is
+    stopped (aborted if the finish was not reached). `result`: the finish's result
+    block, or None before it."""
+
+    def __init__(self, message, step, timeout, spent, pending=(), result=None):
+        super().__init__(message, pending)
+        self.step, self.timeout, self.spent, self.result = step, timeout, spent, result
+
+
 class CommandRejected(KomorebiError):
     """The dispatcher consumed the command and submitted nothing; the run goes on."""
 

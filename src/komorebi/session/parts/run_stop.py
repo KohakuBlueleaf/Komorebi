@@ -14,6 +14,7 @@ from komorebi.errors import (
     KomorebiError,
     MessagesGaveUp,
     StartError,
+    StopTimeout,
     WaitTimeout,
     describe_core,
 )
@@ -69,25 +70,36 @@ class StopMixin:
         error it still closes (abort) and raises."""
         if self._stopped:
             return self._result
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        step = "the threads' stop"
         try:
             for thread_run in self._thread_runs().values():
                 thread_run.stop(
                     _left(deadline)
                 )  # each thread's stop is inside the deadline
+            step = "the engines' stop"
             if self._engine_state is not None:
                 self._engine_state.stop(
                     _left(deadline)
                 )  # EXIT waits for running engines
+            step = "the drain"
             self.drain(_left(deadline))
+            step = "the EXIT"
             exit_handle = self._queue_command(
                 self.h["KM_HANDLER_EXIT"], (0, self.cores)
             )
             self.wait(exit_handle, _left(deadline))
+            step = "the STOP's store"
             stop_handle = self._queue_command(self.h["KM_HANDLER_STOP"], None)
             self._send(stop_handle, _left(deadline))
         except KernelFailed:
             raise
+        except WaitTimeout as error:  # the budget ran out in `step`: one error names it
+            self.abort()
+            raise self._remember(
+                self._stop_timeout(step, timeout, started, error)
+            ) from error
         except BaseException:
             self.abort()
             raise
@@ -100,11 +112,40 @@ class StopMixin:
             self._log(stop_failed.args[0])
             raise stop_failed
         wrong = self._finish_problems(result)
+        if not result.get("result_ready", True) and _left(deadline) == 0.0:
+            # not ready because the finish waited out what was left of the budget
+            raise self._remember(
+                self._stop_timeout("the finish", timeout, started, None, wrong, result)
+            )
         if wrong:
             raise self._remember(
                 KernelFailed(f"the stop did not end cleanly: {wrong}", result=result)
             )
         return result
+
+    def _stop_timeout(self, step, timeout, started, error, said="", result=None):
+        """The StopTimeout of a stop whose budget ran out in `step`: the stop's own
+        timeout, the time spent, what was still pending, and the step's own error
+        (`error`) or what the finish found (`said`)."""
+        spent = time.monotonic() - started
+        pending = list(getattr(error, "pending", []))
+        if step == "the finish":
+            what = "the kernel's result block not ready"
+        elif step == "the STOP's store":
+            what = f"the STOP (command {pending[0]}) not stored" if pending else ""
+        else:
+            what = f"command(s) {pending} without their event" if pending else ""
+        detail = str(error) if error is not None else said
+        return StopTimeout(
+            f"the stop ran out of its {timeout} s in {step} after {spent:.2f} s"
+            + (f" ({what})" if what else "")
+            + (f"; {detail}" if detail else ""),
+            step,
+            timeout,
+            spent,
+            pending,
+            result,
+        )
 
     def _finish_problems(self, result):
         """What is wrong with a finish, as text ("" when the result is ready, the tile
@@ -179,16 +220,19 @@ class StopMixin:
         )
 
     def _send(self, handle, timeout):
-        """Stores queued commands up to `handle` without waiting for events."""
+        """Stores queued commands up to `handle` without waiting for events: one try
+        at least, also with no time left."""
         self._hand()
         deadline = time.monotonic() + timeout
         none = np.zeros(0, np.uint32)
         while self.stored < handle - self._base + 1:
-            if time.monotonic() > deadline:
-                raise WaitTimeout(f"command {handle} not stored in {timeout} s", [])
             rows = self.port.wait(none, handle & M32, 0.0)
             if len(rows):
                 self._take(rows)
+            if self.stored < handle - self._base + 1 and time.monotonic() > deadline:
+                raise WaitTimeout(
+                    f"command {handle} not stored in {timeout} s", [handle]
+                )
 
     def abort(self):
         """Stops the grid, then the kernel through the runtime, reads back what the
