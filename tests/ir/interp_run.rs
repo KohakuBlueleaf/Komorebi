@@ -903,6 +903,108 @@ fn a_call_on_a_range_of_the_chain_s_group_runs_on_it_as_its_group() {
     );
 }
 
+/// Program 7's chain at small sizes (examples/ir/p7_swiglu.kom with D 2, H 4, WIDTH 2
+/// and CHUNK 2; the gate `h g + h` in place of silu, so each number is exact): `forward`
+/// as the frontend writes it, and `half`, whose up runs on rank 0 only.
+const SWIGLU_CHAIN: &str = "module swiglu
+
+tile [32, 32]
+format bf16, f32
+
+param D: u32 = 2 @bind(build)
+param H: u32 = 4 @bind(build)
+param WIDTH: u32 = 2 @bind(build)
+param CHUNK: u32 = 2 @bind(build)
+
+func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
+    return matmul(x, w)
+}
+
+func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {
+    return h * g + h
+}
+
+program SwiGLU {
+    handler up(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, hidden: tensor<bf16>) @on(group) {
+        var h: tile<f32>[WIDTH] = zeros
+        var g: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for xb, w1b, w3b in zip(stream(x.tiles[0:1, 0:D], block = CHUNK), stream(w1.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]), stream(w3.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH])) {
+            h += project(xb, w1b)
+            g += project(xb, w3b)
+        }
+        store hidden.tiles[0:1, first:first + WIDTH] <- gate(h, g)
+    }
+    handler down(hidden: tensor<bf16>, w2: tensor<bf16>, y: tensor<f32>) @on(group) {
+        var out: tile<f32>[WIDTH] = zeros
+        let first = worker.rank * WIDTH
+        for hb, wb in zip(stream(hidden.tiles[0:1, 0:H], block = CHUNK), stream(w2.tiles[0:H, first:first + WIDTH], block = [CHUNK, WIDTH])) {
+            out += project(hb, wb)
+        }
+        store y.tiles[0:1, first:first + WIDTH] <- out
+    }
+    chain forward(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, w2: tensor<bf16>, hidden: tensor<bf16>, y: tensor<f32>) @on(group) {
+        call up(x, w1, w3, hidden)
+        call down(hidden, w2, y) @on(group[0:1])
+    }
+    chain half(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, w2: tensor<bf16>, hidden: tensor<bf16>, y: tensor<f32>) @on(group) {
+        call up(x, w1, w3, hidden) @on(group[0:1])
+        call down(hidden, w2, y) @on(group[0:1])
+    }
+}
+";
+
+#[test]
+fn program_7s_chain_runs_up_then_down_on_its_part_of_the_group() {
+    let m = module(SWIGLU_CHAIN);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    // x's tiles hold 1/32 and 2/32; W1's tile (k, j) holds j + 1, W3's 2; W2's tile
+    // (k, j) j + 1; the hidden and y start at -1
+    let x = tensor(&mut run, Format::Bf16, (1, 2), |i, _| (i + 1) as f64 / 32.0);
+    let w1 = tensor(&mut run, Format::Bf16, (2, 4), |i, _| (i % 4 + 1) as f64);
+    let w3 = tensor(&mut run, Format::Bf16, (2, 4), |_, _| 2.0);
+    let w2 = tensor(&mut run, Format::Bf16, (4, 2), |i, _| (i % 2 + 1) as f64);
+    let hidden = tensor(&mut run, Format::Bf16, (1, 4), |_, _| -1.0);
+    let y = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
+    let args = [x, w1, w3, w2, hidden, y].map(Arg::Tensor);
+    assert_eq!(
+        run.invoke("SwiGLU.forward", &args, (0, 2), &[]),
+        End::Completed(None)
+    );
+    let exact = |run: &Machine<'_>, t, i, want: f64| {
+        let got = tile_f64(run, t, i);
+        assert!(
+            got.iter().all(|v| *v == want),
+            "tile {i}: {} for {want}",
+            got[0]
+        );
+    };
+    // By hand: up on ranks 0 and 1, h's tile j 32 (1/32 + 2/32)(j + 1) = 3 (j + 1), g's
+    // 32 (3/32) 2 = 6, the gate h g + h = 21 (j + 1): the hidden 21, 42, 63, 84; down
+    // on rank 0 alone (group[0:1], a group of 1), y's tile j the sum over k of
+    // 32 hidden_k (j + 1) = 32 x 210 (j + 1): 6720 and 13440
+    for (j, want) in [21.0, 42.0, 63.0, 84.0].into_iter().enumerate() {
+        exact(&run, hidden, j, want);
+    }
+    exact(&run, y, 0, 6720.0);
+    exact(&run, y, 1, 13440.0);
+    // `half`: up on rank 0 only writes the hidden's tiles 0 and 1; down reads all four,
+    // tiles 2 and 3 as they were before the chain (-1): 32 (21 + 42 - 1 - 1)(j + 1) =
+    // 1952 (j + 1)
+    let hidden = tensor(&mut run, Format::Bf16, (1, 4), |_, _| -1.0);
+    let y = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
+    let args = [x, w1, w3, w2, hidden, y].map(Arg::Tensor);
+    assert_eq!(
+        run.invoke("SwiGLU.half", &args, (0, 2), &[]),
+        End::Completed(None)
+    );
+    for (j, want) in [21.0, 42.0, -1.0, -1.0].into_iter().enumerate() {
+        exact(&run, hidden, j, want);
+    }
+    exact(&run, y, 0, 1952.0);
+    exact(&run, y, 1, 3904.0);
+}
+
 fn scalars(run: &Machine<'_>, worker: usize, member: usize) -> Vec<Scalar> {
     match &run.workers[worker].state[0][member].data {
         komorebi_ir::interp::memory::MemberData::Scalars(v) => v.clone(),

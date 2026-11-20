@@ -759,6 +759,154 @@ fn a_chain_the_walk_is_not_emitted_for_is_refused_by_name() {
     );
 }
 
+/// A chain's entry: each call as the host builds its record (`kc.Call`), derived from
+/// the called handler (R49): program 7's, its ends numbers; program 3's `twice`, its
+/// ends the handler's words and a constant among its arguments; each handler's mask
+/// word after its own. What it cannot describe is refused at the compile, by name.
+#[test]
+fn a_chain_s_entry_describes_each_call_from_its_handler() {
+    use komorebi_ir::backend::{ChainArg, ChainCall};
+    use komorebi_ir::types::{ChainId, Entry};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let p7 = std::fs::read_to_string(root.join("examples/ir/p7_swiglu.kom")).expect("p7");
+    let compiled = |text: &str| {
+        let module = komorebi_ir::api::build(text).unwrap_or_else(|d| panic!("{d:?}"));
+        Tensix
+            .compile(&module, &target("tensix"))
+            .unwrap_or_else(|r| panic!("{r:?}"))
+    };
+    let output = compiled(&p7);
+    let entries: Vec<_> = (output.entries.iter())
+        .map(|e| (e.name.as_str(), e.number, e.mask_word))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("SwiGLU.up", 1, Some(4)),
+            ("SwiGLU.down", 2, Some(3)),
+            ("SwiGLU.forward", 3, None)
+        ]
+    );
+    let chain = &output.entries[2];
+    assert_eq!(chain.entry, Entry::Chain(ProgramId(0), ChainId(0)));
+    assert_eq!(chain.symbol, "kHandlerKmChain");
+    let p = ChainArg::Param;
+    let n = Expr::Const;
+    // up on the whole group, each rank a block of 8 tiles of the hidden from 8 r; down
+    // on ranks 0 to 3, each reading the hidden's 96 tiles, the call before's output
+    assert_eq!(
+        chain.calls,
+        [
+            ChainCall {
+                handler: 1,
+                args: vec![p(0), p(1), p(2), p(4)],
+                part: None,
+                size: 1,
+                width: n(8),
+                output: Some(4),
+                input: None,
+                ranges: vec![],
+                reads: vec![0, 1, 2],
+                bits: vec![(0, 1), (1, 2), (2, 4), (4, 8)],
+            },
+            ChainCall {
+                handler: 2,
+                args: vec![p(4), p(3), p(5)],
+                part: Some((0, 4)),
+                size: 1,
+                width: n(8),
+                output: Some(5),
+                input: Some(4),
+                ranges: vec![(n(0), n(0), n(96))],
+                reads: vec![3],
+                bits: vec![(4, 1), (3, 2), (5, 4)],
+            },
+        ]
+    );
+    // program 3's add in a chain: the width is the handler's word 3, given 4 at the
+    // call; the second call reads tiles 0 + width x rank on, width of them
+    let add = std::fs::read_to_string(here().join("steps_add.kom")).expect("the .kom");
+    let chained = |calls: &str| {
+        let end = add.rfind("}\n").expect("the program's end");
+        format!(
+            "{}\n    chain twice(a: tensor<f32>, b: tensor<f32>, out: tensor<f32>) @on(group) \
+             {{\n{calls}    }}\n}}\n",
+            &add[..end]
+        )
+    };
+    let output = compiled(&chained(
+        "        call add(a, b, out, 4)\n        call add(out, b, a, 4) @on(group[0:2])\n",
+    ));
+    let w = Expr::Word(3);
+    assert_eq!(
+        output.entries[1].calls,
+        [
+            ChainCall {
+                handler: 1,
+                args: vec![p(0), p(1), p(2), ChainArg::Int(4)],
+                part: None,
+                size: 1,
+                width: w.clone(),
+                output: Some(2),
+                input: None,
+                ranges: vec![],
+                reads: vec![0, 1],
+                bits: vec![(0, 1), (1, 2), (2, 4)],
+            },
+            ChainCall {
+                handler: 1,
+                args: vec![p(2), p(1), p(0), ChainArg::Int(4)],
+                part: Some((0, 2)),
+                size: 1,
+                width: w.clone(),
+                output: Some(0),
+                input: Some(2),
+                ranges: vec![(n(0), w.clone(), w)],
+                reads: vec![1],
+                bits: vec![(2, 1), (1, 2), (0, 4)],
+            },
+        ]
+    );
+    let refused = |text: &str| {
+        let module = komorebi_ir::api::build(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let refusals = tensix::sources(&module).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    // a read of what a call further back wrote: an earlier input, not built yet
+    let earlier = refused(&chained(
+        "        call add(a, b, out, 4)\n        call add(b, a, b, 4)\n        \
+         call add(out, a, a, 4)\n",
+    ));
+    assert_eq!(
+        earlier,
+        "call 2 of `twice` reads `out`, which call 0 further back writes: an earlier \
+         input, which the Tensix backend does not build yet"
+    );
+    // a read of the call before's output by a share of K (a partition of its tiles)
+    let shared = add.replacen(
+        "program StepHandlers {\n",
+        "program StepHandlers {\n    handler copy(x: tensor<f32>, y: tensor<f32>, n: u32) \
+         @on(group) {\n        let out = sink(partition(y.tiles(0, n), worker.rank, \
+         group.size), block = 1)\n        for xb in stream(partition(x.tiles(0, n), \
+         worker.rank, group.size), block = 1) {\n            out.push(xb)\n        }\n    \
+         }\n",
+        1,
+    );
+    let end = shared.rfind("}\n").expect("the program's end");
+    let share = refused(&format!(
+        "{}\n    chain twice(a: tensor<f32>, b: tensor<f32>, out: tensor<f32>) @on(group) \
+         {{\n        call add(a, b, out, 4)\n        call copy(out, a, 8)\n    }}\n}}\n",
+        &shared[..end]
+    ));
+    assert_eq!(
+        share,
+        "the Tensix backend does not describe a read of the call before's output by a \
+         share of K in a chain's record yet, call 1 of `twice`"
+    );
+}
+
 #[test]
 fn a_load_sizes_a_reduces_arrivals_from_the_machines_islands() {
     use komorebi_ir::api::load::load;

@@ -5,6 +5,7 @@ komorebi-ir wheel; what the IR cannot say yet refused by name, with the class's 
 
 import importlib.util
 import inspect
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -13,11 +14,13 @@ import pytest
 
 import komorebi as km
 import komorebi_ir as ir
+from komorebi.chain import calls as kc
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
+from komorebi.dsl.chain.chain_calls import chain_calls
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.ir import written
-from komorebi.dsl.ir.built import Entry, module, program
+from komorebi.dsl.ir.built import Entry, chain, module, program
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND = (ROOT / "tests" / "ir" / "tensix" / "t1_class.kom").read_text()
@@ -729,6 +732,98 @@ def test_program_7s_chain_is_on_the_span_of_its_calls_cores(
     assert f"        call up(x, w1, w3, hidden){up}\n" in m.text
     assert f"        call down(hidden, w2, y){down}\n" in m.text
     assert m.chains == {"forward": span}
+
+
+# program 7's arguments in the order of its chain's parameters
+FORWARD = ("x", "w1", "w3", "w2", "hidden", "y")
+
+
+def cored(source, cores):
+    """Program 7's source with up and down on `cores`, each (first core, count)."""
+    for given, (first, count) in zip(("(0, 12)", "(0, 4)"), cores, strict=True):
+        assert source.count(f"cores={given}") == 1
+        source = source.replace(f"cores={given}", f"cores=({first}, {count})")
+    return source
+
+
+@pytest.mark.parametrize(
+    "cores, span",
+    [
+        (((0, 12), (0, 4)), (0, 12)),
+        # a span that starts at core 4: today's absolute cores in the records
+        (((4, 12), (6, 4)), (4, 12)),
+        # up writes the hidden's first 48 tiles, down reads all 96: built, as today
+        # (the tiles the chain does not write are read as they were before it, R2)
+        (((0, 6), (0, 4)), (0, 6)),
+    ],
+)
+def test_program_7s_chain_records_are_todays_word_for_word(
+    tmp_path, monkeypatch, cores, span
+):
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    p7 = swiglu_script(tmp_path, monkeypatch, cored(source, cores))
+    given = p7.made_with()
+    values = [given[name] for name in FORWARD]
+    today = p7.SwiGLU(log=lambda line: None, **given)
+    theirs = chain_calls(None, today.forward(*values), None)
+    ours = program(p7.SwiGLU, log=lambda line: None, **given).chain("forward")
+    assert ours.span == span
+    calls = ours.calls(*values)
+    # today's proof (check_calls, prove, check_direct), called as run.chain calls it
+    assert kc.build(calls) == kc.build(theirs) == ({}, None)
+    for mine, its in zip(calls, theirs, strict=True):
+        for field in ("args", "group", "size", "width", "output", "input", "ranges"):
+            assert getattr(mine, field) == getattr(its, field), field
+        assert int(mine.handler) == int(its.handler)
+    handlers = [int(call.handler) for call in theirs]
+    for address in (0x20000, 0x7F000):
+        mine, its = (kc.records(c, address, handlers) for c in (calls, theirs))
+        assert mine.tolist() == its.tolist()
+
+
+def test_program_7s_chain_refused_by_todays_records_is_refused_with_todays_text(
+    tmp_path, monkeypatch
+):
+    # a hidden of 2048 tiles: down reads a range wider than a record's field (2047)
+    source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
+    p7 = swiglu_script(tmp_path, monkeypatch, re.sub(r"\b96\b", "2048", source))
+    given = p7.made_with()
+    ours = program(p7.SwiGLU, log=lambda line: None, **given).chain("forward")
+    calls = ours.calls(*(given[name] for name in FORWARD))
+    assert kc.build(calls) == ({}, None)
+    with pytest.raises(kc.ChainRefused) as refused:
+        kc.records(calls, 0x20000, [1, 2])
+    assert str(refused.value) == (
+        "Range(base=0, step=0, width=2048, root_only=False): base 0 to 4095, step 0 to "
+        "255, width 0 to 2047"
+    )
+
+
+def test_program_7s_chain_through_run_chain_runs_its_own_entry(tmp_path, monkeypatch):
+    p7 = swiglu_script(tmp_path, monkeypatch)
+    given = p7.made_with()
+    ours = program(p7.SwiGLU, log=lambda line: None, **given)
+    forward = ours.chain("forward")
+
+    class Run:  # a stand-in for a session's run: what built.chain asks of it
+        def chain(self, calls, mode=0, flags=0, records_at=None):
+            self.calls, self.given = calls, (mode, flags, records_at)
+            return kc.Chain(int(calls[0].handler), (0, 12), mode, flags, None,
+                            None, {}, calls)  # fmt: skip
+
+        def program_field(self, program):
+            assert program is ours
+            return 0
+
+        def field_handler(self, number, field):
+            return number
+
+    run = Run()
+    made = chain(run, forward, *(given[name] for name in FORWARD), records_at=0x9000)
+    assert run.calls == forward.calls(*(given[name] for name in FORWARD))
+    assert run.given == (0, 0, 0x9000)
+    # the command runs kHandlerKmChain, the chain's entry, not its first call's handler
+    assert made.handler == forward.number == 3
 
 
 @pytest.mark.parametrize(

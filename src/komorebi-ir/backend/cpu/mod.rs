@@ -128,6 +128,8 @@ impl Backend for Cpu {
                     words,
                     bounds: Vec::new(),
                     patterns: Vec::new(),
+                    mask_word: None,
+                    calls: Vec::new(),
                 });
             }
         }

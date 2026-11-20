@@ -15,7 +15,8 @@ use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
 use crate::backend::tensix::load::LoadTensor;
 use crate::backend::{
-    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Machine, Processor, Setting,
+    ArgKind, ArgWord, Build, ChainArg, ChainCall, CompileArg, EntryPoint, Expr, Kernel, Machine,
+    Processor, Setting,
 };
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
@@ -393,7 +394,8 @@ fn arg_word(w: &ArgWord) -> (&'static str, usize) {
 }
 
 /// One entry point as data: (name, kind, number, symbol, params, words, bounds,
-/// patterns).
+/// patterns, mask_word, calls); a call (handler, args, part, size, width, output,
+/// input, ranges, reads, bits).
 fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAny>> {
     let kind = match e.entry {
         Entry::Handler(..) => "handler",
@@ -419,6 +421,46 @@ fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAn
         words,
         bounds,
         e.patterns.clone(),
+        e.mask_word,
+        e.calls
+            .iter()
+            .map(|c| chain_call(py, c))
+            .collect::<PyResult<Vec<_>>>()?,
+    );
+    Ok(row.into_pyobject(py)?.into_any())
+}
+
+/// One call of a chain as data: (handler, args, part, size, width, output, input,
+/// ranges, reads, bits); an argument `("param", p)`, `("int", n)`, `("float", x)` or
+/// `("bool", b)`, a width and each range's ends as a bound's.
+fn chain_call<'py>(py: Python<'py>, c: &ChainCall) -> PyResult<Bound<'py, PyAny>> {
+    let args = c
+        .args
+        .iter()
+        .map(|a| match a {
+            ChainArg::Param(p) => ("param", *p).into_pyobject(py).map(Bound::into_any),
+            ChainArg::Int(n) => ("int", *n).into_pyobject(py).map(Bound::into_any),
+            ChainArg::Float(x) => ("float", f64::from_bits(*x))
+                .into_pyobject(py)
+                .map(Bound::into_any),
+            ChainArg::Bool(b) => ("bool", *b).into_pyobject(py).map(Bound::into_any),
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let mut ranges = Vec::new();
+    for (base, step, width) in &c.ranges {
+        ranges.push((expr(py, base)?, expr(py, step)?, expr(py, width)?));
+    }
+    let row = (
+        c.handler,
+        args,
+        c.part,
+        c.size,
+        expr(py, &c.width)?,
+        c.output,
+        c.input,
+        ranges,
+        c.reads.clone(),
+        c.bits.clone(),
     );
     Ok(row.into_pyobject(py)?.into_any())
 }

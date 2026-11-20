@@ -28,7 +28,7 @@ use crate::bytecode::hash::{hashes, hex, sha256, Hashes};
 use crate::program::derive::Cause;
 use crate::program::notes::Anchor;
 use crate::program::Module;
-use crate::types::{Ability, Entry, Format, IslandGraph, ScalarType, TileShape, Type};
+use crate::types::{Ability, ConstValue, Entry, Format, IslandGraph, ScalarType, TileShape, Type};
 
 /// A backend refuses a requirement it does not provide (by name, with the construct
 /// that needs it).
@@ -269,6 +269,63 @@ pub struct EntryPoint {
     /// The parameters whose word is a pattern (`@tensix.pattern`): a host sends only a
     /// valid pattern's word, and refuses any other value before sending.
     pub patterns: Vec<usize>,
+    /// A handler's word after its own that a chain's record fills (Tensix: the mask of
+    /// the tensors the chain writes); a plain invocation sends no word there.
+    pub mask_word: Option<u32>,
+    /// A chain's calls, as its host describes them to build its records (R49); none
+    /// for a handler, or on a backend that keeps a chain's order itself.
+    pub calls: Vec<ChainCall>,
+}
+
+/// One call of a chain as a host builds its record from it: what the backend derives
+/// from the called handler's text, in the chain's parameters (Tensix: `kc.Call`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainCall {
+    /// The called handler's entry number.
+    pub handler: u32,
+    /// Each of its arguments, in the handler's order.
+    pub args: Vec<ChainArg>,
+    /// Its part of the chain's group (first rank, count); none: the whole group.
+    pub part: Option<(u64, u64)>,
+    /// The ranks of a group whose root writes a block of its output.
+    pub size: u64,
+    /// The tiles of the block each root writes of its output, from the handler's words.
+    pub width: Expr,
+    /// The chain's parameter it writes.
+    pub output: Option<usize>,
+    /// The chain's parameter it reads that the call before writes.
+    pub input: Option<usize>,
+    /// What each core reads of the input: (base, step, width), tiles `base + step x`
+    /// its group's index on, `width` of them; each from the handler's words.
+    pub ranges: Vec<(Expr, Expr, Expr)>,
+    /// The chain's parameters it reads besides its input, as tensors from outside.
+    pub reads: Vec<usize>,
+    /// Each tensor argument's bit in its mask word: (the chain's parameter, bit).
+    pub bits: Vec<(usize, u32)>,
+}
+
+/// An argument of a chain's call, as its record's word is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainArg {
+    /// The chain's parameter at this position.
+    Param(usize),
+    /// An integer of the chain's text.
+    Int(u64),
+    /// A float of the chain's text, as its `f64`'s bits.
+    Float(u64),
+    /// `true` or `false`.
+    Bool(bool),
+}
+
+impl ChainArg {
+    /// A constant of the chain's text as an argument.
+    pub fn of(value: ConstValue) -> ChainArg {
+        match value {
+            ConstValue::Int(_, n) => ChainArg::Int(n),
+            ConstValue::Float(_, x) => ChainArg::Float(x.to_bits()),
+            ConstValue::Bool(b) => ChainArg::Bool(b),
+        }
+    }
 }
 
 /// One step of building an output: a program and its arguments, run in the directory

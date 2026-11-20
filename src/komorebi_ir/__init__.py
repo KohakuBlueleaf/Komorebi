@@ -136,6 +136,24 @@ class EntryPoint(NamedTuple):
     words: list[tuple[str, int]]
     bounds: list[tuple]
     patterns: list[int]  # the parameters whose word is a pattern's, sent only valid
+    mask_word: int | None  # the word after a handler's own a chain's record fills
+    calls: list["ChainCall"]  # a chain's calls, as a host builds its records
+
+
+class ChainCall(NamedTuple):
+    """One call of a chain as a host builds its record, derived from the called
+    handler; a width and a range's ends are ends as a bound's, of its words."""
+
+    handler: int  # the called handler's entry number
+    args: list[tuple]  # ("param", p), or a constant ("int" | "float" | "bool", v)
+    part: tuple[int, int] | None  # its part of the group (first, count); None: all
+    size: int  # the ranks of a group whose root writes a block
+    width: tuple  # the tiles of the block a root writes of its output
+    output: int | None  # the chain's parameter it writes
+    input: int | None  # the one it reads that the call before writes
+    ranges: list[tuple]  # what each core reads of it: (base, step, width)
+    reads: list[int]  # its other reads: tensors from outside the chain
+    bits: list[tuple[int, int]]  # each tensor argument's bit in its mask word
 
 
 class Kernel(NamedTuple):
@@ -198,7 +216,18 @@ def emit(
         key,
         [(name, data) for name, data in files],
         [
-            EntryPoint(*e[:4], list(e[4]), list(e[5]), list(e[6]), list(e[7]))
+            EntryPoint(
+                *e[:4],
+                list(e[4]),
+                list(e[5]),
+                list(e[6]),
+                list(e[7]),
+                e[8],
+                [
+                    ChainCall(c[0], list(c[1]), *c[2:7], *map(list, c[7:10]))
+                    for c in e[9]
+                ],
+            )
             for e in entries
         ],
         [Kernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
@@ -312,6 +341,7 @@ def load(
 
 __all__ = [
     "Buffer",
+    "ChainCall",
     "Diagnostic",
     "Emitted",
     "EntryPoint",

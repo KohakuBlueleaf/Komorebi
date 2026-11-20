@@ -217,6 +217,18 @@ handler's own (a plain submit sends the handler's words, as today). A case ends 
 its record on mover B (`km_chain_end`). A chain on islands, a call with `past`, and a call of a
 handler that reduces over its group (a reduce's tree) are refused by name (`K964`).
 
+The chain's entry point (`kHandlerKmChain`) describes each call as a host builds its record
+(today's `kc.Call`), derived from the called handler: its handler's number, its arguments, its
+part of the group (R47), groups of one rank, the block each rank writes of its output from the
+store (rank r's `w` tiles from `r w`, `w` from the handler's words), the tiles each rank reads of
+the call before's output from the stream (`base + step x rank`, `width` of them), its other reads
+as tensors from outside the chain, and each tensor argument's bit in the mask word, which a
+handler's entry point places after its own words. The host builds the records and proves them
+with today's code (`kc.build`, `kc.records`). A read of what a call further back wrote (an
+earlier input), a read of the call before's output by a share of K or by a rectangle of other
+rows, and an output that is not each rank's block of one row are refused by name at the compile
+(`K964`).
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of

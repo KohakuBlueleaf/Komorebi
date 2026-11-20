@@ -9,6 +9,7 @@ from pathlib import Path
 
 import komorebi_ir
 from komorebi import abi
+from komorebi.chain import calls as kc
 from komorebi.dsl.compile.source import file_of
 from komorebi.dsl.files import put, text_key
 from komorebi.dsl.front.front import word_of
@@ -40,12 +41,19 @@ class Built(km_program.Program):
     output's entry points: `entry(name)` is what Run.submit takes."""
 
     entries: dict = field(default_factory=dict, compare=False)
+    chains: dict = field(default_factory=dict, compare=False)
 
     def entry(self, name):
         """The handler `name` of this program (an `Entry`)."""
         if name not in self.entries:
             raise KeyError(f"{self.name} has no handler {name!r}")
         return self.entries[name]
+
+    def chain(self, name):
+        """The chain `name` of this program (a `ChainEntry`)."""
+        if name not in self.chains:
+            raise KeyError(f"{self.name} has no chain {name!r}")
+        return self.chains[name]
 
 
 class Entry(km_program.Handler):
@@ -203,6 +211,81 @@ class Entry(km_program.Handler):
         return self.names[p] if kind == "word" else f"{self.names[p]}'s {kind}"
 
 
+class ChainEntry:
+    """A chain from its `komorebi_ir.EntryPoint`: `calls(...)`, the host's calls of
+    the chain (`kc.Call`, today's records' description) from what the backend derived
+    of each called handler, on the session's cores of its span (first core, count)."""
+
+    def __init__(self, point, program, names, span):
+        self.point, self.program, self.names = point, program, list(names)
+        self.short = point.name.split(".")[-1]
+        self.span = tuple(span)
+        self.number = point.number  # kHandlerKmChain: what the chain's command runs
+
+    def calls(self, *values):
+        """The chain's calls with these arguments, each its words (its mask word after
+        them: the tensors the chain writes), its cores, its output and its input by
+        name, and its other reads as tensors from outside the chain."""
+        if len(values) != len(self.names):
+            raise ProgramError(
+                f"{self.short}: {len(values)} arguments, the chain takes "
+                f"{len(self.names)}"
+            )
+        handlers = {e.point.number: e for e in self.program.entries.values()}
+        named = {}  # a chain's parameter: the place of the first call that takes it
+        for call in self.point.calls:
+            entry = handlers[call.handler]
+            for place, (kind, p) in zip(entry.names, call.args):
+                if kind == "param":
+                    address = getattr(values[p], "address", 0)
+                    named.setdefault(p, f"{place} ({address:#x})")
+        written = {call.output for call in self.point.calls}
+        made = []
+        for call in self.point.calls:
+            entry = handlers[call.handler]
+            first, count = self.span
+            if call.part is not None:
+                first, count = first + call.part[0], call.part[1]
+            given = [values[a] if kind == "param" else a for kind, a in call.args]
+            words = entry.args(*given, group=(first, count))
+            ends = {"rank": None, "size": count}  # an end free of the rank
+            width = value_of(call.width, words, ends)
+            ranges = [tuple(value_of(e, words, ends) for e in r) for r in call.ranges]
+            at = entry.point.mask_word
+            if at is not None:
+                mask = 0
+                for p, bit in call.bits:
+                    mask |= bit if p in written else 0
+                words += [0] * (at - len(words)) + [mask]
+            made.append(
+                kc.Call(
+                    entry,
+                    tuple(words),
+                    (first, count),
+                    call.size,
+                    width,
+                    None if call.output is None else named[call.output],
+                    None if call.input is None else named[call.input],
+                    None,
+                    tuple(kc.Range(*r) for r in ranges),
+                    False,
+                    tuple(kc.Read(named[p], None, (), False) for p in call.reads),
+                    None,
+                    name=entry.point.name,
+                )
+            )
+        return made
+
+
+def chain(run, entry, *values, mode=0, flags=0, records_at=None):
+    """`run.chain` of a chain built through the IR: its calls (`entry.calls`) proven
+    and written as records by today's run.chain (`kc.build`, `kc.records`), the
+    command run by the chain's own entry (kHandlerKmChain)."""
+    made = run.chain(entry.calls(*values), mode, flags, records_at=records_at)
+    made.handler = run.field_handler(entry.number, run.program_field(entry.program))
+    return made
+
+
 def width_of(tensor):
     """A tensor's width in tiles, when it is in tiles of two dimensions or more."""
     shape = shape_of(tensor)
@@ -317,6 +400,7 @@ def program(cls, machine=None, **make):
     build/<name>-<text_key> beside the class's source, as today's make writes them."""
     log = make.get("log", print)
     made = module(cls, **make)
+    spans = made.chains
     compiled = komorebi_ir.compile(made.text, komorebi_ir.Origin(*made.origin))
     out = komorebi_ir.emit(compiled, "tensix")
     tensors = {
@@ -354,6 +438,9 @@ def program(cls, machine=None, **make):
     for point in out.entries:
         short = point.name.split(".")[-1]
         names = list(inspect.signature(getattr(cls, short).function).parameters)[1:]
+        if point.kind == "chain":
+            made.chains[short] = ChainEntry(point, made, names, spans[short])
+            continue
         widths = {n: t.shape[1] for n, t in tensors.items() if t.shape is not None}
         made.entries[short] = Entry(point, made, names, widths)
     return made

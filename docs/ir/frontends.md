@@ -207,6 +207,13 @@ first core to the highest end. A call over the whole span has no `@on`; any othe
 not a parameter of the chain (`km.past`, `km.direct`), and a line other than such a call (a loop,
 `km.all_gather`) are refused by name with the chain's line.
 
+`chain(name)` of the `Built` is the chain's entry: its `calls(...)`, given the chain's arguments,
+are today's `kc.Call`s of the chain on the session's cores of its span (a call's `@on` counted
+from the span's first core), each call's words its handler's with the mask word after them.
+`built.chain(run, entry, ...)` gives them to `run.chain`, which proves them and writes their
+records as today (`kc.build`, `kc.records`), and runs the command on the chain's entry. For
+program 7 the records are today's word for word, on a span from core 0 or core 4.
+
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
 its tensor's end before anything is sent; today's make checks only the ranges of `items(...)`.

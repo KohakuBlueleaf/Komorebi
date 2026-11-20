@@ -22,20 +22,20 @@ pub mod tile;
 pub mod unit;
 
 use crate::backend::{
-    check_statement, ArgKind, ArgWord, Backend, Bound, Buffer, Build, Built, CacheKey, CompileArg,
-    EntryPoint, Expr, Kernel, LoadStatement, Machine, Output, Processor, Reads, Refusal, Setting,
-    Statement, Target, Unpack, NOT_BUILT,
+    check_statement, ArgKind, ArgWord, Backend, Bound, Buffer, Build, Built, CacheKey, ChainArg,
+    ChainCall, CompileArg, EntryPoint, Expr, Kernel, LoadStatement, Machine, Output, Processor,
+    Reads, Refusal, Setting, Statement, Target, Unpack, NOT_BUILT,
 };
 use crate::bytecode::hash::{hex, sha256};
 use crate::program::body::InstId;
-use crate::program::notes::{Anchor, Origin};
+use crate::program::notes::{Anchor, Origin, Owner};
 use crate::program::{BodyRef, CallArg, Module};
 use crate::types::{Ability, Entry, Format, IslandGraph, TileShape};
 use crate::types::{ChainId, FuncId, HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
 use self::plan::{
-    Fields, Int, Moved, Part, Plan, Product, Range, Rect, Shape, Stored, Sum, WordKind,
+    param_name, Fields, Int, Moved, Part, Plan, Product, Range, Rect, Shape, Stored, Sum, WordKind,
 };
 use self::unit::Unit;
 
@@ -322,6 +322,16 @@ fn chain_refusals(module: &Module, plans: &[Plan]) -> Vec<Refusal> {
                     ),
                     at,
                 ));
+            }
+            // the call's record as the host builds it (`entries`): refused here by name
+            // too, so the compile refuses what the chain's entry cannot describe (a
+            // handler not planned is refused as itself)
+            let past = call.args.iter().any(|a| matches!(a, CallArg::Past(_)));
+            let shape = plan.map(|plan| &plan.shape);
+            if !past && shape.is_some() && !matches!(shape, Some(Shape::Summed(_))) {
+                if let Err(r) = chain_call(module, plans, c, k, call) {
+                    out.push(r);
+                }
             }
         }
     }
@@ -2835,7 +2845,8 @@ impl Backend for Tensix {
 /// checks before sending: each stream's tiles `first .. first + n` in its tensor.
 fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refusal>> {
     let program = &module.programs[0];
-    plans
+    let chained = chained(module);
+    let mut out: Vec<EntryPoint> = plans
         .iter()
         .enumerate()
         .map(|(i, plan)| {
@@ -2850,7 +2861,7 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
                 })
                 .collect();
             let bounds = bounds(plan).map_err(|r| vec![r])?;
-            Ok(EntryPoint {
+            Ok::<_, Vec<Refusal>>(EntryPoint {
                 name: format!("{}.{}", program.name, plan.name),
                 entry: Entry::Handler(plan.program, plan.handler),
                 number: i as u32 + 1,
@@ -2862,9 +2873,246 @@ fn entries(module: &Module, plans: &[Plan]) -> Result<Vec<EntryPoint>, Vec<Refus
                     .filter(|(_, w)| w.kind == WordKind::Pattern)
                     .map(|(p, _)| p)
                     .collect(),
+                // the record's mask after the handler's words (`chain_mask_word`)
+                mask_word: (chained && plan.words.len() < 10).then_some(plan.words.len() as u32),
+                calls: Vec::new(),
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    let mut refusals = Vec::new();
+    for (c, chain) in program.chains.iter().enumerate() {
+        let c = ChainId(c as u32);
+        let mut calls = Vec::new();
+        for (k, call) in chain.calls.iter().enumerate() {
+            match chain_call(module, plans, c, k, call) {
+                Ok(described) => calls.push(described),
+                Err(r) => refusals.push(r),
+            }
+        }
+        out.push(EntryPoint {
+            name: format!("{}.{}", program.name, chain.name),
+            entry: Entry::Chain(ProgramId(0), c),
+            number: plans.len() as u32 + 1,
+            symbol: "kHandlerKmChain".to_string(),
+            params: chain.params.iter().filter_map(ArgKind::of).collect(),
+            words: Vec::new(),
+            bounds: Vec::new(),
+            patterns: Vec::new(),
+            mask_word: None,
+            calls,
+        });
+    }
+    if !refusals.is_empty() {
+        return Err(refusals);
+    }
+    Ok(out)
+}
+
+/// Call `k` of chain `c` as a host builds its record (`chain_calls.placed`), derived
+/// from the called handler's plan: its part of the group (R47), groups of one rank (a
+/// reduce's tree is refused), the block each root writes of its output from the
+/// store's view (rank r's `w` tiles from `r x w`), what each core reads of the call
+/// before's output from the stream's view (tiles `base + step x rank`), and its other
+/// reads as tensors from outside the chain; the ends in the handler's words, which the
+/// host has at the chain's build. What cannot be so described is refused by name.
+fn chain_call(
+    module: &Module,
+    plans: &[Plan],
+    c: ChainId,
+    k: usize,
+    call: &crate::program::Call,
+) -> Result<ChainCall, Refusal> {
+    let p = ProgramId(0);
+    let chain = &module.programs[0].chains[c.0 as usize];
+    let at = Anchor::Call(p, c, k as u32);
+    let refused = |what: &str| Refusal {
+        code: NOT_BUILT,
+        what: format!(
+            "the Tensix backend does not describe {what} in a chain's record yet, call {k} \
+             of `{}`",
+            chain.name
+        ),
+        at: Some(at),
+    };
+    let (number, plan) = plans
+        .iter()
+        .enumerate()
+        .find(|(_, plan)| plan.handler == call.handler)
+        .ok_or_else(|| refused("a call of a handler not built"))?;
+    let mut args = Vec::new();
+    for arg in &call.args {
+        match arg {
+            CallArg::Param(i) => args.push(ChainArg::Param(*i as usize)),
+            CallArg::Const(value) => args.push(ChainArg::of(*value)),
+            CallArg::Past(_) => return Err(refused("an earlier input (`past`)")),
+        }
+    }
+    let param = |word: usize| match args[word] {
+        ChainArg::Param(i) => Some(i),
+        _ => None,
+    };
+    let part = match call.part {
+        None => None,
+        Some(crate::program::Part {
+            first: crate::types::Count::Const(a),
+            end: crate::types::Count::Const(b),
+        }) => Some((a, b - a)),
+        Some(_) => return Err(refused("a range of the group not known at build")),
+    };
+    let handler_at = Anchor::Handler(p, plan.handler);
+    let host = |int: &Int| host_expr(plan, int, handler_at);
+    // what each call before writes, the latest last: the call before's is the input
+    let writes = |b: usize| {
+        let call = &chain.calls[b];
+        let moved = plans
+            .iter()
+            .find(|plan| plan.handler == call.handler)?
+            .written()?;
+        match call.args.get(moved.tensor) {
+            Some(CallArg::Param(i)) => Some(*i as usize),
+            _ => None,
+        }
+    };
+    let before = k.checked_sub(1).and_then(writes);
+    let mut input = None;
+    let mut ranges = Vec::new();
+    let mut reads = Vec::new();
+    for read in &plan.reads {
+        let Some(tensor) = param(read.tensor) else {
+            continue; // a constant: no tensor
+        };
+        if Some(tensor) != before {
+            if let Some(b) = (0..k).rev().find(|&b| writes(b) == Some(tensor)) {
+                let name = param_name(module, Owner::Chain(p, c), tensor as u32)
+                    .map_or_else(|| format!("p{tensor}"), str::to_string);
+                return Err(Refusal {
+                    code: NOT_BUILT,
+                    what: format!(
+                        "call {k} of `{}` reads `{name}`, which call {b} further back \
+                         writes: an earlier input, which the Tensix backend does not \
+                         build yet",
+                        chain.name
+                    ),
+                    at: Some(at),
+                });
+            }
+            if !reads.contains(&tensor) {
+                reads.push(tensor);
+            }
+            continue;
+        }
+        if matches!(read.range, Range::Part(_)) {
+            return Err(refused(
+                "a read of the call before's output by a share of K",
+            ));
+        }
+        let (base, step, width) = row_range(plan, &read.range).ok_or_else(|| {
+            refused("a read of the call before's output not of tiles of the first row")
+        })?;
+        if input.is_some() {
+            return Err(refused("two reads of the call before's output"));
+        }
+        input = Some(tensor);
+        ranges.push((host(&base)?, host(&step)?, host(&width)?));
+    }
+    // the output: rank r writes tiles r x w to r x w + w - 1 of one row
+    let (output, width) = match plan.written() {
+        None => (None, Expr::Const(0)),
+        Some(moved) => {
+            let (base, step, width) = row_range(plan, &moved.range)
+                .ok_or_else(|| refused("an output not of tiles of the first row"))?;
+            if base != Int::Const(0) || step != width {
+                return Err(refused("an output whose block is not the rank's"));
+            }
+            (param(moved.tensor), host(&width)?)
+        }
+    };
+    let bits = (0..plan.words.len())
+        .filter(|&i| plan.words[i].kind == WordKind::Tensor)
+        .enumerate()
+        .filter_map(|(n, i)| Some((param(i)?, 1u32 << n)))
+        .collect();
+    Ok(ChainCall {
+        handler: number as u32 + 1,
+        args,
+        part,
+        size: 1,
+        width,
+        output,
+        input,
+        ranges,
+        reads,
+        bits,
+    })
+}
+
+/// A range of tiles of a tensor's first row as (base, step, width), ints free of the
+/// rank: tiles `base + step x rank` on, `width` of them; none when it is not such a
+/// range (a partition, a rectangle of other rows, a count that reads the rank).
+fn row_range(plan: &Plan, range: &Range) -> Option<(Int, Int, Int)> {
+    let (first, width) = match range {
+        Range::Part(_) => return None,
+        Range::Tiles { first, n } => match by_rank(plan, n)? {
+            (n, Int::Const(0)) => (first, n),
+            _ => return None,
+        },
+        Range::Rect(rect) => {
+            if rect.rows != (Int::Const(0), Int::Const(1)) {
+                return None;
+            }
+            (&rect.cols.0, count(plan, &rect.cols.0, &rect.cols.1)?)
+        }
+    };
+    let (base, step) = by_rank(plan, first)?;
+    Some((base, step, width))
+}
+
+/// The tiles from `lo` to `hi` (not included) as an int free of the rank, when both
+/// ends go up by the same step of the rank.
+fn count(plan: &Plan, lo: &Int, hi: &Int) -> Option<Int> {
+    let ((lo, low_step), (hi, high_step)) = (by_rank(plan, lo)?, by_rank(plan, hi)?);
+    if low_step != high_step {
+        return None;
+    }
+    Some(match (&lo, &hi) {
+        (Int::Const(a), Int::Const(b)) => Int::Const(b.checked_sub(*a)?),
+        (lo, Int::Bin('+', a, n)) if **a == *lo => (**n).clone(),
+        _ => Int::Bin('-', Box::new(hi.clone()), Box::new(lo.clone())),
+    })
+}
+
+/// An int as `base + step x rank` (its named values followed), both free of the
+/// rank, when it is one.
+fn by_rank(plan: &Plan, int: &Int) -> Option<(Int, Int)> {
+    let zero = Int::Const(0);
+    Some(match int {
+        Int::Const(_) | Int::Word(_) | Int::Size => (int.clone(), zero),
+        Int::Rank => (zero, Int::Const(1)),
+        Int::Local(l) => by_rank(plan, &plan.locals.get(*l)?.value)?,
+        Int::Bin(op, a, b) => {
+            let ((ab, a_step), (bb, b_step)) = (by_rank(plan, a)?, by_rank(plan, b)?);
+            match op {
+                '+' => (folded('+', ab, bb), folded('+', a_step, b_step)),
+                '*' if a_step == zero => (folded('*', ab.clone(), bb), folded('*', ab, b_step)),
+                '*' if b_step == zero => (folded('*', ab, bb.clone()), folded('*', a_step, bb)),
+                '-' if b_step == zero => (folded('-', ab, bb), a_step),
+                '/' | '%' if a_step == zero && b_step == zero => (folded(*op, ab, bb), zero),
+                _ => return None,
+            }
+        }
+    })
+}
+
+/// `a op b`, worked out when both are numbers or one is 0 or 1 where that settles it.
+fn folded(op: char, a: Int, b: Int) -> Int {
+    match (op, &a, &b) {
+        ('+', Int::Const(x), Int::Const(y)) if x.checked_add(*y).is_some() => Int::Const(x + y),
+        ('*', Int::Const(x), Int::Const(y)) if x.checked_mul(*y).is_some() => Int::Const(x * y),
+        ('+', Int::Const(0), _) | ('*', Int::Const(1), _) => b,
+        ('+' | '-', _, Int::Const(0)) | ('*' | '/', _, Int::Const(1)) => a,
+        ('*', Int::Const(0), _) | ('*', _, Int::Const(0)) => Int::Const(0),
+        _ => Int::Bin(op, Box::new(a), Box::new(b)),
+    }
 }
 
 /// Every range of a handler's tensors as a bound a host checks: a partition's whole
