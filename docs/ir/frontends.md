@@ -71,14 +71,25 @@ first and last lines. A refused origin raises `IrError`, and its message says wh
 class compiler does, and gives a `Made`: the text and `made.origin` for `komorebi_ir.compile`. It
 does not import `komorebi_ir`, and today's make does not call it.
 
-It takes the lines of the first lesson and of the corpus's program 1 (`Scalars.line`):
+It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`) and 2
+(`StepHandlers.sum`):
 - an int value (`first = self.rank * TILES`): int parameters and values, numbers, a module's int
   constant as its number, `self.rank`, `+ - *`, written `let first = worker.rank * 64`;
 - a partition of a tensor's pages;
 - a write stream and a read loop, each over a partition or over `t.pages(first, count)`, written
   `t.tiles(first, count)`;
 - a push of a tile function's result, or of a tile expression (`results.push(x * scale)`), which
-  is written as the function `tile_line_<line>` of the names it reads, as today's class compiles it.
+  is written as the function `tile_line_<line>` of the names it reads, as today's class compiles it;
+- a tile of zeros (`total = km.tile.zeros(km.fp32)`), written `var total: tile<f32> = zeros`, and
+  the loop's tile added to it (`total += tile`, a stream of one tile a block);
+- `whole = km.reduce(total, form="tree")`, written `let whole = reduce(total, with = sum)`. The
+  grouping is the backend's, so `form="tree"` writes nothing. `form="owner"` is refused by name
+  until a `tensix.*` hint names it;
+- `if self.rank == self.leader:` with no `else`, written `if worker.is_leader`, and in it the
+  result's page write (`t.pages(0, 1).write(whole)`), written `store t.tiles(0, 1) <- whole`.
+  `self.leader` as a number is refused by name.
+
+A stream with no `block=` is of one tile a block, as today's.
 
 A stream of blocks of n tiles gives the loop `tile<F>[n]`, so its tile function is declared on
 blocks (`tile<F>[n]` for the block and the result). Every other line is refused by name, with the

@@ -32,7 +32,7 @@ through (an index, a format, the bytes of a page, the pages, and the other half'
 buffer is one half of a pair, one half for each mover). Each entry carries the invocation's ABI, the same on
 every backend: its number, its argument words in order (a tensor's address, a tensor's tile
 count, a parameter's value), and the bounds a host checks before sending it: tensor tiles whose
-first and count are of the words, numbers, the worker's rank and the group's size, by `+` and `*`,
+first and count are of the words, numbers, the worker's rank and the group's size, by `+ - *`,
 checked for each rank of the group when they read the rank. Compiling runs nothing and writes nothing. The
 output's files are kept under a key over the hash of the parts the backend reads, the backend's
 name and version, and the target; what a build makes of them is the build's own cache.
@@ -97,11 +97,23 @@ tiles `t.tiles(first, n)` themselves, its ends `u32` words, numbers, the rank, `
 values of these (`let first = worker.rank * 64`, a line of the movers). A kernel's case reads
 only the rank, size and words its lines use. Partitions of the same values are printed once.
 A tile function may be on blocks, the template applied to each valid tile of the block (today's
-compute loop). Everything else is refused with `K964`, by name.
+compute loop).
 
-An entry point states the ranges a host can compute from the words and the group (words, numbers,
-the rank and size, sums and products): program 1's `a.tiles(worker.rank * 64, 64)` is checked for
-each rank. A range with a `-` is not stated yet.
+It also emits the corpus's program 2 (`StepHandlers.sum`). Its loop adds each `f32` tile of a
+stream, one tile a block, to a `var` of `zeros`. After the loop, `reduce(total, with = sum)` sums
+the group's totals, and the leader stores the result in one tile. Which worker is the leader is
+the backend's statement, not the language's: on Tensix it is rank 0 of the group
+(`km_rank == 0`). A `reduce` whose combine is commutative leaves the grouping and order to the
+backend. On Tensix that is a tree over the NoC, as today's `form="tree"`. Its arrival buffer holds
+7 slots of one tile, one a round, on one island. Its out buffer holds two tiles. Compute unpacks
+the read pair and the arrivals to Dst as float32, unrounded (a buffer's `unpack`, today's
+`unpack_to_dest_mode`). A reduce with another combine is refused. Everything else is refused with
+`K964`, by name.
+
+An entry point states every range of its tensors as a bound a host computes from the words and
+the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
+is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of
+a tensor goes unchecked.
 
 The tile function's two files, `tile_<f>.hpp` and its listing, are not made by a port of today's
 tile compiler. They are its output for the one shape `return a * k` (a `bf16` tile times an `f32`),
@@ -127,7 +139,8 @@ The result, `Emitted`, holds:
 - how the output is built:
   - for the Tensix backend, the kernels (source, processor, defines, compile-time arguments,
     options, each a bool or a text) and the buffers (index, format, page bytes, pages, the
-    other half of its pair) the machine's runtime compiles and makes at load;
+    other half of its pair, how compute unpacks it to Dst when not the default: `unpack`,
+    tt-metal's name, `UnpackToDestFp32`) the machine's runtime compiles and makes at load;
   - for the CPU backend, the steps run in the folder of the files.
 
 A backend's refusal raises `IrError` with each refusal's code, and so does a backend name that

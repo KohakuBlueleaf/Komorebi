@@ -96,7 +96,7 @@ class Entry(km_program.Handler):
         words of today's ranges (pages.ranges.at_submit)."""
         start, many = value_of(first, words, at), value_of(count, words, at)
         held = tiles_of(tensor)
-        if many < 1 or start + many <= held:
+        if many == 0 or (start >= 0 and many > 0 and start + many <= held):
             return
         per_page = getattr(tensor, "page_tiles", 1)
         size = tensor.page_bytes // per_page
@@ -115,8 +115,8 @@ class Entry(km_program.Handler):
             return str(expr[1])
         if expr[0] in ("rank", "size"):
             return {"rank": "worker.rank", "size": "group.size"}[expr[0]]
-        if expr[0] in ("add", "mul"):
-            sign = {"add": "+", "mul": "*"}[expr[0]]
+        if expr[0] in ("add", "sub", "mul"):
+            sign = {"add": "+", "sub": "-", "mul": "*"}[expr[0]]
             text = f"{self.text(expr[1], True)} {sign} {self.text(expr[2], True)}"
             return f"({text})" if inner else text
         kind, p = self.point.words[expr[1]]
@@ -132,12 +132,13 @@ def reads_group(expr):
     """Whether an end of a range reads the worker's rank or the group's size."""
     if expr[0] in ("rank", "size"):
         return True
-    return expr[0] in ("add", "mul") and (reads_group(expr[1]) or reads_group(expr[2]))
+    pair = expr[0] in ("add", "sub", "mul")
+    return pair and (reads_group(expr[1]) or reads_group(expr[2]))
 
 
 def value_of(expr, words, at):
     """An end of a range at a call: of its words, constants, the rank and size in
-    `at`, sums and products."""
+    `at`, sums, differences (below 0 a range the check refuses) and products."""
     kind = expr[0]
     if kind == "word":
         return words[expr[1]]
@@ -146,7 +147,7 @@ def value_of(expr, words, at):
     if kind in ("rank", "size"):
         return at[kind]
     left, right = value_of(expr[1], words, at), value_of(expr[2], words, at)
-    return left + right if kind == "add" else left * right
+    return {"add": left + right, "sub": left - right, "mul": left * right}[kind]
 
 
 def load_tensor(tensor):
@@ -224,12 +225,16 @@ def program(cls, **make):
         put(folder / file, text)
     log(f"{cls.__name__}: built through the IR, files {digest} (key {out.key[:16]})")
     compute = next((k for k in loaded.kernels if k.processor == "compute"), None)
+    options = dict(compute.options) if compute is not None else {}
+    unpack = {b.index: b.unpack for b in loaded.buffers if b.unpack is not None}
+    if unpack:  # today's compute option of the buffers unpacked to Dst unrounded
+        options["unpack_to_dest_mode"] = unpack
     made = Built(
         name=name,
         kernels={k.processor: folder / k.source for k in loaded.kernels},
         buffers=buffers_of(loaded),
         compile_args=compile_args_of(loaded),
-        compute=dict(compute.options) if compute is not None else {},
+        compute=options,
         defines={},
         depth=make.get("depth", 4),
         handlers=folder / f"{name}.h",

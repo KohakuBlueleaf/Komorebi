@@ -395,6 +395,22 @@ fn the_ranges_and_values_not_built_are_refused_by_name() {
         .1;
     assert!(movement.contains("Y(y), first, tiles,"), "{movement}");
     assert!(!movement.contains("km_size"), "{movement}");
+    // a range of a difference is stated as a bound, as every range of a tensor is
+    let module = edited(
+        streams,
+        "let out = sink(y.tiles(first, tiles - first), block = 1)\n        \
+         for xb in stream(x.tiles(first, tiles - first), block = 1) {",
+    );
+    let output = Tensix
+        .compile(&module, &target("tensix"))
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let less = Expr::Sub(Box::new(Expr::Word(3)), Box::new(Expr::Word(2)));
+    let bound = |tensor| Bound {
+        tensor,
+        first: Expr::Word(2),
+        count: less.clone(),
+    };
+    assert_eq!(output.entries[0].bounds, [bound(0), bound(1)]);
 }
 
 fn target(arch: &str) -> Target {
@@ -593,4 +609,36 @@ fn a_load_takes_its_tensors_by_name_and_names_formats_as_the_loader_does() {
     assert!(refused(&["x", "y"], Some("grayskull"))[0]
         .what
         .contains("not `grayskull`"));
+}
+
+#[test]
+fn a_sum_other_than_program_2s_is_refused_by_name() {
+    let source = std::fs::read_to_string(here().join("steps_sum.kom")).expect("the .kom");
+    let built = |from: &str, to: &str| {
+        assert!(source.contains(from), "{from}");
+        komorebi_ir::api::build(&source.replacen(from, to, 1)).unwrap_or_else(|d| panic!("{d:?}"))
+    };
+    let refused = |from: &str, to: &str| {
+        let refusals = tensix::sources(&built(from, to)).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    // program 2 as written is built, its leader rank 0
+    let files = tensix::sources(&built("", "")).unwrap_or_else(|r| panic!("{r:?}"));
+    let movement = &files
+        .iter()
+        .find(|(n, _)| n == "movement.cpp")
+        .expect("movement")
+        .1;
+    assert!(movement.contains("if (km_rank == 0) {"), "{movement}");
+    let max = refused("with = sum", "with = max");
+    assert!(max.contains("a reduce with other than sum"), "{max}");
+    // (a store outside `if worker.is_leader` is the language's own K405)
+    let after = refused(
+        "            store t.tiles(0, 1) <- whole\n        }",
+        "            store t.tiles(0, 1) <- whole\n        }\n        \
+         if worker.is_leader {\n            store t.tiles(0, 1) <- whole\n        }",
+    );
+    assert!(after.contains("lines after its leader's store"), "{after}");
 }

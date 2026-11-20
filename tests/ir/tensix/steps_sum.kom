@@ -1,0 +1,24 @@
+// Program 2's module, StepHandlers.sum, as the class DSL's frontend gives it for
+// steps_sum.py (the frontend renames the loop's `tile`, an IR word, to `tile_`).
+module stephandlers
+
+tile [32, 32]
+format f32
+
+program StepHandlers {
+    handler sum(
+        s: tensor<f32>,
+        t: tensor<f32>,
+        tiles: u32,
+    ) @on(group) {
+        let part = partition(s.tiles(0, tiles), worker.rank, group.size)
+        var total: tile<f32> = zeros
+        for tile in stream(part, block = 1) {
+            total += tile
+        }
+        let whole = reduce(total, with = sum)
+        if worker.is_leader {
+            store t.tiles(0, 1) <- whole
+        }
+    }
+}

@@ -16,7 +16,7 @@ import komorebi_ir as ir
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.ir import module
-from komorebi.dsl.ir.built import program
+from komorebi.dsl.ir.built import Entry, program
 
 ROOT = Path(__file__).resolve().parents[3]
 HAND = (ROOT / "tests" / "ir" / "tensix" / "t1_class.kom").read_text()
@@ -78,6 +78,42 @@ class Patterned(km.Program):
             out.push(times(xb, k))
 
 
+class Owned(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        part = self.partition(x.pages(0, tiles))
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x[part]):
+            total += tile
+        whole = km.reduce(total, form="owner")
+        if self.rank == self.leader:
+            y.pages(0, 1).write(whole)
+
+
+class Led(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        part = self.partition(x.pages(0, tiles))
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x[part]):
+            total += tile
+        whole = km.reduce(total)
+        if self.rank == self.leader:
+            y.pages(self.leader, 1).write(whole)
+
+
+class Ranked(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        part = self.partition(x.pages(0, tiles))
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x[part]):
+            total += tile
+        whole = km.reduce(total)
+        if self.rank == 1:
+            y.pages(0, 1).write(whole)
+
+
 def line_of(cls, text):
     """The file's line number of the line of `cls` that holds `text`."""
     lines, first = inspect.getsourcelines(cls)
@@ -118,6 +154,9 @@ def test_a_name_that_is_an_ir_word_is_renamed():
     [
         (Counted, "n = k * 2.0", "an assignment the IR module does not write yet"),
         (Patterned, "pattern=", "a stream's pattern= is not written"),
+        (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
+        (Led, "pages(self.leader", "self.leader as a number is not written"),
+        (Ranked, "self.rank == 1", "an if other than `if self.rank == self.leader:`"),
     ],
 )
 def test_a_line_it_does_not_know_is_refused_with_the_class_line(cls, text, why):
@@ -192,6 +231,13 @@ def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monke
     )
     with pytest.raises(km.ProgramError, match="items 1 to 2048 of x"):
         run.args(x, y, 1, x.pages, 2.0)
+    # a count of a difference below 0 (a wrapped word on the card) is refused too
+    less = ("sub", ("word", 3), ("word", 2))
+    point = run.point._replace(bounds=[(0, ("word", 2), less)])
+    ranged = Entry(point, ours, run.names)
+    assert ranged.args(x, y, 4, 4, 2.0)[2:4] == [4, 4]
+    with pytest.raises(km.ProgramError, match=r"x.tiles\(first, tiles - first\)"):
+        ranged.args(x, y, 5, 3, 2.0)
 
 
 def test_program_1_built_through_the_ir_is_todays(tmp_path, monkeypatch):
@@ -228,3 +274,35 @@ def test_program_1_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     )
     with pytest.raises(km.ProgramError, match="reads the rank: give"):
         line.args(a, out, 2.0)
+
+
+def test_program_2_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    script = tmp_path / "steps_sum.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "steps_sum.py", script)
+    spec = importlib.util.spec_from_file_location("steps_sum", script)
+    p2 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "steps_sum", p2)
+    spec.loader.exec_module(p2)
+    given = p2.made_with()
+    today = p2.StepHandlers(log=lambda line: None, **given)
+    ours = program(p2.StepHandlers, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "stephandlers.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    # the arrivals and the reads unpacked to Dst unrounded: today's option, from
+    # the buffers' `unpack`
+    assert ours.compute["unpack_to_dest_mode"] == dict.fromkeys(
+        (0, 1, 8), "UnpackToDestFp32"
+    )
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    s, t = given["s"], given["t"]
+    whole = p2.CORES * p2.TILES
+    words = ours.entry("sum").args(s, t, whole)
+    assert words == list(today.sum.args(s, t, whole))
+    # every range is stated: s's tiles 0 .. tiles and t's one tile, both checked;
+    # a tile more than s holds: today checks nothing here and sends it, the IR refuses
+    assert list(today.sum.args(s, t, whole + 1)) == [*words[:2], whole + 1]
+    with pytest.raises(km.ProgramError, match="items 0 to 768 of s"):
+        ours.entry("sum").args(s, t, whole + 1)

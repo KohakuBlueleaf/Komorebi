@@ -217,6 +217,8 @@ pub enum Expr {
     Size,
     /// A sum.
     Add(Box<Expr>, Box<Expr>),
+    /// A difference: the first less the second (a host refuses one below 0).
+    Sub(Box<Expr>, Box<Expr>),
     /// A product.
     Mul(Box<Expr>, Box<Expr>),
 }
@@ -342,6 +344,24 @@ pub struct Buffer {
     /// The other half of its pair, when it is one: the two halves of a stream's
     /// buffer, one for each mover.
     pub pair: Option<u32>,
+    /// How compute unpacks its tiles to Dst, when not the default.
+    pub unpack: Option<Unpack>,
+}
+
+/// How compute unpacks a buffer's tiles to its Dst registers, when not the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unpack {
+    /// As float32, unrounded (tt-metal's `UnpackToDestFp32`): a float32 buffer's.
+    ToDestFp32,
+}
+
+impl Unpack {
+    /// tt-metal's name of it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Unpack::ToDestFp32 => "UnpackToDestFp32",
+        }
+    }
 }
 
 /// A backend's output: files, the entries, and how to build them; nothing is run and

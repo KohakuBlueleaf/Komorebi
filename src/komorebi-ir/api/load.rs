@@ -21,6 +21,9 @@ pub struct LoadBuffer {
     pub pages: u64,
     /// The other half of its pair, when it is one.
     pub pair: Option<u32>,
+    /// How compute unpacks its tiles to Dst, by tt-metal's name, when not the default
+    /// (`UnpackToDestFp32`: today's `unpack_to_dest_mode` of the buffer).
+    pub unpack: Option<&'static str>,
 }
 
 /// What a load makes.
@@ -102,6 +105,7 @@ pub fn load(
             page_bytes: b.page_bytes,
             pages: b.pages,
             pair: b.pair,
+            unpack: b.unpack.map(|u| u.name()),
         });
     }
     let name = module.programs.first().map_or("", |p| p.name.as_str());

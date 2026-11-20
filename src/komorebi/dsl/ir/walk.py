@@ -1,7 +1,7 @@
-"""The walk: a class's handlers, read with `ast` as the class compiler reads them,
-written as one IR module's text with the origin of each of its lines. It knows the
-corpus's lines (a word, a partition, streams, a read loop pushing a tile function's
-result or a tile expression); any other is refused by name, with its class's line."""
+"""The walk: a class's handlers, read with `ast` as the class compiler does, as one IR
+module's text with each line's origin. It knows the corpus's lines (a word, a partition,
+streams, a loop pushing a tile function's result or expression, a sum reduced and
+written by the leader); any other is refused by name, with its class's line."""
 
 import ast
 from dataclasses import dataclass, field
@@ -16,6 +16,8 @@ from komorebi.dsl.front.names import kind_of, spelling
 
 # The tensor formats the walk writes, by the DSL's names.
 FORMATS = {"bfloat16": "bf16", "float32": "f32"}
+# A tile's formats, by the DSL's constructs (km.fp32).
+TILE_FORMATS = {"fp32": "f32", "bf16": "bf16"}
 # The make's keywords that are no part of the module: load facts and the report's log.
 LOAD_OPTIONS = ("log", "l1", "depth")
 # Names a value or a parameter cannot have in the text: the IR's keywords, and its
@@ -59,7 +61,8 @@ class Made:
 @dataclass
 class Value:
     """What a name holds in a handler: its kind ("tensor", "u32", "f32", "partition",
-    "sink", "block"), a partition's tensor and range's words, a block's tiles."""
+    "sink", "block", "tile", "reduced"), a partition's tensor and range's words, a
+    block's tiles."""
 
     kind: str
     format: str = ""
@@ -119,8 +122,8 @@ def module(cls, **make):
                 )
     formats = []
     for walk in walks:
-        for value in walk.params.values():
-            if value.kind == "tensor" and value.format not in formats:
+        for value in [*walk.params.values(), *walk.scope.values()]:
+            if value.kind in ("tensor", "tile") and value.format not in formats:
                 formats.append(value.format)
     text.line(0, f"module {cls.__name__.lower()}")
     text.line(0, "")
@@ -287,9 +290,16 @@ class Handler:
     def statement(self, node):
         if isinstance(node, ast.Assign):
             return self.assign(node)
+        if isinstance(node, ast.AugAssign):
+            return (node, [self.augment(node)], [])
         if isinstance(node, ast.For):
             return self.loop(node)
+        if isinstance(node, ast.If):
+            return self.leader(node)
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Attribute) and func.attr == spelling("write"):
+                return (node, [self.store(node, node.value)], [])
             return (node, [self.push(node, node.value)], [])
         self.refuse(
             node, "a line the IR module does not write yet", "see the IR's lines"
@@ -311,6 +321,10 @@ class Handler:
             lines = self.stream(node, value, write=True)
             lines[-1] = f"let {self.name(target)} = {lines[-1]}"
             self.scope[target] = Value("sink")
+        elif construct == "zeros":
+            lines = [self.zeros(node, target, value)]
+        elif construct == "reduce":
+            lines = [self.reduce(node, target, value)]
         elif word is not None:
             lines = [f"let {self.name(target)} = {bare(word)}"]
             self.scope[target] = Value("u32")
@@ -348,6 +362,111 @@ class Handler:
         self.scope[target] = Value("partition", tensor=tensor, first=first, count=count)
         view = f"{self.name(tensor)}.tiles({first}, {count})"
         return f"let {self.name(target)} = {partition_text(view)}"
+
+    def zeros(self, node, target, value):
+        """`total = km.tile.zeros(km.fp32)`: a tile of zeros the handler adds to."""
+        (arg,) = value.args if len(value.args) == 1 and not value.keywords else (None,)
+        format_ = None
+        if (
+            isinstance(arg, ast.Attribute)
+            and isinstance(arg.value, ast.Name)
+            and arg.value.id == "km"
+        ):
+            format_ = TILE_FORMATS.get(kind_of(arg.attr, tuple(TILE_FORMATS)))
+        if format_ is None:
+            self.refuse(
+                node,
+                "a tile of zeros of what is not a format written",
+                f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32)",
+            )
+        self.scope[target] = Value("tile", format=format_)
+        return f"var {self.name(target)}: tile<{format_}> = zeros"
+
+    def augment(self, node):
+        """`total += tile`: the loop's tile added to a tile of the handler."""
+        target, value = node.target, node.value
+        if not (
+            isinstance(node.op, ast.Add)
+            and isinstance(target, ast.Name)
+            and self.kind(target.id) == "tile"
+            and isinstance(value, ast.Name)
+            and self.kind(value.id) == "block"
+            and self.scope[value.id].tiles == 1
+        ):
+            self.refuse(
+                node,
+                "an augmented assignment other than tile += the loop's tile",
+                "add the loop's tile (block=1) to a tile of zeros",
+            )
+        return f"{self.name(target.id)} += {self.name(value.id)}"
+
+    def reduce(self, node, target, value):
+        """`whole = km.reduce(total, form="tree")`: the group's sum, with `sum`; how the
+        backend groups it is its own (on Tensix a tree), so no form is written."""
+        tile = value.args[0] if len(value.args) == 1 else None
+        if not (isinstance(tile, ast.Name) and self.kind(tile.id) == "tile"):
+            self.refuse(node, "a reduce of what is not a tile", "reduce one tile")
+        for keyword in value.keywords:
+            given = keyword.value
+            if keyword.arg != spelling("form"):
+                self.refuse(
+                    node,
+                    f"a reduce's {keyword.arg}= is not written in an IR module yet",
+                    "leave it out",
+                )
+            if isinstance(given, ast.Constant) and given.value == "owner":
+                self.refuse(
+                    node,
+                    'a reduce by owner (form="owner") is not written in an IR module '
+                    "yet: no tensix.* hint names it",
+                    'leave form= out or write form="tree"',
+                )
+            if not (isinstance(given, ast.Constant) and given.value == "tree"):
+                self.refuse(
+                    node, "a reduce's form that is not written", 'write form="tree"'
+                )
+        self.scope[target] = Value("reduced", format=self.scope[tile.id].format)
+        return f"let {self.name(target)} = reduce({self.name(tile.id)}, with = sum)"
+
+    def leader(self, node):
+        """`if self.rank == self.leader:` over its lines: `if worker.is_leader`."""
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and self_attribute(test.left) == spelling("rank")
+            and self_attribute(test.comparators[0]) == spelling("leader")
+            and not node.orelse
+        ):
+            self.refuse(
+                node,
+                "an if other than `if self.rank == self.leader:` with no else",
+                "test the leader so",
+            )
+        return (node, ["if worker.is_leader {"], self.body(node.body))
+
+    def store(self, node, call):
+        """`t.pages(a, b).write(whole)`: a reduce's result written to t's tiles."""
+        pages = call.func.value
+        whole = call.args[0] if len(call.args) == 1 and not call.keywords else None
+        if not (isinstance(whole, ast.Name) and self.kind(whole.id) == "reduced"):
+            self.refuse(
+                node,
+                "a page write of what is not a reduce's result",
+                "write the tile km.reduce(...) gives",
+            )
+        if not (
+            isinstance(pages, ast.Call)
+            and isinstance(pages.func, ast.Attribute)
+            and pages.func.attr == spelling("pages")
+            and isinstance(pages.func.value, ast.Name)
+            and self.kind(pages.func.value.id) == "tensor"
+        ):
+            self.refuse(
+                node, "a write to what is not t.pages(first, count)", "write t's pages"
+            )
+        return f"store {self.view(node, pages, [])} <- {self.name(whole.id)}"
 
     def view(self, node, view, lines):
         """The text of a stream's view: `t.pages(a, b)` as `t.tiles(a, b)`; of `t[p]`,
@@ -390,7 +509,8 @@ class Handler:
         return self.restated[key]
 
     def stream(self, node, call, write):
-        """The lines of `km.Stream(t[p], block=n)`, the last one the stream itself."""
+        """The lines of `km.Stream(t[p], block=n)` (n 1 when not given), the last one
+        the stream itself."""
         keywords = {k.arg: k.value for k in call.keywords}
         allowed = {spelling("block")} | ({spelling("write_stream")} if write else set())
         for key in keywords:
@@ -400,7 +520,8 @@ class Handler:
                     f"a stream's {key}= is not written in an IR module yet",
                     "leave it out",
                 )
-        block = keywords.get(spelling("block"))
+        # no block= is a block of one tile, as today's (`stream_options`, row=1)
+        block = keywords.get(spelling("block"), ast.Constant(1))
         if not (isinstance(block, ast.Constant) and type(block.value) is int):
             self.refuse(
                 node, "a stream's block that is not a number written", "write block=<n>"
@@ -428,7 +549,8 @@ class Handler:
         lines = self.stream(node, node.iter, write=False)
         target = node.target.id
         lines[-1] = f"for {self.name(target)} in {lines[-1]} {{"
-        block = {k.arg: k.value for k in node.iter.keywords}[spelling("block")].value
+        keywords = {k.arg: k.value for k in node.iter.keywords}
+        block = keywords.get(spelling("block"), ast.Constant(1)).value
         self.scope[target] = Value(
             "block", format=self.scope_format(node.iter), tiles=block
         )
@@ -540,6 +662,14 @@ class Handler:
     def word(self, node, expression):
         """An int expression of the handler's words (`int_text`), else refused."""
         text = self.int_text(expression)
+        nodes = ast.walk(expression)
+        leader = any(self_attribute(n) == spelling("leader") for n in nodes)
+        if text is None and leader:
+            self.refuse(
+                node,
+                "self.leader as a number is not written in an IR module yet",
+                "test it: `if self.rank == self.leader:`",
+            )
         if text is None:
             self.refuse(
                 node,
@@ -600,14 +730,34 @@ class Handler:
 
 
 def construct_of(node):
-    """The construct a call is: "partition" (self.partition), "stream" (km.Stream)."""
+    """The construct a call is: "partition" (self.partition), "stream" (km.Stream),
+    "reduce" (km.reduce), "zeros" (km.tile.zeros)."""
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return None
     func = node.func
     if isinstance(func.value, ast.Name) and func.value.id == "self":
         return kind_of(func.attr, ("partition",))
     if isinstance(func.value, ast.Name) and func.value.id == "km":
-        return kind_of(func.attr, ("stream",))
+        return kind_of(func.attr, ("stream", "reduce"))
+    tile = func.value
+    if (
+        isinstance(tile, ast.Attribute)
+        and tile.attr == spelling("tile")
+        and isinstance(tile.value, ast.Name)
+        and tile.value.id == "km"
+    ):
+        return kind_of(func.attr, ("zeros",))
+    return None
+
+
+def self_attribute(node):
+    """The attribute's name of `self.<name>`, else None."""
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ):
+        return node.attr
     return None
 
 

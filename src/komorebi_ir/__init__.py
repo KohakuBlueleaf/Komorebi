@@ -118,7 +118,7 @@ class EntryPoint(NamedTuple):
     """What a host invokes: ``Program.handler``, kind, number, symbol, parameter kinds,
     words (``("address" | "tiles" | "word", p)``), the ranges a host checks, ``(tensor,
     first, count)``, each end ``("word", i)``, ``("const", n)``, ``("rank",)``,
-    ``("size",)``, ``("add", a, b)`` or ``("mul", a, b)``."""
+    ``("size",)``, ``("add" | "sub" | "mul", a, b)``."""
 
     name: str
     kind: str
@@ -143,13 +143,15 @@ class Kernel(NamedTuple):
 
 class Buffer(NamedTuple):
     """A buffer of each core's memory the kernels pass tiles through; ``pair`` the
-    other half's index when it is one half of a stream's pair, one for each mover."""
+    other half's index when it is one half of a stream's pair, one for each mover;
+    ``unpack`` how compute unpacks it to Dst when not the default (tt-metal's name)."""
 
     index: int
     format: str
     page_bytes: int
     pages: int
     pair: int | None
+    unpack: str | None
 
 
 class Step(NamedTuple):
@@ -211,13 +213,15 @@ class LoadedKernel(NamedTuple):
 
 
 class LoadBuffer(NamedTuple):
-    """A buffer as a load makes it: its format by the loader's name (``bfloat16``)."""
+    """A buffer as a load makes it: its format by the loader's name (``bfloat16``),
+    ``unpack`` as in ``Buffer``."""
 
     index: int
     dtype: str
     page_bytes: int
     pages: int
     pair: int | None
+    unpack: str | None
 
 
 class Loaded(NamedTuple):

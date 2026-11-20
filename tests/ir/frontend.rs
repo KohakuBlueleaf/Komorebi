@@ -199,7 +199,7 @@ fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix:
                 Processor::Compute => ("compute", 2),
             };
             let args: Vec<String> = k.args.iter().map(u64::to_string).collect();
-            let options = k
+            let mut options: Vec<(String, String)> = k
                 .options
                 .iter()
                 .map(|(name, v)| {
@@ -210,6 +210,15 @@ fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix:
                     (name.clone(), v)
                 })
                 .collect();
+            // the buffers unpacked to Dst, as today's compute option (a Python dict)
+            let unpacked: Vec<String> = buffers
+                .iter()
+                .filter_map(|b| b.unpack.map(|u| format!("{}: '{}'", b.index, u.name())))
+                .collect();
+            if k.processor == Processor::Compute && !unpacked.is_empty() {
+                let dict = format!("{{{}}}", unpacked.join(", "));
+                options.push(("unpack_to_dest_mode".to_string(), dict));
+            }
             format!(
                 "KERNEL {role} {} {number} args={} defines={} options={}",
                 k.source,
@@ -315,4 +324,40 @@ fn program_1_through_the_frontend_is_todays_text_byte_for_byte() {
         count: Expr::Const(64),
     };
     assert_eq!(output.entries[0].bounds, [bound(0), bound(1)]);
+}
+
+#[test]
+fn program_2_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // StepHandlers.sum: a partition's tiles summed into a tile of zeros, the sum
+    // reduced over the group (by tree on Tensix), the leader's written to one tile.
+    let made = made("steps", "steps_sum", "StepHandlers");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    // The stand-ins: s of 768 float32 pages of 4096 B, t of one.
+    let tensor = |pages: u64| LoadTensor {
+        pages,
+        layout: vec![2, 4096],
+        dram_page: None,
+    };
+    same_as_today(&made, &module, &[tensor(768), tensor(1)], "stephandlers");
+    // Every range is a bound: s's partitioned tiles 0 .. tiles, and t's one tile.
+    let target = Target {
+        arch: chip::ARCH.to_string(),
+        features: Default::default(),
+    };
+    let output = Tensix
+        .compile(&module, &target)
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let bound = |tensor, count| Bound {
+        tensor,
+        first: Expr::Const(0),
+        count,
+    };
+    assert_eq!(
+        output.entries[0].bounds,
+        [bound(0, Expr::Word(2)), bound(1, Expr::Const(1))]
+    );
 }

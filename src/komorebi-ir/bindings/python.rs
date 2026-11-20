@@ -326,6 +326,9 @@ fn expr<'py>(py: Python<'py>, e: &Expr) -> PyResult<Bound<'py, PyAny>> {
         Expr::Add(a, b) => ("add", expr(py, a)?, expr(py, b)?)
             .into_pyobject(py)?
             .into_any(),
+        Expr::Sub(a, b) => ("sub", expr(py, a)?, expr(py, b)?)
+            .into_pyobject(py)?
+            .into_any(),
         Expr::Mul(a, b) => ("mul", expr(py, a)?, expr(py, b)?)
             .into_pyobject(py)?
             .into_any(),
@@ -402,6 +405,9 @@ fn kernel<'py>(py: Python<'py>, k: &Kernel) -> PyResult<KernelRow<'py>> {
     ))
 }
 
+/// A buffer as Python takes it: index, format, page bytes, pages, pair and unpack.
+type BufferRow<'a> = (u32, &'a str, u64, u64, Option<u32>, Option<&'a str>);
+
 type KernelRow<'py> = (
     String,
     &'static str,
@@ -461,7 +467,17 @@ fn emit<'py>(
                 .collect::<PyResult<_>>()?,
             buffers
                 .iter()
-                .map(|b| (b.index, b.format.name(), b.page_bytes, b.pages, b.pair))
+                .map(|b| {
+                    let unpack = b.unpack.map(|u| u.name());
+                    (
+                        b.index,
+                        b.format.name(),
+                        b.page_bytes,
+                        b.pages,
+                        b.pair,
+                        unpack,
+                    )
+                })
                 .collect(),
             Vec::new(),
         ),
@@ -475,7 +491,7 @@ fn emit<'py>(
         ),
     };
     let kernels: Vec<KernelRow> = kernels;
-    let buffers: Vec<(u32, &str, u64, u64, Option<u32>)> = buffers;
+    let buffers: Vec<BufferRow> = buffers;
     let steps: Vec<(String, Vec<String>)> = steps;
     let row = (output.key.hex(), files, entries, kernels, buffers, steps);
     Ok(row.into_pyobject(py)?.into_any())
@@ -550,10 +566,10 @@ fn load<'py>(
         );
         kernels.push(row.into_pyobject(py)?.into_any());
     }
-    let buffers: Vec<(u32, &str, u64, u64, Option<u32>)> = loaded
+    let buffers: Vec<BufferRow> = loaded
         .buffers
         .iter()
-        .map(|b| (b.index, b.dtype, b.page_bytes, b.pages, b.pair))
+        .map(|b| (b.index, b.dtype, b.page_bytes, b.pages, b.pair, b.unpack))
         .collect();
     let (name, text) = loaded.thread;
     Ok((name, text, kernels, buffers).into_pyobject(py)?.into_any())

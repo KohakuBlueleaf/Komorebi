@@ -158,6 +158,13 @@ def test_emit_gives_the_tensix_output_as_data():
         ("word", i) for i in (2, 3, 4)
     ]
     assert entry.bounds == [(t, ("word", 2), ("word", 3)) for t in (0, 1)]
+    # a range of a difference is stated too: every range of a tensor is a bound
+    less = T1.replace("x.tiles(first, tiles)", "x.tiles(first, tiles - first)").replace(
+        "y.tiles(first, tiles)", "y.tiles(first, tiles - first)"
+    )
+    (entry,) = ir.emit(ir.compile(less), "tensix").entries
+    count = ("sub", ("word", 3), ("word", 2))
+    assert entry.bounds == [(t, ("word", 2), count) for t in (0, 1)]
     layouts = [("layout", 0), ("layout", 1)]
     assert [(k.source, k.processor, k.args) for k in out.kernels] == [
         ("movement.cpp", "reader", layouts),

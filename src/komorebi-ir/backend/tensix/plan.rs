@@ -1,15 +1,18 @@
 //! What a handler's body is, in the terms today's class DSL compiles: its command
 //! words, its named int values, the one partition its streams share or the range
-//! each streams, a write stream, a read stream whose loop pushes a tile function's
-//! result. A body of another form is refused by name (K964) until it is built.
+//! each streams, and a read stream whose loop either pushes a tile function's result
+//! into a write stream, or sums its tiles into a `var` reduced over the group and
+//! stored by the leader. A body of another form is refused by name (K964).
 
 use std::collections::HashMap;
 
 use crate::backend::{Refusal, NOT_BUILT};
-use crate::program::body::{Body, InstId, Op, ValueId};
+use crate::program::body::{Body, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
-use crate::types::{BinOp, ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type};
+use crate::types::{
+    BinOp, Combiner, ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type,
+};
 
 /// How a command word is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +129,37 @@ pub struct Call {
     pub inst: InstId,
 }
 
+/// What a handler's loop makes of its read stream's tiles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shape {
+    /// `out.push(f(tile, k))` into a write stream of the same count (the first lesson).
+    Mapped {
+        /// The write stream (the sink).
+        write: Moved,
+        /// The loop's call.
+        call: Call,
+    },
+    /// `total += tile` from `zeros`, the total reduced over the group, the leader's
+    /// result stored (program 2).
+    Summed(Sum),
+}
+
+/// A sum of a stream's tiles: `var total: tile<f32> = zeros`, `total += tile` in the
+/// loop, `let whole = reduce(total, with = sum)`, `if worker.is_leader { store ... }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sum {
+    /// The `zeros` the total starts at.
+    pub zeros: InstId,
+    /// The add in the loop.
+    pub add: InstId,
+    /// The reduce.
+    pub reduce: InstId,
+    /// The `if worker.is_leader`.
+    pub leader: InstId,
+    /// The store in it: its tensor and tiles, one block of one tile.
+    pub store: Moved,
+}
+
 /// One handler, as the kernels print it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -142,12 +176,28 @@ pub struct Plan {
     /// The partitions, in the order they are written: one where the streams' are
     /// the same range (`shared`), else the write stream's and the read stream's.
     pub parts: Vec<Part>,
-    /// The write stream (the sink).
-    pub write: Moved,
     /// The read stream (the loop's).
     pub read: Moved,
-    /// The loop's call.
-    pub call: Call,
+    /// What the loop makes of it.
+    pub shape: Shape,
+}
+
+impl Plan {
+    /// The tiles the handler writes: its write stream's, or its store's.
+    pub fn written(&self) -> &Moved {
+        match &self.shape {
+            Shape::Mapped { write, .. } => write,
+            Shape::Summed(sum) => &sum.store,
+        }
+    }
+
+    /// The first instruction of the loop's body (whose line ends the loop's head).
+    pub fn looped(&self) -> InstId {
+        match &self.shape {
+            Shape::Mapped { call, .. } => call.inst,
+            Shape::Summed(sum) => sum.add,
+        }
+    }
 }
 
 /// The name the notes give value `v` of `body`, if any.
@@ -218,9 +268,8 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
     let Found {
         locals,
         parts,
-        write,
         read,
-        call,
+        shape,
     } = found;
     Ok(Plan {
         program: p,
@@ -229,9 +278,8 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         words,
         locals,
         parts,
-        write,
         read,
-        call,
+        shape,
     })
 }
 
@@ -273,6 +321,11 @@ enum Val {
     Sink,
     Tile,
     Called,
+    Zeros,
+    Total,
+    Added,
+    Reduced,
+    Leader,
 }
 
 /// The tiles a stream was opened on, before the partitions are shared.
@@ -286,16 +339,31 @@ enum Over {
 struct Found {
     locals: Vec<Local>,
     parts: Vec<Part>,
-    write: Moved,
     read: Moved,
-    call: Call,
+    shape: Shape,
+}
+
+/// What the walk found of a sum, as it is read.
+#[derive(Default)]
+struct Summing {
+    local: Option<LocalId>,
+    zeros_seen: bool,
+    zeros: Option<InstId>,
+    add: Option<InstId>,
+    summed: bool,
+    reduce: Option<InstId>,
+    leader: Option<InstId>,
+    store: Option<Moved>,
+    closed: bool,
 }
 
 /// The body read instruction by instruction: arguments, ints of words, numbers and
 /// the rank (a named one a local), partitions of `t.tiles(first, n)` by rank and
 /// size, one sink, one stream, each of a partition or of tiles, the loop over the
 /// stream whose body calls a tile function on the loop's tile (or block) and a `f32`
-/// word and pushes the result into the sink, the loop's end, and nothing after.
+/// word and pushes the result into the sink, the loop's end, and nothing after; or,
+/// with no sink, a `var` of `zeros` the loop adds each tile to, its reduce with `sum`
+/// after the loop and the leader's store of the result, and nothing after.
 struct Walk<'m> {
     module: &'m Module,
     body: &'m Body,
@@ -309,6 +377,7 @@ struct Walk<'m> {
     looped: bool,
     pushed: bool,
     ended: bool,
+    sum: Summing,
 }
 
 impl<'m> Walk<'m> {
@@ -326,6 +395,7 @@ impl<'m> Walk<'m> {
             looped: false,
             pushed: false,
             ended: false,
+            sum: Summing::default(),
         }
     }
 
@@ -357,8 +427,14 @@ impl<'m> Walk<'m> {
         for (i, inst) in self.body.insts.iter().enumerate() {
             let id = InstId(i as u32);
             let anchor = Anchor::Inst(self.at, id);
-            if self.ended {
+            if self.ended && self.sum.local.is_none() {
                 return Err(not_built("a handler's lines after its stream loop", anchor));
+            }
+            if self.sum.closed {
+                return Err(not_built(
+                    "a handler's lines after its leader's store",
+                    anchor,
+                ));
             }
             let val = self
                 .step(&inst.op, id)
@@ -371,9 +447,18 @@ impl<'m> Walk<'m> {
             BodyRef::Handler(p, h) => Anchor::Handler(p, h),
             _ => Anchor::Module,
         };
-        let (Some((_, write, wover)), Some((read, rover)), Some(call), true) =
-            (self.sink, self.stream, self.call, self.ended)
-        else {
+        if self.sum.local.is_some() {
+            return self.summed(at);
+        }
+        if self.sum.zeros_seen {
+            return Err(not_built("a zeros other than a var's start", at));
+        }
+        let (Some((_, write, wover)), Some((read, rover)), Some(call), true) = (
+            self.sink.take(),
+            self.stream.take(),
+            self.call.take(),
+            self.ended,
+        ) else {
             return Err(not_built(
                 "a handler other than a stream loop that pushes a tile function's result into a sink",
                 at,
@@ -425,7 +510,19 @@ impl<'m> Walk<'m> {
                 ))
             }
         };
-        // a named value no stream reads: no line today's text prints
+        self.locals_read(&parts, [&write, &read], at)?;
+        Ok(Found {
+            locals: self.locals,
+            parts,
+            read,
+            shape: Shape::Mapped { write, call },
+        })
+    }
+
+    /// Refuses a named value no stream reads (no line today's text prints) and a read
+    /// stream's count of a named value.
+    fn locals_read(&self, parts: &[Part], moved: [&Moved; 2], at: Anchor) -> Result<(), Refusal> {
+        let [write, read] = moved;
         let mut used = Vec::new();
         let ints = parts.iter().flat_map(|p| [&p.first, &p.n]).chain(
             [&write.range, &read.range]
@@ -468,12 +565,66 @@ impl<'m> Walk<'m> {
         if counted {
             return Err(not_built("a read stream's count of a named value", at));
         }
+        Ok(())
+    }
+
+    /// A sum's plan: its stream of a partition or of tiles, its total of `f32` tiles
+    /// of one a block, its reduce and the leader's store; every named value read.
+    fn summed(mut self, at: Anchor) -> Result<Found, Refusal> {
+        let sum = std::mem::take(&mut self.sum);
+        if self.sink.is_some() {
+            return Err(not_built("a sink in a handler of a sum", at));
+        }
+        let (Some((read, over)), Some(zeros), Some(add), Some(reduce), Some(leader)) = (
+            self.stream.take(),
+            sum.zeros,
+            sum.add,
+            sum.reduce,
+            sum.leader,
+        ) else {
+            return Err(not_built(
+                "a handler other than a stream loop summed into a var, reduced and stored by the leader",
+                at,
+            ));
+        };
+        let (Some(store), true) = (sum.store, sum.closed) else {
+            return Err(not_built("a reduce other than one the leader stores", at));
+        };
+        let format = self.words.get(read.tensor).and_then(|w| w.format);
+        if format != Some(Format::F32) || read.block != 1 {
+            return Err(not_built(
+                "a sum of a stream other than of f32 tiles one a block",
+                at,
+            ));
+        }
+        let (parts, read) = match over {
+            Over::Part(part) => (
+                vec![part],
+                Moved {
+                    range: Range::Part(0),
+                    ..read
+                },
+            ),
+            Over::Tiles(first, n) => (
+                Vec::new(),
+                Moved {
+                    range: Range::Tiles { first, n },
+                    ..read
+                },
+            ),
+        };
+        self.locals_read(&parts, [&store, &read], at)?;
         Ok(Found {
             locals: self.locals,
             parts,
-            write,
             read,
-            call,
+            shape: Shape::Summed(Sum {
+                zeros,
+                add,
+                reduce,
+                leader,
+                store,
+            }),
         })
     }
 
@@ -484,6 +635,95 @@ impl<'m> Walk<'m> {
             Op::Const(ConstValue::Int(_, x)) => Some(Val::Int(Int::Const(*x))),
             Op::Rank => Some(Val::Int(Int::Rank)),
             Op::GroupSize => Some(Val::Int(Int::Size)),
+            Op::Binary(BinOp::Add, a, b)
+                if matches!(self.val(*a), Some(Val::Total))
+                    && matches!(self.val(*b), Some(Val::Tile)) =>
+            {
+                if !self.looped || self.ended || self.sum.add.is_some() {
+                    return Err("an add of tiles other than the total's in the loop, once".into());
+                }
+                self.sum.add = Some(id);
+                Some(Val::Added)
+            }
+            Op::Zeros if !self.looped && self.sum.zeros.is_none() => {
+                self.sum.zeros_seen = true;
+                Some(Val::Zeros)
+            }
+            Op::Set(l, v) => {
+                let tile = self.body.locals.get(l.0 as usize) == Some(&Type::Tile(Format::F32));
+                match (self.val(*v), self.sum.local) {
+                    (Some(Val::Zeros), None) if tile && !self.looped => {
+                        self.sum.local = Some(*l);
+                        self.sum.zeros = Some(id);
+                    }
+                    (Some(Val::Added), Some(local)) if local == *l && !self.sum.summed => {
+                        self.sum.summed = true;
+                    }
+                    _ => {
+                        return Err(
+                            "a var other than a tile<f32> of zeros the loop adds its tiles to"
+                                .into(),
+                        )
+                    }
+                }
+                None
+            }
+            Op::Get(l) if self.sum.local == Some(*l) => Some(Val::Total),
+            Op::ReduceGroup {
+                x,
+                with,
+                within,
+                among,
+                publish,
+            } => {
+                let total = matches!(self.val(*x), Some(Val::Total));
+                if !self.ended || !total || self.sum.reduce.is_some() {
+                    return Err("a reduce other than of the loop's total, once, after it".into());
+                }
+                if *with != Combiner::Sum {
+                    return Err("a reduce with other than sum".into());
+                }
+                if within.is_some() || among.is_some() || !publish.is_empty() {
+                    return Err("a reduce with within, among or publish".into());
+                }
+                self.sum.reduce = Some(id);
+                Some(Val::Reduced)
+            }
+            Op::IsLeader if self.sum.reduce.is_some() => Some(Val::Leader),
+            Op::If { cond } => {
+                let leader = matches!(self.val(*cond), Some(Val::Leader));
+                if !leader || self.sum.leader.is_some() {
+                    return Err(
+                        "an if other than `if worker.is_leader` after the reduce, once".into(),
+                    );
+                }
+                self.sum.leader = Some(id);
+                None
+            }
+            Op::Store(view, v) => {
+                let reduced = matches!(self.val(*v), Some(Val::Reduced));
+                let inside = self.sum.leader.is_some() && !self.sum.closed;
+                let Some(Val::Tiles { tensor, first, n }) = self.val(*view) else {
+                    return Err("a store other than into t.tiles(first, n) of a parameter".into());
+                };
+                if !reduced || !inside || self.sum.store.is_some() || n != Int::Const(1) {
+                    return Err(
+                        "a store other than of the reduce's tile into one tile, by the leader, once"
+                            .into(),
+                    );
+                }
+                self.sum.store = Some(Moved {
+                    tensor,
+                    block: 1,
+                    inst: id,
+                    range: Range::Tiles { first, n },
+                });
+                None
+            }
+            Op::End if self.sum.leader.is_some() && self.sum.store.is_some() => {
+                self.sum.closed = true;
+                None
+            }
             Op::Binary(op, a, b) => {
                 let op = match op {
                     BinOp::Add => '+',
@@ -640,7 +880,7 @@ impl<'m> Walk<'m> {
                 self.pushed = true;
                 None
             }
-            Op::End if self.looped && self.pushed => {
+            Op::End if self.looped && !self.ended && (self.pushed || self.sum.summed) => {
                 self.ended = true;
                 None
             }
