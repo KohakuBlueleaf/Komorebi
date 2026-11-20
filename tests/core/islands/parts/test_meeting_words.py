@@ -1,9 +1,7 @@
 """The island table's meeting words (km::team_meet): after the children, their number
-(the most ranks an island of the load) and then a word a rank, each 0 at the load. A
-rank writes a meeting's marker into its word of the leader's, so a collective given up
-before its leader met leaves nothing a later meeting counts. Two words follow them, the
-collectives' generation pages' DRAM address and page bytes, then at the next 32 B the
-core's generation row (km_ask.hpp coll_guard)."""
+and then a word a rank, each 0 at the load; a rank writes a meeting's marker into its
+word of the leader's. Two words follow them, the collectives' generation pages' DRAM
+address and page bytes, then at the next 32 B the core's generation row."""
 
 from types import SimpleNamespace
 

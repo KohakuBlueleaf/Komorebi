@@ -517,18 +517,15 @@ class LinkPlanMixin:
 
     def _table_of(self, session):
         """The island table in the L1 of every core of `session`'s card, each core its
-        own island's (graph.table): KM_ISLAND_TABLE, sized by the island count and
-        the most ranks an island (km::team_meet's words, a rank each). Two words follow
-        the meeting words: the collectives' generation pages' DRAM address and page
-        bytes (km_ask.hpp coll_guard; KM_COLL_GEN_*, generation 1, made here in DRAM,
-        `_coll_gen`'s), then at the next 32 B the core's generation row."""
+        own island's (graph.table): KM_ISLAND_TABLE. After the meeting words (a rank
+        each) come the collectives' generation pages' DRAM address and page bytes,
+        then at the next 32 B the core's generation row (km_ask.hpp coll_guard)."""
         columns, rows = session.grid
         count = len(self.graph.islands)
         ranks = max(self.graph.count(island) for island in range(count))
         h = abi.headers()
-        # the entries (2 words an island), far tiles (2), counts (1), children (1),
-        # the meeting words (their number, then one a rank), the generation's two
-        # words, the row at the next 32 B
+        # entries (2 words an island), far tiles (2), counts, children, the meeting
+        # words (their number, one a rank), the generation's two words, then its row
         meet = 6 * count + 1 + ranks
         size = meet + 2 + 8 + h["KM_COLL_GEN_BYTES"] // 4
         # 64 B a page, its first 32 B the words: a live transfer moves whole 64 B

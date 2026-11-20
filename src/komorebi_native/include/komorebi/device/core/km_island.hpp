@@ -198,9 +198,8 @@ namespace km {
 #endif
         }
 
-        // The meeting words' L1 address on this island's cores (km::team_meet), after
-        // the table's children: a word, how many follow, then a word a rank of a team;
-        // 0: none (one island).
+        // The meeting words' L1 address on this island's cores (km::team_meet): a word,
+        // how many follow, then a word a rank of a team; 0: none (one island).
         uint32_t meetings() const {
 #if defined(KM_ONE_ISLAND)
             return 0;

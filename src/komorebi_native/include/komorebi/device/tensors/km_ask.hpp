@@ -2782,9 +2782,8 @@ namespace km {
         kCsStamps = 32
     };
 
-    // The last stage (kCsEntry .. kCsReleased) this CPU's collective reached, stamps
-    // or not: what a leader's mark says it gave up in (an overlay part's own, as
-    // team_goes_now's).
+    // The last stage (kCsEntry .. kCsReleased) this CPU's collective reached: what a
+    // leader's mark says it gave up in (an overlay part's own, as team_goes_now's).
 #if defined(KM_OVERLAY_PART)
     inline uint32_t& coll_stage() {
         static uint32_t own = 0;
@@ -2897,9 +2896,8 @@ namespace km {
         uint32_t index;
     };
 
-    // The releases and meetings so far in this command: every call's markers follow
-    // the last call's, so a second collective in one command never meets the first's
-    // marker.
+    // The releases and meetings so far in this command: a call's markers follow the
+    // last call's, so a second collective never meets the first's marker.
     struct TeamGoes {
         uint32_t sequence;
         uint32_t goes;
@@ -2930,8 +2928,7 @@ namespace km {
     }
 
     // The marker of `command`'s release or meeting `count`: its sequence, and count %
-    // 7 + 1 (two in a row differ). A word another command wrote never holds it (one
-    // 2^29 commands before excepted).
+    // 7 + 1 (two in a row differ); no other command's word holds it (2^29 apart).
     inline uint32_t team_marker(const km_command_t& command, uint32_t count) {
         return command.sequence << 3 | (count % 7 + 1);
     }
@@ -3002,9 +2999,7 @@ namespace km {
     }
 
     // The team meets: each rank writes the meeting's marker into its word of the
-    // leader's meeting words (Islands::meetings, word t.index), the leader waits until
-    // every word holds it. A marker, not a count: a collective given up before its
-    // leader met leaves words no later meeting's marker equals. False: gave up.
+    // leader's meeting words; the leader waits for all of them. False: gave up.
     template <typename Kernel>
     __attribute__((noinline)) bool team_meet(
         const Kernel& core, const km_command_t& command, const Team& t
@@ -3107,9 +3102,8 @@ namespace km {
         return code == kGaveNone || coll_gave_up(core, command, code);
     }
 
-    // The leader lets the team go: the release's marker into each rank's go word, which
-    // the rank waits for; a whole island led from its first core by a multicast a
-    // rectangle (KM_ISLAND_GO), else a write a rank. A marker, not a count (team_meet).
+    // The leader lets the team go: the release's marker into each rank's go word (a
+    // whole island by one multicast, KM_ISLAND_GO, else a write a rank).
     template <typename Kernel>
     inline bool team_go(const Kernel& core, const km_command_t& command, Team& t) {
         const Islands view = islands_at(core.args().control);
@@ -3428,14 +3422,8 @@ namespace km {
         return partition(pages, c, n);
     }
 
-    // A collective given up (at the dispatcher's deadline or at a wait's limit) leaves
-    // what its leaders counted, and the tensors it was reducing half summed. The
-    // generation ties a leader's state to the host's clear: a DRAM page a core
-    // (KM_COLL_GEN_*, 1 at the load), raised by run.clear_collectives() with nothing
-    // running. A leader reads it into its L1 row as its collective begins. One that
-    // gives up inside a collective marks itself with it, and its next collective gives
-    // up at once, by name, until the host has raised it; one that last led under
-    // another generation starts its counts table at 0.
+    // A leader's state is tied to the host's clear by a generation (KM_COLL_GEN_*): a
+    // leader that gave up refuses by name until run.clear_collectives() raises it.
     struct CollGen {
         uint32_t row;   // the core's generation row in L1 (0: the load made none)
         uint32_t dram;  // the generation pages' DRAM address
@@ -3472,9 +3460,8 @@ namespace km {
     }
 #endif
 
-    // The row from this core's DRAM page, or into it (`write`), done at return; a wait
-    // the dispatcher's abort does not end, so a mark made after a give-up at the
-    // deadline lands. Its kGave* code.
+    // The row from this core's DRAM page, or into it (`write`): a wait the abort does
+    // not end, so a mark made after a give-up lands. Its kGave* code.
     template <typename Kernel>
     inline uint32_t coll_gen_io(const Kernel& core, const CollGen& g, bool write) {
         const Islands view = islands_at(core.args().control);
@@ -3490,8 +3477,11 @@ namespace km {
         return core.poll_stop_at(
             kWhereAsk,
             [write] {
-                return write ? ncrisc_noc_nonposted_writes_flushed(noc_index)
-                             : ncrisc_noc_reads_flushed(noc_index);
+                return (
+                    write
+                        ? ncrisc_noc_nonposted_writes_flushed(noc_index)
+                        : ncrisc_noc_reads_flushed(noc_index)
+                );
             },
             core.args().wait_limit
         );
@@ -3516,10 +3506,8 @@ namespace km {
         return false;
     }
 
-    // A leader's collective: it marks itself with its generation if it does not end.
-    // The first mark under a generation also keeps what it gave up in (its give-up
-    // word of this command, 0: none recorded; the sequence; its stage), for the host
-    // to name; a refusal of a marked leader keeps the first.
+    // A leader's collective: it marks itself with its generation if it does not end;
+    // the first mark keeps what it gave up in (word, sequence, stage) for the host.
     template <typename Kernel>
     struct CollMark {
         const Kernel& core;
@@ -3534,8 +3522,9 @@ namespace km {
                     const uint32_t word = (
                         core.role() == kRoleWriter ? kStWriter : kStReader
                     );
-                    const volatile tt_l1_ptr uint32_t*
-                        state = l1(core.args().control + KM_CONTROL_STATE);
+                    const volatile tt_l1_ptr uint32_t* state = (
+                        l1(core.args().control + KM_CONTROL_STATE)
+                    );
                     gen[KM_COLL_GEN_GAVE] = (
                         state[word + 1] == command.sequence ? state[word] : 0
                     );
@@ -3553,10 +3542,8 @@ namespace km {
         }
     };
 
-    // A leader begins a collective: its generation read; one it gave up in, the host
-    // not having raised it since, gives up at once. The first it leads under a
-    // generation starts its counts table at 0, marked or not (what a given-up
-    // collective counted and left). False: gave up.
+    // A leader begins a collective: marked and not cleared, it gives up at once; its
+    // first under a generation starts its counts table at 0. False: gave up.
     template <typename Kernel>
     __attribute__((noinline)) bool coll_guard(
         const Kernel& core, const km_command_t& command

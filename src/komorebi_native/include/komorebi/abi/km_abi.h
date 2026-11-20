@@ -686,11 +686,10 @@ KM_STATIC_ASSERT(
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* the island table (KM_ISLAND_TABLE): an entry an island {first u16, count u16, next
-   link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids;
-   then the meeting words: a word, their number m (the most ranks an island), m words;
-   then two words, the collectives' generation pages' DRAM address and page bytes, and
-   at the next 32 B the core's generation row (KM_COLL_GEN_BYTES) */
+   link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids */
 #define KM_ISLAND_ENTRY_BYTES 8u
+/* after them the meeting words (their number m, then m words), the generation pages'
+   DRAM address and page bytes, then at the next 32 B the core's generation row */
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
 #endif
@@ -717,19 +716,14 @@ KM_STATIC_ASSERT(
 #define KM_ISLAND_PORT_LINKS 4u
 #define KM_ISLAND_PORT_BYTES 8u
 #define KM_ISLAND_NO_CORE 0xFFu
-/* a collective's generation (km_ask.hpp coll_guard): a DRAM page of 64 B a core (page
- * = the core) the host reads and writes, its first 32 B these words: the generation
- * (the host raises it after a collective is given up), the core's give-up mark, the
- * generation it last led a collective under (0: none); then, written with the mark
- * when the core marks itself, what it gave up in: its give-up word (code | where << 8
- * | slot << 16, the state word's), the command's sequence, the stage it had reached
- * (kCs*); word 3 is not used */
-#define KM_COLL_GEN_NOW 0u
-#define KM_COLL_GEN_MARK 1u
-#define KM_COLL_GEN_LAST 2u
-#define KM_COLL_GEN_GAVE 4u
-#define KM_COLL_GEN_SEQUENCE 5u
-#define KM_COLL_GEN_STAGE 6u
+/* a collective's generation row (km_ask.hpp coll_guard): the first 32 B of a core's
+   64 B DRAM page, read and written by the host; words by number, 3 not used */
+#define KM_COLL_GEN_NOW 0u      /* the generation; the host raises it after a give-up */
+#define KM_COLL_GEN_MARK 1u     /* the core's give-up mark */
+#define KM_COLL_GEN_LAST 2u     /* the generation it last led under (0: none) */
+#define KM_COLL_GEN_GAVE 4u     /* its give-up word: code | where << 8 | slot << 16 */
+#define KM_COLL_GEN_SEQUENCE 5u /* the given-up command's sequence */
+#define KM_COLL_GEN_STAGE 6u    /* the stage it had reached (kCs*) */
 #define KM_COLL_GEN_BYTES 32u
 /* after the ports: a word, the link area's L1 address on this island's cores (0: no
    link area) */

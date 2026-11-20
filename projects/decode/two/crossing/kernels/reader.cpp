@@ -23,10 +23,8 @@ namespace {
         }
     }
 
-    // The roots meet (km::team_meet's marker, the roots alone): a root writes the
-    // meeting's marker into its word of the leader's meeting words, the leader waits
-    // until each root's word holds it. A marker, not a count: a crossing given up
-    // before its leader met leaves nothing a later meeting counts. False: gave up.
+    // The roots meet (km::team_meet's marker, the roots alone): each root writes the
+    // marker into its word of the leader's, the leader waits for all. False: gave up.
     bool roots_meet(
         km::Reader& reader,
         const km_command_t& command,

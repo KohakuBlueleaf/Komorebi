@@ -1220,12 +1220,9 @@ class IslandRun(TreeCalls, RunCalls):
 
     def clear_collectives(self, timeout=10.0):
         """After a collective given up: every command waited for, then every core's
-        collectives' generation raised, so the cores that gave up lead collectives
-        again (until then each gives up at once, by name) and each leader's counts
-        start at 0. The data is not restored: write the tensors the given-up
-        collective was reducing again first (clearing says they are whole). Returns
-        the new generation; the host's collectives are no longer refused
-        (_coll_cleared)."""
+        generation raised, so the cores that gave up lead collectives again and each
+        leader's counts start at 0. The data is not restored: write the tensors it
+        was reducing again first. Returns the new generation."""
         with contextlib.suppress(KomorebiError):  # given up again: its cores marked
             self.drain(timeout)
         generation = self.session.raise_generation()
@@ -1240,12 +1237,8 @@ class IslandRun(TreeCalls, RunCalls):
     def _coll_cleared(self, what):
         """Refuses `what`, a host collective, before anything is queued, once the host
         has seen a command given up at its deadline on a load whose movers call a
-        collective and has not cleared since: queued, its leaders would refuse at once
-        but its other ranks would wait for them past the deadline, and a runtime
-        handler's command is never given up there, so the run would end (hazards.md, a
-        collective given up mid-way). The generation rows only name the leaders marked,
-        earliest stage first; none named: the given-up command was not a collective,
-        or its marks were not written."""
+        collective and has not cleared since: queued, it would end the run (hazards.md,
+        a collective given up mid-way). The rows name the leaders marked, if any."""
         if self._given_ups() == self._coll_clear_at:
             return
         if self._coll_movers is None:
@@ -1257,11 +1250,13 @@ class IslandRun(TreeCalls, RunCalls):
         where = (
             "an island"
             if not islands
-            else f"island {islands[0]}"
-            if len(islands) == 1
-            else "islands "
-            + ", ".join(str(i) for i in islands[:-1])
-            + f" and {islands[-1]}"
+            else (
+                f"island {islands[0]}"
+                if len(islands) == 1
+                else "islands "
+                + ", ".join(str(i) for i in islands[:-1])
+                + f" and {islands[-1]}"
+            )
         )
         named = [
             f"island {island}'s leader (core {core}) gave up at "
