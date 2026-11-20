@@ -32,6 +32,7 @@ from komorebi.tools.child_env import child_environment
 LIST = Path(__file__).with_name("card_checks.txt")
 LOGS = Path("build") / "card_check"  # under the root: a log a check, the prebuild stamp
 STAMP = "prebuilt.json"
+DEV = Path("/dev/tenstorrent")  # the driver's device nodes
 SHAPES = {"1": (0,), "2": (0, 1), "tensix": (1,)}
 ALONE = ("1", "tensix")  # a card opened once for the shape's list
 DISPATCHERS = {"tensix": dispatch.TENSIX}  # a shape's dispatcher (else the default)
@@ -89,6 +90,29 @@ def shape_environment(cards, **extra):
 
 def stamp_path(root):
     return Path(root) / LOGS / STAMP
+
+
+def made_off_card(dev=None, sys=None):
+    """Whether no card can be seen from here, as off_card.sh makes it (or a machine
+    with no card): no device node in /dev/tenstorrent, no driver entry in sysfs."""
+    dev = Path(DEV if dev is None else dev)
+    folders = (dev, Path(power.SYS if sys is None else sys) / "class" / "tenstorrent")
+    return not any(folder.is_dir() and any(folder.iterdir()) for folder in folders)
+
+
+def fresh_off_card(root):
+    """The regression's rule: the stamp of this code was made off card (its prebuild
+    saw no card), every line of the list is in it, each shape's shared open built."""
+    stamp = read_stamp(root)
+    if stamp.get("off_card") is not True:
+        return False
+    for cards in SHAPES:
+        lines = [check.line for check in read_list(LIST, cards)]
+        if any(line not in stamp.get("checks", {}) for line in lines):
+            return False
+        if stamp.get("shared", {}).get(cards) != lines:
+            return False
+    return True
 
 
 def prebuild_run(check, root):
@@ -207,7 +231,14 @@ def prebuild(checks, root, log_dir, jobs, list_path):
     """Every check's prebuild, `jobs` at a time; the second pass must compile nothing.
     Writes the stamp the card run reads; returns the number of checks that failed."""
     failed, kept, cold, started = 0, read_stamp(root), 0, time.perf_counter()
-    stamp = {"code": remembered.code_digest(), "checks": kept.get("checks", {})}
+    off_card = made_off_card()  # what this prebuild sees, not what its caller says
+    if kept.get("off_card") is not off_card:  # lines built the other way are not kept
+        kept = {}
+    stamp = {
+        "code": remembered.code_digest(),
+        "off_card": off_card,
+        "checks": kept.get("checks", {}),
+    }
     for check in checks:
         stamp["checks"].pop(check.line, None)
 
@@ -314,7 +345,8 @@ def compiled_in(text):
 
 def read_stamp(root):
     """The last prebuild's stamp ({"checks": {line: kernel buffer}, "shared": {cards:
-    the lines of the list built at its shared open}}) if made with this code; else {}.
+    the lines of the list built at its shared open}, "off_card": whether its prebuild
+    saw no card}) if made with this code; else {}.
     """
     try:
         stamp = json.loads(stamp_path(root).read_text())
