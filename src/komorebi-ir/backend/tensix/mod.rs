@@ -712,11 +712,10 @@ fn line_of(lines: &Lines, plan: &Plan, inst: InstId) -> u32 {
 /// The last head line of a compound statement: the line before its body's first.
 fn head_last(lines: &Lines, plan: &Plan) -> Option<u32> {
     if let Shape::Dropped = plan.shape {
-        // a loop whose body is one line that makes nothing (`pass`): its head ends
-        // the line before the statement's last
+        // a loop whose body makes nothing: before its `pass`, or a drain whole
         let body = BodyRef::Handler(plan.program, plan.handler);
         let place = lines.place(Anchor::Inst(body, plan.reads[0].inst))?;
-        return Some(place.last.saturating_sub(1).max(place.first));
+        return Some(origin::dropped_head_last(lines.origin?, place));
     }
     head_before(lines, plan, plan.looped())
 }
@@ -1745,12 +1744,17 @@ fn compute_text(
     out.push(String::new());
     out.push("void kernel_main() {".to_string());
     indented(&mut out, 1, "km::Compute compute;");
-    // the first read and the first written buffer (a sum's out buffer)
+    // the first read and the first written buffer (a sum's out buffer); with none
+    // written, the first read again (`program.compute_source`)
     let rows = plans.first().and_then(|p| out_rows(plans, p));
+    let writes = pairs(plans, lines)
+        .iter()
+        .any(|p| p.name.starts_with("kWrite"));
     let written = match plans.first().map(|p| &p.shape) {
         Some(Shape::Fields(_)) => rows.as_deref().unwrap_or("kOut0"),
         Some(Shape::Summed(_) | Shape::Product(_)) => "kOut0",
-        _ => "kWrite0.mover_a",
+        _ if writes => "kWrite0.mover_a",
+        _ => "kRead0.mover_a",
     };
     indented(
         &mut out,

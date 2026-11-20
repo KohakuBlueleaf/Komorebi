@@ -647,6 +647,54 @@ def test_program_4_built_through_the_ir_is_todays(tmp_path, monkeypatch):
             ours.entry("gate").args(a, b, out, gate.TILES, value, group=group)
 
 
+def test_program_5s_read_as_a_drain_is_todays(tmp_path, monkeypatch):
+    # `km.Stream(...).drain()` is today's loop over the stream with no body
+    source = (ROOT / "tests" / "ir" / "tensix" / "movement_class.py").read_text()
+    loop = (
+        "        for _ in km.Stream(\n"
+        "            pages, block=self.BLOCK, pattern=pattern, repeat=repetitions\n"
+        "        ):\n"
+        "            pass\n"
+    )
+    drain = (
+        "        km.Stream(\n"
+        "            pages, block=self.BLOCK, pattern=pattern, repeat=repetitions\n"
+        "        ).drain()\n"
+    )
+    assert loop in source
+    (tmp_path / "movement_class.py").write_text(source.replace(loop, drain))
+    movement = gate_script(tmp_path, monkeypatch, "movement_class", folder_copy=False)
+    given = movement.made_with()
+    m = module(movement.Movement, **given)
+    assert (
+        "        for i in range(repetitions) {\n"
+        "            for _ in stream(pages, block = BLOCK) @tensix.pattern(pattern) {\n"
+        "            }\n"
+    ) in m.text
+    today = movement.Movement(log=lambda line: None, **given)
+    ours = program(movement.Movement, log=lambda line: None, **given)
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+
+
+def test_a_program_that_only_drains_is_todays(tmp_path, monkeypatch):
+    # nothing written: compute starts up on its first read twice, as today's does
+    (tmp_path / "drained.py").write_text(
+        "import komorebi as km\n\n\n"
+        "class Touch(km.Program):\n"
+        "    @km.handler\n"
+        "    def touch(self, a: km.Tensor):\n"
+        "        km.Stream(a.pages(0, 1)).drain()\n"
+    )
+    drained = gate_script(tmp_path, monkeypatch, "drained", folder_copy=False)
+    given = {"a": tensor()}
+    today = drained.Touch(log=lambda line: None, **given)
+    ours = program(drained.Touch, log=lambda line: None, **given)
+    assert ours.sources() == today.sources()
+    compute = Path(ours.sources()["compute"]).read_text()
+    assert "compute_kernel_hw_startup(kRead0.mover_a, kRead0.mover_a);" in compute
+
+
 def test_program_5_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     movement = gate_script(tmp_path, monkeypatch, "movement_class")
     given = movement.made_with()

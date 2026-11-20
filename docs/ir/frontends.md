@@ -111,6 +111,7 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
   class uses `i`). Only a loop over one stream whose body is `pass` is repeated. A repeat of a loop
   with a body, or of two streams zipped, is refused by name;
 - a loop whose body is `pass`, written with an empty body (its blocks moved and dropped);
+  `km.Stream(...).drain()` is that loop, on the call's lines, as today makes it;
 - a loop over two read streams zipped (`for x, y in zip(km.Stream(...), km.Stream(...)):`),
   written `for x, y in zip(a.tiles(...), b.tiles(...))`. Three streams, a write stream or names
   other than one a stream are refused by name;

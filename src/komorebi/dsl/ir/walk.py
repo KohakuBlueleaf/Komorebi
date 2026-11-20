@@ -436,6 +436,14 @@ class Handler:
             func = node.value.func
             if isinstance(func, ast.Attribute) and func.attr == spelling("write"):
                 return (node, [self.store(node, node.value)], [])
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == spelling("drain")
+                and construct_of(func.value) == "stream"
+                and not node.value.args
+                and not node.value.keywords
+            ):
+                return self.loop(drained(node, func.value))
             return (node, [self.push(node, node.value)], [])
         self.refuse(
             node, "a line the IR module does not write yet", "see the IR's lines"
@@ -1370,6 +1378,18 @@ def type_text(value):
     if value.field:
         return f"tile<{value.format}>[{value.cols or value.tiles}]"
     return f"tile<{value.format}>"
+
+
+def drained(node, stream):
+    """`km.Stream(pages, ...).drain()` as today's `page_streams.drain` reads it: a loop
+    over the stream whose body is `pass`, on the call's lines."""
+    loop = ast.For(
+        target=ast.Name("_", ast.Store()), iter=stream, body=[ast.Pass()], orelse=[]
+    )
+    ast.copy_location(loop, node)
+    loop.end_lineno = node.end_lineno
+    loop.body[0].lineno = loop.body[0].end_lineno = node.lineno
+    return loop
 
 
 def construct_of(node):

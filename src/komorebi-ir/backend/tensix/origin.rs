@@ -86,6 +86,26 @@ fn tidied(text: &str) -> String {
     out
 }
 
+/// The last line of a loop whose body makes nothing (`pass`, or a drain's call), as
+/// today's `line_text` cuts its head: at the line before its body's first when that
+/// is after the statement's first, else the whole statement. A drain is the loop
+/// today makes on the call's own lines, so its head is the whole statement; a `pass`
+/// is the statement's last line (`pass` alone, or after the head's `:`).
+pub fn dropped_head_last(origin: &Origin, place: Place) -> u32 {
+    let Place { file, first, last } = place;
+    let text = line(origin, file, last).unwrap_or("");
+    let code = text.split('#').next().unwrap_or("").trim_end();
+    let passes = code.strip_suffix("pass").is_some_and(|before| {
+        let before = before.trim_end();
+        before.is_empty() || before.ends_with(':')
+    });
+    if passes && last > first {
+        last - 1
+    } else {
+        last
+    }
+}
+
 /// A statement group's comment (`compile/handler/statements.py`, `statements`):
 /// `line N: ` and the statement's text; a statement of more than three lines that
 /// holds no body gives its first line and ` ...`. `head_last` is a compound
@@ -148,5 +168,37 @@ mod tests {
             statement_comment(&o, compound, Some(5)),
             "line 5: for a in b:"
         );
+    }
+
+    #[test]
+    fn a_dropped_loops_head_ends_before_its_pass_and_a_drains_is_all_of_it() {
+        let o = origin(&[
+            "for _ in s(",
+            "    a, b",
+            "):",
+            "    pass  # nothing",
+            "s(",
+            "    a, b",
+            ").drain()",
+            "for _ in s(a):  pass",
+            "for _ in s(",
+            "    a",
+            "): pass",
+            "for _ in s(a): pass",
+        ]);
+        let at = |first, last| Place {
+            file: 0,
+            first,
+            last,
+        };
+        assert_eq!(dropped_head_last(&o, at(1, 4)), 3);
+        assert_eq!(dropped_head_last(&o, at(5, 7)), 7);
+        assert_eq!(
+            statement_comment(&o, at(5, 7), Some(7)),
+            "line 5: s(a, b).drain()"
+        );
+        assert_eq!(dropped_head_last(&o, at(8, 8)), 8);
+        assert_eq!(dropped_head_last(&o, at(9, 11)), 10);
+        assert_eq!(dropped_head_last(&o, at(12, 12)), 12);
     }
 }
