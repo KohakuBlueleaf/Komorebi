@@ -2,15 +2,19 @@
 //! the grid, the block expressions and the stores; `KernelIR::dump` prints it as today
 //! does. `kernel_ir` builds it from a `func` body as today's `tile_unit` traces a tile
 //! function at the 1-tile width: a load of each tile parameter's tile `unit`, the body
-//! on them, its result stored into `result`. What the trace would not make is refused
-//! by name (K964).
+//! on them, its result stored into `result`. `row_kernel_ir` builds it as today traces
+//! a tile function on a row of n tiles (the row form): a function on blocks of n tiles
+//! whose body reduces along a row. What the trace would not make is refused by name
+//! (K964).
 
 use crate::backend::tensix::plan::param_name;
 use crate::backend::{Refusal, NOT_BUILT};
 use crate::program::body::{Body, InstId, Op, ValueId};
 use crate::program::notes::{Anchor, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
-use crate::types::{BinOp, CmpOp, ConstValue, Format, FuncId, ScalarType, Type, UnaryOp};
+use crate::types::{
+    Axis, BinOp, CmpOp, ConstValue, Count, Format, FuncId, ReduceOp, ScalarType, Type, UnaryOp,
+};
 
 use super::py;
 
@@ -400,6 +404,8 @@ struct Tracer<'m> {
     calls: Vec<FuncId>,
     /// The place of the instruction being traced: the line of the nodes it makes.
     line: Option<String>,
+    /// Whether this is the row form's trace (a `.row()` reads a resident operand only).
+    row_form: bool,
 }
 
 impl Tracer<'_> {
@@ -551,12 +557,47 @@ impl Tracer<'_> {
                         _ => return Err(refused(i, "a comparison of two scalars".into())),
                     }
                 }
+                Op::Reduce(op, a, Axis::Row) => {
+                    // the IR's reduction along a row is today's exact one (the vector
+                    // unit's, in fp32), along the last dim
+                    let a = tile(&values, i, *a)?;
+                    let op = match op {
+                        ReduceOp::Sum => "sum",
+                        ReduceOp::Max => "max",
+                        ReduceOp::Min => "min",
+                    };
+                    let attrs = vec![
+                        ("op", Attr::Text(op.into())),
+                        ("exact", Attr::Text("True".into())),
+                        ("dim", Attr::Int(Int::Const(-1))),
+                    ];
+                    self.op("reduce", &[a], attrs)
+                }
+                Op::Reduce(_, _, Axis::Col) => {
+                    return Err(refused(i, "a reduction along a column".into()));
+                }
                 Op::Matmul(a, b) => {
                     let (a, b) = (tile(&values, i, *a)?, tile(&values, i, *b)?);
                     self.op("matmul", &[a, b], vec![])
                 }
                 Op::SpreadRow(a) => {
                     let a = tile(&values, i, *a)?;
+                    // the checker takes `.row()` of a parameter only: in the row form,
+                    // a resident one or a streamed one (a row load)
+                    let resident = match &a {
+                        Traced::Tile(id) => self
+                            .ir
+                            .arena
+                            .get(id.0)
+                            .is_some_and(|n| n.kind == "resident"),
+                        _ => false,
+                    };
+                    if self.row_form && !resident {
+                        return Err(refused(
+                            i,
+                            "the row form's .row() of a streamed operand".into(),
+                        ));
+                    }
                     self.op("row", &[a], vec![])
                 }
                 Op::SpreadCol(a) => {
@@ -628,6 +669,18 @@ fn values_set(values: &mut [Option<Traced>], defs: &[ValueId], made: Traced) {
 /// tensor's tiles, and the result is stored into the `float32` tensor `result`; a function
 /// on blocks is traced on one tile of each block.
 pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Refusal> {
+    // a reduction along a row is traced where every block is of one tile
+    let rows = module.funcs.get(f.0 as usize).is_none_or(|func| {
+        func.params
+            .iter()
+            .chain([&func.ret])
+            .all(|t| !matches!(t, Type::Block(_, r, c) if (r, c) != (&Count::ONE, &Count::ONE)))
+    });
+    one_tile(module, f, name, rows)
+}
+
+/// `kernel_ir`, with a reduction along a row traced when `rows` says so.
+fn one_tile(module: &Module, f: FuncId, name: &str, rows: bool) -> Result<KernelIR, Refusal> {
     let refused = |what: String, at: Anchor| Refusal {
         code: NOT_BUILT,
         what: format!("the Tensix backend's tile compiler does not take {what} yet"),
@@ -643,8 +696,9 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
         ));
     }
     // a function on blocks: its body, typed on blocks (R45), read as the one on each
-    // tile when it is element by element (the same unit): no product, no reduction
-    let whole = |op: &Op| matches!(op, Op::Matmul(..) | Op::Reduce(..));
+    // tile when it is element by element (the same unit): no product, and no reduction
+    // but where `rows` takes it (the chain refuses it with today's text)
+    let whole = |op: &Op| matches!(op, Op::Matmul(..)) || !rows && matches!(op, Op::Reduce(..));
     if func.on_blocks()
         && func
             .body
@@ -708,6 +762,7 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
         ir: KernelIR::new(name, tensors, values),
         calls: vec![f],
         line: None,
+        row_form: false,
     };
     tracer.ir.grid = Some(Grid {
         count: Int::Size {
@@ -740,6 +795,178 @@ pub fn kernel_ir(module: &Module, f: FuncId, name: &str) -> Result<KernelIR, Ref
     let value = tracer.node(&result);
     tracer.ir.stores.push(Store {
         view: tile("result"),
+        value,
+    });
+    Ok(tracer.ir)
+}
+
+/// The KernelIR of function `f`, a function on blocks of `count` tiles whose body reduces
+/// along a row, traced as today's `tile_unit` traces a tile function on a row of `count`
+/// tiles (the row form), under the name `name`; `count` is the blocks' count as the
+/// caller resolves it (a constant, or a bound module parameter's value), and none (a
+/// parameter not bound at compile) is refused by name. Each block parameter is streamed (a row
+/// load `x.tiles[unit, :]` each unit) or, where `resident` says so (a state member at
+/// the call: today's field), resident (`resident(x.tiles[0, :])`, read once); the
+/// resident ones are the last, as today's fields are. The grid walks the first streamed
+/// tensor's tile rows, and the result is stored into the `float32` row `result`. At one
+/// tile it is the tile form's trace (`kernel_ir`), as today calls it.
+pub fn row_kernel_ir(
+    module: &Module,
+    f: FuncId,
+    name: &str,
+    count: Option<u64>,
+    resident: &[bool],
+) -> Result<KernelIR, Refusal> {
+    let refused = |what: String, at: Anchor| Refusal {
+        code: NOT_BUILT,
+        what: format!("the Tensix backend's tile compiler does not take {what} yet"),
+        at: Some(at),
+    };
+    let Some(func) = module.funcs.get(f.0 as usize) else {
+        return Err(refused("a call of no function".into(), Anchor::Func(f)));
+    };
+    if !matches!(func.kind, FuncKind::Plain) {
+        return Err(refused(
+            "a function that is not a `func`".into(),
+            Anchor::Func(f),
+        ));
+    }
+    let Some(count) = count else {
+        return Err(refused(
+            "a block whose count is not bound at compile".into(),
+            Anchor::Func(f),
+        ));
+    };
+    if resident.len() != func.params.len() {
+        return Err(refused(
+            "a call whose operands' sources are not one a parameter".into(),
+            Anchor::Func(f),
+        ));
+    }
+    let blocks = |t: &Type| match t {
+        Type::Block(format, Count::ONE, n) => Some((*format, *n)),
+        _ => None,
+    };
+    for (i, t) in func.params.iter().chain([&func.ret]).enumerate() {
+        let at = if i < func.params.len() {
+            Anchor::ParamOf(Owner::Func(f), i as u32)
+        } else {
+            Anchor::Func(f)
+        };
+        match blocks(t) {
+            None => {
+                return Err(refused(
+                    "a parameter or result of the row form that is not a block of one row".into(),
+                    at,
+                ))
+            }
+            Some((_, Count::Const(n))) if n != count => {
+                return Err(refused(
+                    format!("a block of {n} tiles called on a row of {count}"),
+                    at,
+                ))
+            }
+            Some((_, Count::GroupSize)) => {
+                return Err(refused(
+                    "a block of the group's size in the row form".into(),
+                    at,
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    if count == 0 {
+        return Err(refused("a row of no tile".into(), Anchor::Func(f)));
+    }
+    if count == 1 {
+        return one_tile(module, f, name, true);
+    }
+    if resident.windows(2).any(|w| w[0] && !w[1]) {
+        return Err(refused(
+            "a resident operand before a streamed one (today's fields are the last parameters)"
+                .into(),
+            Anchor::Func(f),
+        ));
+    }
+    let Some(body) = func.body.as_ref() else {
+        return Err(refused("a function with no body".into(), Anchor::Func(f)));
+    };
+    let mut tensors = Vec::new();
+    for (i, t) in func.params.iter().enumerate() {
+        let at = Anchor::ParamOf(Owner::Func(f), i as u32);
+        let Some(p) = param_name(module, Owner::Func(f), i as u32) else {
+            return Err(refused("a parameter with no name".into(), at));
+        };
+        let Some((format, _)) = blocks(t) else {
+            return Err(refused("a parameter that is not a block".into(), at));
+        };
+        let dtype = dtype(format).map_err(|what| refused(what, at))?;
+        tensors.push(TensorParam {
+            name: p.to_string(),
+            output: false,
+            dtype: Some(dtype.to_string()),
+        });
+    }
+    let Some(first) = resident
+        .iter()
+        .position(|r| !r)
+        .and_then(|i| tensors.get(i))
+        .map(|t| t.name.clone())
+    else {
+        return Err(refused(
+            "a row form of no streamed operand".into(),
+            Anchor::Func(f),
+        ));
+    };
+    let names: Vec<String> = tensors.iter().map(|t| t.name.clone()).collect();
+    tensors.push(TensorParam {
+        name: "result".to_string(),
+        output: true,
+        dtype: Some("float32".to_string()),
+    });
+    let mut tracer = Tracer {
+        module,
+        ir: KernelIR::new(name, tensors, Vec::new()),
+        calls: vec![f],
+        line: None,
+        row_form: true,
+    };
+    tracer.ir.grid = Some(Grid {
+        count: Int::Size {
+            what: "tile_rows".into(),
+            name: first,
+            dim: None,
+        },
+        block: 1,
+        cols: None,
+    });
+    let row = |tensor: &str, index: Int| View {
+        tensor: tensor.to_string(),
+        kind: "row".into(),
+        index,
+        cols: None,
+    };
+    // the resident rows first (read once, before the walk), then each unit's loads, as
+    // today's call site makes them
+    let mut args: Vec<Option<Traced>> = vec![None; names.len()];
+    for (k, t) in names.iter().enumerate().filter(|(k, _)| resident[*k]) {
+        let view = Attr::View(row(t, Int::Const(0)));
+        args[k] = Some(Traced::Tile(tracer.ir.node(
+            "resident",
+            vec![],
+            vec![("view", view)],
+        )));
+    }
+    for (k, t) in names.iter().enumerate().filter(|(k, _)| !resident[*k]) {
+        let view = Attr::View(row(t, Int::Unit(None)));
+        let attrs = vec![("view", view), ("pad", Attr::None), ("share", Attr::None)];
+        args[k] = Some(Traced::Tile(tracer.ir.node("load", vec![], attrs)));
+    }
+    let args: Vec<Traced> = args.into_iter().flatten().collect();
+    let result = tracer.body(f, body, &args)?;
+    let value = tracer.node(&result);
+    tracer.ir.stores.push(Store {
+        view: row("result", Int::Unit(None)),
         value,
     });
     Ok(tracer.ir)

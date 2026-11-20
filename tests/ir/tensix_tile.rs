@@ -8,7 +8,8 @@
 //! does. Today's `tile_wormhole.py`, `tile_checks.py`, `tile_matrix.py` and
 //! `tile_rows.py` give the Wormhole forms, the emit and its checks, the hazard checks,
 //! the matrix unit's words and the per-row passes, on code of a few words that the
-//! corpus does not reach.
+//! corpus does not reach. Today's `tile_rows_form.py` traces functions on a row of n
+//! tiles (the row form), written in the IR on blocks in `tile_rows_form.kom`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,9 +20,9 @@ use komorebi_ir::backend::tensix::tile::checks::{
     check_config_nop, check_dst_window, check_mad_readers, check_saved, not_held,
 };
 use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
-use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
+use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, row_kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::lower::{
-    common_values, drop_copies, per_row_prepass, stream_chain, unit_program,
+    common_values, drop_copies, per_row_prepass, stream_chain, unit_program, FIDELITY,
 };
 use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
@@ -32,6 +33,9 @@ use komorebi_ir::backend::tensix::tile::unit::{
 };
 use komorebi_ir::backend::tensix::tile::wormhole::forms;
 use komorebi_ir::backend::tensix::unit::fidelity;
+use komorebi_ir::program::body::{InstId, Op};
+use komorebi_ir::program::notes::{Anchor, Origin};
+use komorebi_ir::program::BodyRef;
 
 /// Between the items of a list in one field.
 const SEP: char = '\x1f';
@@ -1084,4 +1088,150 @@ fn two_constants_before_a_run_are_refused_by_name() {
         "not ported: the order of the constants before a run is not pinned yet"
     );
     assert_eq!(code.iter().map(row_line).collect::<Vec<_>>(), before);
+}
+
+/// Today's trace of the row form's corpus (`tile_rows_form.py`), once for all the tests.
+fn today_rows() -> Option<PathBuf> {
+    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOLDER
+        .get_or_init(|| run_today("tile_rows_form.py", "tensix-tile-rows-form"))
+        .clone()
+}
+
+/// The row form's corpus, `tile_rows_form.kom`.
+fn rows_corpus() -> komorebi_ir::program::Module {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile/tile_rows_form.kom");
+    let text = std::fs::read_to_string(path).expect("tile_rows_form.kom");
+    komorebi_ir::api::build(&text).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+#[test]
+fn each_function_on_a_row_traces_to_todays_kernel_ir() {
+    let Some(folder) = today_rows() else { return };
+    let module = rows_corpus();
+    let cases = std::fs::read_to_string(folder.join("cases.txt")).expect("the cases");
+    let mut names: Vec<&str> = Vec::new();
+    for line in cases.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (case, width, fields) = (f[0], f[1].parse().ok(), f[2].parse::<usize>());
+        let fields = fields.expect("the fields");
+        names.push(case);
+        let at = func(&module, &format!("t_{case}"));
+        let params = module.funcs[at.0 as usize].params.len();
+        let resident: Vec<bool> = (0..params).map(|k| k >= params - fields).collect();
+        let want = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
+        let ir = row_kernel_ir(&module, at, case, width, &resident)
+            .unwrap_or_else(|r| panic!("{case}: {}", r.what));
+        let got = ir.dump() + "\n";
+        assert!(
+            got == want,
+            "{case} differs, {}",
+            first_difference(&want, &got)
+        );
+    }
+    names.sort();
+    let mut funcs: Vec<&str> = module
+        .funcs
+        .iter()
+        .filter_map(|f| f.name.strip_prefix("t_"))
+        .collect();
+    funcs.sort();
+    assert_eq!(funcs, names, "a func `t_<case>` for each case and no other");
+}
+
+#[test]
+fn a_reduction_on_one_tile_is_refused_with_todays_text_and_line() {
+    let Some(folder) = today_rows() else { return };
+    let today = std::fs::read_to_string(folder.join("one_tile.refused")).expect("the text");
+    let today = today.trim_end();
+    // today's line is the reduction's, in the script: the reduction's instruction is
+    // placed there and every other one elsewhere
+    let line: u32 = today
+        .rsplit(':')
+        .next()
+        .and_then(|l| l.strip_suffix(')'))
+        .and_then(|l| l.parse().ok())
+        .expect("the line");
+    let mut module = rows_corpus();
+    let f = func(&module, "one");
+    let body = module.funcs[f.0 as usize].body.as_ref().expect("a body");
+    let places = (0..body.insts.len())
+        .map(|i| {
+            let op = &body.insts[i].op;
+            let at = if matches!(op, Op::Reduce(..)) {
+                line
+            } else {
+                1000 + i as u32
+            };
+            let inst = Anchor::Inst(BodyRef::Func(f), InstId(i as u32));
+            (inst, 0, at, at)
+        })
+        .collect();
+    module.notes.origin = Some(Origin {
+        files: vec!["tests/ir/tensix/tile/tile_rows_form.py".into()],
+        lines: Vec::new(),
+        places,
+    });
+    let ir = row_kernel_ir(&module, f, "one", Some(1), &[false]).expect("the trace");
+    let refused = unit_program(&ir, "fp32", true, false, FIDELITY).expect_err("refused");
+    let refusal = refused.refusal(Some(Anchor::Func(f)));
+    assert_eq!((refusal.code, refusal.what.as_str()), ("K962", today));
+}
+
+#[test]
+fn what_the_row_forms_trace_would_not_make_is_refused_by_name() {
+    let text = "module refused\n\ntile [32, 32]\nformat f32\n\n\
+        func streamed(x: tile<f32>[2], g: tile<f32>[2]) -> tile<f32>[2] {\n\
+        \x20   return x * rsqrt(reduce_sum(x * x, axis = row)).col() * g.row()\n}\n\n\
+        func scalar(x: tile<f32>[2], k: f32) -> tile<f32>[2] {\n\
+        \x20   return x * reduce_sum(x, axis = row).col() * k\n}\n\n\
+        func square(x: tile<f32>[2, 2]) -> tile<f32>[2, 2] {\n\
+        \x20   return x * reduce_sum(x, axis = row).col()\n}\n";
+    let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
+    let named = |f: &str, count: Option<u64>, resident: &[bool]| {
+        let refusal = row_kernel_ir(&module, func(&module, f), f, count, resident).expect_err(f);
+        assert_eq!(refusal.code, "K964", "{f}");
+        refusal.what
+    };
+    let not = |what: &str| format!("the Tensix backend's tile compiler does not take {what} yet");
+    let both = [false, false];
+    assert_eq!(
+        named("streamed", Some(2), &both),
+        not("the row form's .row() of a streamed operand")
+    );
+    assert_eq!(
+        named("streamed", None, &both),
+        not("a block whose count is not bound at compile")
+    );
+    assert_eq!(
+        named("streamed", Some(4), &both),
+        not("a block of 2 tiles called on a row of 4")
+    );
+    assert_eq!(
+        named("streamed", Some(2), &[true, false]),
+        not("a resident operand before a streamed one (today's fields are the last parameters)")
+    );
+    assert_eq!(
+        named("streamed", Some(2), &[true, true]),
+        not("a row form of no streamed operand")
+    );
+    assert_eq!(
+        named("streamed", Some(2), &[false]),
+        not("a call whose operands' sources are not one a parameter")
+    );
+    assert_eq!(
+        named("scalar", Some(2), &both),
+        not("a parameter or result of the row form that is not a block of one row")
+    );
+    assert_eq!(
+        named("square", Some(2), &[false]),
+        not("a parameter or result of the row form that is not a block of one row")
+    );
+    // the 1-tile trace takes a row reduction only where every block is of one tile
+    let one = kernel_ir(&module, func(&module, "streamed"), "streamed").expect_err("one");
+    assert_eq!(
+        one.what,
+        not("a function on blocks with a product or a reduction (not element by element)")
+    );
 }

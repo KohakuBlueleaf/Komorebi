@@ -1,0 +1,56 @@
+module tile_rows_form
+
+tile [32, 32]
+format f32, bf16
+
+// The functions of tile_rows_form.py's corpus on blocks of a row's tiles, each under
+// its case's name with `t_` before it; a block's count is the row's width.
+
+func t_rms_norm(x: tile<f32>[2], w: tile<f32>[2]) -> tile<f32>[2] {
+    let ms = reduce_sum(x * x, axis = row) * 0.015625
+    return x * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func t_rms_norm_wide(x: tile<f32>[4], w: tile<f32>[4]) -> tile<f32>[4] {
+    let ms = reduce_sum(x * x, axis = row) * 0.0078125
+    return x * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func t_rms_bf16(x: tile<f32>[3], w: tile<bf16>[3]) -> tile<f32>[3] {
+    let ms = reduce_sum(x * x, axis = row) * 0.010416666666666666
+    return x * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func t_softmax_rows(x: tile<f32>[3]) -> tile<f32>[3] {
+    let top = reduce_max(x, axis = row)
+    let e = exp(x - top.col())
+    return e * reciprocal(reduce_sum(e, axis = row)).col()
+}
+
+func t_centred(x: tile<f32>[2]) -> tile<f32>[2] {
+    return x - (reduce_sum(x, axis = row) * 0.015625).col()
+}
+
+func t_row_max(x: tile<f32>[4]) -> tile<f32>[4] {
+    return x - reduce_max(x, axis = row).col()
+}
+
+func t_row_min(x: tile<f32>[2]) -> tile<f32>[2] {
+    return x - reduce_min(x, axis = row).col()
+}
+
+func t_layer_norm(x: tile<f32>[4], w: tile<f32>[4], b: tile<f32>[4]) -> tile<f32>[4] {
+    let d = x - (reduce_sum(x, axis = row) * 0.0078125).col()
+    let variance = reduce_sum(d * d, axis = row) * 0.0078125
+    return d * rsqrt(variance + 1e-5).col() * w.row() + b.row()
+}
+
+func t_gated(x: tile<f32>[2], g: tile<f32>[2], w: tile<f32>[2]) -> tile<f32>[2] {
+    let y = x * g
+    return y * rsqrt(reduce_sum(y * y, axis = row) + 1e-6).col() * w.row()
+}
+
+// a reduction on one tile: today's chain refuses it
+func one(x: tile<f32>[1]) -> tile<f32>[1] {
+    return x - reduce_sum(x, axis = row).col()
+}

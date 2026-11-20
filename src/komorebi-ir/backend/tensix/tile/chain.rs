@@ -214,7 +214,19 @@ pub(crate) fn shape(
                 }
             }
         }
-        "slot" | "word" | "state" | "reduce" | "slice" | "cat" | "resident" => {
+        "reduce" => {
+            let Some(&a) = n.args.first() else {
+                return Err(ChainError::NotPorted("a reduction of no operand".into()));
+            };
+            if shape(ir, a, of)? != "row" {
+                return Err(ChainError::Plan(
+                    "tile.reduce_sum reduces a row: load x.tiles[r, :]".into(),
+                    n.line.clone(),
+                ));
+            }
+            return Err(ChainError::NotPorted("the row form's reduce".into()));
+        }
+        "slot" | "word" | "state" | "slice" | "cat" | "resident" => {
             return Err(ChainError::NotPorted(format!("the row form's {}", n.kind)))
         }
         _ => {
