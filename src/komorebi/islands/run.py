@@ -11,13 +11,20 @@ from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
-from komorebi.errors import CommandTimeout, KomorebiError, MessagesGaveUp, WaitTimeout
+from komorebi.errors import (
+    CommandTimeout,
+    KomorebiError,
+    MessagesGaveUp,
+    WaitTimeout,
+    coll_not_cleared,
+)
 from komorebi.islands import local as island_local
 from komorebi.islands import records as island_records
 from komorebi.islands.same import RunCalls
 from komorebi.islands.trees import TreeCalls
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
+from komorebi.program.checks import far_collectives
 from komorebi.program.description import Program
 from komorebi.session import state as device_state
 
@@ -82,6 +89,9 @@ class IslandRun(TreeCalls, RunCalls):
         # an add a later island's device refused: ("number", n) or ("program", p) ->
         # why a command naming it is refused (_half_added_error)
         self._half_added = {}
+        # the give-ups seen at the last clear_collectives(), and whether the load's
+        # movers call a collective (None: not looked yet): _coll_cleared
+        self._coll_clear_at, self._coll_movers = 0, None
         for run in self.runs:  # each island's own Run refuses them too
             run.half_added = self._half_added
         for island, run in enumerate(self.runs):  # a time-out names every island's part
@@ -1214,17 +1224,74 @@ class IslandRun(TreeCalls, RunCalls):
         again (until then each gives up at once, by name) and each leader's counts
         start at 0. The data is not restored: write the tensors the given-up
         collective was reducing again first (clearing says they are whole). Returns
-        the new generation."""
+        the new generation; the host's collectives are no longer refused
+        (_coll_cleared)."""
         with contextlib.suppress(KomorebiError):  # given up again: its cores marked
             self.drain(timeout)
-        return self.session.raise_generation()
+        generation = self.session.raise_generation()
+        self._coll_clear_at = self._given_ups()
+        return generation
+
+    def _given_ups(self):
+        """The give-ups at a deadline the host has seen on every island since the
+        load (each Run's count of the dispatcher's, as last read)."""
+        return sum(getattr(run, "_given_up_seen", 0) for run in self.runs)
+
+    def _coll_cleared(self, what):
+        """Refuses `what`, a host collective, before anything is queued, once the host
+        has seen a command given up at its deadline on a load whose movers call a
+        collective and has not cleared since: queued, its leaders would refuse at once
+        but its other ranks would wait for them past the deadline, and a runtime
+        handler's command is never given up there, so the run would end (hazards.md, a
+        collective given up mid-way). The generation rows only name the leaders marked,
+        earliest stage first; none named: the given-up command was not a collective,
+        or its marks were not written."""
+        if self._given_ups() == self._coll_clear_at:
+            return
+        if self._coll_movers is None:
+            self._coll_movers = far_collectives.calls(self.runs[0].programs)
+        if not self._coll_movers:
+            return
+        marked = self.session.coll_marked() if self.session is not None else []
+        islands = sorted({island for island, *_ in marked})
+        where = (
+            "an island"
+            if not islands
+            else f"island {islands[0]}"
+            if len(islands) == 1
+            else "islands "
+            + ", ".join(str(i) for i in islands[:-1])
+            + f" and {islands[-1]}"
+        )
+        named = [
+            f"island {island}'s leader (core {core}) gave up at "
+            f"{device_state.COLL_STAGES.get(stage, f'stage {stage}')} "
+            + (
+                f"({gave['code']} in {gave['where']})"
+                if gave is not None
+                else "(no give-up recorded)"
+            )
+            + f" in the command of sequence {sequence}"
+            for island, core, gave, sequence, stage in marked
+        ]
+        said = (
+            "; the leaders marked, earliest stage first: " + "; ".join(named)
+            if named
+            else "; no leader is marked (the command given up was not a collective, "
+            "or its marks were not written)"
+        )
+        raise KomorebiError(
+            f"{what}: refused before anything was queued: {coll_not_cleared(where)}; "
+            "the host saw a command given up at its deadline on this load, whose "
+            f"movers call a collective{said}"
+        )
 
     def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
         """All-gather of pages first .. first + pages - 1 (default to the end) of the
         copy `tensor`, island c's share (layout.partition of the pages, c of the
         islands) written on island c: on return every island's copy holds every
         share. One island: returns at once. km::all_gather on every rank (GATHER)."""
-        first, pages = self._collective(tensor, first, pages)
+        first, pages = self._collective(tensor, first, pages, "run.all_gather()")
         if len(self.runs) < 2 or pages == 0:
             return None
         h = abi.headers()
@@ -1239,7 +1306,7 @@ class IslandRun(TreeCalls, RunCalls):
         island's copy its partial): every copy then holds the sum, in its format.
         `scratch` and `tree` as reduce_to's (a tree: every page up it, then down). One
         island: returns at once; else REDUCE on every rank (km::all_reduce)."""
-        first, pages = self._collective(tensor, first, pages)
+        first, pages = self._collective(tensor, first, pages, "run.all_reduce()")
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
             raise KomorebiError(
@@ -1268,9 +1335,10 @@ class IslandRun(TreeCalls, RunCalls):
             by_island.append(list(words))
         return self._served(h["KM_HANDLER_REDUCE"], by_island, timeout)
 
-    def _collective(self, tensor, first, pages):
-        """(first, pages) of a collective on `tensor`, checked: a copy, the pages in
-        it, the islands joined (the link services)."""
+    def _collective(self, tensor, first, pages, what="a collective"):
+        """(first, pages) of a collective (`what`) on `tensor`, checked: a copy, the
+        pages in it, the islands joined (the link services), no give-up seen since the
+        last clear (_coll_cleared)."""
         pages = tensor.pages - first if pages is None else pages
         if not getattr(tensor.placement, "copy", False):
             raise KomorebiError("a collective's tensor is a copy (copy=True)")
@@ -1280,6 +1348,8 @@ class IslandRun(TreeCalls, RunCalls):
             )
         if len(self.runs) > 1 and self._counts is None:
             raise KomorebiError("a collective crosses links: the session has none")
+        if len(self.runs) > 1:
+            self._coll_cleared(what)
         return first, pages
 
     def _served(self, handler, words, timeout):

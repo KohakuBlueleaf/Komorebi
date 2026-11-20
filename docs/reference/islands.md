@@ -1566,7 +1566,11 @@ some islands only), and its leaders refuse every later collective by name until 
 host has written the tensors again and called `run.clear_collectives()`, which raises
 each core's generation (a DRAM page a core the island table names); a leader's first
 collective under it starts its counts at 0. The clear restores no data
-([hazards](hazards.md#a-collective-given-up-mid-way)).
+([hazards](hazards.md#a-collective-given-up-mid-way)). Once the host has seen a command
+given up at its deadline on a load whose movers call a collective, the host's own
+collectives (`run.all_reduce()` and the others) are refused at the call, before
+anything is queued, until the clear, naming each leader marked, earliest stage first: a
+runtime command that reached its deadline would end the run.
 
 Each call runs over a tree of the islands: by default the routes' tree of each root
 (island i's parent toward root r is the island across its next link toward r, the same

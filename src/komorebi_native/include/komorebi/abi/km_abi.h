@@ -720,10 +720,16 @@ KM_STATIC_ASSERT(
 /* a collective's generation (km_ask.hpp coll_guard): a DRAM page of 64 B a core (page
  * = the core) the host reads and writes, its first 32 B these words: the generation
  * (the host raises it after a collective is given up), the core's give-up mark, the
- * generation it last led a collective under (0: none) */
+ * generation it last led a collective under (0: none); then, written with the mark
+ * when the core marks itself, what it gave up in: its give-up word (code | where << 8
+ * | slot << 16, the state word's), the command's sequence, the stage it had reached
+ * (kCs*); word 3 is not used */
 #define KM_COLL_GEN_NOW 0u
 #define KM_COLL_GEN_MARK 1u
 #define KM_COLL_GEN_LAST 2u
+#define KM_COLL_GEN_GAVE 4u
+#define KM_COLL_GEN_SEQUENCE 5u
+#define KM_COLL_GEN_STAGE 6u
 #define KM_COLL_GEN_BYTES 32u
 /* after the ports: a word, the link area's L1 address on this island's cores (0: no
    link area) */

@@ -1471,6 +1471,27 @@ The meeting and release words need nothing: they hold markers of their command, 
 no later command's marker equals. The page ports are set back when the command is
 given up (its page lines settled).
 
+**The host's collectives.** An older rule of the dispatcher applies to them: only a
+program's handler (1 to `KM_HANDLER_USER_MAX`) may be given up at its deadline, the
+run going on. A command of the runtime's handlers is never given up there; one that
+reaches its deadline ends the run. `run.all_reduce()`, `run.reduce_to()`,
+`run.all_gather()` and `run.broadcast_from()` are such commands (the service overlay's
+REDUCE and GATHER). Queued after a give-up and before the clear, their leaders refuse at
+once, but the other ranks have met and wait for them, so the command would reach its
+deadline and end the run. So once the host has seen a command given up at its deadline
+on a load whose movers call a collective, these calls are refused at the call, before
+anything is queued, in the same words, until `run.clear_collectives()`. The refusal
+names each leader marked under the generation, earliest stage first: the stage it had
+reached, its give-up's code and wait, and the command's sequence, kept in its generation
+row with its mark. It does not say which leader began it: at a deadline every leader
+gives up together. A program's own handler is not refused at its submit, since the host
+knows per load, not per handler, which handlers call a collective; its leaders refuse
+on the device, after the deadline's wait.
+
+One gap stays: a host collective already queued when the give-up comes, or queued
+before the host has read the give-up's event, falls under the older rule and ends the
+run.
+
 One window stays open: a collective's page lines into another island's copy (its
 tree's shares, `gather_run`) are not among the lines the give-up settles. The settle
 waits only for a CPU's own page reads and puts, which it counts as it sends them. A

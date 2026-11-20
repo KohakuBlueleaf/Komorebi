@@ -2781,6 +2781,22 @@ namespace km {
         kCsAddWords,
         kCsStamps = 32
     };
+
+    // The last stage (kCsEntry .. kCsReleased) this CPU's collective reached, stamps
+    // or not: what a leader's mark says it gave up in (an overlay part's own, as
+    // team_goes_now's).
+#if defined(KM_OVERLAY_PART)
+    inline uint32_t& coll_stage() {
+        static uint32_t own = 0;
+        return own;
+    }
+#else
+    inline uint32_t coll_stage_state = 0;
+
+    inline uint32_t& coll_stage() {
+        return coll_stage_state;
+    }
+#endif
 #if defined(KM_COLL_STAMPS)
 #if defined(KM_OVERLAY_PART)
     // an overlay's statics are linked into its slot, in L1
@@ -2812,6 +2828,7 @@ namespace km {
 #endif
 
     inline void coll_stamp(uint32_t step) {
+        coll_stage() = step;
         if (coll_words() != nullptr) {
             coll_words()[step] = wall();
         }
@@ -2854,7 +2871,8 @@ namespace km {
         );
     }
 #else
-    inline void coll_stamp(uint32_t) {
+    inline void coll_stamp(uint32_t step) {
+        coll_stage() = step;
     }
 
     inline void coll_count(uint32_t, uint32_t) {
@@ -3499,15 +3517,32 @@ namespace km {
     }
 
     // A leader's collective: it marks itself with its generation if it does not end.
+    // The first mark under a generation also keeps what it gave up in (its give-up
+    // word of this command, 0: none recorded; the sequence; its stage), for the host
+    // to name; a refusal of a marked leader keeps the first.
     template <typename Kernel>
     struct CollMark {
         const Kernel& core;
+        const km_command_t& command;
         bool armed;
 
         ~CollMark() {
             const CollGen g = coll_gen_of(islands_at(core.args().control));
             if (armed && g.row != 0) {
-                l1(g.row)[KM_COLL_GEN_MARK] = coll_gen_now();
+                volatile tt_l1_ptr uint32_t* gen = l1(g.row);
+                if (gen[KM_COLL_GEN_MARK] != coll_gen_now()) {
+                    const uint32_t word = (
+                        core.role() == kRoleWriter ? kStWriter : kStReader
+                    );
+                    const volatile tt_l1_ptr uint32_t*
+                        state = l1(core.args().control + KM_CONTROL_STATE);
+                    gen[KM_COLL_GEN_GAVE] = (
+                        state[word + 1] == command.sequence ? state[word] : 0
+                    );
+                    gen[KM_COLL_GEN_SEQUENCE] = command.sequence;
+                    gen[KM_COLL_GEN_STAGE] = coll_stage();
+                }
+                gen[KM_COLL_GEN_MARK] = coll_gen_now();
                 static_cast<void>(coll_gen_io(core, g, true));  // for its next begin
             }
         }
@@ -3528,6 +3563,7 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const CollGen g = coll_gen_of(view);
+        coll_stage() = kCsEntry;
         if (g.row == 0) {
             return coll_refused(core, command, kGaveBadItem, kCollNone, view.here());
         }
@@ -3779,7 +3815,7 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
-        CollMark<Kernel> marked = {core, t.index == 0};
+        CollMark<Kernel> marked = {core, command, t.index == 0};
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }
@@ -3829,7 +3865,7 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
-        CollMark<Kernel> marked = {core, t.index == 0};
+        CollMark<Kernel> marked = {core, command, t.index == 0};
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }
@@ -3976,7 +4012,7 @@ namespace km {
         coll_begin();
         Team t = team_of(view, command, core.me());
         Gather posted = {};
-        CollMark<Kernel> marked = {core, t.index == 0};
+        CollMark<Kernel> marked = {core, command, t.index == 0};
         if (t.index == 0 && !coll_guard(core, command)) {
             return false;
         }

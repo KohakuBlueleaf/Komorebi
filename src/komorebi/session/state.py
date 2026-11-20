@@ -72,6 +72,15 @@ WHERES = (
 )
 # kColl*: why a collective's guard gave up
 COLLS = ("Stale", "Gen", "None")
+# kCs* (km_ask.hpp CollStamp): the stage a leader's collective had reached when it
+# marked itself (KM_COLL_GEN_STAGE), earliest first
+COLL_STAGES = {
+    0: "its begin, before its team met",
+    1: "its team met, its shares on their way",
+    3: "its shares in, its posts not yet confirmed",
+    4: "its posts confirmed, its team not yet let go",
+    5: "its team let go",
+}
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
 

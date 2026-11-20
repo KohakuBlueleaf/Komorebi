@@ -399,6 +399,17 @@ class MessagesGaveUp(CommandTimeout):
         self.args = (f"{self.args[0]}; {said}", *self.args[1:])
 
 
+def coll_not_cleared(where):
+    """Why a collective is refused after one was given up and before the host's clear
+    (`where`: "island 3", "islands 0 and 1"), the device's guard and the host's call
+    in the same words."""
+    return (
+        f"{where}: a collective was given up on this load and the host has not yet "
+        "cleared it; the tensors it was reducing are not whole: write them again, then "
+        "run.clear_collectives()"
+    )
+
+
 def _no_free_slot(gave):
     """The words after an overlay's give-up for want of a slot."""
     slots = gave.get("slots", 0)
@@ -463,9 +474,7 @@ def _core_parts(core):
             elif gave["where"] == "coll":
                 island = gave.get("island")
                 said = {
-                    "stale": f"island {island}: a collective was given up on this load "
-                    "and the host has not yet cleared it; the tensors it was reducing "
-                    "are not whole: write them again, then run.clear_collectives()",
+                    "stale": coll_not_cleared(f"island {island}"),
                     "gen": f"island {island}'s generation words in its DRAM, read or "
                     "written",
                     "none": f"island {island}: this load made no generation page",

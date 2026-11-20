@@ -17,6 +17,7 @@ from komorebi.program import description as program_module
 from komorebi.program import several as programs_module
 from komorebi.program.description import Program
 from komorebi.session import sizes
+from komorebi.session import state as device_state
 
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
@@ -567,6 +568,30 @@ class LinkPlanMixin:
             words = session.read(tensor)[0].view(np.uint32)
             out.append((session, tensor, islands, words.reshape(columns * rows, -1)))
         return out
+
+    def coll_marked(self):
+        """Every core marked under the generation now (a leader that gave up inside a
+        collective since the load or the last clear), earliest stage first, then by
+        island: [(island, core, gave, sequence, stage)], `gave` its give-up word as
+        state.gave_up reads it (None: none recorded), `stage` its kCs* number."""
+        h = abi.headers()
+        now, mark = h["KM_COLL_GEN_NOW"], h["KM_COLL_GEN_MARK"]
+        gave, sequence = h["KM_COLL_GEN_GAVE"], h["KM_COLL_GEN_SEQUENCE"]
+        stage = h["KM_COLL_GEN_STAGE"]
+        out = []
+        for _session, _tensor, islands, words in self._gen_words():
+            for core in np.flatnonzero(words[:, mark] == words[:, now]):
+                row = words[core]
+                out.append(
+                    (
+                        islands[int(core)],
+                        int(core),
+                        device_state.gave_up(row[gave], row[sequence], h),
+                        int(row[sequence]),
+                        int(row[stage]),
+                    )
+                )
+        return sorted(out, key=lambda each: (each[4], each[0], each[1]))
 
     def raise_generation(self):
         """Every core's collectives' generation one more (the host's, after a

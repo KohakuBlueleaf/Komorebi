@@ -63,7 +63,7 @@ class TreeCalls:
         island's copy its partial) into island `root`'s copy, up its tree (or `tree`,
         a parent an island, rooted at `root`), in the tensor's format; the others are
         left partial. `scratch`: a copy of ports x pages. One island: returns."""
-        first, pages = self._collective(tensor, first, pages)
+        first, pages = self._collective(tensor, first, pages, "run.reduce_to()")
         if tensor.dtype not in SUMS:
             raise KomorebiError(f"reduce_to adds {sorted(SUMS)}: not {tensor.dtype}")
         word = self._root(root)
@@ -97,7 +97,7 @@ class TreeCalls:
         """Broadcast of pages first .. first + pages - 1 of island `root`'s copy of the
         copy `tensor` into every other island's copy, down its tree (or `tree`, rooted
         at `root`). One island: returns at once."""
-        first, pages = self._collective(tensor, first, pages)
+        first, pages = self._collective(tensor, first, pages, "run.broadcast_from()")
         word = self._root(root)
         if len(self.runs) < 2 or pages == 0:
             return None
