@@ -1019,6 +1019,7 @@ All derive from `km.KomorebiError`.
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
 | `CardNotReady` | `Session.open` and the open over several cards, before tt-metal's: the card's sysfs entry or device node is missing, or its heartbeat did not advance in 0.3 s (below) | `card`; `state`: what was read |
+| `ChipsHidden` | the open over several cards: `TT_VISIBLE_DEVICES` hides chips of the machine and tt-metal cannot make one fabric mesh of the chips left ([hazard](hazards.md#a-galaxy-session-with-tt_visible_devices-set-to-some-of-its-chips)); tt-metal's failure chained | `hidden`, `visible`: the cards |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
 | `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core; `taken`: the bytes of its row "L1 held by the session" |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |

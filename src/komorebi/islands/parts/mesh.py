@@ -9,6 +9,7 @@ from komorebi.chain import records as chain_records
 from komorebi.device import chips, mock, native
 from komorebi.errors import (
     CardBusy,
+    ChipsHidden,
     KomorebiError,
 )
 from komorebi.islands import graph as islands
@@ -69,6 +70,16 @@ def visible_ids(chips, visible):
     if visible and sorted(chips) == list(range(len(visible))) != sorted(visible):
         return [visible[chip] for chip in chips]
     return list(chips)
+
+
+# tt-metal's refusal when the chips it sees do not make the mesh an open asks for
+MESH_REFUSAL = "Requested mesh shape"
+
+
+def hidden_chips(visible, machine):
+    """The machine's cards (`machine`) that TT_VISIBLE_DEVICES' cards (`visible`, a
+    list or None) leave out, sorted: none when it is unset."""
+    return sorted(set(machine) - set(visible)) if visible is not None else []
 
 
 def form_pairs(mesh, count):
@@ -314,7 +325,13 @@ class MeshMixin:
         """The mesh of every chip tt-metal sees under one of FORMS (`ring`), its chips
         as card ids, the card pairs it joins and the machine's own ({pair: links})."""
         with mock.cluster_visible(self.cards):  # a prebuild: the mock, not the cards
-            mesh = module.Islands(0, self._worker_l1, self.packet, ring)
+            try:
+                mesh = module.Islands(0, self._worker_l1, self.packet, ring)
+            except RuntimeError as error:
+                hidden = hidden_chips(visible, process.card_entries())
+                if not hidden or MESH_REFUSAL not in str(error):
+                    raise
+                raise ChipsHidden(hidden, visible) from error
         try:
             raw = list(mesh.chips())
             ids = visible_ids(raw, visible)

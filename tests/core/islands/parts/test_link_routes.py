@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from komorebi.errors import KomorebiError, ProgramError
+from komorebi.errors import ChipsHidden, KomorebiError, ProgramError
 from komorebi.islands import graph as islands
 from komorebi.islands.parts.calls import CallsMixin
 from komorebi.islands.parts.link_plan import link_tail
@@ -17,6 +17,7 @@ from komorebi.islands.parts.mesh import (
     cards_graph,
     check_wired,
     graph_line,
+    hidden_chips,
     link_slots,
     second_links,
     second_slots,
@@ -24,7 +25,7 @@ from komorebi.islands.parts.mesh import (
     visible_ids,
 )
 from komorebi.islands.session import IslandSession
-from komorebi.session import kernels
+from komorebi.session import kernels, process
 
 
 def cores(parts, size=30, columns=10):
@@ -444,3 +445,41 @@ def test_the_ring_form_is_tried_first_only_where_the_machine_s_pairs_hold_a_cycl
     owner, lines = _opener([0, 1])
     MeshMixin._open_fabric(owner, machine, None)
     assert machine.opened == [False] and owner._ring is False
+
+
+class _Refusing(_Machine):
+    """A stand-in whose mesh open fails as tt-metal's does for the chips it sees."""
+
+    text = (
+        "TT_FATAL @ system_mesh.cpp:159: requested_size <= system_size\n"
+        "Requested mesh shape MeshShape([1, 31]) requires 31 devices, but only 28 "
+        "devices are available in the system mesh MeshShape([14, 2])."
+    )
+
+    def Islands(self, count, worker_l1, packet, ring):
+        raise RuntimeError(self.text)
+
+
+def test_a_mesh_tt_metal_cannot_make_of_the_visible_chips_names_the_hidden_ones(
+    monkeypatch,
+):
+    """32 chips, TT_VISIBLE_DEVICES without chip 16: the named error, tt-metal's
+    chained; unset, hiding nothing, or another failure: tt-metal's own error."""
+    monkeypatch.setattr(process, "card_entries", lambda: list(range(32)))
+    visible = [card for card in range(32) if card != 16]
+    machine = _Refusing(list(range(31)), {(0, 1): 1}, {True: set(), False: set()})
+    owner, _ = _opener(visible)
+    with pytest.raises(ChipsHidden, match=r"hides chips \[16\] .*unset") as caught:
+        MeshMixin._open_fabric(owner, machine, visible)
+    assert caught.value.hidden == [16] and caught.value.visible == visible
+    assert "requires 31 devices" in str(caught.value.__cause__)
+    for seen in (None, list(range(32))):
+        with pytest.raises(RuntimeError) as caught:
+            MeshMixin._open_fabric(owner, machine, seen)
+        assert not isinstance(caught.value, ChipsHidden)
+    machine.text = "Timed out while waiting for active ethernet core to become active"
+    with pytest.raises(RuntimeError, match="Timed out") as caught:
+        MeshMixin._open_fabric(owner, machine, visible)
+    assert not isinstance(caught.value, ChipsHidden)
+    assert hidden_chips(None, range(32)) == []
+    assert hidden_chips([0, 1, 3], range(4)) == [2]

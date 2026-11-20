@@ -177,6 +177,22 @@ class NotServed(KomorebiError):
         self.dispatcher, self.ability = dispatcher, ability
 
 
+class ChipsHidden(KomorebiError):
+    """TT_VISIBLE_DEVICES hides chips of the machine and tt-metal cannot make one fabric
+    mesh of the chips it leaves (an open over several cards); `hidden` and `visible`
+    are the cards. The tt-metal failure is chained."""
+
+    def __init__(self, hidden, visible):
+        super().__init__(
+            f"TT_VISIBLE_DEVICES hides chips {list(hidden)} of the machine, and "
+            f"tt-metal cannot make one fabric mesh of the {len(visible)} chips it "
+            "leaves. The islands open takes every chip tt-metal sees as one mesh and "
+            "gives a chip not asked for no island: leave TT_VISIBLE_DEVICES unset, or "
+            "include every chip of the board"
+        )
+        self.hidden, self.visible = list(hidden), list(visible)
+
+
 class ChannelError(KomorebiError):
     """The host channel cannot be used as asked: the open logged the driver's warning
     about its NoC address, or a transfer does not fit the session's region."""

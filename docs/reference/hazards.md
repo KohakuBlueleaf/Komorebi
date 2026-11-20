@@ -2626,3 +2626,17 @@ with no error.
 **The rule.** Leave such a chip out of every session: it is not an island of the 31.
 
 **The guard.** None: Komorebi does not check DRAM.
+
+### A Galaxy session with TT_VISIBLE_DEVICES set to some of its chips
+
+**The hazard.** The islands open over several cards opens every chip tt-metal sees as
+one fabric mesh and gives a chip not asked for no island. With `TT_VISIBLE_DEVICES`
+hiding one chip of a 32-chip Galaxy (31 visible), auto-discovery makes the system mesh
+14 x 2 and the open fails ("requires 31 devices, but only 28 devices are available"),
+every time; with the variable unset the same 31 cards open (2026-11-20).
+
+**The rule.** For a session over most of a Galaxy, leave `TT_VISIBLE_DEVICES` unset, or
+include every chip of the board.
+
+**The guard.** The open raises `km.ChipsHidden`, naming the hidden chips, with
+tt-metal's failure chained.
