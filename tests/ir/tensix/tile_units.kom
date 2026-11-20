@@ -143,3 +143,19 @@ func half(a: tile<f32>) -> tile<f32> {
 func t_called(a: tile<f32>, b: tile<f32>) -> tile<f32> {
     return half(a) + half(where(0.0 < b, b, a))
 }
+
+func t_pick_ge(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(a >= b, a, b)
+}
+
+func t_pick_le_ne(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(a <= b, a, b) + where(a != b, a, b)
+}
+
+func t_pick_eq(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(a == b, a, b)
+}
+
+func t_zero_tests(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return where(a == 0.0, b, a) + where(a != 0.0, a, b) + where(a == -0.0, b, a)
+}

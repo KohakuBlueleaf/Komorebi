@@ -5,10 +5,10 @@
 //! compiler (`stream_chain`).
 //!
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
-//! `abs`, multiply-add, constants, run-time scalars and the vector functions `exp`,
-//! `recip` and `sigmoid`, with every pass of that path and the load macro. Refused by
-//! name (K964) where it would act: the other vector functions, `min` / `max`, selects,
-//! several results, per-row operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
+//! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and the
+//! vector functions `exp`, `recip` and `sigmoid`, with every pass of that path and the
+//! load macro. Refused by name (K964) where it would act: the other vector functions,
+//! `flash_exp2`, several results, per-row operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
 //! pre-pass and `allocate`'s high registers.
 
 use std::collections::HashMap;
@@ -503,6 +503,113 @@ fn sigmoid(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
     recip(b, sum)
 }
 
+/// The larger of x and y in every lane: one SFPSWAP on copies.
+fn maximum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
+    Ok(swapped(b, x, y, "max")?.0)
+}
+
+/// The smaller of x and y in every lane: the other result of maximum's swap.
+fn minimum(b: &mut Body, x: Arg, y: Arg) -> Result<Arg, ChainError> {
+    Ok(swapped(b, x, y, "min")?.1)
+}
+
+/// Copies of x and y swapped where y is the larger (`what` names the copies' use):
+/// (the larger, the smaller).
+fn swapped(b: &mut Body, x: Arg, y: Arg, what: &str) -> Result<(Arg, Arg), ChainError> {
+    let big = b.op("SFPMOV", &format!("{what}: first"), &[("lreg_c", x)])?;
+    let small = b.op("SFPMOV", &format!("{what}: second"), &[("lreg_c", y)])?;
+    b.word(
+        "SFPSWAP",
+        "max, min",
+        &[
+            ("lreg_src_c", big.clone()),
+            ("lreg_dest", small.clone()),
+            n("instr_mod1", 1),
+        ],
+    )?;
+    Ok((big, small))
+}
+
+/// Lane tests of a condition: (instruction, mod1, the operands swapped).
+const CONDITIONS: [(&str, (&str, i64, bool)); 2] =
+    [("gt", ("SFPGT", 1, false)), ("lt", ("SFPGT", 1, true))];
+/// SFPSETCC's mod1 of the tests against 0 (on the integer view: -0.0 is not 0).
+const ZERO_TESTS: [(&str, i64); 2] = [("eq", 6), ("ne", 2)];
+/// The tests made of SFPGT's: the tests whose lanes take the other value over the
+/// value where the test holds (ne: the reverse), one SFPGT each.
+const INVERSES: [(&str, &[&str]); 4] = [
+    ("ge", &["lt"]),
+    ("le", &["gt"]),
+    ("eq", &["gt", "lt"]),
+    ("ne", &["gt", "lt"]),
+];
+
+/// Whether test `kind` against node `y` is == or != against the constant +0.0 (an
+/// SFPSETCC).
+fn zero_test(vs: &Vs, kind: &str, y: VId) -> bool {
+    let zero = vs.get(y).is_some_and(
+        |n| matches!(n.value, VValue::Const(v) if n.kind == "const" && (v as f32).to_bits() == 0),
+    );
+    ZERO_TESTS.iter().any(|(k, _)| *k == kind) && zero
+}
+
+/// A select whose test is the inverse of SFPGT's: the value taken where the test
+/// holds first, the other written over it in the lanes of each test of `INVERSES`.
+#[allow(clippy::too_many_arguments)]
+fn select_inverse(
+    b: &mut Body,
+    vs: &Vs,
+    (kind, x, y): (&'static str, VId, VId),
+    tests: &[&'static str],
+    then: Arg,
+    other: Arg,
+    done: &mut Vec<(VId, Arg)>,
+) -> Result<Arg, ChainError> {
+    let (first, over) = if kind == "ne" {
+        (other, then)
+    } else {
+        (then, other)
+    };
+    let out = b.op(
+        "SFPMOV",
+        &format!("select: x {kind} y"),
+        &[("lreg_c", first)],
+    )?;
+    for &test in tests {
+        when(b, vs, (test, x, y), done)?;
+        let args = [("lreg_c", over.clone()), ("lreg_dest", out.clone())];
+        b.word("SFPMOV", &format!("select: where x {test} y"), &args)?;
+        b.end()?;
+    }
+    Ok(out)
+}
+
+/// Lane flags from comparison `kind` of x and y: the lanes where it holds run what
+/// follows.
+fn when(
+    b: &mut Body,
+    vs: &Vs,
+    (kind, x, y): (&str, VId, VId),
+    done: &mut Vec<(VId, Arg)>,
+) -> Result<(), ChainError> {
+    let x = value(b, vs, x, done)?;
+    let y = value(b, vs, y, done)?;
+    if let Some((_, mode)) = ZERO_TESTS.iter().find(|(k, _)| *k == kind) {
+        if y == name("zero") {
+            let args = [("lreg_c", x), n("instr_mod1", *mode)];
+            return b.when("SFPSETCC", &format!("x {kind} 0"), &args);
+        }
+    }
+    let Some((_, (op, mode, swap))) = CONDITIONS.iter().find(|(k, _)| *k == kind) else {
+        return Err(plan_error(format!(
+            "the comparison {kind} is not built in the unit program"
+        )));
+    };
+    let (x, y) = if *swap { (y, x) } else { (x, y) };
+    let args = [("lreg_c", y), ("lreg_dest", x), n("instr_mod1", *mode)];
+    b.when(op, &format!("x {kind} y"), &args)
+}
+
 /// The value of vector node `id` (an operand, a constant, an operation), each node
 /// once (`done`); operand k is a load of Dst tile k.
 fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<Arg, ChainError> {
@@ -600,7 +707,41 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
                 "vector function {f} is not built in the unit program"
             )))
         }
-        ("max" | "min" | "select" | "flash_exp2", _) => {
+        ("max" | "min", _) => {
+            let mut a = args(b, done)?.into_iter();
+            let (Some(x), Some(y)) = (a.next(), a.next()) else {
+                return Err(ChainError::NotPorted(format!(
+                    "a {} of no two values",
+                    node.kind
+                )));
+            };
+            if node.kind == "max" {
+                maximum(b, x, y)?
+            } else {
+                minimum(b, x, y)?
+            }
+        }
+        ("select", VValue::Cond(kind, x, y)) => {
+            let mut a = args(b, done)?.into_iter();
+            let (Some(then), Some(other)) = (a.next(), a.next()) else {
+                return Err(ChainError::NotPorted("a select of no two values".into()));
+            };
+            let inverse = INVERSES.iter().find(|(k, _)| k == kind);
+            match inverse {
+                Some((_, tests)) if !zero_test(vs, kind, *y) => {
+                    select_inverse(b, vs, (kind, *x, *y), tests, then, other, done)?
+                }
+                _ => {
+                    let out = b.op("SFPMOV", "select: the other value", &[("lreg_c", other)])?;
+                    when(b, vs, (kind, *x, *y), done)?;
+                    let args = [("lreg_c", then), ("lreg_dest", out.clone())];
+                    b.word("SFPMOV", "select: where it holds", &args)?;
+                    b.end()?;
+                    out
+                }
+            }
+        }
+        ("flash_exp2", _) => {
             return Err(ChainError::NotPorted(format!(
                 "the vector operation {}",
                 node.kind

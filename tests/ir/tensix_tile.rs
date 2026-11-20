@@ -281,7 +281,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 29, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 33, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -549,7 +549,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 32);
+    assert_eq!(compared, 36);
 }
 
 #[test]
@@ -628,41 +628,46 @@ fn each_unit_programs_listing_is_todays() {
     // the whole-tile arithmetic, `a * k` among it, with and without a load macro;
     // smooth's checks repair its code (an SFPNOP after its constant register's setup);
     // exp, recip and sigmoid with their lane conditions; gate's 2-word constants tie
-    // for the registers (first loaded first); two reciprocals share their 2.0
+    // for the registers (first loaded first); two reciprocals share their 2.0;
+    // min, max and the selects: SFPGT's tests, their inverses, the tests against 0
     let whole = [
         "t_times",
         "t_plus",
         "t_plus_bfp8",
         "t_gate",
         "t_silu_gate_bf16",
+        "t_clamp01",
+        "t_leaky",
         "t_smooth",
         "t_scaled_sum",
         "t_exp",
         "t_sigmoid",
         "t_silu",
         "t_recip",
+        "t_relu",
         "t_square",
         "t_neg",
         "t_divide",
+        "t_floor",
         "t_twice_k",
         "t_chained",
         "t_two_recips",
+        "t_pick_ge",
+        "t_pick_le_ne",
+        "t_pick_eq",
+        "t_zero_tests",
+        "t_called",
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
     let refused = [
         "plus_band: the band (a body on the live rows)",
-        "clamp01: the vector operation min",
-        "leaky: the vector operation select",
         "project: a function that is one tile product",
         "tanh: the vector function tanh",
         "erf: the vector function erf",
         "log: the vector function log",
         "sqrt: the vector function sqrt",
         "rsqrt: the vector function rsqrt",
-        "relu: the vector operation max",
-        "floor: the vector operation select",
-        "called: the vector operation select",
     ];
     let named: Vec<String> = not_ported
         .iter()
