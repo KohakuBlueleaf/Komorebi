@@ -163,3 +163,15 @@ func t_zero_tests(a: tile<f32>, b: tile<f32>) -> tile<f32> {
 func t_four_registers(a: tile<f32>) -> tile<f32> {
     return rsqrt(a) * reciprocal(a)
 }
+
+func t_project_silu(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
+    return silu(matmul(x, w))
+}
+
+func t_project_bias(x: tile<bf16>, w: tile<bf16>, b: tile<f32>) -> tile<f32> {
+    return matmul(x, w) + b
+}
+
+func t_two_products(x: tile<bf16>, w: tile<bf16>, v: tile<bf16>) -> tile<f32> {
+    return matmul(x, w) * matmul(x, v)
+}

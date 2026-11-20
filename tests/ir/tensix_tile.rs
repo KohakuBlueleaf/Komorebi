@@ -282,7 +282,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 33, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 36, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -550,7 +550,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 37);
+    assert_eq!(compared, 40);
 }
 
 #[test]
@@ -632,7 +632,8 @@ fn each_unit_programs_listing_is_todays() {
     // for the registers (first loaded first); two reciprocals share their 2.0;
     // min, max and the selects: SFPGT's tests, their inverses, the tests against 0;
     // every vector function, rsqrt's integer constant register among them; a function
-    // that is one tile product, at today's default fidelity
+    // that is one tile product, at today's default fidelity; products before the vector
+    // code (one, one beside a loaded tile, two)
     let whole = [
         "t_times",
         "t_plus",
@@ -643,6 +644,9 @@ fn each_unit_programs_listing_is_todays() {
         "t_leaky",
         "t_smooth",
         "t_project",
+        "t_project_silu",
+        "t_project_bias",
+        "t_two_products",
         "t_scaled_sum",
         "t_exp",
         "t_sigmoid",

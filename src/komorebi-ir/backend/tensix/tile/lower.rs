@@ -6,10 +6,11 @@
 //!
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
 //! `abs`, multiply-add, `min` / `max`, selects, constants, run-time scalars and every
-//! vector function (`FUNCTIONS`), with every pass of that path and the load macro.
-//! Refused by name (K964) where it would act: `flash_exp2`, several results, per-row
-//! operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
-//! pre-pass and `allocate`'s high registers.
+//! vector function (`FUNCTIONS`), with every pass of that path and the load macro; tile
+//! products, alone or before the vector code, at today's default fidelity. Refused by
+//! name (K964) where it would act: `flash_exp2`, several results, per-row operands and
+//! the band. Not on this path, so not ported: `drop_copies`, `common_values`, the
+//! per-row pre-pass and `allocate`'s high registers.
 
 use std::collections::HashMap;
 
@@ -2028,7 +2029,13 @@ pub fn unit_program(
     for leaf in &chain.operands {
         tensors.push(operand_tensor(ir, leaf.source)?);
     }
-    let leaves = tensors.iter().filter(|t| t.is_none()).count();
+    let mut products_at = Vec::new();
+    for (k, (leaf, tensor)) in chain.operands.iter().zip(&tensors).enumerate() {
+        if let (None, Source::Node(n)) = (tensor, leaf.source) {
+            products_at.push((k as i64, n));
+        }
+    }
+    let leaves = products_at.len();
     if leaves > OPERANDS {
         return Err(plan_error(format!(
             "{}: {leaves} products: Dst holds {OPERANDS} operand tiles of a body (a product's result stays in Dst for the vector code)",
@@ -2266,30 +2273,46 @@ pub fn unit_program(
         .filter(|(_, t)| t.is_some())
         .map(|(k, _)| format!("copy_tile(in{k}, 0, dst + {k})"))
         .collect();
-    if leaves > 0 {
-        return Err(ChainError::NotPorted(
-            "tile products before the vector code".into(),
-        ));
-    }
-    let mut unpack = vec![sync(
+    unit.tile[UNPACK] = vec![sync(
         "unpack",
         "reader",
         "cb_wait_front(in, 1)",
         "the input tiles",
     )];
-    unpack.extend(
+    let multiplied = if leaves > 0 {
+        products(ir, &mut unit, &products_at, FIDELITY)?
+    } else {
+        Vec::new()
+    };
+    unit.tile[UNPACK].extend(
         copies
             .iter()
             .map(|c| call(c, "the tile into Dst (fp32, unpacked to Dst)")),
     );
-    unpack.push(call("cb_pop_front(in, 1)", "frees the input tiles"));
-    unit.tile[0] = unpack;
+    unit.tile[UNPACK].push(call("cb_pop_front(in, 1)", "frees the input tiles"));
+    if leaves > 0 {
+        let words: usize = multiplied
+            .iter()
+            .map(|x| match x {
+                Item::Product(p) => p.words.len(),
+                _ => 0,
+            })
+            .sum();
+        unit.passes.push(pass(
+            "schedule",
+            "products",
+            vec![format!(
+                "{leaves} product(s) at {FIDELITY} before the vector code ({words} matrix words), the vector unit's stall on the matrix unit after them"
+            )],
+        ));
+    }
     let mut math = vec![sync(
         "math",
         "pack",
         "tile_regs_acquire()",
         "a free Dst half",
     )];
+    math.extend(multiplied);
     math.extend(
         copies
             .iter()
@@ -2299,7 +2322,11 @@ pub fn unit_program(
     math.push(Item::Insn(insn(
         "STALLWAIT",
         &[("stall_res", STALL_SFPU), ("wait_res", WAIT_MATH)],
-        "SFPU waits for the matrix unit",
+        if leaves > 0 {
+            "SFPU waits for the matrix unit (the products)"
+        } else {
+            "SFPU waits for the matrix unit"
+        },
     )?));
     math.extend(items(head));
     math.extend(items(held));

@@ -51,6 +51,10 @@ CASES = [
     ("leaky", lambda a: km.where(a > 0.0, a, a * 0.01), [F], {}),
     ("smooth", lambda a: a * 0.5 + abs(a) * 0.5, [F], {}),
     ("project", lambda x, w: x @ w, [BF, BF], {}),
+    # products before the vector code: one, one beside a loaded tile, two
+    ("project_silu", lambda x, w: km.silu(x @ w), [BF, BF], {}),
+    ("project_bias", lambda x, w, b: x @ w + b, [BF, BF, F], {}),
+    ("two_products", lambda x, w, v: (x @ w) * (x @ v), [BF, BF, BF], {}),
     ("scaled_sum", lambda a, b, k: (a + b) * k, [F, F, SCALAR], {}),
     ("exp", lambda a: km.exp(a), [F], {}),
     ("sigmoid", lambda a: km.sigmoid(a), [F], {}),
