@@ -350,6 +350,44 @@ fn names_word(re: &str, word: &str) -> bool {
 
 const TEXTMATE: &str = "packaging/vscode/komorebi-ir/syntaxes/komorebi-ir.tmLanguage.json";
 
+/// The scope roots a rule may give: the ones VS Code's default themes (Dark+, Dark Modern,
+/// Light+, Light Modern) colour, and the ones that only carry structure (`meta`) or
+/// punctuation. A scope outside them (`constant.other`, `support.constant`) is shown in
+/// the editor's plain foreground, which is how a name once went uncoloured.
+const ALLOWED_ROOTS: &[&str] = &[
+    "comment",
+    "constant.character.escape",
+    "constant.language",
+    "constant.numeric",
+    "entity.name",
+    "entity.other.attribute-name",
+    "keyword",
+    "meta",
+    "punctuation",
+    "storage",
+    "string",
+    "support.function",
+    "support.type",
+    "support.variable",
+    "variable",
+];
+
+/// Every scope name a rule of the grammar gives (a `name`, at any depth below the top).
+fn scope_names(node: &Json, top: bool, into: &mut Vec<String>) {
+    match node {
+        Json::Obj(members) => {
+            for (key, value) in members {
+                match (key.as_str(), value) {
+                    ("name", Json::Str(name)) if !top => into.push(name.clone()),
+                    _ => scope_names(value, false, into),
+                }
+            }
+        }
+        Json::Arr(items) => items.iter().for_each(|i| scope_names(i, false, into)),
+        _ => {}
+    }
+}
+
 #[test]
 fn the_textmate_grammar_names_every_word_of_the_language() {
     let grammar = parse_json(TEXTMATE);
@@ -375,6 +413,32 @@ fn the_textmate_grammar_names_every_word_of_the_language() {
         missing.is_empty(),
         "the TextMate grammar does not name: {}",
         missing.join(", ")
+    );
+}
+
+#[test]
+fn every_scope_the_grammar_gives_is_one_the_default_themes_colour() {
+    let grammar = parse_json(TEXTMATE);
+    let mut names = Vec::new();
+    scope_names(&grammar, true, &mut names);
+    assert!(
+        names.len() > 50,
+        "the scopes were not read ({} found)",
+        names.len()
+    );
+    let outside: BTreeSet<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| {
+            !ALLOWED_ROOTS.iter().any(|root| {
+                name.strip_prefix(root)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+            })
+        })
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "scopes outside the roots the default themes colour: {outside:?}"
     );
 }
 

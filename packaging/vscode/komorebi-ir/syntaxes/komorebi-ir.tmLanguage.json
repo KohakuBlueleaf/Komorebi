@@ -120,8 +120,17 @@
           }
         },
         {
-          "match": "^\\s*(extern)\\s+(func)\\s+([A-Za-z_]\\w*)",
-          "captures": {
+          "begin": "^\\s*(extern)\\s+(func)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "patterns": [
+            {
+              "include": "#parameter"
+            },
+            {
+              "include": "#expression"
+            }
+          ],
+          "beginCaptures": {
             "1": {
               "name": "storage.modifier.extern.komorebi-ir"
             },
@@ -130,28 +139,70 @@
             },
             "3": {
               "name": "entity.name.function.komorebi-ir"
+            },
+            "4": {
+              "name": "punctuation.section.parens.begin.komorebi-ir"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.komorebi-ir"
             }
           }
         },
         {
-          "match": "^\\s*(func|combine)\\s+([A-Za-z_]\\w*)",
-          "captures": {
+          "begin": "^\\s*(func|combine)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "patterns": [
+            {
+              "include": "#parameter"
+            },
+            {
+              "include": "#expression"
+            }
+          ],
+          "beginCaptures": {
             "1": {
               "name": "storage.type.function.komorebi-ir"
             },
             "2": {
               "name": "entity.name.function.komorebi-ir"
+            },
+            "3": {
+              "name": "punctuation.section.parens.begin.komorebi-ir"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.komorebi-ir"
             }
           }
         },
         {
-          "match": "^\\s*(handler|control|chain|run)\\s+([A-Za-z_]\\w*)",
-          "captures": {
+          "begin": "^\\s*(handler|control|chain|run)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "end": "\\)",
+          "patterns": [
+            {
+              "include": "#parameter"
+            },
+            {
+              "include": "#expression"
+            }
+          ],
+          "beginCaptures": {
             "1": {
               "name": "storage.type.function.komorebi-ir"
             },
             "2": {
               "name": "entity.name.function.komorebi-ir"
+            },
+            "3": {
+              "name": "punctuation.section.parens.begin.komorebi-ir"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.parens.end.komorebi-ir"
             }
           }
         },
@@ -295,7 +346,11 @@
               "include": "#named_argument"
             },
             {
-              "name": "constant.other.attribute-argument.komorebi-ir",
+              "name": "constant.language.attribute-argument.komorebi-ir",
+              "match": "(?<![\\w.])(group|grid|build|load|invoke|element|worker|program|island)(?!\\w)(?!\\s*[(.=])"
+            },
+            {
+              "name": "variable.other.readwrite.attribute-argument.komorebi-ir",
               "match": "(?<![\\w.])[A-Za-z_]\\w*(?!\\w)(?!\\s*[(.=])"
             },
             {
@@ -357,6 +412,14 @@
         },
         {
           "include": "#punctuation"
+        },
+        {
+          "name": "variable.other.constant.komorebi-ir",
+          "match": "(?<![\\w.])[A-Z][A-Z0-9_]*(?!\\w)(?!\\s*\\()"
+        },
+        {
+          "name": "variable.other.readwrite.komorebi-ir",
+          "match": "(?<![\\w.])[A-Za-z_]\\w*(?!\\w)"
         }
       ]
     },
@@ -387,8 +450,15 @@
           "match": "(?<![\\w.])(if|else|for|in|while|return|await)(?!\\w)"
         },
         {
-          "name": "storage.type.komorebi-ir",
-          "match": "(?<![\\w.])(let|var)(?!\\w)"
+          "match": "(?<![\\w.])(let|var)(?!\\w)(?:\\s+([A-Za-z_]\\w*))?",
+          "captures": {
+            "1": {
+              "name": "storage.type.komorebi-ir"
+            },
+            "2": {
+              "name": "variable.other.readwrite.declaration.komorebi-ir"
+            }
+          }
         },
         {
           "name": "keyword.other.komorebi-ir",
@@ -448,11 +518,11 @@
           "match": "(?<![\\w.])(worker|group|island)(?=\\s*\\.)"
         },
         {
-          "name": "support.constant.komorebi-ir",
+          "name": "constant.language.builtin.komorebi-ir",
           "match": "(?<![\\w.])(zeros|row|col|sum|max|min|and|or|grid)(?!\\w)"
         },
         {
-          "name": "support.constant.failure.komorebi-ir",
+          "name": "constant.language.failure.komorebi-ir",
           "match": "(?<![\\w.])(view_end|empty_state|send_refused|capacity|given_up|dependency|not_a_peer|over_bound|divide_by_zero|out_of_range)(?!\\w)"
         }
       ]
@@ -590,7 +660,7 @@
       "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(:)(?!:)",
       "captures": {
         "1": {
-          "name": "variable.other.declaration.komorebi-ir"
+          "name": "variable.other.member.komorebi-ir"
         },
         "2": {
           "name": "punctuation.separator.colon.komorebi-ir"
@@ -615,6 +685,17 @@
           "include": "#expression"
         }
       ]
+    },
+    "parameter": {
+      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(:)(?!:)",
+      "captures": {
+        "1": {
+          "name": "variable.parameter.komorebi-ir"
+        },
+        "2": {
+          "name": "punctuation.separator.colon.komorebi-ir"
+        }
+      }
     }
   }
 }
