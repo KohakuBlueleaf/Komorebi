@@ -137,9 +137,34 @@ pub fn tile_bytes(format: Format, shape: TileShape) -> u64 {
     }
 }
 
+/// The name today's loader gives a buffer's format (`formats.DTYPES`), if it has one:
+/// the integers of 8 to 32 bits, `f16`, `f32` and `bf16`. The block-float formats are
+/// not named: today has two of each (`bfp8`, `bfp8_b`) and the IR's one is neither yet.
+pub fn dtype(format: Format) -> Option<&'static str> {
+    Some(match format {
+        Format::U8 => "uint8",
+        Format::U16 => "uint16",
+        Format::U32 => "uint32",
+        Format::I32 => "int32",
+        Format::F16 => "float16",
+        Format::F32 => "float32",
+        Format::Bf16 => "bfloat16",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loaders_names_are_todays() {
+        assert_eq!(
+            [Format::Bf16, Format::F32, Format::U32].map(dtype),
+            [Some("bfloat16"), Some("float32"), Some("uint32")]
+        );
+        assert_eq!([Format::Bfp8, Format::U64].map(dtype), [None, None]);
+    }
 
     #[test]
     fn the_tile_bytes_are_todays() {

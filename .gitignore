@@ -21,3 +21,5 @@ results/
 !experiments/programs/ray_wide/frame_profile.json
 !experiments/checks/graph_checks/graphs/*.json
 !experiments/checks/stream_checks/streams/*.json
+# cargo's build folder, when CARGO_TARGET_DIR names none
+/target/

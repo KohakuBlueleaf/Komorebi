@@ -17,8 +17,8 @@ pub mod unit;
 
 use crate::backend::{
     check_statement, ArgKind, ArgWord, Backend, Bound, Buffer, Build, Built, CacheKey, CompileArg,
-    EntryPoint, Expr, Kernel, LoadStatement, Machine, Output, Processor, Reads, Refusal, Statement,
-    Target, NOT_BUILT,
+    EntryPoint, Expr, Kernel, LoadStatement, Machine, Output, Processor, Reads, Refusal, Setting,
+    Statement, Target, NOT_BUILT,
 };
 use crate::bytecode::hash::{hex, sha256};
 use crate::program::body::InstId;
@@ -997,12 +997,13 @@ fn buffers(plans: &[Plan]) -> Vec<Buffer> {
     for pair in pairs(plans, &lines) {
         // A stream's word is a tensor's by the walk (`plan`), so its format is known.
         let format = pair.format.unwrap_or(Format::Bf16);
-        for index in [pair.index, pair.index + 1] {
+        for (index, other) in [(pair.index, pair.index + 1), (pair.index + 1, pair.index)] {
             out.push(Buffer {
                 index,
                 format,
                 page_bytes: chip::tile_bytes(format, chip::TILE),
                 pages: pair.pages,
+                pair: Some(other),
             });
         }
     }
@@ -1042,8 +1043,11 @@ fn kernels(plans: &[Plan]) -> Vec<Kernel> {
             defines: Vec::new(),
             args: Vec::new(),
             options: vec![
-                ("fp32_dest_acc_en".to_string(), "true".to_string()),
-                ("math_fidelity".to_string(), "HiFi4".to_string()),
+                ("fp32_dest_acc_en".to_string(), Setting::Bool(true)),
+                (
+                    "math_fidelity".to_string(),
+                    Setting::Text("HiFi4".to_string()),
+                ),
             ],
         },
     ]

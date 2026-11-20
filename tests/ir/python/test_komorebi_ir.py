@@ -165,6 +165,12 @@ def test_emit_gives_the_tensix_output_as_data():
         ("compute.cpp", "compute", []),
     ]
     assert {b.format for b in out.buffers} == {"bf16"} and len(out.buffers) == 4
+    pairs = [(16, 17), (17, 16), (0, 1), (1, 0)]
+    assert [(b.index, b.pair) for b in out.buffers] == pairs
+    assert out.kernels[2].options == [
+        ("fp32_dest_acc_en", True),
+        ("math_fidelity", "HiFi4"),
+    ]
     assert out.steps == []
 
 

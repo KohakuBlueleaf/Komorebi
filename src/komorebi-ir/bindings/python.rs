@@ -13,7 +13,9 @@ use pyo3::types::{PyBytes, PyList};
 
 use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
-use crate::backend::{ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Processor};
+use crate::backend::{
+    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Processor, Setting,
+};
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
 use crate::errors::{Diagnostic, Severity};
@@ -366,8 +368,8 @@ fn entry_point<'py>(py: Python<'py>, e: &EntryPoint) -> PyResult<Bound<'py, PyAn
 }
 
 /// One kernel as data: (source, processor, defines, args, options); an argument is
-/// `("word", n)` or `("layout", parameter)`.
-fn kernel(k: &Kernel) -> KernelRow {
+/// `("word", n)` or `("layout", parameter)`, an option's value a bool or a text.
+fn kernel<'py>(py: Python<'py>, k: &Kernel) -> PyResult<KernelRow<'py>> {
     let processor = match k.processor {
         Processor::Reader => "reader",
         Processor::Writer => "writer",
@@ -381,21 +383,29 @@ fn kernel(k: &Kernel) -> KernelRow {
             CompileArg::TensorLayout { param } => ("layout", *param as u64),
         })
         .collect();
-    (
+    let mut options = Vec::new();
+    for (name, value) in &k.options {
+        let value = match value {
+            Setting::Bool(b) => b.into_pyobject(py)?.to_owned().into_any(),
+            Setting::Text(t) => t.into_pyobject(py)?.into_any(),
+        };
+        options.push((name.clone(), value));
+    }
+    Ok((
         k.source.clone(),
         processor,
         k.defines.clone(),
         args,
-        k.options.clone(),
-    )
+        options,
+    ))
 }
 
-type KernelRow = (
+type KernelRow<'py> = (
     String,
     &'static str,
     Vec<(String, String)>,
     Vec<(&'static str, u64)>,
-    Vec<(String, String)>,
+    Vec<(String, Bound<'py, PyAny>)>,
 );
 
 /// A module's output on a backend (`api::emit`), as data: (key, files, entries,
@@ -443,10 +453,13 @@ fn emit<'py>(
     }
     let (kernels, buffers, steps) = match &output.build {
         Build::Kernels { kernels, buffers } => (
-            kernels.iter().map(kernel).collect(),
+            kernels
+                .iter()
+                .map(|k| kernel(py, k))
+                .collect::<PyResult<_>>()?,
             buffers
                 .iter()
-                .map(|b| (b.index, b.format.name(), b.page_bytes, b.pages))
+                .map(|b| (b.index, b.format.name(), b.page_bytes, b.pages, b.pair))
                 .collect(),
             Vec::new(),
         ),
@@ -460,7 +473,7 @@ fn emit<'py>(
         ),
     };
     let kernels: Vec<KernelRow> = kernels;
-    let buffers: Vec<(u32, &str, u64, u64)> = buffers;
+    let buffers: Vec<(u32, &str, u64, u64, Option<u32>)> = buffers;
     let steps: Vec<(String, Vec<String>)> = steps;
     let row = (output.key.hex(), files, entries, kernels, buffers, steps);
     Ok(row.into_pyobject(py)?.into_any())

@@ -40,7 +40,7 @@ if __name__ == "__main__":
     made = Scale(log=lambda line: None, l1=1 << 20, x=tensor(), y=tensor())
     print(f"FOLDER {made.built.folder}")
     # The kernels the program hands the runtime (role, source, describe's processor,
-    # compile arguments, defines, options), then its buffers (a pair's halves).
+    # compile arguments, defines, options), its buffers (halves), then its pairs.
     for number, role in enumerate(("reader", "writer", "compute")):
         options = made.compute if role == "compute" else {}
         print(
@@ -58,3 +58,5 @@ if __name__ == "__main__":
         )
     for buffer in made.buffers:
         print("BUFFER", buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
+    for pair in made.pairs:
+        print("PAIR", pair.mover_a, pair.mover_b)

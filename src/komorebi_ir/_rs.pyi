@@ -28,6 +28,6 @@ def emit(
     list[tuple[str, bytes]],
     list[tuple],
     list[tuple],
-    list[tuple[int, str, int, int]],
+    list[tuple[int, str, int, int, int | None]],
     list[tuple[str, list[str]]],
 ]: ...

@@ -11,16 +11,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
-use komorebi_ir::backend::tensix::{self, Tensix};
+use komorebi_ir::backend::tensix::{self, chip, Tensix};
 use komorebi_ir::backend::{
-    ArgWord, Backend, Bound, Build, CacheKey, CompileArg, Expr, Processor, Reads, Target,
+    ArgWord, Backend, Bound, Build, CacheKey, CompileArg, Expr, Processor, Reads, Setting, Target,
 };
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::bytecode::{decode, encode};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::notes::{Anchor, Origin, Owner};
 use komorebi_ir::program::{BodyRef, Module};
-use komorebi_ir::types::{Format, HandlerId, ProgramId};
+use komorebi_ir::types::{HandlerId, ProgramId};
 
 fn here() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix")
@@ -173,14 +173,27 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
         panic!("kernels built at load");
     };
     let loaded = load::kernels(&module, built, &stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
-    let joined = |pairs: &[(String, String)]| {
-        let mut pairs = pairs.to_vec();
+    let joined = |pairs: Vec<(String, String)>| {
+        let mut pairs = pairs;
         pairs.sort();
         pairs
             .iter()
             .map(|(k, v)| format!("{k}:{v}"))
             .collect::<Vec<_>>()
             .join(",")
+    };
+    // An option as the script prints it: a bool in lower case, a text as itself.
+    let settings = |options: &[(String, Setting)]| {
+        options
+            .iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    Setting::Bool(b) => b.to_string(),
+                    Setting::Text(t) => t.clone(),
+                };
+                (k.clone(), v)
+            })
+            .collect::<Vec<_>>()
     };
     let described: Vec<String> = loaded
         .iter()
@@ -196,8 +209,8 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
                 "KERNEL {role} {} {number} args={} defines={} options={}",
                 k.source,
                 args.join(","),
-                joined(&k.defines),
-                joined(&k.options)
+                joined(k.defines.clone()),
+                joined(settings(&k.options))
             )
         })
         .collect();
@@ -206,30 +219,31 @@ fn the_first_lesson_is_todays_text_byte_for_byte() {
         .filter(|l| l.starts_with("KERNEL "))
         .collect();
     assert_eq!(described, theirs, "the kernels handed to the runtime");
-    // The buffers, as the Program's halves (description.Buffer: its format by today's
-    // name of it, formats.py).
-    let dtype = |f: Format| match f {
-        Format::Bf16 => "bfloat16".to_string(),
-        Format::F32 => "float32".to_string(),
-        other => format!("{other}"),
-    };
+    // The buffers, as the Program's halves (description.Buffer: its format by the
+    // loader's name of it, chip::dtype), then its pairs (description.BufferPair: mover
+    // A's half, mover B's), a pair once, by its first half.
     let made: Vec<String> = buffers
         .iter()
         .map(|b| {
-            format!(
-                "BUFFER {} {} {} {}",
-                b.index,
-                dtype(b.format),
-                b.page_bytes,
-                b.pages
-            )
+            let dtype = chip::dtype(b.format).unwrap_or("none");
+            format!("BUFFER {} {dtype} {} {}", b.index, b.page_bytes, b.pages)
         })
+        .chain(
+            buffers
+                .iter()
+                .filter_map(|b| {
+                    b.pair
+                        .filter(|other| b.index < *other)
+                        .map(|o| (b.index, o))
+                })
+                .map(|(a, b)| format!("PAIR {a} {b}")),
+        )
         .collect();
     let theirs: Vec<&str> = printed
         .lines()
-        .filter(|l| l.starts_with("BUFFER "))
+        .filter(|l| l.starts_with("BUFFER ") || l.starts_with("PAIR "))
         .collect();
-    assert_eq!(made, theirs, "the buffers made at load");
+    assert_eq!(made, theirs, "the buffers made at load and their pairs");
 
     // The folder's name is today's digest of its files (dsl/files.py, text_key): the
     // same files give the same folder.

@@ -27,8 +27,9 @@ emitted (`K960` to `K965`, [the checks](checks.md)). A backend never substitutes
 Its output is files, the entries an invocation names, and its build, as data: steps to run in the
 output's directory, or kernels the machine's runtime compiles at load (a kernel's source, the
 processor it runs on, defines, compile arguments, a tensor's layout among them filled at load,
-and options) with the buffers in each core's memory they pass pages through (an index, a
-format, the bytes of a page, the pages). Each entry carries the invocation's ABI, the same on
+and options, each a bool or a text) with the buffers in each core's memory they pass pages
+through (an index, a format, the bytes of a page, the pages, and the other half's index when the
+buffer is one half of a pair, one half for each mover). Each entry carries the invocation's ABI, the same on
 every backend: its number, its argument words in order (a tensor's address, a tensor's tile
 count, a parameter's value), and the bounds a host checks before sending it. Compiling runs nothing and writes nothing. The
 output's files are kept under a key over the hash of the parts the backend reads, the backend's
@@ -114,8 +115,8 @@ The result, `Emitted`, holds:
 - the entry points, each with its number, argument words and the ranges a host checks;
 - how the output is built:
   - for the Tensix backend, the kernels (source, processor, defines, compile-time arguments,
-    options) and the buffers (index, format, page bytes, pages) the machine's runtime compiles
-    and makes at load;
+    options, each a bool or a text) and the buffers (index, format, page bytes, pages, the
+    other half of its pair) the machine's runtime compiles and makes at load;
   - for the CPU backend, the steps run in the folder of the files.
 
 A backend's refusal raises `IrError` with each refusal's code, and so does a backend name that

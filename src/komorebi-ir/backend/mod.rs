@@ -293,7 +293,16 @@ pub struct Kernel {
     /// Its compile-time arguments, in order.
     pub args: Vec<CompileArg>,
     /// Its compile options, by name.
-    pub options: Vec<(String, String)>,
+    pub options: Vec<(String, Setting)>,
+}
+
+/// A compile option's value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Setting {
+    /// On or off.
+    Bool(bool),
+    /// A name the runtime reads (`HiFi4`).
+    Text(String),
 }
 
 /// How an output is built.
@@ -323,6 +332,9 @@ pub struct Buffer {
     pub page_bytes: u64,
     /// Its pages.
     pub pages: u64,
+    /// The other half of its pair, when it is one: the two halves of a stream's
+    /// buffer, one for each mover.
+    pub pair: Option<u32>,
 }
 
 /// A backend's output: files, the entries, and how to build them; nothing is run and

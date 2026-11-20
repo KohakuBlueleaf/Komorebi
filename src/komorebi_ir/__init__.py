@@ -132,22 +132,24 @@ class EntryPoint(NamedTuple):
 class Kernel(NamedTuple):
     """A kernel the machine's runtime compiles at load: its source (a file of the
     output), its processor, defines, compile-time arguments (``("word", n)``, or
-    ``("layout", parameter)`` filled at load) and compile options."""
+    ``("layout", parameter)`` filled at load) and compile options (a bool or a text)."""
 
     source: str
     processor: str
     defines: list[tuple[str, str]]
     args: list[tuple[str, int]]
-    options: list[tuple[str, str]]
+    options: list[tuple[str, bool | str]]
 
 
 class Buffer(NamedTuple):
-    """A buffer of each core's memory the kernels pass tiles through."""
+    """A buffer of each core's memory the kernels pass tiles through; ``pair`` the
+    other half's index when it is one half of a stream's pair, one for each mover."""
 
     index: int
     format: str
     page_bytes: int
     pages: int
+    pair: int | None
 
 
 class Step(NamedTuple):

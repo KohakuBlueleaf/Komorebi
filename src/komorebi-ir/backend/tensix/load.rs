@@ -4,7 +4,7 @@
 //! holds each tensor's page count and kind, which a compile does not know; so it is
 //! not one of the compiled files and not in the compile's key.
 
-use crate::backend::{CompileArg, Kernel, Processor, Refusal, Target, NOT_BUILT};
+use crate::backend::{CompileArg, Kernel, Processor, Refusal, Setting, Target, NOT_BUILT};
 use crate::program::Module;
 
 use super::chip::Chip;
@@ -94,7 +94,7 @@ pub struct LoadedKernel {
     /// Its compile-time arguments, each tensor's layout in its place.
     pub args: Vec<u64>,
     /// Its compile options, by name.
-    pub options: Vec<(String, String)>,
+    pub options: Vec<(String, Setting)>,
 }
 
 /// The kernels of `module`'s output as a load given `tensors` (one for each tensor
