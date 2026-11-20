@@ -82,9 +82,9 @@ tensor, partitioned alike. The Tensix backend prints one partition for the two.
 
 ### A class's program through the IR
 
-`komorebi.dsl.ir.built.program(cls, **make)` builds the class's `km_program.Program` through the IR,
-apart from today's make, which it neither calls nor changes. It imports the komorebi-ir wheel,
-which `komorebi.dsl.ir` does not.
+`komorebi.dsl.ir.built.program(cls, **make)` builds the class's `km_program.Program` (a `Built`)
+through the IR, apart from today's make, which it neither calls nor changes. It imports the
+komorebi-ir wheel, which `komorebi.dsl.ir` does not.
 
 1. `module` gives the module, which is compiled with its origin.
 2. The Tensix backend emits the module's files and kernels.
@@ -100,5 +100,9 @@ which `komorebi.dsl.ir` does not.
    - the compute kernel's options;
    - the handlers' header;
    - the make's `depth=`.
+6. Each handler is made from its entry point: `entry(name)` is a handler `Run.submit` takes,
+   and its `args(...)` gives the command words of a call, as today's make gives them.
 
-For the first lesson, each of these fields is today's, and the folder is the same.
+For the first lesson, each of these fields is today's, and the folder is the same. The path
+through the IR checks each range a handler's entry point states at submit, refusing a range past
+its tensor's end before anything is sent; today's make checks only the ranges of `items(...)`.

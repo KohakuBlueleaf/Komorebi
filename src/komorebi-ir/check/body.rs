@@ -416,7 +416,9 @@ impl Checker<'_> {
         let params: Vec<Ty> = params.iter().map(tile).collect();
         cx.ret = Some(tile(&ret));
         self.bind_params(&mut cx, &f.params, &params);
+        self.on_blocks = on_blocks;
         self.block(&mut cx, &f.body);
+        self.on_blocks = false;
         if on_blocks {
             self.whole_block_ops(&f.name.name, f.body.span);
         }
@@ -706,9 +708,16 @@ impl Checker<'_> {
                 span,
             );
         } else if !ty.fits(want) {
+            // a tile against a block in a function on blocks: the reader sees a block
+            let why = match (ty, want) {
+                (Ty::Tile(_), Ty::Block(..)) | (Ty::Block(..), Ty::Tile(_)) if self.on_blocks => {
+                    " (in a function on blocks the body is on one tile)"
+                }
+                _ => "",
+            };
             self.error(
                 codes::WRONG_TYPE,
-                format!("{what} is {ty}, where {want} is asked"),
+                format!("{what} is {ty}, where {want} is asked{why}"),
                 span,
             );
         }

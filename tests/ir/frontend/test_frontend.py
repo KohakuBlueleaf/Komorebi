@@ -161,3 +161,32 @@ def test_the_program_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     assert ours.buffers == today.buffers
     assert halves(ours.pairs) == halves(today.pairs)
     assert ours.args is None and today.args is None
+
+
+def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monkeypatch):
+    script = tmp_path / "t1_class.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "t1_class.py", script)
+    spec = importlib.util.spec_from_file_location("t1_class", script)
+    t1 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "t1_class", t1)
+    spec.loader.exec_module(t1)
+    x, y = t1.tensor(), t1.tensor()
+    given = {"l1": 1 << 20, "x": x, "y": y}
+    today = t1.Scale(log=lambda line: None, **given)
+    ours = program(t1.Scale, log=lambda line: None, **given)
+    run = ours.entry("run")
+    assert run.program is ours
+    assert run.args(x, y, 0, 64, 2.0) == list(today.run.args(x, y, 0, 64, 2.0))
+    assert run.args(x, y, 0, x.pages, 2.0) == [0x1000, 0x1000, 0, 2048, 0x40000000]
+    # one tile past the end: today's make keeps no range for pages under a partition
+    # and sends it; the IR's handler refuses it before anything is sent
+    assert list(today.run.args(x, y, x.pages, 1, 2.0))[2:4] == [2048, 1]
+    with pytest.raises(km.ProgramError) as refused:
+        run.args(x, y, x.pages, 1, 2.0)
+    assert str(refused.value) == (
+        "run: x.tiles(first, tiles): items 2048 to 2048 of x at this call, and x "
+        "holds 2048 items of 2048 B (2048 page(s) of 1): keep the range inside the "
+        "tensor"
+    )
+    with pytest.raises(km.ProgramError, match="items 1 to 2048 of x"):
+        run.args(x, y, 1, x.pages, 2.0)

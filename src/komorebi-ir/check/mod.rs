@@ -202,6 +202,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         tile_missing: false,
         scope: None,
         scopes: HashMap::new(),
+        on_blocks: false,
     };
     let env = checker.collect(&module);
     checker.module_rules(&module);
@@ -356,6 +357,8 @@ pub(crate) struct Checker<'a> {
     late: HashSet<(usize, usize)>,
     /// The broadcasts the handler being checked makes, by the place of each call.
     made: Vec<Span>,
+    /// Whether the body being checked is a function's on blocks (its body on one tile).
+    on_blocks: bool,
 }
 
 impl Checker<'_> {

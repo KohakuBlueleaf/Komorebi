@@ -1758,3 +1758,17 @@ fn a_function_on_blocks_runs_on_each_tile_and_a_last_block_is_shorter() {
         assert!(all(&tile_f64(&run, out, i), w), "tile {i}");
     }
 }
+
+#[test]
+fn a_tile_against_a_block_in_a_function_on_blocks_says_its_body_is_on_one_tile() {
+    let text = "module blocks\n\ntile [32, 32]\nformat f32\n\n\
+                func twice(x: tile<f32>[4]) -> tile<f32>[4] {\n    return x * 2.0\n}\n\n\
+                func many(x: tile<f32>[4]) -> tile<f32>[4] {\n    return twice(x)\n}\n";
+    let found = komorebi_ir::check(text).expect_err("refused");
+    let why = "(in a function on blocks the body is on one tile)";
+    assert!(!found.is_empty(), "{found:?}");
+    for d in &found {
+        assert_eq!(d.code, "K102", "{d:?}");
+        assert!(d.message.ends_with(why), "{d:?}");
+    }
+}
