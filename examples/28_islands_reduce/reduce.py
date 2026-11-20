@@ -14,6 +14,7 @@ import numpy as np
 import komorebi as km
 from komorebi import formats
 from komorebi.bench import power
+from komorebi.islands import line_pairs
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "reduce.h", known=km.abi.headers().constants)
@@ -75,7 +76,8 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     opened = {"cards": cards}
     if args.islands:  # one card split, its islands in a line
-        opened = {"card": cards[0], "islands": args.islands, "line": True}
+        line = line_pairs(args.islands)
+        opened = {"card": cards[0], "islands": args.islands, "graph": line}
     report = {"cards": cards, "dtype": args.dtype, "pages": args.pages}
     generator = np.random.default_rng(1)
     with km.Session(**opened, log=log) as session:

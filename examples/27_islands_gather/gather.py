@@ -14,6 +14,7 @@ import numpy as np
 import komorebi as km
 from komorebi import formats
 from komorebi.bench import power
+from komorebi.islands import line_pairs
 from komorebi.layout import partition
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
@@ -95,7 +96,8 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     opened = {"cards": cards}
     if args.islands:  # one card split, its islands in a line
-        opened = {"card": cards[0], "islands": args.islands, "line": True}
+        line = line_pairs(args.islands)
+        opened = {"card": cards[0], "islands": args.islands, "graph": line}
     report = {"cards": cards, "pages": args.pages, "bytes": args.pages * 4096}
     whole = np.random.default_rng(1).standard_normal((args.pages * TILE, TILE))
     whole = whole.astype(np.float32)
