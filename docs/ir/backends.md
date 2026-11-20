@@ -112,6 +112,15 @@ the read pair and the arrivals to Dst as float32, unrounded (a buffer's `unpack`
 `unpack_to_dest_mode`). A reduce with another combine is refused. Everything else is refused with
 `K964`, by name.
 
+It also emits the corpus's program 3 (`StepHandlers.add`). Its loop zips two read streams, one
+tile a block each, and pushes a tile function of both (`plus(x, y)`) into a sink. Both read pairs
+and the write pair move in one call (`movement.move(km_read0, km_read1, km_write0)`). Compute
+waits for each read half, copies each tile to its own Dst tile and frees each half. A call takes
+the Dst tiles its unit states (today's larger of its operands and results), so a batch is the Dst
+half's tiles over that: two calls of `plus` an acquire. The call's tiles must be the loop's, in
+order, followed by `f32` words; any other call, a third read stream, or a loop other than one
+over each read stream once is refused by name.
+
 An entry point states every range of its tensors as a bound a host computes from the words and
 the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(worker.rank * 64, 64)`
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of

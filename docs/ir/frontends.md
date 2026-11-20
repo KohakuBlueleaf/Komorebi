@@ -71,13 +71,16 @@ first and last lines. A refused origin raises `IrError`, and its message says wh
 class compiler does, and gives a `Made`: the text and `made.origin` for `komorebi_ir.compile`. It
 does not import `komorebi_ir`, and today's make does not call it.
 
-It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`) and 2
-(`StepHandlers.sum`):
+It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.line`), 2
+(`StepHandlers.sum`) and 3 (`StepHandlers.add`):
 - an int value (`first = self.rank * TILES`): int parameters and values, numbers, a module's int
   constant as its number, `self.rank`, `+ - *`, written `let first = worker.rank * 64`;
 - a partition of a tensor's pages;
 - a write stream and a read loop, each over a partition or over `t.pages(first, count)`, written
   `t.tiles(first, count)`;
+- a loop over two read streams zipped (`for x, y in zip(km.Stream(...), km.Stream(...)):`),
+  written `for x, y in zip(a.tiles(...), b.tiles(...))`. Three streams, a write stream or names
+  other than one a stream are refused by name;
 - a push of a tile function's result, or of a tile expression (`results.push(x * scale)`), which
   is written as the function `tile_line_<line>` of the names it reads, as today's class compiles it;
 - a tile of zeros (`total = km.tile.zeros(km.fp32)`), written `var total: tile<f32> = zeros`, and

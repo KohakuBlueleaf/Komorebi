@@ -23,6 +23,18 @@ pub struct Unit {
     pub words: String,
     /// `tile_<name>.txt`.
     pub listing: String,
+    /// Its unit program's operands.
+    operands: usize,
+    /// Its unit program's results.
+    results: usize,
+}
+
+impl Unit {
+    /// The Dst tiles a call takes (today's `max(len(unit.operands), unit.results)`):
+    /// a batch of calls is the Dst half's tiles over this.
+    pub fn dst_tiles(&self) -> usize {
+        self.operands.max(self.results)
+    }
 }
 
 /// The Dst a tile function runs on (today's `tile_dest`): `fp16a` when every
@@ -42,11 +54,11 @@ fn dest(ir: &KernelIR) -> &'static str {
     }
 }
 
-/// Why the handler's compute loop, which reads one tile into Dst tile 0 of each call
-/// and packs one result from it, does not take `unit`, if it does not.
+/// Why the handler's compute loop, which reads its tiles into Dst tiles 0.. of each
+/// call and packs one result from it, does not take `unit`, if it does not.
 fn not_printed(unit: &UnitProgram) -> Option<&'static str> {
-    if unit.operands.len() != 1 || unit.operands[0].is_none() {
-        Some("a tile function whose unit reads other than its one tile")
+    if unit.operands.is_empty() || unit.operands.iter().any(Option::is_none) {
+        Some("a tile function whose unit reads other than tiles")
     } else if unit.results != 1 || !unit.products.is_empty() || !unit.parts.is_empty() {
         Some("a tile function of more than one result or with tile products")
     } else {
@@ -82,5 +94,7 @@ pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
         name,
         words,
         listing,
+        operands: made.operands.len(),
+        results: usize::try_from(made.results).unwrap_or(0),
     })
 }

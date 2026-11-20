@@ -689,3 +689,33 @@ fn a_load_on_islands_of_a_reduce_sized_for_one_is_refused_by_name() {
     let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
     load(&scale, &both, None, Some(&machine(vec![6, 6]))).expect("no reduce: loads");
 }
+
+#[test]
+fn a_zip_other_than_program_3s_is_refused_by_name() {
+    let source = std::fs::read_to_string(here().join("steps_add.kom")).expect("the .kom");
+    let built = |from: &str, to: &str| {
+        assert!(source.contains(from), "{from}");
+        komorebi_ir::api::build(&source.replacen(from, to, 1)).unwrap_or_else(|d| panic!("{d:?}"))
+    };
+    let refused = |from: &str, to: &str| {
+        let refusals = tensix::sources(&built(from, to)).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        let what: Vec<String> = refusals.into_iter().map(|r| r.what).collect();
+        what.join("; ")
+    };
+    // program 3 as written: both read streams in one move, each tile copied to its
+    // own Dst tile, two a call
+    let files = tensix::sources(&built("", "")).unwrap_or_else(|r| panic!("{r:?}"));
+    let file = |name: &str| &files.iter().find(|(n, _)| n == name).expect(name).1;
+    assert!(file("movement.cpp").contains("movement.move(km_read0, km_read1, km_write0)"));
+    assert!(
+        file("compute.cpp").contains("copy_tile(km_half1, km_tile0 + km_slot0, 2 * km_slot0 + 1);")
+    );
+    let swapped = refused("plus(x, y)", "plus(y, x)");
+    assert!(swapped.contains("the loop's tiles in order"), "{swapped}");
+    let third = refused(
+        "let results = sink(",
+        "let c = stream(a.tiles(first, width), block = 1)\n        let results = sink(",
+    );
+    assert!(third.contains("a third read stream"), "{third}");
+}

@@ -1,0 +1,28 @@
+// Program 3's module, StepHandlers.add, as the class DSL's frontend gives it for
+// steps_add.py.
+module stephandlers
+
+tile [32, 32]
+format f32
+
+func plus(
+    a: tile<f32>,
+    b: tile<f32>,
+) -> tile<f32> {
+    return a + b
+}
+
+program StepHandlers {
+    handler add(
+        a: tensor<f32>,
+        b: tensor<f32>,
+        out: tensor<f32>,
+        width: u32,
+    ) @on(group) {
+        let first = worker.rank * width
+        let results = sink(out.tiles(first, width), block = 1)
+        for x, y in zip(stream(a.tiles(first, width), block = 1), stream(b.tiles(first, width), block = 1)) {
+            results.push(plus(x, y))
+        }
+    }
+}

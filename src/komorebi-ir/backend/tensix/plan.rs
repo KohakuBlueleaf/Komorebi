@@ -1,8 +1,9 @@
 //! What a handler's body is, in the terms today's class DSL compiles: its command
 //! words, its named int values, the one partition its streams share or the range
-//! each streams, and a read stream whose loop either pushes a tile function's result
-//! into a write stream, or sums its tiles into a `var` reduced over the group and
-//! stored by the leader. A body of another form is refused by name (K964).
+//! each streams, and a loop over a read stream, or over two zipped, that either pushes
+//! a tile function's result into a write stream, or sums its tiles into a `var`
+//! reduced over the group and stored by the leader. A body of another form is refused
+//! by name (K964).
 
 use std::collections::HashMap;
 
@@ -116,15 +117,17 @@ pub struct Moved {
     pub range: Range,
 }
 
-/// The loop's body: `out.push(f(tile, scalar))`.
+/// The loop's body: `out.push(f(x, y, k))`, the loop's tiles in order, then `f32` words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call {
     /// The tile function.
     pub func: FuncId,
     /// Its name.
     pub name: String,
-    /// The word of its scalar argument.
-    pub scalar: usize,
+    /// Its tile operands: the loop's tiles, one from each read stream, in order.
+    pub tiles: usize,
+    /// The words of its scalar arguments, after the tiles.
+    pub scalars: Vec<usize>,
     /// The call's instruction.
     pub inst: InstId,
 }
@@ -176,9 +179,9 @@ pub struct Plan {
     /// The partitions, in the order they are written: one where the streams' are
     /// the same range (`shared`), else the write stream's and the read stream's.
     pub parts: Vec<Part>,
-    /// The read stream (the loop's).
-    pub read: Moved,
-    /// What the loop makes of it.
+    /// The read streams the loop walks: one, or the two it zips, in order.
+    pub reads: Vec<Moved>,
+    /// What the loop makes of them.
     pub shape: Shape,
 }
 
@@ -268,7 +271,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
     let Found {
         locals,
         parts,
-        read,
+        reads,
         shape,
     } = found;
     Ok(Plan {
@@ -278,7 +281,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         words,
         locals,
         parts,
-        read,
+        reads,
         shape,
     })
 }
@@ -315,11 +318,16 @@ pub fn shared(parts: &[Part]) -> (Vec<Part>, Vec<usize>) {
 enum Val {
     Arg(usize),
     Int(Int),
-    Tiles { tensor: usize, first: Int, n: Int },
+    Tiles {
+        tensor: usize,
+        first: Int,
+        n: Int,
+    },
     Part(usize, Part),
     Stream,
     Sink,
-    Tile,
+    /// The loop's tile from read stream `i`.
+    Tile(usize),
     Called,
     Zeros,
     Total,
@@ -339,7 +347,7 @@ enum Over {
 struct Found {
     locals: Vec<Local>,
     parts: Vec<Part>,
-    read: Moved,
+    reads: Vec<Moved>,
     shape: Shape,
 }
 
@@ -359,9 +367,10 @@ struct Summing {
 
 /// The body read instruction by instruction: arguments, ints of words, numbers and
 /// the rank (a named one a local), partitions of `t.tiles(first, n)` by rank and
-/// size, one sink, one stream, each of a partition or of tiles, the loop over the
-/// stream whose body calls a tile function on the loop's tile (or block) and a `f32`
-/// word and pushes the result into the sink, the loop's end, and nothing after; or,
+/// size, one sink, one or two streams, each of a partition or of tiles, the loop over
+/// the stream (or the two zipped) whose body calls a tile function on the loop's tiles
+/// (or blocks) and `f32` words and pushes the result into the sink, the loop's end,
+/// and nothing after; or,
 /// with no sink, a `var` of `zeros` the loop adds each tile to, its reduce with `sum`
 /// after the loop and the leader's store of the result, and nothing after.
 struct Walk<'m> {
@@ -372,7 +381,10 @@ struct Walk<'m> {
     vals: HashMap<ValueId, Val>,
     locals: Vec<Local>,
     sink: Option<(ValueId, Moved, Over)>,
-    stream: Option<(Moved, Over)>,
+    /// The read streams opened: each its value, its stream and its tiles.
+    streams: Vec<(ValueId, Moved, Over)>,
+    /// The streams the loop walks, by their place in `streams`.
+    walked: Vec<usize>,
     call: Option<Call>,
     looped: bool,
     pushed: bool,
@@ -390,7 +402,8 @@ impl<'m> Walk<'m> {
             vals: HashMap::new(),
             locals: Vec::new(),
             sink: None,
-            stream: None,
+            streams: Vec::new(),
+            walked: Vec::new(),
             call: None,
             looped: false,
             pushed: false,
@@ -453,84 +466,119 @@ impl<'m> Walk<'m> {
         if self.sum.zeros_seen {
             return Err(not_built("a zeros other than a var's start", at));
         }
-        let (Some((_, write, wover)), Some((read, rover)), Some(call), true) = (
-            self.sink.take(),
-            self.stream.take(),
-            self.call.take(),
-            self.ended,
-        ) else {
+        let (Some((_, write, wover)), Some(call), true) =
+            (self.sink.take(), self.call.take(), self.ended)
+        else {
             return Err(not_built(
                 "a handler other than a stream loop that pushes a tile function's result into a sink",
                 at,
             ));
         };
-        if write.block != read.block {
+        let (reads, overs) = self.walked_streams();
+        if reads.iter().any(|r| r.block != write.block) {
             return Err(not_built("a sink in blocks other than its loop's", at));
         }
-        let (parts, write, read) = match (wover, rover) {
-            (Over::Part(w), Over::Part(r)) => {
-                if w.n != r.n {
-                    return Err(not_built(
-                        "a sink of another count than its loop's stream",
-                        at,
-                    ));
-                }
-                let (parts, index) = shared(&[w, r]);
-                let write = Moved {
-                    range: Range::Part(index[0]),
-                    ..write
-                };
-                let read = Moved {
-                    range: Range::Part(index[1]),
-                    ..read
-                };
-                (parts, write, read)
-            }
-            (Over::Tiles(wf, wn), Over::Tiles(rf, rn)) => {
-                if wn != rn {
-                    return Err(not_built(
-                        "a sink of another count than its loop's stream",
-                        at,
-                    ));
-                }
-                let write = Moved {
-                    range: Range::Tiles { first: wf, n: wn },
-                    ..write
-                };
-                let read = Moved {
-                    range: Range::Tiles { first: rf, n: rn },
-                    ..read
-                };
-                (Vec::new(), write, read)
-            }
-            _ => {
-                return Err(not_built(
-                    "a sink of a partition and its loop's stream of tiles, or the other way",
-                    at,
-                ))
-            }
+        let count = |o: &Over| match o {
+            Over::Part(p) => p.n.clone(),
+            Over::Tiles(_, n) => n.clone(),
         };
-        self.locals_read(&parts, [&write, &read], at)?;
+        if overs.iter().any(|o| count(o) != count(&wover)) {
+            return Err(not_built(
+                "a sink of another count than its loop's stream",
+                at,
+            ));
+        }
+        let all: Vec<Over> = std::iter::once(wover).chain(overs).collect();
+        let (parts, ranges) = if all.iter().all(|o| matches!(o, Over::Part(_))) {
+            let given: Vec<Part> = all
+                .into_iter()
+                .filter_map(|o| match o {
+                    Over::Part(p) => Some(p),
+                    Over::Tiles(..) => None,
+                })
+                .collect();
+            let (parts, index) = shared(&given);
+            (
+                parts,
+                index.into_iter().map(Range::Part).collect::<Vec<_>>(),
+            )
+        } else if all.iter().all(|o| matches!(o, Over::Tiles(..))) {
+            let ranges = all
+                .into_iter()
+                .filter_map(|o| match o {
+                    Over::Tiles(first, n) => Some(Range::Tiles { first, n }),
+                    Over::Part(_) => None,
+                })
+                .collect();
+            (Vec::new(), ranges)
+        } else {
+            return Err(not_built(
+                "a sink of a partition and its loop's stream of tiles, or the other way",
+                at,
+            ));
+        };
+        let mut ranges = ranges.into_iter();
+        let write = Moved {
+            range: ranges.next().unwrap_or(Range::Part(0)),
+            ..write
+        };
+        let reads: Vec<Moved> = reads
+            .into_iter()
+            .zip(ranges)
+            .map(|(read, range)| Moved { range, ..read })
+            .collect();
+        let moved: Vec<&Moved> = std::iter::once(&write).chain(&reads).collect();
+        self.locals_read(&parts, &moved, at)?;
         Ok(Found {
             locals: self.locals,
             parts,
-            read,
+            reads,
             shape: Shape::Mapped { write, call },
         })
     }
 
+    /// The loop at `id` over `streams` (values of read streams, in order): each read
+    /// stream is walked by it, once.
+    fn walk_streams(&mut self, streams: &[ValueId], id: InstId) -> Result<(), String> {
+        let found: Option<Vec<usize>> = streams
+            .iter()
+            .map(|v| self.streams.iter().position(|(s, _, _)| s == v))
+            .collect();
+        match found {
+            Some(walked) if !self.looped && walked.len() == self.streams.len() => {
+                for &i in &walked {
+                    self.streams[i].1.inst = id;
+                }
+                self.walked = walked;
+                self.looped = true;
+                Ok(())
+            }
+            _ => Err("a loop other than one over each read stream, once".into()),
+        }
+    }
+
+    /// The streams the loop walks, in the loop's order: each stream and its tiles.
+    fn walked_streams(&mut self) -> (Vec<Moved>, Vec<Over>) {
+        let walked = std::mem::take(&mut self.walked);
+        walked
+            .into_iter()
+            .map(|i| {
+                let (_, moved, over) = self.streams[i].clone();
+                (moved, over)
+            })
+            .unzip()
+    }
+
     /// Refuses a named value no stream reads (no line today's text prints) and a read
     /// stream's count of a named value.
-    fn locals_read(&self, parts: &[Part], moved: [&Moved; 2], at: Anchor) -> Result<(), Refusal> {
-        let [write, read] = moved;
+    /// `moved` is the written tiles, then the read streams.
+    fn locals_read(&self, parts: &[Part], moved: &[&Moved], at: Anchor) -> Result<(), Refusal> {
         let mut used = Vec::new();
         let ints = parts.iter().flat_map(|p| [&p.first, &p.n]).chain(
-            [&write.range, &read.range]
-                .into_iter()
-                .flat_map(|r| match r {
-                    Range::Tiles { first, n } => vec![first, n],
-                    Range::Part(_) => Vec::new(),
-                }),
+            moved.iter().map(|m| &m.range).flat_map(|r| match r {
+                Range::Tiles { first, n } => vec![first, n],
+                Range::Part(_) => Vec::new(),
+            }),
         );
         for int in ints {
             int.each(&mut |i| {
@@ -559,8 +607,10 @@ impl<'m> Walk<'m> {
             ));
         }
         let mut counted = false;
-        if let Range::Tiles { n, .. } = &read.range {
-            n.each(&mut |i| counted |= matches!(i, Int::Local(_)));
+        for read in &moved[1..] {
+            if let Range::Tiles { n, .. } = &read.range {
+                n.each(&mut |i| counted |= matches!(i, Int::Local(_)));
+            }
         }
         if counted {
             return Err(not_built("a read stream's count of a named value", at));
@@ -575,8 +625,10 @@ impl<'m> Walk<'m> {
         if self.sink.is_some() {
             return Err(not_built("a sink in a handler of a sum", at));
         }
-        let (Some((read, over)), Some(zeros), Some(add), Some(reduce), Some(leader)) = (
-            self.stream.take(),
+        let (reads, overs) = self.walked_streams();
+        let (Ok([read]), Ok([over]), Some(zeros), Some(add), Some(reduce), Some(leader)) = (
+            <[Moved; 1]>::try_from(reads),
+            <[Over; 1]>::try_from(overs),
             sum.zeros,
             sum.add,
             sum.reduce,
@@ -613,11 +665,11 @@ impl<'m> Walk<'m> {
                 },
             ),
         };
-        self.locals_read(&parts, [&store, &read], at)?;
+        self.locals_read(&parts, &[&store, &read], at)?;
         Ok(Found {
             locals: self.locals,
             parts,
-            read,
+            reads: vec![read],
             shape: Shape::Summed(Sum {
                 zeros,
                 add,
@@ -637,7 +689,7 @@ impl<'m> Walk<'m> {
             Op::GroupSize => Some(Val::Int(Int::Size)),
             Op::Binary(BinOp::Add, a, b)
                 if matches!(self.val(*a), Some(Val::Total))
-                    && matches!(self.val(*b), Some(Val::Tile)) =>
+                    && matches!(self.val(*b), Some(Val::Tile(0))) =>
             {
                 if !self.looped || self.ended || self.sum.add.is_some() {
                     return Err("an add of tiles other than the total's in the loop, once".into());
@@ -812,10 +864,18 @@ impl<'m> Walk<'m> {
                     range: Range::Part(0),
                 };
                 if matches!(op, Op::Stream(..)) {
-                    if self.stream.is_some() {
-                        return Err("a second read stream".into());
+                    if self.streams.len() == 2 {
+                        return Err("a third read stream".into());
                     }
-                    self.stream = Some((moved, over));
+                    let defined = self
+                        .body
+                        .insts
+                        .get(id.0 as usize)
+                        .and_then(|i| i.defs.first().copied());
+                    let Some(v) = defined else {
+                        return Err("a stream that defines nothing".into());
+                    };
+                    self.streams.push((v, moved, over));
                     Some(Val::Stream)
                 } else {
                     if self.sink.is_some() {
@@ -834,14 +894,17 @@ impl<'m> Walk<'m> {
                 }
             }
             Op::ForStream { stream } => {
-                if self.looped || !matches!(self.val(*stream), Some(Val::Stream)) {
-                    return Err("a loop other than one over the read stream".into());
+                self.walk_streams(&[*stream], id)?;
+                Some(Val::Tile(0))
+            }
+            Op::ForZip { a, b } => {
+                self.walk_streams(&[*a, *b], id)?;
+                // the second tile: the first is the instruction's first value
+                let defs = &self.body.insts[id.0 as usize].defs;
+                if let Some(v) = defs.get(1) {
+                    self.vals.insert(*v, Val::Tile(1));
                 }
-                if let Some((m, _)) = self.stream.as_mut() {
-                    m.inst = id;
-                }
-                self.looped = true;
-                Some(Val::Tile)
+                Some(Val::Tile(0))
             }
             Op::CallFunc(f, args) => {
                 let plain = self
@@ -849,25 +912,29 @@ impl<'m> Walk<'m> {
                     .funcs
                     .get(f.0 as usize)
                     .filter(|func| func.kind == FuncKind::Plain);
-                let ([t, s], Some(func)) = (args.as_slice(), plain) else {
-                    return Err("a call other than f(the loop's tile, a f32 word)".into());
-                };
-                let scalar = self.word(*s, WordKind::F32);
-                let (true, None, true, Some(scalar)) = (
-                    self.looped,
-                    self.call.as_ref(),
-                    matches!(self.val(*t), Some(Val::Tile)),
-                    scalar,
-                ) else {
+                let tiles = self.walked.len();
+                let in_order = args.len() >= tiles
+                    && args[..tiles]
+                        .iter()
+                        .enumerate()
+                        .all(|(i, t)| matches!(self.val(*t), Some(Val::Tile(j)) if i == j));
+                let scalars: Option<Vec<usize>> = args[tiles.min(args.len())..]
+                    .iter()
+                    .map(|s| self.word(*s, WordKind::F32))
+                    .collect();
+                let (Some(func), true, None, true, Some(scalars)) =
+                    (plain, self.looped, self.call.as_ref(), in_order, scalars)
+                else {
                     return Err(
-                        "a call other than f(the loop's tile, a f32 word), once, in the loop"
+                        "a call other than f(the loop's tiles in order, f32 words), once, in the loop"
                             .into(),
                     );
                 };
                 self.call = Some(Call {
                     func: *f,
                     name: func.name.clone(),
-                    scalar,
+                    tiles,
+                    scalars,
                     inst: id,
                 });
                 Some(Val::Called)

@@ -361,3 +361,38 @@ fn program_2_through_the_frontend_is_todays_text_byte_for_byte() {
         [bound(0, Expr::Word(2)), bound(1, Expr::Const(1))]
     );
 }
+
+#[test]
+fn program_3_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // StepHandlers.add: a word of the rank times a parameter, two streams zipped in
+    // one move, a function of two tiles (`plus`, from the tile compiler) into a sink.
+    let made = made("steps_add", "steps_add", "StepHandlers");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    // The stand-ins: a, b and out of 768 float32 pages of 4096 B each.
+    let tensor = LoadTensor {
+        pages: 768,
+        layout: vec![2, 4096],
+        dram_page: None,
+    };
+    let stand_ins = [tensor.clone(), tensor.clone(), tensor];
+    same_as_today(&made, &module, &stand_ins, "stephandlers");
+    // Every range is a bound, each rank's: a's, b's and out's tiles first .. first +
+    // width, first = worker.rank * width.
+    let target = Target {
+        arch: chip::ARCH.to_string(),
+        features: Default::default(),
+    };
+    let output = Tensix
+        .compile(&module, &target)
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let bound = |tensor| Bound {
+        tensor,
+        first: Expr::Mul(Box::new(Expr::Rank), Box::new(Expr::Word(3))),
+        count: Expr::Word(3),
+    };
+    assert_eq!(output.entries[0].bounds, [bound(0), bound(1), bound(2)]);
+}

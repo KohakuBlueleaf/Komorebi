@@ -535,25 +535,46 @@ class Handler:
         return lines
 
     def loop(self, node):
-        """`for b in km.Stream(t[p], block=n):` over its lines."""
-        if node.orelse or not isinstance(node.target, ast.Name):
-            self.refuse(
-                node, "a loop with an else or several names", "loop with one name"
-            )
-        if construct_of(node.iter) != "stream" or write_stream(node.iter):
+        """`for b in km.Stream(t[p], block=n):`, or `for x, y in zip(km.Stream(...),
+        km.Stream(...)):`, over its lines."""
+        zipped = (
+            isinstance(node.iter, ast.Call)
+            and isinstance(node.iter.func, ast.Name)
+            and node.iter.func.id == "zip"
+            and not node.iter.keywords
+        )
+        calls = node.iter.args if zipped else [node.iter]
+        targets = node.target.elts if isinstance(node.target, ast.Tuple) else []
+        names = targets if zipped else [node.target]
+        if node.orelse or len(names) != len(calls) or zipped and len(calls) != 2:
             self.refuse(
                 node,
-                "a loop over what is not a read stream",
-                "loop over km.Stream(t[p], block=n)",
+                "a loop with an else, or names other than one a stream",
+                "loop one name over a stream, or two over zip(a, b)",
             )
-        lines = self.stream(node, node.iter, write=False)
-        target = node.target.id
-        lines[-1] = f"for {self.name(target)} in {lines[-1]} {{"
-        keywords = {k.arg: k.value for k in node.iter.keywords}
-        block = keywords.get(spelling("block"), ast.Constant(1)).value
-        self.scope[target] = Value(
-            "block", format=self.scope_format(node.iter), tiles=block
-        )
+        if not all(isinstance(n, ast.Name) for n in names):
+            self.refuse(node, "a loop's name that is not a name", "loop over names")
+        for call in calls:
+            if construct_of(call) != "stream" or write_stream(call):
+                self.refuse(
+                    node,
+                    "a loop over what is not a read stream",
+                    "loop over km.Stream(t[p], block=n)",
+                )
+        lines, streams = [], []
+        for call in calls:
+            made = self.stream(node, call, write=False)
+            lines += made[:-1]
+            streams.append(made[-1])
+        held = ", ".join(self.name(n.id) for n in names)
+        walked = f"zip({', '.join(streams)})" if zipped else streams[0]
+        lines.append(f"for {held} in {walked} {{")
+        for name, call in zip(names, calls):
+            keywords = {k.arg: k.value for k in call.keywords}
+            block = keywords.get(spelling("block"), ast.Constant(1)).value
+            self.scope[name.id] = Value(
+                "block", format=self.scope_format(call), tiles=block
+            )
         children = self.body(node.body)
         return (node, lines, children)
 

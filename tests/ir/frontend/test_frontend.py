@@ -114,6 +114,31 @@ class Ranked(km.Program):
             y.pages(0, 1).write(whole)
 
 
+@km.tile_function
+def plus(a, b):
+    return a + b
+
+
+class Thrice(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a, b, c in zip(
+            km.Stream(x.pages(0, tiles)),
+            km.Stream(x.pages(0, tiles)),
+            km.Stream(x.pages(0, tiles)),
+        ):
+            out.push(plus(a, b) + c)
+
+
+class IntoWritten(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a, b in zip(km.Stream(x.pages(0, tiles)), out):
+            out.push(plus(a, b))
+
+
 def line_of(cls, text):
     """The file's line number of the line of `cls` that holds `text`."""
     lines, first = inspect.getsourcelines(cls)
@@ -157,6 +182,8 @@ def test_a_name_that_is_an_ir_word_is_renamed():
         (Owned, "form=", r'a reduce by owner \(form="owner"\) is not written'),
         (Led, "pages(self.leader", "self.leader as a number is not written"),
         (Ranked, "self.rank == 1", "an if other than `if self.rank == self.leader:`"),
+        (Thrice, "for a, b, c", "names other than one a stream"),
+        (IntoWritten, "for a, b", "a loop over what is not a read stream"),
     ],
 )
 def test_a_line_it_does_not_know_is_refused_with_the_class_line(cls, text, why):
@@ -306,3 +333,32 @@ def test_program_2_built_through_the_ir_is_todays(tmp_path, monkeypatch):
     assert list(today.sum.args(s, t, whole + 1)) == [*words[:2], whole + 1]
     with pytest.raises(km.ProgramError, match="items 0 to 768 of s"):
         ours.entry("sum").args(s, t, whole + 1)
+
+
+def test_program_3_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    script = tmp_path / "steps_add.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "steps_add.py", script)
+    spec = importlib.util.spec_from_file_location("steps_add", script)
+    p3 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "steps_add", p3)
+    spec.loader.exec_module(p3)
+    given = p3.made_with()
+    today = p3.StepHandlers(log=lambda line: None, **given)
+    ours = program(p3.StepHandlers, log=lambda line: None, **given)
+    # the same folder: every file, the two tile files of `plus` included
+    assert ours.header == today.built.folder / "stephandlers.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    a, b, out = given["a"], given["b"], given["out"]
+    group = (0, p3.CORES)
+    words = ours.entry("add").args(a, b, out, p3.WIDTH, group=group)
+    assert words == list(today.add.args(a, b, out, p3.WIDTH))
+    # every range is stated, each rank's: one worker more than the tensors hold is
+    # sent by today unchecked, and refused by the IR at the rank it fails
+    more = (0, p3.CORES + 1)
+    assert list(today.add.args(a, b, out, p3.WIDTH)) == words
+    with pytest.raises(km.ProgramError, match=f"at rank {p3.CORES} of {p3.CORES + 1}"):
+        ours.entry("add").args(a, b, out, p3.WIDTH, group=more)
