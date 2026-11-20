@@ -96,7 +96,7 @@ sink of the same count, in one block. Each stream is of a partition of a tensor'
 tiles `t.tiles(first, n)` themselves, its ends `u32` words, numbers, the rank, `+ - *` and named
 values of these (`let first = worker.rank * 64`, a line of the movers). A kernel's case reads
 only the rank, size and words its lines use. Partitions of the same values are printed once.
-A tile function may be on blocks, the template applied to each valid tile of the block (today's
+A tile function may be on blocks, the function applied to each valid tile of the block (today's
 compute loop).
 
 It also emits the corpus's program 2 (`StepHandlers.sum`). Its loop adds each `f32` tile of a
@@ -115,11 +115,12 @@ the group (words, numbers, the rank and size, `+ - *`): program 1's `a.tiles(wor
 is checked for each rank. A range that cannot be stated is refused by name (`K964`): no range of
 a tensor goes unchecked.
 
-The tile function's two files, `tile_<f>.hpp` and its listing, are not made by a port of today's
-tile compiler. They are its output for the one shape `return a * k` (a `bf16` tile times an `f32`),
-kept as a template with two names filled in, and their identity with today's files proves nothing
-about a tile compiler. Any other tile function is refused; the next one starts the port of the tile
-compiler.
+The tile function's two files, `tile_<f>.hpp` and its listing, are made by the port of today's
+tile compiler (`backend/tensix/tile/`): the function traced into today's tile IR, its vector-unit
+function, its unit program with its rules and hazard checks, Wormhole's forms of its words, and
+the header with the emit's checks. `tests/ir/tensix_tile.rs` compares each stage with today's on a
+corpus of tile functions. A tile function the port does not take yet is refused with `K964`, by
+name; one today's compiler refuses too, with `K962` and today's text.
 
 The tests `tests/ir/tensix.rs` and `tests/ir/frontend.rs` run today's emitter on the scripts (`python3`, else
 `KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails

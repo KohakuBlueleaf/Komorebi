@@ -157,6 +157,104 @@ pub fn dtype(format: Format) -> Option<&'static str> {
     })
 }
 
+/// Wormhole's AddrMod field is 2 bits: 4 to 7 only with ADDR_MOD_SET_Base
+/// (`device/chips.py`, `ADDR_MODS`).
+pub const ADDR_MODS: i64 = 4;
+
+/// The vector words the tile compiler writes on Wormhole as their mode less 4, the
+/// base set (`device/chips.py`, `BASED`).
+pub const BASED: [&str; 3] = ["SFPLOAD", "SFPSTORE", "SFPLOADMACRO"];
+
+/// The STALLWAIT fields the tile compiler writes by tt-llk name (`ckernel::p_stall`),
+/// which each chip's header numbers its own way: (field, Blackhole's number, the name)
+/// (`device/chips.py`, `STALL_NAMES`).
+pub const STALL_NAMES: [(&str, i64, &str); 2] = [
+    ("stall_res", 0x100, "ckernel::p_stall::STALL_SFPU"),
+    ("wait_res", 0x10, "ckernel::p_stall::MATH"),
+];
+
+/// SFPSHFT2's lane modes: their result is not held the next cycle (`device/chips.py`,
+/// `SHFT2_LANES`).
+pub const SHFT2_LANES: [i64; 3] = [2, 3, 4];
+
+/// The `instr_mod0` modes that write half an LReg (`device/chips.py`, `HALF_WRITES`).
+pub const HALF_WRITES: [(&str, [i64; 2]); 2] = [("SFPLOADI", [8, 10]), ("SFPLOAD", [14, 15])];
+
+/// A word whose VD is 12 + k stores load macro template k, the back door
+/// (`device/chips.py`, `TEMPLATE_VD`).
+pub const TEMPLATE_VD: i64 = 12;
+
+/// Wormhole's replay count: 0 is 32 (64 on Blackhole), above it wraps
+/// (`device/chips.py`, `REPLAY_MOST`).
+pub const REPLAY_MOST: i64 = 32;
+
+/// A tile compiler's word as a chip's check reads it (today's `unit.chip_word`): its
+/// operation, its fields, its note, its class's name, and the LRegs it reads and
+/// writes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChipWord {
+    /// Its operation.
+    pub op: String,
+    /// Its fields, in the operation's order.
+    pub args: Vec<(String, i64)>,
+    /// What it computes.
+    pub note: String,
+    /// Its class (`mad`, `simple`, ...).
+    pub kind: String,
+    /// The LRegs it reads.
+    pub reads: Vec<i64>,
+    /// The LRegs it writes.
+    pub writes: Vec<i64>,
+}
+
+impl ChipWord {
+    /// Field `name`'s value, if it has one.
+    pub fn arg(&self, name: &str) -> Option<i64> {
+        self.args.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
+    }
+}
+
+/// Why `word` right after `before` runs otherwise on a Wormhole core, which an SFPNOP
+/// between them mends (the tile compiler writes one there on Wormhole), or none
+/// (`device/chips.py`, `wormhole_hold`).
+pub fn wormhole_hold(before: &ChipWord, word: &ChipWord) -> Option<String> {
+    let op = &word.op;
+    let b_op = before.op.as_str();
+    let held_not = word
+        .reads
+        .iter()
+        .filter(|r| before.writes.contains(r))
+        .min();
+    if let (true, Some(r)) = (before.kind == "mad", held_not) {
+        return Some(format!(
+            "{op} reads LReg {r}, {b_op}'s result, the next cycle: Wormhole does not hold it back (an SFPNOP between)"
+        ));
+    }
+    let lanes = before
+        .arg("instr_mod1")
+        .is_some_and(|m| SHFT2_LANES.contains(&m));
+    if let (true, Some(r)) = (b_op == "SFPSHFT2" && lanes, held_not) {
+        return Some(format!(
+            "{op} reads LReg {r} the cycle after SFPSHFT2's lane mode"
+        ));
+    }
+    let half = HALF_WRITES
+        .iter()
+        .find(|(o, _)| o == op)
+        .is_some_and(|(_, modes)| word.arg("instr_mod0").is_some_and(|m| modes.contains(&m)));
+    if b_op == "SFPSWAP" && (matches!(op.as_str(), "SFP_STOCH_RND" | "SFPSHFT2") || half) {
+        return Some(format!(
+            "{op} right after SFPSWAP: their writes collide on Wormhole"
+        ));
+    }
+    if b_op == "SFPSWAP" && before.arg("lreg_dest").unwrap_or(0) >= TEMPLATE_VD && op != "SFPNOP" {
+        return Some(format!(
+            "{op} right after SFPSWAP stored as a template: Wormhole runs it twice"
+        ));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

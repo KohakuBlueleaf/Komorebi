@@ -57,6 +57,8 @@ pub const STEP_ADDR_MOD: i64 = MACRO_ADDR_MOD;
 pub const TILE_DTYPES: [&str; 5] = ["float32", "bfloat16", "bfp8_b", "bfp4_b", "bfp2_b"];
 /// The A family's formats, read into a 16-bit Dst.
 pub const A_DTYPES: [&str; 4] = ["float16", "bfp8", "bfp4", "bfp2"];
+/// SFPENCC's (imm, mod1): the condition on, every lane's flag set.
+pub const CC_RESET: (i64, i64) = (3, 10);
 /// The vector functions today's unit program builds (none ported yet).
 pub const FUNCTIONS: [&str; 8] = [
     "exp", "sigmoid", "rsqrt", "recip", "sqrt", "tanh", "erf", "log",

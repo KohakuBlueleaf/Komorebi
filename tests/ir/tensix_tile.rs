@@ -3,20 +3,25 @@
 //! writes each one's KernelIR, and its unit program as data and as today's listing.
 //! The port must trace the same functions written in the IR (`tile_units.kom`) into
 //! the same KernelIR and the same vector-unit function (its SFPI code included), print
-//! the same listing from the data byte for byte, costs included, and encode every word
-//! of the operation table as today does.
+//! the same listing from the data byte for byte, costs included, and the same header
+//! and listing after the emit, and encode every word of the operation table as today
+//! does. Today's `tile_wormhole.py` gives the Wormhole forms, the emit and its checks
+//! on units of a few words that the corpus does not reach.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
 use komorebi_ir::backend::tensix::tile::chain::{Chain, Source};
+use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program};
+use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
-    Sync, UnitProgram, CPUS, OPS,
+    Sync, UnitError, UnitProgram, CPUS, MATH, OPS,
 };
+use komorebi_ir::backend::tensix::tile::wormhole::forms;
 
 /// Between the items of a list in one field.
 const SEP: char = '\x1f';
@@ -25,20 +30,31 @@ const SEP: char = '\x1f';
 /// at once): the folder, or none when the tests are told to skip Python.
 fn today() -> Option<PathBuf> {
     static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    FOLDER.get_or_init(run_today).clone()
+    FOLDER
+        .get_or_init(|| run_today("tile_units.py", "tensix-tile"))
+        .clone()
 }
 
-/// Today's compiler run on the corpus.
-fn run_today() -> Option<PathBuf> {
+/// Today's Wormhole forms, emit and checks on the units of a few words
+/// (`tile_wormhole.py`), once for all the tests.
+fn today_words() -> Option<PathBuf> {
+    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOLDER
+        .get_or_init(|| run_today("tile_wormhole.py", "tensix-tile-words"))
+        .clone()
+}
+
+/// Today's compiler run by `script` into the folder `name`.
+fn run_today(script: &str, name: &str) -> Option<PathBuf> {
     if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
         eprintln!("the tile identity skipped: KOMO_IR_NO_PYTHON=1");
         return None;
     }
-    let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tensix-tile");
+    let folder = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let python = std::env::var("KOMO_IR_PYTHON").unwrap_or_else(|_| "python3".into());
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new(&python)
-        .arg(root.join("tests/ir/tensix/tile_units.py"))
+        .arg(root.join("tests/ir/tensix").join(script))
         .arg(&folder)
         .env("PYTHONPATH", root.join("src"))
         .output()
@@ -61,6 +77,42 @@ fn arg(text: &str) -> Arg {
 
 fn list(field: &str) -> Vec<&str> {
     field.split(SEP).filter(|s| !s.is_empty()).collect()
+}
+
+/// An instruction from its fields: op, fields, note, uses, its run-time immediate.
+fn insn(f: &[&str]) -> Insn {
+    let args: Vec<(&str, Arg)> = list(f[3])
+        .into_iter()
+        .map(|kv| {
+            let (k, v) = kv.split_once('=').expect("a field");
+            (k, arg(v))
+        })
+        .collect();
+    let mut insn = Insn::new(f[2], &args, f[4]).unwrap_or_else(|e| panic!("{e}"));
+    insn.uses = list(f.get(5).copied().unwrap_or(""))
+        .into_iter()
+        .map(arg)
+        .collect();
+    insn.runtime = f.get(6).copied().unwrap_or("").to_string();
+    insn
+}
+
+/// A product's words of `kind` (its own, Wormhole's), the lines from `at` at `depth`.
+fn product_words(
+    lines: &[(usize, Vec<&str>)],
+    at: &mut usize,
+    depth: usize,
+    kind: &str,
+) -> Vec<Insn> {
+    let mut out = Vec::new();
+    while let Some((d, f)) = lines.get(*at) {
+        if *d != depth || f[0] != kind {
+            break;
+        }
+        out.push(insn(f));
+        *at += 1;
+    }
+    out
 }
 
 /// The items of a loop nest from lines of (depth, fields), from `at`, at `depth`.
@@ -96,21 +148,7 @@ fn items(lines: &[(usize, Vec<&str>)], at: &mut usize, depth: usize) -> Vec<Item
                     unroll: f[4] == "1",
                 })
             }
-            "INSN" => {
-                let args: Vec<(&str, Arg)> = list(f[3])
-                    .into_iter()
-                    .map(|kv| {
-                        let (k, v) = kv.split_once('=').expect("a field");
-                        (k, arg(v))
-                    })
-                    .collect();
-                let mut insn = Insn::new(f[2], &args, f[4]).unwrap_or_else(|e| panic!("{e}"));
-                insn.uses = list(f.get(5).copied().unwrap_or(""))
-                    .into_iter()
-                    .map(arg)
-                    .collect();
-                Item::Insn(insn)
-            }
+            "INSN" => Item::Insn(insn(f)),
             "SYNC" => Item::Sync(Sync {
                 cpu: f[2].into(),
                 other: f[3].into(),
@@ -129,8 +167,8 @@ fn items(lines: &[(usize, Vec<&str>)], at: &mut usize, depth: usize) -> Vec<Item
                         (op.to_string(), block)
                     })
                     .collect(),
-                insns: Vec::new(),
-                wormhole: Vec::new(),
+                insns: product_words(lines, at, depth + 1, "PINSN"),
+                wormhole: product_words(lines, at, depth + 1, "PWORMHOLE"),
             }),
             "CALL" => Item::Call(Call {
                 text: f[2].into(),
@@ -152,7 +190,14 @@ fn unit(text: &str) -> UnitProgram {
         .peekable();
     while let Some(f) = lines.next() {
         match f[0] {
-            "UNIT" => u = UnitProgram::new(f[1], f[2]),
+            "UNIT" => {
+                u = UnitProgram::new(f[1], f[2]);
+                u.band = f.get(3) == Some(&"1");
+                u.scalars = list(f.get(4).copied().unwrap_or(""))
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect();
+            }
             "CONST" => {
                 let (kind, v) = f[2].split_at(1);
                 let value = match kind {
@@ -526,8 +571,28 @@ fn each_unit_programs_listing_is_todays() {
             "{name} differs, {}",
             first_difference(&want, &got)
         );
+        // the emit: the header, and the listing with the emit's checks
+        let mut unit = unit;
+        let words = emit(&mut unit).unwrap_or_else(|e| panic!("{case}: {e}"));
+        for (file, got) in [
+            ("hpp", words),
+            (
+                "emitted.txt",
+                unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n",
+            ),
+        ] {
+            let want = std::fs::read_to_string(folder.join(format!("{case}.{file}")))
+                .unwrap_or_else(|e| panic!("{case}.{file}: {e}"));
+            assert!(
+                got == want,
+                "{name}'s {file} differs, {}",
+                first_difference(&want, &got)
+            );
+        }
         same.push(name);
     }
+    let not_emitted = std::fs::read_to_string(folder.join("not_emitted.txt")).expect("the file");
+    assert_eq!(not_emitted, "", "today's emit refuses none of the corpus");
     // the whole-tile arithmetic, `a * k` among it, with and without a load macro;
     // smooth's checks repair its code (an SFPNOP after its constant register's setup)
     let whole = [
@@ -569,4 +634,75 @@ fn each_unit_programs_listing_is_todays() {
         .map(|l| l.replacen(": not ported", "", 1))
         .collect();
     assert_eq!(named, refused);
+}
+
+/// A word as `op fields ; note`.
+fn word_text(x: &Insn) -> String {
+    let fields: Vec<String> = x.args.iter().map(Arg::to_string).collect();
+    format!("{} {} ; {}", x.op.name, fields.join(","), x.note)
+}
+
+/// Every word of a function, loop bodies once, a product's both images.
+fn all_words<'a>(items: &'a [Item], out: &mut Vec<&'a Insn>) {
+    for item in items {
+        match item {
+            Item::Loop(l) => all_words(&l.body, out),
+            Item::Product(p) => out.extend(p.insns.iter().chain(&p.wormhole)),
+            Item::Insn(x) => out.push(x),
+            Item::Call(_) | Item::Sync(_) => {}
+        }
+    }
+}
+
+/// A check of a unit program.
+type UnitCheck = fn(&UnitProgram) -> Result<String, UnitError>;
+
+#[test]
+fn wormholes_forms_and_the_emit_with_its_checks_are_todays_on_a_few_words() {
+    let Some(folder) = today_words() else { return };
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .expect("the folder")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "unit"))
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 33, "the cases: {cases:?}");
+    let checks: [(&str, UnitCheck); 3] = [
+        ("one-producer", check_buffers),
+        ("back-door", check_back_door),
+        ("macro-templates", check_templates),
+    ];
+    for case in &cases {
+        let data = std::fs::read_to_string(case).expect("the data");
+        let want = std::fs::read_to_string(case.with_extension("out")).expect("today's");
+        let mut made = unit(&data);
+        forms(&mut made).unwrap_or_else(|e| panic!("{case:?}: {e}"));
+        let mut words = Vec::new();
+        for function in [&made.init[MATH], &made.tile[MATH]]
+            .into_iter()
+            .chain(made.parts.iter().map(|(_, items)| items))
+        {
+            all_words(function, &mut words);
+        }
+        let mut out: Vec<String> = words
+            .iter()
+            .filter(|x| !x.wormhole.is_empty())
+            .map(|x| {
+                let form: Vec<String> = x.wormhole.iter().map(word_text).collect();
+                format!("FORM\t{}\t{}", word_text(x), form.join("\t"))
+            })
+            .collect();
+        for (name, check) in checks {
+            let verdict = check(&unit(&data)).unwrap_or_else(|e| format!("refused: {e}"));
+            out.push(format!("CHECK\t{name}\t{verdict}"));
+        }
+        let emitted = emit(&mut unit(&data)).unwrap_or_else(|e| format!("refused: {e}"));
+        out.push(format!("EMIT\n{emitted}"));
+        let got = out.join("\n") + "\n";
+        assert!(
+            got == want,
+            "{case:?} differs, {}",
+            first_difference(&want, &got)
+        );
+    }
 }

@@ -3,10 +3,13 @@
 //! result where an operand was loaded becomes one SFPLOADMACRO a row, beside plain
 //! loads of the others. A row that does not fit is refused with the reason.
 //!
-//! Not ported: the max under a load macro (`max_macro`, `macro_setup`) and the checks
-//! of the back door and the templates; the stream form's unit program uses neither.
+//! The checks of the back door and of the templates run at the emit. Not ported: the
+//! max under a load macro (`max_macro`, `macro_setup`); the stream form's unit
+//! program does not use it.
 
-use super::unit::{op_named, Arg, Insn, UnitError};
+use std::collections::BTreeSet;
+
+use super::unit::{insns, op_named, Arg, Insn, Item, UnitError, UnitProgram, MATH};
 
 /// The sub-unit each instruction a macro slot may arm runs on (the ISA's allocation
 /// table); flag and lane-movement instructions are left out (see `fit`).
@@ -501,4 +504,198 @@ pub fn drain(plan: &Plan) -> Result<Vec<Insn>, UnitError> {
     (0..plan.store_delay + 2)
         .map(|_| nop("load-macro drain"))
         .collect()
+}
+
+/// Field `field` of `x` as a number (none when it has no such field), or a register's
+/// name that today compares with a number, refused by name.
+fn number(x: &Insn, field: &str) -> Result<Option<i64>, UnitError> {
+    match x.arg(field) {
+        None => Ok(None),
+        Some(Arg::Num(n)) => Ok(Some(*n)),
+        Some(value) => Err(UnitError(format!(
+            "{} {field}={value}: not a number",
+            x.op.name
+        ))),
+    }
+}
+
+/// The field a vector word's VD is in: `lreg_dest`, else `lreg_ind`, if it has one.
+fn vd_field(x: &Insn) -> Option<&'static str> {
+    ["lreg_dest", "lreg_ind"]
+        .into_iter()
+        .find(|n| x.arg(n).is_some())
+}
+
+/// (k, word) for each word of `items` (loops looked into) that writes VD 12 + k: on
+/// the vector unit such a word stores instruction template k, whatever else it does
+/// (SFPCONFIG writes the constant registers by its own field).
+pub fn template_writes(items: &[Item]) -> Result<Vec<(i64, &Insn)>, UnitError> {
+    let mut out = Vec::new();
+    for x in insns(items) {
+        if !x.op.name.starts_with("SFP") || x.op.name == "SFPCONFIG" {
+            continue;
+        }
+        let Some(name) = vd_field(x) else { continue };
+        if !x.op.writes.contains(&name) {
+            continue;
+        }
+        if let Some(v) = number(x, name)? {
+            if (BACK_DOOR..BACK_DOOR + MACROS).contains(&v) {
+                out.push((v - BACK_DOOR, x));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Each macro sequence set and the templates it runs (none: a word not known).
+type Sequences = Vec<(i64, Option<BTreeSet<i64>>)>;
+
+/// {sequence: the templates it runs} as `init` writes them (SFPCONFIG 4 + k from
+/// LReg 0, its halves from SFPLOADI modes 10 and 8); none for a word not known.
+fn sequences(init: &[Item]) -> Result<Sequences, UnitError> {
+    let (mut low, mut high) = (None, None);
+    let mut out: Sequences = Vec::new();
+    for x in insns(init) {
+        let name = x.op.name;
+        if name == "SFPLOADI" && x.arg("lreg_ind") == Some(&Arg::Num(0)) {
+            match number(x, "instr_mod0")? {
+                Some(10) => low = number(x, "imm16")?,
+                Some(8) => high = number(x, "imm16")?,
+                _ => (low, high) = (None, None),
+            }
+        } else if x.writes()?.contains(&Arg::Num(0)) {
+            (low, high) = (None, None);
+        } else if name == "SFPCONFIG" && number(x, "instr_mod1")? == Some(0) {
+            let k = number(x, "config_dest")?.unwrap_or(0) - 4;
+            if !(0..MACROS).contains(&k) {
+                continue;
+            }
+            let runs = match (low, high) {
+                (Some(low), Some(high)) => {
+                    let word = high << 16 | low;
+                    let slots = ["simple", "mad", "round"].map(|u| word >> shift(u) & 7);
+                    Some(
+                        slots
+                            .iter()
+                            .filter(|s| **s >= TEMPLATE_SLOT)
+                            .map(|s| s - TEMPLATE_SLOT)
+                            .collect(),
+                    )
+                }
+                _ => None,
+            };
+            match out.iter_mut().find(|(j, _)| *j == k) {
+                Some(entry) => entry.1 = runs,
+                None => out.push((k, runs)),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Python's `repr` of a list of numbers.
+fn numbers(values: &[i64]) -> String {
+    let items: Vec<String> = values.iter().map(i64::to_string).collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// The math CPU's setup and its later functions: the tile's code and the parts.
+fn math(unit: &UnitProgram) -> (&[Item], Vec<&[Item]>) {
+    let mut tile: Vec<&[Item]> = vec![&unit.tile[MATH]];
+    tile.extend(unit.parts.iter().map(|(_, items)| items.as_slice()));
+    (&unit.init[MATH], tile)
+}
+
+/// Rule "back door": the init leaves LaneConfig's back door open, so a vector word
+/// with VD 12 + k (but SFPCONFIG and SFPLOADMACRO) stores template k and runs
+/// nothing; only the init's template stores have one. The check's text, or the
+/// refusal.
+pub fn check_back_door(unit: &UnitProgram) -> Result<String, UnitError> {
+    let mut stores = 0;
+    let (init, tile) = math(unit);
+    for (at_init, functions) in [(true, vec![init]), (false, tile)] {
+        for x in functions.into_iter().flat_map(insns) {
+            let name = x.op.name;
+            if !name.starts_with("SFP") || matches!(name, "SFPCONFIG" | "SFPLOADMACRO") {
+                continue;
+            }
+            let Some(Arg::Num(v)) = vd_field(x).and_then(|f| x.arg(f)) else {
+                continue;
+            };
+            if *v < BACK_DOOR {
+                continue;
+            }
+            if at_init && x.note.starts_with("template") {
+                stores += 1;
+                continue;
+            }
+            return Err(UnitError(format!(
+                "{}: {name} ({}) has VD {v}: with the back door open it stores template {} and runs nothing (a VD of 12 or more only in a macro's template store)",
+                unit.name,
+                x.note,
+                v - BACK_DOOR
+            )));
+        }
+    }
+    Ok(format!(
+        "ok: a VD of 12 or more only in the init's {stores} template store(s)"
+    ))
+}
+
+/// Rule "macro templates": each template a macro of `unit` runs is the last word of
+/// its init to write VD 12 + k and is setup's, and no word of the tile's code (it
+/// repeats a tile: the next tile's macros would run that word) writes it. The
+/// check's text, or the refusal.
+pub fn check_templates(unit: &UnitProgram) -> Result<String, UnitError> {
+    let (init, tile) = math(unit);
+    let mut used = BTreeSet::new();
+    for x in tile.iter().flat_map(|t| insns(t)) {
+        if x.op.name == "SFPLOADMACRO" {
+            let ind = number(x, "lreg_ind")?.unwrap_or(0);
+            used.insert(ind >> 2);
+        }
+    }
+    let used: Vec<i64> = used.into_iter().collect();
+    if used.is_empty() {
+        return Ok("ok: no load macro".to_string());
+    }
+    let sequences = sequences(init)?;
+    let mut stored: Vec<(i64, &Insn)> = Vec::new();
+    for (k, x) in template_writes(init)? {
+        match stored.iter_mut().find(|(j, _)| *j == k) {
+            Some(entry) => entry.1 = x,
+            None => stored.push((k, x)),
+        }
+    }
+    let name = &unit.name;
+    for k in &used {
+        let Some((_, Some(runs))) = sequences.iter().find(|(j, _)| j == k) else {
+            return Err(UnitError(format!(
+                "{name}: macro {k}'s sequence is not set by the init"
+            )));
+        };
+        for t in runs {
+            let last = stored.iter().find(|(j, _)| j == t).map(|(_, x)| *x);
+            if !last.is_some_and(|x| x.note.starts_with("template")) {
+                return Err(UnitError(format!(
+                    "{name}: macro {k} runs template {t}, which the init does not store (it would run an earlier body's)"
+                )));
+            }
+            for items in &tile {
+                if let Some((_, x)) = template_writes(items)?.into_iter().find(|(j, _)| j == t) {
+                    return Err(UnitError(format!(
+                        "{name}: {} ({}) writes VD {} in the tile's code: template {t} of macro {k} after the first tile",
+                        x.op.name,
+                        x.note,
+                        BACK_DOOR + t
+                    )));
+                }
+            }
+        }
+    }
+    Ok(format!(
+        "ok: macros {} run templates their init stores, unwritten after",
+        numbers(&used)
+    ))
 }

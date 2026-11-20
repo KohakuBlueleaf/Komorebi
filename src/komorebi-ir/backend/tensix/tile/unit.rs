@@ -14,6 +14,8 @@ use super::py;
 
 /// The compute CPUs, in the listing's order.
 pub const CPUS: [&str; 3] = ["unpack", "math", "pack"];
+/// The math CPU's index in `CPUS`.
+pub const MATH: usize = 1;
 /// The kinds of a pass.
 pub const KINDS: [&str; 3] = ["algebra", "layout", "schedule"];
 /// Fixed vector-unit registers: 0.0, 1.0, -1.0; 12 to 14 are set by SFPCONFIG.
@@ -161,6 +163,24 @@ pub enum Kind {
     Matrix,
     /// A load macro.
     Macro,
+}
+
+impl Kind {
+    /// Its name in today's table (`mad`, `simple`, ...).
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Mad => "mad",
+            Kind::Simple => "simple",
+            Kind::Load => "load",
+            Kind::Store => "store",
+            Kind::Flags => "flags",
+            Kind::Rwc => "rwc",
+            Kind::Replay => "replay",
+            Kind::Stall => "stall",
+            Kind::Matrix => "matrix",
+            Kind::Macro => "macro",
+        }
+    }
 }
 
 /// One coprocessor instruction: its opcode, its macro's arguments (name, width in

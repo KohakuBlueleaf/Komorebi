@@ -1208,15 +1208,11 @@ pub const FRAMEWORK: &[(&str, &[u8])] = &[
 pub struct Tensix;
 
 impl Tensix {
-    /// The hash of what the output depends on besides the module: the tile units'
-    /// templates and the framework's headers.
+    /// The hash of what the output depends on besides the module and the backend's
+    /// code: the framework's headers.
     fn tables_hash() -> [u8; 32] {
         let mut bytes = Vec::new();
-        for (name, text) in unit::TEMPLATES
-            .iter()
-            .map(|(n, t)| (*n, t.as_bytes()))
-            .chain(FRAMEWORK.iter().copied())
-        {
+        for (name, text) in FRAMEWORK.iter().copied() {
             bytes.extend_from_slice(name.as_bytes());
             bytes.push(0);
             bytes.extend_from_slice(text);

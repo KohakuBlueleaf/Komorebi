@@ -1,7 +1,7 @@
-"""Today's tile compiler on a corpus of tile functions: the reference for the port
-(backend/tensix/tile/; tile_units.kom has them in the IR's text). Writes each KernelIR
-(`<case>.ir`), chain (`.chain`), unit as data (`.unit`) and listing (`.txt`), each
-word's encoding, the refusals, each case's Dst and band. Usage: <this> <folder>."""
+"""Today's tile compiler on a corpus of tile functions, the port's reference (written in
+the IR's text in tile_units.kom). Writes each KernelIR (`<case>.ir`), chain, unit as
+data, listing (`.txt`), header and listing after the emit (`.hpp`, `.emitted.txt`),
+each word's encoding, the refusals, each case's Dst and band. Usage: <this> <folder>."""
 
 import inspect
 import operator
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import komorebi as km
 from komorebi.dsl.compile.tiles.functions import SCALAR, TILE_FORMATS, tile_dest
-from komorebi.dsl.tile import trace, unit_program
+from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.lower import stream_chain
 from komorebi.dsl.tile.unit import (
@@ -126,7 +126,9 @@ def items(lines, things, depth):
         elif isinstance(item, Insn):
             args = SEP.join(f"{n}={value(item.args[n])}" for n, _ in OPS[item.op].args)
             uses = SEP.join(value(u) for u in item.uses)
-            lines.append(f"INSN\t{depth}\t{item.op}\t{args}\t{item.note}\t{uses}")
+            lines.append(
+                f"INSN\t{depth}\t{item.op}\t{args}\t{item.note}\t{uses}\t{item.runtime}"
+            )
         elif isinstance(item, Sync):
             lines.append(
                 f"SYNC\t{depth}\t{item.cpu}\t{item.other}\t{item.text}\t{item.note}"
@@ -136,6 +138,10 @@ def items(lines, things, depth):
             lines.append(
                 f"PRODUCT\t{depth}\t{item.text}\t{item.note}\t{int(item.synced)}\t{words}"
             )
+            for kind, insns in (("PINSN", item.insns), ("PWORMHOLE", item.wormhole)):
+                at = len(lines)
+                items(lines, insns, depth + 1)
+                lines[at:] = [line.replace("INSN", kind, 1) for line in lines[at:]]
         elif isinstance(item, Call):
             lines.append(f"CALL\t{depth}\t{item.text}\t{item.note}")
         else:
@@ -152,7 +158,8 @@ def constant(v):
 
 
 def unit_lines(unit):
-    lines = [f"UNIT\t{unit.name}\t{unit.dest}"]
+    scalars = SEP.join(unit.scalars)
+    lines = [f"UNIT\t{unit.name}\t{unit.dest}\t{int(unit.band)}\t{scalars}"]
     lines += [f"CONST\t{r}\t{constant(v)}" for r, v in unit.constants.items()]
     lines += [f"CLOBBER\t{c}" for c in unit.clobbers]
     for cpu in CPUS:
@@ -235,7 +242,7 @@ def encodings():
 def main(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    refused, cases = [], []
+    refused, not_emitted, cases = [], [], []
     for case, function, formats, options in CASES:
         cases.append(f"{case}\t{tile_dest(formats)}\t{int(bool(options.get('rows')))}")
         ir = traced(case, function, formats)
@@ -252,8 +259,16 @@ def main(folder):
             continue
         (folder / f"{case}.unit").write_text("\n".join(unit_lines(unit)) + "\n")
         (folder / f"{case}.txt").write_text(text + "\n")
+        try:
+            words = emit(unit)  # as the class's files are written (program.write)
+        except UnitError as error:
+            not_emitted.append(f"{case}\t{error}")
+            continue
+        (folder / f"{case}.hpp").write_text(words)
+        (folder / f"{case}.emitted.txt").write_text(unit.dump() + "\n")
     (folder / "encode.txt").write_text("\n".join(encodings()) + "\n")
     (folder / "refused.txt").write_text("".join(f"{r}\n" for r in refused))
+    (folder / "not_emitted.txt").write_text("".join(f"{r}\n" for r in not_emitted))
     (folder / "cases.txt").write_text("".join(f"{c}\n" for c in cases))
 
 
