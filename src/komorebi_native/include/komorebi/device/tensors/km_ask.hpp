@@ -3430,10 +3430,8 @@ namespace km {
         uint32_t page;  // their page bytes
     };
 
-    // After the island table's meeting words: two words (the pages' address and page
-    // bytes), then at the next KM_COLL_GEN_ALIGN bytes the row (a DRAM read's L1 end
-    // matches its DRAM address modulo 64 B on Blackhole: a row at 32 mod 64 reads
-    // wrong).
+    // After the island table's meeting words: the pages' address and page bytes, then
+    // at the next KM_COLL_GEN_ALIGN bytes the row (km_abi.h says why 64).
     inline CollGen coll_gen_of(const Islands& view) {
         const uint32_t meets = view.meetings();
         if (meets == 0) {

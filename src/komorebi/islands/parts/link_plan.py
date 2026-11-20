@@ -519,15 +519,13 @@ class LinkPlanMixin:
         """The island table in the L1 of every core of `session`'s card, each core its
         own island's (graph.table): KM_ISLAND_TABLE. After the meeting words (a rank
         each) come the collectives' generation pages' DRAM address and page bytes,
-        then at the next KM_COLL_GEN_ALIGN bytes the core's generation row (km_ask.hpp
-        coll_guard; a DRAM read lands at its DRAM address modulo 64 B on Blackhole)."""
+        then at the next KM_COLL_GEN_ALIGN bytes the core's generation row."""
         columns, rows = session.grid
         count = len(self.graph.islands)
         ranks = max(self.graph.count(island) for island in range(count))
         h = abi.headers()
         # entries (2 words an island), far tiles (2), counts, children, the meeting
-        # words (their number, one a rank), the generation's two words, room to align
-        # the row, then its row
+        # words (their number, a rank each), the generation words, room for its row
         meet = 6 * count + 1 + ranks
         size = meet + 2 + h["KM_COLL_GEN_ALIGN"] // 4 + h["KM_COLL_GEN_BYTES"] // 4
         # 64 B a page, its first 32 B the words: a live transfer moves whole 64 B

@@ -46,9 +46,8 @@ def test_the_island_table_holds_a_meeting_word_a_rank_of_its_largest_island():
 
 
 def test_the_generation_row_is_at_blackholes_dram_read_alignment_inside_the_table():
-    # two cards of 120 cores, 118 ranks an island: a row at the next 32 B fell at 32
-    # mod 64, and Blackhole's DRAM read lands at its DRAM address mod 64 (a leader read
-    # its generation wrong and refused its first collective)
+    # two cards, 118 ranks an island: a row at the next 32 B fell at 32 mod 64, where
+    # Blackhole's DRAM read needs 0: a leader read its generation wrong and refused
     h = abi.headers()
     count, ranks, cores = 2, 118, 120
     graph = SimpleNamespace(
