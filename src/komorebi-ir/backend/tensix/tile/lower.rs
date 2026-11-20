@@ -19,12 +19,13 @@ use super::checks::{
     WAIT_MATH,
 };
 use super::ir::{Attr, KernelIR, NodeId};
+use super::matrix::{tile_products, wormhole_products};
 use super::py;
 use super::r#macro::{self, NoFit, Plan};
 use super::unit::{
-    insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Sync, UnitError,
-    UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, PROGRAMMABLE, REPLAY_ENTRIES, SAVED,
-    SHIFT_IMM_VC, WORK,
+    insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Sync,
+    UnitError, UnitProduct, UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, IADD_SUB, MATH, PACK,
+    PROGRAMMABLE, REPLAY_ENTRIES, SAVED, SHIFT_IMM_VC, UNPACK, WORK,
 };
 use super::vector::{FnResult, VId, VValue, Vs};
 
@@ -1831,6 +1832,148 @@ fn items(code: Vec<Insn>) -> Vec<Item> {
     code.into_iter().map(Item::Insn).collect()
 }
 
+/// The fidelity of a tile function's products: today's default (`HiFi4`), as the IR
+/// states none.
+pub const FIDELITY: &str = "HiFi4";
+
+/// The tensor names of matmul node `node`'s two operands (a, w).
+fn product_operands(ir: &KernelIR, node: NodeId) -> Result<(String, String), ChainError> {
+    let tensor = |n: NodeId| match ir
+        .arena
+        .get(n.0)
+        .map(|n| n.attrs.iter().find(|(k, _)| k == "view"))
+    {
+        Some(Some((_, Attr::View(v)))) => Ok(v.tensor.clone()),
+        _ => Err(ChainError::NotPorted(
+            "a product of an operand that is no load".into(),
+        )),
+    };
+    let args = ir
+        .arena
+        .get(node.0)
+        .map(|n| n.args.clone())
+        .unwrap_or_default();
+    match args[..] {
+        [a, w] => Ok((tensor(a)?, tensor(w)?)),
+        _ => Err(ChainError::NotPorted("a product of no two operands".into())),
+    }
+}
+
+/// The math CPU's lines of the unit's tile products (`leaves`: (Dst tile, the matmul
+/// node)), in operand order, each the no-MOP product's words after the Dst base of its
+/// tile; records the unit's products and the unpack CPU's calls.
+fn products(
+    ir: &KernelIR,
+    unit: &mut UnitProgram,
+    leaves: &[(i64, NodeId)],
+    fidelity: &str,
+) -> Result<Vec<Item>, ChainError> {
+    let mut lines = Vec::new();
+    let mut first = None;
+    for (i, &(k, node)) in leaves.iter().enumerate() {
+        let (a, w) = product_operands(ir, node)?;
+        first.get_or_insert_with(|| (a.clone(), w.clone()));
+        let pairs = tile_products(fidelity, 1, 1, k)?;
+        let wormhole = wormhole_products(fidelity, k)?;
+        unit.products.push(UnitProduct {
+            dst: k,
+            a: a.clone(),
+            w: w.clone(),
+        });
+        let index = if k == 0 {
+            "dst".to_string()
+        } else {
+            format!("dst + {k}")
+        };
+        lines.push(Item::Call(dst_base(&index)));
+        let (words, insns): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        lines.push(Item::Product(Product {
+            text: format!("{a} @ {w} into Dst tile dst + {k} at {fidelity}"),
+            words,
+            note: "1 cycle a word; a block's two words 8 apart".into(),
+            synced: i == leaves.len() - 1, // the vector unit's stall waits for it
+            insns,
+            wormhole: wormhole.into_iter().map(|(_, x)| x).collect(),
+        }));
+        unit.tile[UNPACK].push(call(
+            &format!("llk_unpack_AB_matmul({a}, {w}, 0, 0, 1, 1, 1)"),
+            &format!("{a} into SrcB, {w} into SrcA (the product of Dst tile {k})"),
+        ));
+    }
+    unit.fidelity = Some(fidelity.to_string());
+    let Some((a, w)) = first else {
+        return Err(ChainError::NotPorted("a unit of no products".into()));
+    };
+    unit.init[UNPACK].push(call(
+        &format!("mm_no_mop_init_short({a}, {w}, false, 1, 1, 1)"),
+        &format!("the products' unpack and address modes, at math_fidelity {fidelity}"),
+    ));
+    Ok(lines)
+}
+
+/// The unit program of a tile function that is one product (`a @ w` stored): the
+/// no-MOP product's words alone, as `matrix.product_program` emits them.
+fn product_alone(
+    ir: &KernelIR,
+    node: NodeId,
+    fidelity: &str,
+    band: bool,
+) -> Result<UnitProgram, ChainError> {
+    if band {
+        return Err(plan_error(format!(
+            "{}: the band runs vector code; a product alone runs whole tiles",
+            ir.name
+        )));
+    }
+    let mut unit = UnitProgram::new(&ir.name, "fp32");
+    unit.operands = vec![None];
+    unit.tile[UNPACK] = vec![sync(
+        "unpack",
+        "reader",
+        "cb_wait_front(in, 1)",
+        "the operand tiles",
+    )];
+    let lines = products(ir, &mut unit, &[(0, node)], fidelity)?;
+    let words = lines
+        .iter()
+        .find_map(|l| match l {
+            Item::Product(p) => Some(p.words.len()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let mut math = vec![sync(
+        "math",
+        "pack",
+        "tile_regs_acquire()",
+        "a free Dst half",
+    )];
+    math.extend(lines);
+    math.push(sync(
+        "math",
+        "pack",
+        "tile_regs_commit()",
+        "hands Dst to the pack CPU",
+    ));
+    unit.tile[MATH] = math;
+    unit.tile[PACK] = vec![
+        sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        call("pack_tile(dst, out)", "Dst tile dst to the output buffer"),
+        sync(
+            "pack",
+            "math",
+            "tile_regs_release()",
+            "frees (and clears) the Dst half",
+        ),
+        sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
+    ];
+    unit.passes.push(pass(
+        "schedule",
+        "products",
+        vec![format!("1 product at {fidelity}: {words} words")],
+    ));
+    Ok(unit)
+}
+
 /// The tensor a register operand of `chain` loads (none: a tile product's result).
 fn operand_tensor(ir: &KernelIR, source: Source) -> Result<Option<String>, ChainError> {
     let Source::Node(n) = source else {
@@ -1872,13 +2015,8 @@ pub fn unit_program(
     }
     let mut chain = stream_chain(ir)?;
     let root = ir.stores.first().map(|s| s.value);
-    if root
-        .and_then(|r| ir.arena.get(r.0))
-        .is_some_and(|n| n.kind == "matmul")
-    {
-        return Err(ChainError::NotPorted(
-            "a function that is one tile product".into(),
-        ));
+    if let Some(r) = root.filter(|r| ir.arena.get(r.0).is_some_and(|n| n.kind == "matmul")) {
+        return product_alone(ir, r, FIDELITY, band);
     }
     if chain.prev.is_some() {
         return Err(plan_error(format!(

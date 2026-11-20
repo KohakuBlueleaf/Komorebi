@@ -14,8 +14,12 @@ use super::py;
 
 /// The compute CPUs, in the listing's order.
 pub const CPUS: [&str; 3] = ["unpack", "math", "pack"];
+/// The unpack CPU's index in `CPUS`.
+pub const UNPACK: usize = 0;
 /// The math CPU's index in `CPUS`.
 pub const MATH: usize = 1;
+/// The pack CPU's index in `CPUS`.
+pub const PACK: usize = 2;
 /// The kinds of a pass.
 pub const KINDS: [&str; 3] = ["algebra", "layout", "schedule"];
 /// Fixed vector-unit registers: 0.0, 1.0, -1.0; 12 to 14 are set by SFPCONFIG.

@@ -5,9 +5,9 @@
 //! the same KernelIR and the same vector-unit function (its SFPI code included), print
 //! the same listing from the data byte for byte, costs included, and the same header
 //! and listing after the emit, and encode every word of the operation table as today
-//! does. Today's `tile_wormhole.py` and `tile_checks.py` give the Wormhole forms, the
-//! emit and its checks, and the hazard checks, on units of a few words that the
-//! corpus does not reach.
+//! does. Today's `tile_wormhole.py`, `tile_checks.py` and `tile_matrix.py` give the
+//! Wormhole forms, the emit and its checks, the hazard checks, and the matrix unit's
+//! words, on units of a few words that the corpus does not reach.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,6 +20,7 @@ use komorebi_ir::backend::tensix::tile::checks::{
 use komorebi_ir::backend::tensix::tile::emit::{check_buffers, emit};
 use komorebi_ir::backend::tensix::tile::ir::{kernel_ir, Attr, KernelIR};
 use komorebi_ir::backend::tensix::tile::lower::{stream_chain, unit_program};
+use komorebi_ir::backend::tensix::tile::matrix::{tile_products, wormhole_products, Word};
 use komorebi_ir::backend::tensix::tile::r#macro::{check_back_door, check_templates};
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, insns, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product,
@@ -630,7 +631,8 @@ fn each_unit_programs_listing_is_todays() {
     // exp, recip and sigmoid with their lane conditions; gate's 2-word constants tie
     // for the registers (first loaded first); two reciprocals share their 2.0;
     // min, max and the selects: SFPGT's tests, their inverses, the tests against 0;
-    // every vector function, rsqrt's integer constant register among them
+    // every vector function, rsqrt's integer constant register among them; a function
+    // that is one tile product, at today's default fidelity
     let whole = [
         "t_times",
         "t_plus",
@@ -640,6 +642,7 @@ fn each_unit_programs_listing_is_todays() {
         "t_clamp01",
         "t_leaky",
         "t_smooth",
+        "t_project",
         "t_scaled_sum",
         "t_exp",
         "t_sigmoid",
@@ -666,10 +669,7 @@ fn each_unit_programs_listing_is_todays() {
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
-    let refused = [
-        "plus_band: the band (a body on the live rows)",
-        "project: a function that is one tile product",
-    ];
+    let refused = ["plus_band: the band (a body on the live rows)"];
     let named: Vec<String> = not_ported
         .iter()
         .map(|l| l.replacen(": not ported", "", 1))
@@ -832,4 +832,52 @@ fn the_hazard_checks_are_todays_on_a_few_words() {
             first_difference(&want, &got)
         );
     }
+}
+
+#[test]
+fn the_matrix_units_words_are_todays_at_each_fidelity_and_shape() {
+    let Some(folder) = run_today("tile_matrix.py", "tensix-tile-matrix") else {
+        return;
+    };
+    let want = std::fs::read_to_string(folder.join("matrix.out")).expect("today's");
+    let lines = |made: Result<Vec<Word>, UnitError>| -> Vec<String> {
+        match made {
+            Err(e) => vec![format!("refused: {e}")],
+            Ok(words) => words
+                .iter()
+                .map(|((op, block), x)| {
+                    let block = block.map_or("None".to_string(), |b| b.to_string());
+                    let fields: Vec<String> =
+                        x.op.args
+                            .iter()
+                            .zip(&x.args)
+                            .map(|((f, _), v)| format!("{f}={v}"))
+                            .collect();
+                    format!(
+                        "{op} {block} | {} {} ; {}",
+                        x.op.name,
+                        fields.join(","),
+                        x.note
+                    )
+                })
+                .collect(),
+        }
+    };
+    let mut out = Vec::new();
+    for fidelity in ["LoFi", "HiFi2", "HiFi3", "HiFi4", "HiFi5"] {
+        for (ct, rt, dst) in [(1, 1, 0), (1, 1, 2), (2, 1, 0), (1, 2, 1), (3, 2, 0)] {
+            out.push(format!("TILE {fidelity} {ct} {rt} {dst}"));
+            out.extend(lines(tile_products(fidelity, ct, rt, dst)));
+        }
+        for dst in [0, 3] {
+            out.push(format!("WORMHOLE {fidelity} {dst}"));
+            out.extend(lines(wormhole_products(fidelity, dst)));
+        }
+    }
+    let got = out.join("\n") + "\n";
+    assert!(
+        got == want,
+        "the words differ, {}",
+        first_difference(&want, &got)
+    );
 }

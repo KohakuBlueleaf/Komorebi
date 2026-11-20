@@ -2,7 +2,8 @@
 //! the math CPU's vector unit and their listing, stage by stage, each stage's text the
 //! same as today's for the same function: the tile IR of a function (`ir`), its
 //! vector-unit function (`chain`, `vector`), its unit program (`lower`, `macro`) with
-//! its hazard checks (`checks`), the unit program's data (`unit`), Wormhole's forms of
+//! its hazard checks (`checks`), the matrix unit's words of a tile product (`matrix`),
+//! the unit program's data (`unit`), Wormhole's forms of
 //! its words (`wormhole`) and its header (`emit`). What is not ported yet is refused by
 //! name.
 
@@ -12,6 +13,7 @@ pub mod emit;
 pub mod ir;
 pub mod lower;
 pub mod r#macro;
+pub mod matrix;
 pub mod py;
 pub mod unit;
 pub mod vector;
