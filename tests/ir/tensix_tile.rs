@@ -282,7 +282,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 36, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 40, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -550,7 +550,32 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 40);
+    assert_eq!(compared, 44);
+}
+
+/// What a caller reads of a unit that its listing does not print, as
+/// `tile_units.py`'s `fields` writes it.
+fn unit_fields(unit: &UnitProgram) -> String {
+    let list = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
+    let operands: Vec<&str> = unit
+        .operands
+        .iter()
+        .map(|o| o.as_deref().unwrap_or("-"))
+        .collect();
+    let products: Vec<String> = unit
+        .products
+        .iter()
+        .map(|p| format!("{}:{}:{}", p.dst, p.a, p.w))
+        .collect();
+    format!(
+        "operands\t{}\nrow\t{}\ncol\t{}\nresults\t{}\nproducts\t{}\nfidelity\t{}\n",
+        operands.join(","),
+        list(&unit.row_operands),
+        list(&unit.col_operands),
+        unit.results,
+        products.join(","),
+        unit.fidelity.as_deref().unwrap_or("-")
+    )
 }
 
 #[test]
@@ -592,6 +617,13 @@ fn each_unit_programs_listing_is_todays() {
                 continue;
             }
         };
+        let want = std::fs::read_to_string(folder.join(format!("{case}.fields"))).expect("fields");
+        let got = unit_fields(&unit);
+        assert!(
+            got == want,
+            "{name}'s fields differ, {}",
+            first_difference(&want, &got)
+        );
         let want =
             std::fs::read_to_string(folder.join(format!("{case}.txt"))).expect("the listing");
         // today's templates pass names the Python line that traced the function
@@ -633,7 +665,7 @@ fn each_unit_programs_listing_is_todays() {
     // min, max and the selects: SFPGT's tests, their inverses, the tests against 0;
     // every vector function, rsqrt's integer constant register among them; a function
     // that is one tile product, at today's default fidelity; products before the vector
-    // code (one, one beside a loaded tile, two)
+    // code (one, one beside a loaded tile, two); a tile's row 0 spread (`.row()`)
     let whole = [
         "t_times",
         "t_plus",
@@ -644,6 +676,7 @@ fn each_unit_programs_listing_is_todays() {
         "t_leaky",
         "t_smooth",
         "t_project",
+        "t_by_row",
         "t_project_silu",
         "t_project_bias",
         "t_two_products",
@@ -673,7 +706,12 @@ fn each_unit_programs_listing_is_todays() {
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
-    let refused = ["plus_band: the band (a body on the live rows)"];
+    let refused = [
+        "plus_band: the band (a body on the live rows)",
+        "by_col: per-row operands (a tile's .col())",
+        "col_prepass: per-row operands (a tile's .col())",
+        "col_cheap: per-row operands (a tile's .col())",
+    ];
     let named: Vec<String> = not_ported
         .iter()
         .map(|l| l.replacen(": not ported", "", 1))

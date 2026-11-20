@@ -555,6 +555,14 @@ impl Tracer<'_> {
                     let (a, b) = (tile(&values, i, *a)?, tile(&values, i, *b)?);
                     self.op("matmul", &[a, b], vec![])
                 }
+                Op::SpreadRow(a) => {
+                    let a = tile(&values, i, *a)?;
+                    self.op("row", &[a], vec![])
+                }
+                Op::SpreadCol(a) => {
+                    let a = tile(&values, i, *a)?;
+                    self.op("col", &[a], vec![])
+                }
                 Op::CallFunc(g, operands) => {
                     let callee = self.module.funcs.get(g.0 as usize);
                     let Some(callee) = callee.filter(|c| matches!(c.kind, FuncKind::Plain)) else {

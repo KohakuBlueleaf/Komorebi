@@ -2070,9 +2070,9 @@ pub fn unit_program(
             TILE_DTYPES[1..].join(", ")
         )));
     }
-    if chain.operands.iter().any(|l| l.kind != "copy") {
+    if chain.operands.iter().any(|l| l.kind == "bcast_col") {
         return Err(ChainError::NotPorted(
-            "per-row and per-column operands".into(),
+            "per-row operands (a tile's .col())".into(),
         ));
     }
     let mut body = Body {
@@ -2089,6 +2089,9 @@ pub fn unit_program(
     body.store(stored, 0, "the result to Dst")?;
     let mut unit = UnitProgram::new(&ir.name, dest);
     unit.operands = tensors;
+    unit.row_operands = (0..chain.operands.len())
+        .filter(|&k| chain.operands[k].kind == "bcast_row")
+        .collect();
     unit.results = ir.stores.len() as i64;
     let templates = chain
         .templates

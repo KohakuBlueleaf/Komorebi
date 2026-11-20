@@ -175,3 +175,19 @@ func t_project_bias(x: tile<bf16>, w: tile<bf16>, b: tile<f32>) -> tile<f32> {
 func t_two_products(x: tile<bf16>, w: tile<bf16>, v: tile<bf16>) -> tile<f32> {
     return matmul(x, w) * matmul(x, v)
 }
+
+func t_by_row(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * b.row()
+}
+
+func t_by_col(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * b.col()
+}
+
+func t_col_prepass(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * rsqrt(b.col() * 0.5 + 1.0)
+}
+
+func t_col_cheap(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a * (b.col() + 1.0)
+}

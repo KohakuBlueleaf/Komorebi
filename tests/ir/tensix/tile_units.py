@@ -51,6 +51,12 @@ CASES = [
     ("leaky", lambda a: km.where(a > 0.0, a, a * 0.01), [F], {}),
     ("smooth", lambda a: a * 0.5 + abs(a) * 0.5, [F], {}),
     ("project", lambda x, w: x @ w, [BF, BF], {}),
+    # a tile's row 0 and column 0 spread (bcast_row, bcast_col: the per-row path, its
+    # pre-pass taken and kept in the rows)
+    ("by_row", lambda a, b: a * b.row(), [F, F], {}),
+    ("by_col", lambda a, b: a * b.col(), [F, F], {}),
+    ("col_prepass", lambda a, b: a * km.rsqrt(b.col() * 0.5 + 1.0), [F, F], {}),
+    ("col_cheap", lambda a, b: a * (b.col() + 1.0), [F, F], {}),
     # products before the vector code: one, one beside a loaded tile, two
     ("project_silu", lambda x, w: km.silu(x @ w), [BF, BF], {}),
     ("project_bias", lambda x, w, b: x @ w + b, [BF, BF, F], {}),
@@ -264,6 +270,19 @@ def encodings():
     return lines
 
 
+def fields(unit):
+    """What a caller reads of a unit that its listing does not print."""
+    products = [f"{p.dst}:{p.a}:{p.w}" for p in unit.products]
+    return [
+        "operands\t" + ",".join(o or "-" for o in unit.operands),
+        "row\t" + ",".join(map(str, unit.row_operands)),
+        "col\t" + ",".join(map(str, unit.col_operands)),
+        f"results\t{unit.results}",
+        "products\t" + ",".join(products),
+        f"fidelity\t{unit.fidelity or '-'}",
+    ]
+
+
 def main(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -284,6 +303,7 @@ def main(folder):
             continue
         (folder / f"{case}.unit").write_text("\n".join(unit_lines(unit)) + "\n")
         (folder / f"{case}.txt").write_text(text + "\n")
+        (folder / f"{case}.fields").write_text("\n".join(fields(unit)) + "\n")
         try:
             words = emit(unit)  # as the class's files are written (program.write)
         except UnitError as error:

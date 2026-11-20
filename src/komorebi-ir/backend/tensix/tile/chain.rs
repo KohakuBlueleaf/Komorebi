@@ -2,10 +2,12 @@
 //! (`Chain`) computing a stored value over at most four register slots, with each
 //! transcendental's template. The stream form's entry to it is in `lower`.
 //!
-//! Not ported: the row form (`banded`, `grouped`, per-row and broadcast operands,
-//! slices, `cat`, `.even` / `.odd`, casts), and the templates chosen by a stated error
-//! (Kohaku-TT's flash exp): the IR states no error, so each transcendental takes its
-//! default, the accurate template. What would take them is refused by name.
+//! A stream form's operand is read copied, or spread from a tile (`.row()`: its row 0
+//! to every row, `bcast_row`; `.col()`: its column 0 to every column, `bcast_col`).
+//! Not ported: the row form (`banded`, `grouped`, reduced values and fields read per
+//! row, slices, `cat`, `.even` / `.odd`, casts), and the templates chosen by a stated
+//! error (Kohaku-TT's flash exp): the IR states no error, so each transcendental takes
+//! its default, the accurate template. What would take them is refused by name.
 
 use super::ir::{Attr, KernelIR, NodeId};
 use super::py;
@@ -193,7 +195,26 @@ pub(crate) fn shape(
             _ => "tile",
         },
         "const" | "param" | "size" => "scalar",
-        "slot" | "word" | "state" | "reduce" | "col" | "slice" | "cat" | "resident" => {
+        "col" => {
+            let Some(&a) = n.args.first() else {
+                return Err(ChainError::NotPorted("a .col() of no operand".into()));
+            };
+            match shape(ir, a, of)? {
+                "tile" => "tile",
+                "scalar" => {
+                    return Err(ChainError::Plan(
+                        ".col() broadcasts a reduced value or a tile".into(),
+                        n.line.clone(),
+                    ))
+                }
+                other => {
+                    return Err(ChainError::NotPorted(format!(
+                        "the row form's .col() of a {other}"
+                    )))
+                }
+            }
+        }
+        "slot" | "word" | "state" | "reduce" | "slice" | "cat" | "resident" => {
             return Err(ChainError::NotPorted(format!("the row form's {}", n.kind)))
         }
         _ => {
@@ -328,7 +349,7 @@ impl<'k> Compiler<'k> {
             built: Vec::new(),
             line: self.ir.arena.get(root.0).and_then(|n| n.line.clone()),
         };
-        let result = s.build(self, root)?;
+        let result = s.build(self, root, "copy")?;
         self.count += 1;
         let name = format!("{}_fn{}", self.ir.name, self.count);
         let func = vector::sfpu_fn(&mut s.vs, &name, FnResult::One(result))
@@ -367,7 +388,7 @@ struct Build {
     ops: Vec<(String, usize)>,
     values: Vec<Scalar>,
     places: Vec<(String, vector::VId)>,
-    built: Vec<(NodeId, Val)>,
+    built: Vec<((NodeId, &'static str), Val)>,
     line: Option<String>,
 }
 
@@ -393,17 +414,29 @@ impl Build {
         Ok(Val::V(id))
     }
 
-    /// The register operand reading `node` whole.
-    fn leaf(&mut self, compiler: &Compiler, node: NodeId) -> Result<Val, ChainError> {
+    /// The register operand reading `node` whole as `how` (today's stream form's
+    /// `leaf_of`): a product copied, a load copied or spread (its column 0 to every
+    /// column, `bcast_col`; its row 0 to every row, `bcast_row`).
+    fn leaf(
+        &mut self,
+        compiler: &Compiler,
+        node: NodeId,
+        how: &'static str,
+    ) -> Result<Val, ChainError> {
         let kind = compiler
             .ir
             .arena
             .get(node.0)
             .map_or("", |n| n.kind.as_str());
-        if !(kind == "load" || compiler.products.contains(&node)) {
+        let read = if compiler.products.contains(&node) {
+            how == "copy"
+        } else {
+            kind == "load" && ["copy", "bcast_col", "bcast_row"].contains(&how)
+        };
+        if !read {
             return Err(compiler.plan(format!("{kind} cannot be read here"), node));
         }
-        let key = (Source::Node(node), "copy");
+        let key = (Source::Node(node), how);
         if let Some((_, id)) = self.keys.iter().find(|(k, _)| *k == key) {
             return Ok(Val::V(*id));
         }
@@ -417,21 +450,32 @@ impl Build {
         self.keys.push((key, id));
         self.operands.push(Leaf {
             source: Source::Node(node),
-            kind: "copy",
+            kind: how,
         });
         Ok(Val::V(id))
     }
 
-    fn build(&mut self, compiler: &mut Compiler, node: NodeId) -> Result<Val, ChainError> {
-        if let Some((_, v)) = self.built.iter().find(|(n, _)| *n == node) {
+    /// The value of `node`, its loads read as `how`, made once.
+    fn build(
+        &mut self,
+        compiler: &mut Compiler,
+        node: NodeId,
+        how: &'static str,
+    ) -> Result<Val, ChainError> {
+        if let Some((_, v)) = self.built.iter().find(|(k, _)| *k == (node, how)) {
             return Ok(*v);
         }
-        let made = self.make(compiler, node)?;
-        self.built.push((node, made));
+        let made = self.make(compiler, node, how)?;
+        self.built.push(((node, how), made));
         Ok(made)
     }
 
-    fn make(&mut self, compiler: &mut Compiler, node: NodeId) -> Result<Val, ChainError> {
+    fn make(
+        &mut self,
+        compiler: &mut Compiler,
+        node: NodeId,
+        how: &'static str,
+    ) -> Result<Val, ChainError> {
         if self.prev == Some(node) {
             if let Some(id) = self.prev_operand {
                 return Ok(Val::V(id));
@@ -449,7 +493,7 @@ impl Build {
             None => self.ops.push((k.to_string(), 1)),
         }
         if k == "load" || compiler.products.contains(&node) {
-            return self.leaf(compiler, node);
+            return self.leaf(compiler, node, how);
         }
         let attr = |name: &str| {
             n.attrs
@@ -475,8 +519,15 @@ impl Build {
                     _ => Err(ChainError::NotPorted("a runtime value of no name".into())),
                 }
             }
-            "resident" | "reduce" | "acc" | "size" | "cast" | "row" | "all" | "col" | "slice"
-            | "cat" | "even" | "odd" | "lagmax" | "pairs" => {
+            "row" | "col" => {
+                let Some(&a) = n.args.first() else {
+                    return Err(ChainError::NotPorted(format!("the node {k} of no operand")));
+                };
+                let spread = if k == "row" { "bcast_row" } else { "bcast_col" };
+                return self.build(compiler, a, spread);
+            }
+            "resident" | "reduce" | "acc" | "size" | "cast" | "all" | "slice" | "cat" | "even"
+            | "odd" | "lagmax" | "pairs" => {
                 return Err(ChainError::NotPorted(format!("the node {k}")));
             }
             _ => {}
@@ -488,7 +539,7 @@ impl Build {
         if k == "div" {
             if let [a, b] = n.args[..] {
                 if shape_of(compiler, b)? == "scalar" {
-                    let a = self.build(compiler, a)?;
+                    let a = self.build(compiler, a, how)?;
                     let bn = compiler.ir.arena.get(b.0).cloned();
                     let bn =
                         bn.ok_or_else(|| ChainError::NotPorted("a node of no kernel".into()))?;
@@ -518,7 +569,7 @@ impl Build {
         }
         let mut args = Vec::new();
         for &a in &n.args {
-            args.push(self.build(compiler, a)?);
+            args.push(self.build(compiler, a, how)?);
         }
         let arg = |i: usize| args.get(i).copied().unwrap_or(Val::F(0.0));
         if n.args.len() != expected_args(k) {
