@@ -883,6 +883,31 @@ a core, `AAAB`) keep every half at a multiple of 16 pages.
 
 Described in [Programs written as classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use).
 
+### A core whose control area is gone in the middle of a run (open)
+
+**The hazard.** On Blackhole, a core of a running program was found with its control
+area reading as zeros: no magic, no tag, every live word 0. That is what a kernel leaves
+when it runs its own start again and does not get past it: the start zeroes the area and
+writes the magic only after its core table is read. It was seen six times, each time one
+core, each time a receiver of a broadcast, and only with the reader as it was before the
+entry below (its branch predictor on through an overlay load): 3 times in 160 runs of
+`examples/17_leader_overlay` at a slot address that stalls. With the reader as it is now,
+those 160 runs have no give-up at all, and no such core was seen. What is not known: what
+makes the kernel start again.
+
+**What it did.** A give-up resets every core of the command's group that has not left
+the command. "Left" was read from the core's live words alone, so a core with no area
+counted as having left, was not reset, and kept the stop from returning; every later
+open in the same process then failed, waiting for that core.
+
+**The guard.** A core has left a command only if its control area carries the magic of
+this run's kernel and none of its live words holds the command. Any other core is in no
+known state: the recovery resets it and loads it again, and the timeout names it ("core
+N: its control area is not there (no kernel of this run is running on it): reset and
+loaded again"). The Tensix dispatcher checks the magic and the run's tag; the X280
+dispatcher the magic alone, since it is not given the tag. With the guard, 3 of 3 such
+cores in 160 runs were reset and named, the stop returned, and the next open worked.
+
 ### An overlay loaded on Blackhole with the reader's branch predictor on
 
 **The hazard.** On Blackhole, a core whose reader (its BRISC) loads an overlay into a
