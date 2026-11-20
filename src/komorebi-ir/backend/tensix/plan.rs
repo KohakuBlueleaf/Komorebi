@@ -1,7 +1,7 @@
 //! What a handler's body is, in the terms today's class DSL compiles: its command
-//! words, the one partition its streams share, a write stream, a read stream whose
-//! loop pushes a tile function's result. A body of another form is refused by name
-//! (K964) until it is built.
+//! words, its named int values, the one partition its streams share or the range
+//! each streams, a write stream, a read stream whose loop pushes a tile function's
+//! result. A body of another form is refused by name (K964) until it is built.
 
 use std::collections::HashMap;
 
@@ -9,7 +9,7 @@ use crate::backend::{Refusal, NOT_BUILT};
 use crate::program::body::{Body, InstId, Op, ValueId};
 use crate::program::notes::{Anchor, Named, Owner};
 use crate::program::{BodyRef, FuncKind, Module};
-use crate::types::{ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type};
+use crate::types::{BinOp, ConstValue, Format, FuncId, HandlerId, On, ProgramId, ScalarType, Type};
 
 /// How a command word is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,22 +33,75 @@ pub struct Word {
     pub format: Option<Format>,
 }
 
+/// An unsigned int the kernels compute from the command, as today's text prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Int {
+    /// A `u32` word, by its index.
+    Word(usize),
+    /// A number.
+    Const(u64),
+    /// The worker's rank in the group (`km_rank`).
+    Rank,
+    /// The group's size (`km_size`).
+    Size,
+    /// A named value: an index into the plan's `locals`.
+    Local(usize),
+    /// `(a op b)`: `+`, `-` or `*`.
+    Bin(char, Box<Int>, Box<Int>),
+}
+
+impl Int {
+    /// Calls `f` on each part of the int, itself included.
+    pub fn each(&self, f: &mut impl FnMut(&Int)) {
+        f(self);
+        if let Int::Bin(_, a, b) = self {
+            a.each(f);
+            b.each(f);
+        }
+    }
+}
+
+/// A named int value (`let first = worker.rank * 64`): a line of the movers' case.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Local {
+    /// Its name (the notes'; `v<i>` when they give none).
+    pub name: String,
+    /// What it is.
+    pub value: Int,
+    /// The instruction that makes it.
+    pub inst: InstId,
+}
+
 /// A partition the kernels print: `partition(t.tiles(first, n), rank, size)`, by its
-/// words; which partitions are one is the layout rule `shared`.
+/// ints; which partitions are one is the layout rule `shared`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     /// Its name: the first partition's.
     pub name: String,
-    /// The word of `first`.
-    pub first: usize,
-    /// The word of `n`.
-    pub n: usize,
+    /// `first`.
+    pub first: Int,
+    /// `n`.
+    pub n: Int,
     /// The first partition's instruction.
     pub inst: InstId,
 }
 
-/// A stream of whole tiles over the partition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The tiles a stream moves: a partition's part, or `t.tiles(first, n)` as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Range {
+    /// An index into the plan's `parts`.
+    Part(usize),
+    /// Tiles `first` to `first + n - 1`.
+    Tiles {
+        /// The first tile.
+        first: Int,
+        /// The tiles.
+        n: Int,
+    },
+}
+
+/// A stream of whole tiles over its range.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Moved {
     /// The tensor's word.
     pub tensor: usize,
@@ -56,8 +109,8 @@ pub struct Moved {
     pub block: u64,
     /// The instruction that opens it: the sink, or the loop over the stream.
     pub inst: InstId,
-    /// Its partition: an index into the plan's `parts`.
-    pub part: usize,
+    /// Its tiles.
+    pub range: Range,
 }
 
 /// The loop's body: `out.push(f(tile, scalar))`.
@@ -84,6 +137,8 @@ pub struct Plan {
     pub name: String,
     /// Its command words, in order.
     pub words: Vec<Word>,
+    /// Its named int values, in the order they are written.
+    pub locals: Vec<Local>,
     /// The partitions, in the order they are written: one where the streams' are
     /// the same range (`shared`), else the write stream's and the read stream's.
     pub parts: Vec<Part>,
@@ -161,6 +216,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
     let body = BodyRef::Handler(p, h);
     let found = Walk::new(module, &handler.body, body, &words).run()?;
     let Found {
+        locals,
         parts,
         write,
         read,
@@ -171,6 +227,7 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
         handler: h,
         name: handler.name.clone(),
         words,
+        locals,
         parts,
         write,
         read,
@@ -180,10 +237,10 @@ pub fn plan(module: &Module, p: ProgramId, h: HandlerId) -> Result<Plan, Refusal
 
 /// The layout rule for partitions (today's DSL writes one partition and indexes both
 /// tensors with it, `y[src]`): partitions that take the same values (the same `first`
-/// and `n` words, by `worker.rank` and `group.size`, the only rank and size the walk
-/// takes) are one range whatever their tensors, printed once, as the first of them
-/// written; partitions that differ in a value are printed each. Gives the partitions
-/// to print and, for each given one, its index among them.
+/// and `n`, by `worker.rank` and `group.size`, the only rank and size the walk takes)
+/// are one range whatever their tensors, printed once, as the first of them written;
+/// partitions that differ in a value are printed each. Gives the partitions to print
+/// and, for each given one, its index among them.
 pub fn shared(parts: &[Part]) -> (Vec<Part>, Vec<usize>) {
     let mut order: Vec<usize> = (0..parts.len()).collect();
     order.sort_by_key(|&i| parts[i].inst);
@@ -193,7 +250,7 @@ pub fn shared(parts: &[Part]) -> (Vec<Part>, Vec<usize>) {
         let part = &parts[i];
         match out
             .iter()
-            .position(|p| (p.first, p.n) == (part.first, part.n))
+            .position(|p| (&p.first, &p.n) == (&part.first, &part.n))
         {
             Some(at) => index[i] = at,
             None => {
@@ -206,49 +263,48 @@ pub fn shared(parts: &[Part]) -> (Vec<Part>, Vec<usize>) {
 }
 
 /// What a value of the body is, as far as the plan reads it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Val {
     Arg(usize),
-    Const(u64),
-    Rank,
-    Size,
-    Tiles {
-        tensor: usize,
-        first: usize,
-        n: usize,
-    },
-    Part {
-        tensor: usize,
-        first: usize,
-        n: usize,
-        inst: InstId,
-    },
+    Int(Int),
+    Tiles { tensor: usize, first: Int, n: Int },
+    Part(usize, Part),
     Stream,
     Sink,
     Tile,
     Called,
 }
 
+/// The tiles a stream was opened on, before the partitions are shared.
+#[derive(Clone, Debug)]
+enum Over {
+    Part(Part),
+    Tiles(Int, Int),
+}
+
 /// What the walk found.
 struct Found {
+    locals: Vec<Local>,
     parts: Vec<Part>,
     write: Moved,
     read: Moved,
     call: Call,
 }
 
-/// The body read instruction by instruction: arguments, partitions of `t.tiles(first,
-/// n)` by rank and size, one sink, one stream, the loop over it whose body calls a
-/// tile function on the loop's tile and a `f32` word and pushes the result into the
-/// sink, the loop's end, and nothing after.
+/// The body read instruction by instruction: arguments, ints of words, numbers and
+/// the rank (a named one a local), partitions of `t.tiles(first, n)` by rank and
+/// size, one sink, one stream, each of a partition or of tiles, the loop over the
+/// stream whose body calls a tile function on the loop's tile (or block) and a `f32`
+/// word and pushes the result into the sink, the loop's end, and nothing after.
 struct Walk<'m> {
     module: &'m Module,
     body: &'m Body,
     at: BodyRef,
     words: &'m [Word],
     vals: HashMap<ValueId, Val>,
-    sink: Option<(ValueId, Moved, (usize, usize, InstId))>,
-    stream: Option<(Moved, (usize, usize, InstId))>,
+    locals: Vec<Local>,
+    sink: Option<(ValueId, Moved, Over)>,
+    stream: Option<(Moved, Over)>,
     call: Option<Call>,
     looped: bool,
     pushed: bool,
@@ -263,6 +319,7 @@ impl<'m> Walk<'m> {
             at,
             words,
             vals: HashMap::new(),
+            locals: Vec::new(),
             sink: None,
             stream: None,
             call: None,
@@ -273,7 +330,19 @@ impl<'m> Walk<'m> {
     }
 
     fn val(&self, v: ValueId) -> Option<Val> {
-        self.vals.get(&v).copied()
+        self.vals.get(&v).cloned()
+    }
+
+    /// The int `v` is: a `u32` word, a number, the rank or size, a named value, or
+    /// an operation of these.
+    fn int(&self, v: ValueId) -> Option<Int> {
+        match self.val(v)? {
+            Val::Arg(i) if self.words.get(i).is_some_and(|w| w.kind == WordKind::U32) => {
+                Some(Int::Word(i))
+            }
+            Val::Int(i) => Some(i),
+            _ => None,
+        }
     }
 
     /// The word `v` is, if it is an argument of `kind`.
@@ -302,7 +371,7 @@ impl<'m> Walk<'m> {
             BodyRef::Handler(p, h) => Anchor::Handler(p, h),
             _ => Anchor::Module,
         };
-        let (Some((_, write, wpart)), Some((read, rpart)), Some(call), true) =
+        let (Some((_, write, wover)), Some((read, rover)), Some(call), true) =
             (self.sink, self.stream, self.call, self.ended)
         else {
             return Err(not_built(
@@ -310,45 +379,100 @@ impl<'m> Walk<'m> {
                 at,
             ));
         };
-        if wpart.1 != rpart.1 {
-            return Err(not_built(
-                "a sink of another count than its loop's stream",
-                at,
-            ));
-        }
         if write.block != read.block {
             return Err(not_built("a sink in blocks other than its loop's", at));
         }
-        let named = |(first, n, inst): (usize, usize, InstId)| {
-            let defined = self
-                .body
-                .insts
-                .get(inst.0 as usize)
-                .and_then(|i| i.defs.first().copied());
-            let name = defined
-                .and_then(|v| value_name(self.module, self.at, v))
-                .map_or_else(
-                    || format!("v{}", defined.map_or(0, |v| v.0)),
-                    str::to_string,
-                );
-            Part {
-                name,
-                first,
-                n,
-                inst,
+        let (parts, write, read) = match (wover, rover) {
+            (Over::Part(w), Over::Part(r)) => {
+                if w.n != r.n {
+                    return Err(not_built(
+                        "a sink of another count than its loop's stream",
+                        at,
+                    ));
+                }
+                let (parts, index) = shared(&[w, r]);
+                let write = Moved {
+                    range: Range::Part(index[0]),
+                    ..write
+                };
+                let read = Moved {
+                    range: Range::Part(index[1]),
+                    ..read
+                };
+                (parts, write, read)
+            }
+            (Over::Tiles(wf, wn), Over::Tiles(rf, rn)) => {
+                if wn != rn {
+                    return Err(not_built(
+                        "a sink of another count than its loop's stream",
+                        at,
+                    ));
+                }
+                let write = Moved {
+                    range: Range::Tiles { first: wf, n: wn },
+                    ..write
+                };
+                let read = Moved {
+                    range: Range::Tiles { first: rf, n: rn },
+                    ..read
+                };
+                (Vec::new(), write, read)
+            }
+            _ => {
+                return Err(not_built(
+                    "a sink of a partition and its loop's stream of tiles, or the other way",
+                    at,
+                ))
             }
         };
-        let (parts, index) = shared(&[named(wpart), named(rpart)]);
+        // a named value no stream reads: no line today's text prints
+        let mut used = Vec::new();
+        let ints = parts.iter().flat_map(|p| [&p.first, &p.n]).chain(
+            [&write.range, &read.range]
+                .into_iter()
+                .flat_map(|r| match r {
+                    Range::Tiles { first, n } => vec![first, n],
+                    Range::Part(_) => Vec::new(),
+                }),
+        );
+        for int in ints {
+            int.each(&mut |i| {
+                if let Int::Local(l) = i {
+                    used.push(*l);
+                }
+            });
+        }
+        for (l, local) in self.locals.iter().enumerate().rev() {
+            local.value.each(&mut |i| {
+                if let Int::Local(k) = i {
+                    if used.contains(&l) {
+                        used.push(*k);
+                    }
+                }
+            });
+        }
+        if let Some(local) = (0..self.locals.len())
+            .rev()
+            .find(|l| !used.contains(l))
+            .map(|l| &self.locals[l])
+        {
+            return Err(not_built(
+                "a named value no stream reads",
+                Anchor::Inst(self.at, local.inst),
+            ));
+        }
+        let mut counted = false;
+        if let Range::Tiles { n, .. } = &read.range {
+            n.each(&mut |i| counted |= matches!(i, Int::Local(_)));
+        }
+        if counted {
+            return Err(not_built("a read stream's count of a named value", at));
+        }
         Ok(Found {
+            locals: self.locals,
             parts,
-            write: Moved {
-                part: index[0],
-                ..write
-            },
-            read: Moved {
-                part: index[1],
-                ..read
-            },
+            write,
+            read,
             call,
         })
     }
@@ -357,28 +481,68 @@ impl<'m> Walk<'m> {
     fn step(&mut self, op: &Op, id: InstId) -> Result<Option<Val>, String> {
         Ok(match op {
             Op::Arg(a) => Some(Val::Arg(*a as usize)),
-            Op::Const(ConstValue::Int(_, x)) => Some(Val::Const(*x)),
-            Op::Rank => Some(Val::Rank),
-            Op::GroupSize => Some(Val::Size),
+            Op::Const(ConstValue::Int(_, x)) => Some(Val::Int(Int::Const(*x))),
+            Op::Rank => Some(Val::Int(Int::Rank)),
+            Op::GroupSize => Some(Val::Int(Int::Size)),
+            Op::Binary(op, a, b) => {
+                let op = match op {
+                    BinOp::Add => '+',
+                    BinOp::Sub => '-',
+                    BinOp::Mul => '*',
+                    _ => return Err("an int operation other than + - *".into()),
+                };
+                let (Some(a), Some(b)) = (self.int(*a), self.int(*b)) else {
+                    return Err("an operation other than of u32 words, numbers and the rank".into());
+                };
+                let value = Int::Bin(op, Box::new(a), Box::new(b));
+                let defined = self
+                    .body
+                    .insts
+                    .get(id.0 as usize)
+                    .and_then(|i| i.defs.first().copied());
+                match defined.and_then(|v| value_name(self.module, self.at, v)) {
+                    Some(name) => {
+                        self.locals.push(Local {
+                            name: name.to_string(),
+                            value,
+                            inst: id,
+                        });
+                        Some(Val::Int(Int::Local(self.locals.len() - 1)))
+                    }
+                    None => Some(Val::Int(value)),
+                }
+            }
             Op::Tiles { tensor, first, n } => {
                 let (Some(tensor), Some(first), Some(n)) = (
                     self.word(*tensor, WordKind::Tensor),
-                    self.word(*first, WordKind::U32),
-                    self.word(*n, WordKind::U32),
+                    self.int(*first),
+                    self.int(*n),
                 ) else {
-                    return Err("a view other than t.tiles(first, n) of parameters".into());
+                    return Err("a view other than t.tiles(first, n) of a parameter".into());
                 };
                 Some(Val::Tiles { tensor, first, n })
             }
             Op::Partition(view, rank, size) => {
-                match (self.val(*view), self.val(*rank), self.val(*size)) {
-                    (Some(Val::Tiles { tensor, first, n }), Some(Val::Rank), Some(Val::Size)) => {
-                        Some(Val::Part {
-                            tensor,
+                match (self.val(*view), self.int(*rank), self.int(*size)) {
+                    (Some(Val::Tiles { tensor, first, n }), Some(Int::Rank), Some(Int::Size)) => {
+                        let defined = self
+                            .body
+                            .insts
+                            .get(id.0 as usize)
+                            .and_then(|i| i.defs.first().copied());
+                        let name = defined
+                            .and_then(|v| value_name(self.module, self.at, v))
+                            .map_or_else(
+                                || format!("v{}", defined.map_or(0, |v| v.0)),
+                                str::to_string,
+                            );
+                        let part = Part {
+                            name,
                             first,
                             n,
                             inst: id,
-                        })
+                        };
+                        Some(Val::Part(tensor, part))
                     }
                     _ => {
                         return Err(
@@ -388,29 +552,30 @@ impl<'m> Walk<'m> {
                 }
             }
             Op::Sink(view, block) | Op::Stream(view, block) => {
-                let (
-                    Some(Val::Part {
-                        tensor,
-                        first,
-                        n,
-                        inst,
-                    }),
-                    Some(Val::Const(block)),
-                ) = (self.val(*view), self.val(*block))
-                else {
-                    return Err("a stream other than of a partition in a constant block".into());
+                let block = match self.int(*block) {
+                    Some(Int::Const(b)) => b,
+                    _ => return Err("a stream in a block that is not a constant".into()),
+                };
+                let (tensor, over) = match self.val(*view) {
+                    Some(Val::Part(tensor, part)) => (tensor, Over::Part(part)),
+                    Some(Val::Tiles { tensor, first, n }) => (tensor, Over::Tiles(first, n)),
+                    _ => {
+                        return Err(
+                            "a stream other than of a partition or of t.tiles(first, n)".into()
+                        )
+                    }
                 };
                 let moved = Moved {
                     tensor,
                     block,
                     inst: id,
-                    part: 0,
+                    range: Range::Part(0),
                 };
                 if matches!(op, Op::Stream(..)) {
                     if self.stream.is_some() {
                         return Err("a second read stream".into());
                     }
-                    self.stream = Some((moved, (first, n, inst)));
+                    self.stream = Some((moved, over));
                     Some(Val::Stream)
                 } else {
                     if self.sink.is_some() {
@@ -424,7 +589,7 @@ impl<'m> Walk<'m> {
                     let Some(v) = defined else {
                         return Err("a sink that defines nothing".into());
                     };
-                    self.sink = Some((v, moved, (first, n, inst)));
+                    self.sink = Some((v, moved, over));
                     Some(Val::Sink)
                 }
             }
@@ -495,8 +660,8 @@ mod tests {
     fn part(name: &str, first: usize, n: usize, inst: u32) -> Part {
         Part {
             name: name.into(),
-            first,
-            n,
+            first: Int::Word(first),
+            n: Int::Word(n),
             inst: InstId(inst),
         }
     }

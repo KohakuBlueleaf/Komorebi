@@ -53,8 +53,9 @@ pub fn unit(module: &Module, f: FuncId) -> Result<Unit, Refusal> {
         .map(|b| b.insts.as_slice())
         .unwrap_or(&[]);
     let shape = matches!(func.kind, FuncKind::Plain)
-        && func.params == [Type::Tile(Format::Bf16), Type::Scalar(ScalarType::F32)]
-        && func.ret == Type::Tile(Format::Bf16)
+        && func.inner(Some(0)) == Some(Type::Tile(Format::Bf16))
+        && func.inner(Some(1)) == Some(Type::Scalar(ScalarType::F32))
+        && func.inner(None) == Some(Type::Tile(Format::Bf16))
         && matches!(
             insts,
             [a, k, mul, ret]

@@ -63,7 +63,7 @@ class Counted(km.Program):
     @km.handler
     def run(self, x: km.Tensor, y: km.Tensor, first: int, tiles: int, k: float):
         src = self.partition(x.pages(first, tiles))
-        n = tiles + 1
+        n = k * 2.0
         out = km.Stream(y[src], write=True, block=1)
         for xb in km.Stream(x[src], block=1):
             out.push(times(xb, k + n))
@@ -116,7 +116,7 @@ def test_a_name_that_is_an_ir_word_is_renamed():
 @pytest.mark.parametrize(
     "cls, text, why",
     [
-        (Counted, "n = tiles + 1", "an assignment the IR module does not write yet"),
+        (Counted, "n = k * 2.0", "an assignment the IR module does not write yet"),
         (Patterned, "pattern=", "a stream's pattern= is not written"),
     ],
 )
@@ -190,3 +190,26 @@ def test_the_ir_handler_sends_todays_words_and_checks_its_ranges(tmp_path, monke
     )
     with pytest.raises(km.ProgramError, match="items 1 to 2048 of x"):
         run.args(x, y, 1, x.pages, 2.0)
+
+
+def test_program_1_built_through_the_ir_is_todays(tmp_path, monkeypatch):
+    script = tmp_path / "scalars_line.py"
+    shutil.copy(ROOT / "tests" / "ir" / "tensix" / "scalars_line.py", script)
+    spec = importlib.util.spec_from_file_location("scalars_line", script)
+    p1 = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "scalars_line", p1)
+    spec.loader.exec_module(p1)
+    given = p1.made_with()
+    today = p1.Scalars(log=lambda line: None, **given)
+    ours = program(p1.Scalars, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "scalars.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    a, out = given["a"], given["out"]
+    line = ours.entry("line")
+    assert line.args(a, out, 2.0) == list(today.line.args(a, out, 2.0))
+    # each worker's range reads its rank: no range a host computes, none checked
+    assert line.point.bounds == []

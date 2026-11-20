@@ -88,9 +88,17 @@ no chip. A chip's name there is refused; the chip, `blackhole` or `wormhole_b0`,
 load. At load the backend also writes the thread's header from the tensors given (their pages and
 kinds), which no compile knows.
 
-At this stage it emits the first lesson: one program of one handler on a group, a loop over a read
-stream of a partition of a tensor's tiles that pushes a tile function's result into a sink.
-Partitions of the same values are printed once. Everything else is refused with `K964`, by name.
+At this stage it emits the first lesson and the corpus's program 1 (`Scalars.line`): one program
+of one handler on a group, a loop over a read stream that pushes a tile function's result into a
+sink of the same count, in one block. Each stream is of a partition of a tensor's tiles or of the
+tiles `t.tiles(first, n)` themselves, its ends `u32` words, numbers, the rank, `+ - *` and named
+values of these (`let first = worker.rank * 64`, a line of the movers). A kernel's case reads
+only the rank, size and words its lines use. Partitions of the same values are printed once.
+A tile function may be on blocks, the template applied to each valid tile of the block (today's
+compute loop). Everything else is refused with `K964`, by name.
+
+An entry point states the ranges a host can compute from the words (words, numbers, sums); a
+range that reads the rank is each worker's and is not stated.
 
 The tile function's two files, `tile_<f>.hpp` and its listing, are not made by a port of today's
 tile compiler. They are its output for the one shape `return a * k` (a `bf16` tile times an `f32`),
@@ -98,7 +106,7 @@ kept as a template with two names filled in, and their identity with today's fil
 about a tile compiler. Any other tile function is refused; the next one starts the port of the tile
 compiler.
 
-The test `tests/ir/tensix.rs` runs today's emitter on the lesson's script (`python3`, else
+The tests `tests/ir/tensix.rs` and `tests/ir/frontend.rs` run today's emitter on the scripts (`python3`, else
 `KOMO_IR_PYTHON`), with no card and no compiler, and compares every file byte for byte; it fails
 without Python unless `KOMO_IR_NO_PYTHON=1` skips it.
 
@@ -127,7 +135,8 @@ is not one of these two.
 in DRAM. The result holds:
 - the thread header, its name and text;
 - the kernels, each tensor's layout among the compile arguments;
-- the buffers, each format by the name today's loader gives it (`bfloat16`).
+- the buffers, each format by the name today's loader gives it (`bfloat16`; the block-float
+  formats are the `_b` family, `bfp8` as `bfp8_b`).
 
 A named chip must be `blackhole` or `wormhole_b0`. A missing tensor, a tensor named twice and a
 name the program does not take are each refused by name.

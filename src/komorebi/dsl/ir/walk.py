@@ -1,7 +1,7 @@
 """The walk: a class's handlers, read with `ast` as the class compiler reads them,
 written as one IR module's text with the origin of each of its lines. It knows the
-first lesson's lines (a partition, a write stream, a read loop pushing a tile
-function's result); any other line is refused by name, with its class's line."""
+corpus's lines (a word, a partition, streams, a read loop pushing a tile function's
+result or a tile expression); any other is refused by name, with its class's line."""
 
 import ast
 from dataclasses import dataclass, field
@@ -59,13 +59,26 @@ class Made:
 @dataclass
 class Value:
     """What a name holds in a handler: its kind ("tensor", "u32", "f32", "partition",
-    "sink", "block") and, for a partition, its tensor and its range's words."""
+    "sink", "block"), a partition's tensor and range's words, a block's tiles."""
 
     kind: str
     format: str = ""
     tensor: str = ""
     first: str = ""
     count: str = ""
+    tiles: int = 1
+
+
+@dataclass
+class Inline:
+    """A tile expression pushed as it is (`out.push(x * scale)`), which today's class
+    compiles as the function `tile_line_<line>` of the names it reads, in order."""
+
+    name: str
+    node: ast.AST
+    value: ast.AST
+    names: list
+    where: Where
 
 
 class Text:
@@ -291,12 +304,16 @@ class Handler:
                 node, f"{target} assigned twice", "give each value its own name"
             )
         construct = construct_of(value)
+        word = self.int_text(value) if construct is None else None
         if construct == "partition":
             lines = [self.partition(node, target, value)]
         elif construct == "stream" and write_stream(value):
             lines = self.stream(node, value, write=True)
             lines[-1] = f"let {self.name(target)} = {lines[-1]}"
             self.scope[target] = Value("sink")
+        elif word is not None:
+            lines = [f"let {self.name(target)} = {bare(word)}"]
+            self.scope[target] = Value("u32")
         else:
             self.refuse(
                 node,
@@ -333,8 +350,19 @@ class Handler:
         return f"let {self.name(target)} = {partition_text(view)}"
 
     def view(self, node, view, lines):
-        """The text name of a stream's view `t[p]`: p's name, or p's range of tensor t
-        restated (`lines` gains the restatement)."""
+        """The text of a stream's view: `t.pages(a, b)` as `t.tiles(a, b)`; of `t[p]`,
+        p's name or p's range of tensor t restated (`lines` gains the restatement)."""
+        if (
+            isinstance(view, ast.Call)
+            and isinstance(view.func, ast.Attribute)
+            and view.func.attr == spelling("pages")
+            and isinstance(view.func.value, ast.Name)
+            and self.kind(view.func.value.id) == "tensor"
+            and len(view.args) == 2
+            and not view.keywords
+        ):
+            first, count = (bare(self.word(node, arg)) for arg in view.args)
+            return f"{self.name(view.func.value.id)}.tiles({first}, {count})"
         if not (
             isinstance(view, ast.Subscript)
             and isinstance(view.value, ast.Name)
@@ -343,7 +371,9 @@ class Handler:
             and self.kind(view.slice.id) == "partition"
         ):
             self.refuse(
-                node, "a stream of what is not t[part]", "stream a tensor's partition"
+                node,
+                "a stream of what is not t[part] or t.pages(first, count)",
+                "stream a tensor's partition or pages",
             )
         tensor, part = view.value.id, view.slice.id
         held = self.scope[part]
@@ -398,15 +428,22 @@ class Handler:
         lines = self.stream(node, node.iter, write=False)
         target = node.target.id
         lines[-1] = f"for {self.name(target)} in {lines[-1]} {{"
-        self.scope[target] = Value("block", format=self.scope_format(node.iter))
+        block = {k.arg: k.value for k in node.iter.keywords}[spelling("block")].value
+        self.scope[target] = Value(
+            "block", format=self.scope_format(node.iter), tiles=block
+        )
         children = self.body(node.body)
         return (node, lines, children)
 
     def scope_format(self, call):
-        return self.scope[call.args[0].value.id].format
+        """The format of the tensor a stream's view reads."""
+        view = call.args[0]
+        tensor = view.func.value if isinstance(view, ast.Call) else view.value
+        return self.scope[tensor.id].format
 
     def push(self, node, call):
-        """`out.push(f(b, k))`: a tile function's result into a write stream."""
+        """`out.push(f(b, k))` or `out.push(<expression>)`: a tile function's result,
+        or a tile expression's as the function `tile_line_<line>`, into a sink."""
         func = call.func
         if not (
             isinstance(func, ast.Attribute)
@@ -419,7 +456,23 @@ class Handler:
             self.refuse(
                 node, "a call the IR module does not write yet", "see the IR's lines"
             )
-        return f"{self.name(func.value.id)}.push({self.tile_call(node, call.args[0])})"
+        pushed = call.args[0]
+        if isinstance(pushed, ast.BinOp):
+            called = self.tile_expression(node, pushed)
+        else:
+            called = self.tile_call(node, pushed)
+        return f"{self.name(func.value.id)}.push({called})"
+
+    def tile_expression(self, node, value):
+        """A tile expression of the loop's block and floats as today's class compiles
+        it, the function `tile_line_<line>` of the names it reads, in order."""
+        names = []
+        for leaf in ast.walk(value):
+            if isinstance(leaf, ast.Name) and leaf.id not in names:
+                names.append(leaf.id)
+        name = f"tile_line_{node.lineno}"
+        function = Inline(name, node, value, names, self.where)
+        return self.tile_operands(node, function, names, "a tile expression")
 
     def tile_call(self, node, call):
         """A tile function's call on a block and scalar parameters."""
@@ -446,50 +499,82 @@ class Handler:
                 f"{function.name}'s options are not written in an IR module yet",
                 "leave them out",
             )
-        kinds, names = [], []
-        for arg in call.args:
-            if not isinstance(arg, ast.Name) or self.kind(arg.id) not in (
-                "block",
-                "f32",
-            ):
+        if not all(isinstance(arg, ast.Name) for arg in call.args):
+            self.refuse(
+                node,
+                "a tile function's operand that is not a block or a float",
+                "pass the loop's block or a float",
+            )
+        names = [arg.id for arg in call.args]
+        return self.tile_operands(node, function, names, "a tile function")
+
+    def tile_operands(self, node, function, names, what):
+        """The call of `function` on the handler's `names`: a block first, then floats;
+        a block of n tiles typed `tile<F>[n]` (the function is declared on blocks)."""
+        kinds = []
+        for name in names:
+            if self.kind(name) not in ("block", "f32"):
                 self.refuse(
                     node,
-                    "a tile function's operand that is not a block or a float",
+                    f"{what}'s operand that is not a block or a float",
                     "pass the loop's block or a float",
                 )
-            value = self.scope[arg.id]
-            kinds.append(f"tile<{value.format}>" if value.kind == "block" else "f32")
-            names.append(self.name(arg.id))
+            value = self.scope[name]
+            tiles = f"[{value.tiles}]" if value.tiles > 1 else ""
+            kinds.append(
+                f"tile<{value.format}>{tiles}" if value.kind == "block" else "f32"
+            )
         if "tile<" not in "".join(kinds[:1]):
             self.refuse(
                 node,
-                "a tile function whose first operand is not a block",
+                f"{what} whose first operand is not a block",
                 "pass the block first",
             )
         self.functions[function.name] = (function, tuple(kinds))
-        return f"{function.name}({', '.join(names)})"
+        return f"{function.name}({', '.join(self.name(n) for n in names)})"
 
     def kind(self, name):
         value = self.scope.get(name)
         return value.kind if value else None
 
     def word(self, node, expression):
-        """An int expression of the handler's words: names and numbers, + - *."""
+        """An int expression of the handler's words (`int_text`), else refused."""
+        text = self.int_text(expression)
+        if text is None:
+            self.refuse(
+                node,
+                "a word that is not an int parameter or value, a number, the rank, "
+                "+ - or *",
+                "write it of those",
+            )
+        return text
+
+    def int_text(self, expression):
+        """The text of an int expression of int parameters and values, numbers (a
+        module's int constant as its number), `self.rank`, + - *; else None."""
         if isinstance(expression, ast.Name) and self.kind(expression.id) == "u32":
             return self.name(expression.id)
+        if isinstance(expression, ast.Name) and expression.id not in self.scope:
+            known = self.globals.get(expression.id)
+            if type(known) is int and known >= 0:
+                return str(known)
         if isinstance(expression, ast.Constant) and type(expression.value) is int:
             return str(expression.value)
+        if (
+            isinstance(expression, ast.Attribute)
+            and isinstance(expression.value, ast.Name)
+            and expression.value.id == "self"
+            and expression.attr == spelling("rank")
+        ):
+            return "worker.rank"
         operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
         if isinstance(expression, ast.BinOp) and type(expression.op) in operators:
-            left, right = self.word(node, expression.left), self.word(
-                node, expression.right
-            )
+            left = self.int_text(expression.left)
+            right = self.int_text(expression.right)
+            if left is None or right is None:
+                return None
             return f"({left} {operators[type(expression.op)]} {right})"
-        self.refuse(
-            node,
-            "a word that is not an int parameter, a number, + - or *",
-            "write it of those",
-        )
+        return None
 
     def write(self, text):
         """The handler's lines into `text`, each range of them with its place."""
@@ -542,31 +627,37 @@ def partition_text(view):
 
 def tile_function(text, function, kinds):
     """A tile function as a `func`: its one `return` of + - * / over its parameters and
-    numbers, its parameters typed by the call."""
-    definition, lines, first = source_of(function.function)
-    where = Where(
-        function.name, "tile function", lines, first, file_of(function.function)
-    )
-    parameters = [a.arg for a in definition.args.args]
-    if len(parameters) != len(kinds) or len(definition.body) != 1:
-        refuse(
-            where,
-            definition,
-            "not one return over its parameters",
-            "write `return <expression>`",
+    numbers, its parameters typed by the call; a tile expression (`Inline`) alike."""
+    if isinstance(function, Inline):
+        where, parameters = function.where, function.names
+        definition = returned = function.node
+        value = function.value
+    else:
+        definition, lines, first = source_of(function.function)
+        where = Where(
+            function.name, "tile function", lines, first, file_of(function.function)
         )
-    returned = definition.body[0]
-    if not isinstance(returned, ast.Return) or returned.value is None:
-        refuse(
-            where,
-            returned,
-            "a line that is not its return",
-            "write `return <expression>`",
-        )
+        parameters = [a.arg for a in definition.args.args]
+        if len(parameters) != len(kinds) or len(definition.body) != 1:
+            refuse(
+                where,
+                definition,
+                "not one return over its parameters",
+                "write `return <expression>`",
+            )
+        returned = definition.body[0]
+        if not isinstance(returned, ast.Return) or returned.value is None:
+            refuse(
+                where,
+                returned,
+                "a line that is not its return",
+                "write `return <expression>`",
+            )
+        value = returned.value
     names = set(parameters)
     if (names | {function.name}) & RESERVED:
         refuse(where, definition, "a name that is an IR word", "rename it")
-    body = bare(expression(where, returned, returned.value, names))
+    body = bare(expression(where, returned, value, names))
     start = text.line(0, f"func {function.name}(")
     for name, kind in zip(parameters, kinds):
         text.line(1, f"{name}: {kind},")

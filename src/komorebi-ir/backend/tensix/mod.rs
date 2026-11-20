@@ -29,7 +29,7 @@ use crate::types::{Entry, Format, TileShape};
 use crate::types::{HandlerId, ProgramId};
 
 use self::origin::{place, statement_comment, Place};
-use self::plan::{Moved, Part, Plan, WordKind};
+use self::plan::{Int, Moved, Part, Plan, Range, WordKind};
 use self::unit::Unit;
 
 /// One indent of the generated text (`program_sources.INDENT`).
@@ -385,16 +385,72 @@ fn word_line(plan: &Plan, i: usize) -> String {
     }
 }
 
-/// A case's opening lines: the rank and size, then the words this kernel reads.
-fn case_head(out: &mut Vec<String>, plan: &Plan, me: &str, used: &[usize]) {
-    indented(
-        out,
-        4,
-        &format!("const uint32_t km_rank = {me}.me() - km::first(command);"),
-    );
-    indented(out, 4, "const uint32_t km_size = km::count(command);");
+/// An int as the kernels print it: a word's or a value's name, a number, the rank or
+/// size, `(a op b)`.
+fn int_text(plan: &Plan, int: &Int) -> String {
+    match int {
+        Int::Word(i) => plan.words[*i].name.clone(),
+        Int::Const(n) => n.to_string(),
+        Int::Rank => "km_rank".to_string(),
+        Int::Size => "km_size".to_string(),
+        Int::Local(l) => plan.locals[*l].name.clone(),
+        Int::Bin(op, a, b) => format!("({} {op} {})", int_text(plan, a), int_text(plan, b)),
+    }
+}
+
+/// What a kernel's lines read of `ints`, the named values they read included: the
+/// words, the named values, and whether the rank and the size.
+#[derive(Default)]
+struct Uses {
+    words: Vec<usize>,
+    locals: Vec<usize>,
+    rank: bool,
+    size: bool,
+}
+
+impl Uses {
+    fn of<'a>(plan: &Plan, ints: impl IntoIterator<Item = &'a Int>) -> Uses {
+        let mut out = Uses::default();
+        let mut pending: Vec<Int> = ints.into_iter().cloned().collect();
+        while let Some(int) = pending.pop() {
+            int.each(&mut |i| match i {
+                Int::Word(w) if !out.words.contains(w) => out.words.push(*w),
+                Int::Rank => out.rank = true,
+                Int::Size => out.size = true,
+                Int::Local(l) if !out.locals.contains(l) => {
+                    out.locals.push(*l);
+                    pending.push(plan.locals[*l].value.clone());
+                }
+                _ => {}
+            });
+        }
+        out
+    }
+}
+
+/// The ints a range reads.
+fn range_ints<'p>(plan: &'p Plan, range: &'p Range) -> Vec<&'p Int> {
+    match range {
+        Range::Part(p) => vec![&plan.parts[*p].first, &plan.parts[*p].n],
+        Range::Tiles { first, n } => vec![first, n],
+    }
+}
+
+/// A case's opening lines: the rank and size where the kernel reads them, then the
+/// words it reads.
+fn case_head(out: &mut Vec<String>, plan: &Plan, me: &str, reads: &Uses) {
+    if reads.rank {
+        indented(
+            out,
+            4,
+            &format!("const uint32_t km_rank = {me}.me() - km::first(command);"),
+        );
+    }
+    if reads.size {
+        indented(out, 4, "const uint32_t km_size = km::count(command);");
+    }
     for i in 0..plan.words.len() {
-        if used.contains(&i) {
+        if reads.words.contains(&i) {
             indented(out, 4, &word_line(plan, i));
         }
     }
@@ -411,7 +467,8 @@ fn comment(out: &mut Vec<String>, depth: usize, text: Option<String>) {
 fn part_line(plan: &Plan, part: &Part) -> String {
     format!(
         "const km::Partition {} = km::partition({}, km_rank, km_size);",
-        part.name, plan.words[part.n].name
+        part.name,
+        int_text(plan, &part.n)
     )
 }
 
@@ -461,19 +518,30 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
     for plan in plans {
         let body = BodyRef::Handler(plan.program, plan.handler);
         indented(&mut out, 3, &case_line(plan, lines));
-        let mut used = vec![plan.read.tensor, plan.write.tensor];
-        for part in &plan.parts {
-            used.extend([part.first, part.n]);
+        let ints = range_ints(plan, &plan.read.range)
+            .into_iter()
+            .chain(range_ints(plan, &plan.write.range));
+        let mut reads = Uses::of(plan, ints);
+        reads.words.extend([plan.read.tensor, plan.write.tensor]);
+        if !plan.parts.is_empty() {
+            (reads.rank, reads.size) = (true, true);
         }
-        case_head(&mut out, plan, "movement", &used);
+        case_head(&mut out, plan, "movement", &reads);
         let stream = |kind: &str, var: &str, pair: &str, moved: &Moved| {
             let t = &plan.words[moved.tensor].name;
-            let part = &plan.parts[moved.part];
+            let tiles = match &moved.range {
+                Range::Part(p) => {
+                    let part = &plan.parts[*p];
+                    let first = int_text(plan, &part.first);
+                    format!("({first} + {p}.start), {p}.len", p = part.name)
+                }
+                Range::Tiles { first, n } => {
+                    format!("{}, {}", int_text(plan, first), int_text(plan, n))
+                }
+            };
             format!(
-                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), ({} + {p}.start), {p}.len, {pair}Block, 1, {pair}, {pair}Pattern\n);",
+                "const km::Stream {var}(\n{INDENT}{kind}, {}({t}), {tiles}, {pair}Block, 1, {pair}, {pair}Pattern\n);",
                 camel(t),
-                plan.words[part.first].name,
-                p = part.name
             )
         };
         // The statements in the order written, a comment where the place changes.
@@ -482,6 +550,16 @@ fn movement_text(name: &str, header: &str, plans: &[Plan], lines: &Lines) -> Str
             .iter()
             .map(|part| (part.inst, part_line(plan, part), None))
             .collect();
+        for (l, local) in plan.locals.iter().enumerate() {
+            if reads.locals.contains(&l) {
+                let text = format!(
+                    "const uint32_t {} = {};",
+                    local.name,
+                    int_text(plan, &local.value)
+                );
+                statements.push((local.inst, text, None));
+            }
+        }
         statements.push((
             plan.write.inst,
             stream("km::kMoveWrite", "km_write0", "kWrite0", &plan.write),
@@ -553,27 +631,39 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
         let body = BodyRef::Handler(plan.program, plan.handler);
         let f = &plan.call.name;
         indented(&mut out, 3, &case_line(plan, lines));
-        let part = &plan.parts[plan.read.part];
-        case_head(&mut out, plan, "compute", &[part.n, plan.call.scalar]);
+        // the read stream's count: its partition's length, or its tiles' count
+        let (mut reads, part, count) = match &plan.read.range {
+            Range::Part(p) => {
+                let part = &plan.parts[*p];
+                let mut reads = Uses::of(plan, [&part.n]);
+                (reads.rank, reads.size) = (true, true);
+                (reads, Some(part), format!("{}.len", part.name))
+            }
+            Range::Tiles { n, .. } => (Uses::of(plan, [n]), None, int_text(plan, n)),
+        };
+        reads.words.push(plan.call.scalar);
+        case_head(&mut out, plan, "compute", &reads);
         indented(&mut out, 4, "bool km_ok = true;");
-        comment(
-            &mut out,
-            4,
-            lines.comment(Anchor::Inst(body, part.inst), None),
-        );
-        indented(&mut out, 4, &part_line(plan, part));
+        if let Some(part) = part {
+            comment(
+                &mut out,
+                4,
+                lines.comment(Anchor::Inst(body, part.inst), None),
+            );
+            indented(&mut out, 4, &part_line(plan, part));
+        }
         comment(
             &mut out,
             4,
             lines.comment(Anchor::Inst(body, plan.read.inst), head_last(lines, plan)),
         );
-        let p = &part.name;
+        let p = &count;
         let k = &plan.words[plan.call.scalar].name;
         indented(
             &mut out,
             4,
             &format!(
-                "const uint32_t km_blocks0 = ({p}.len + kRead0Block - 1) / kRead0Block;\n\
+                "const uint32_t km_blocks0 = ({p} + kRead0Block - 1) / kRead0Block;\n\
                  KM_UNPACK_FORMAT_A(kRead0.mover_a);\n\
                  copy_init(kRead0.mover_a);\n\
                  MATH((km_tile::{f}_init()));  // {f}'s setup\n\
@@ -587,7 +677,7 @@ fn compute_text(name: &str, header: &str, plans: &[Plan], units: &[Unit], lines:
                 "const uint32_t km_half0 = km::block_half(kRead0, kRead0Pattern, km_block0);\n\
                  km_ok = compute.wait_front(km_half0, kRead0Block);\n\
                  if (!km_ok) {{\n    break;\n}}\n\
-                 const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p}.len - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
+                 const uint32_t km_valid0 = km_block0 % km_blocks0 + 1 == km_blocks0 ? {p} - (km_blocks0 - 1) * kRead0Block : kRead0Block;\n\
                  const uint32_t km_out0 = km::block_half(kWrite0, kWrite0Pattern, km_block0);\n\
                  const bool km_room0 = compute.reserve_back(km_out0, kWrite0Block);\n\
                  for (uint32_t km_tile0 = 0; km_tile0 < km_valid0; km_tile0 += {DST_HALF}) {{"
@@ -964,13 +1054,22 @@ fn entries(module: &Module, plans: &[Plan]) -> Vec<EntryPoint> {
                     WordKind::U32 | WordKind::F32 => ArgWord::Word(p),
                 })
                 .collect();
+            // A range a host can compute from the words: a partition's whole range, or
+            // a stream's tiles; one that reads the rank is each worker's, not stated.
             let mut bounds = Vec::new();
             for moved in [&plan.read, &plan.write] {
-                let part = &plan.parts[moved.part];
+                let (first, n) = match &moved.range {
+                    Range::Part(p) => (&plan.parts[*p].first, &plan.parts[*p].n),
+                    Range::Tiles { first, n } => (first, n),
+                };
+                let (Some(first), Some(count)) = (host_expr(plan, first), host_expr(plan, n))
+                else {
+                    continue;
+                };
                 let bound = Bound {
                     tensor: moved.tensor,
-                    first: Expr::Word(part.first),
-                    count: Expr::Word(part.n),
+                    first,
+                    count,
                 };
                 if !bounds.contains(&bound) {
                     bounds.push(bound);
@@ -988,6 +1087,21 @@ fn entries(module: &Module, plans: &[Plan]) -> Vec<EntryPoint> {
             }
         })
         .collect()
+}
+
+/// An int as a host computes it from the command's words, if it can: words, numbers,
+/// sums and named values of these.
+fn host_expr(plan: &Plan, int: &Int) -> Option<Expr> {
+    match int {
+        Int::Word(i) => Some(Expr::Word(*i)),
+        Int::Const(n) => Some(Expr::Const(*n)),
+        Int::Local(l) => host_expr(plan, &plan.locals[*l].value),
+        Int::Bin('+', a, b) => Some(Expr::Add(
+            Box::new(host_expr(plan, a)?),
+            Box::new(host_expr(plan, b)?),
+        )),
+        _ => None,
+    }
 }
 
 /// The buffers: each pair's two halves, in the order the pairs are made, a half the

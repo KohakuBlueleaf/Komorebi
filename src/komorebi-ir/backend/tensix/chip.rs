@@ -138,8 +138,9 @@ pub fn tile_bytes(format: Format, shape: TileShape) -> u64 {
 }
 
 /// The name today's loader gives a buffer's format (`formats.DTYPES`), if it has one:
-/// the integers of 8 to 32 bits, `f16`, `f32` and `bf16`. The block-float formats are
-/// not named: today has two of each (`bfp8`, `bfp8_b`) and the IR's one is neither yet.
+/// the integers of 8 to 32 bits, `f16`, `f32` and `bf16`; the block-float formats are
+/// the `_b` family on Tensix (`bfp8` is today's `bfp8_b`; the A family would come by
+/// a `tensix.*` hint).
 pub fn dtype(format: Format) -> Option<&'static str> {
     Some(match format {
         Format::U8 => "uint8",
@@ -149,6 +150,9 @@ pub fn dtype(format: Format) -> Option<&'static str> {
         Format::F16 => "float16",
         Format::F32 => "float32",
         Format::Bf16 => "bfloat16",
+        Format::Bfp8 => "bfp8_b",
+        Format::Bfp4 => "bfp4_b",
+        Format::Bfp2 => "bfp2_b",
         _ => return None,
     })
 }
@@ -163,7 +167,11 @@ mod tests {
             [Format::Bf16, Format::F32, Format::U32].map(dtype),
             [Some("bfloat16"), Some("float32"), Some("uint32")]
         );
-        assert_eq!([Format::Bfp8, Format::U64].map(dtype), [None, None]);
+        assert_eq!(
+            [Format::Bfp8, Format::Bfp4, Format::Bfp2].map(dtype),
+            [Some("bfp8_b"), Some("bfp4_b"), Some("bfp2_b")]
+        );
+        assert_eq!([Format::U64, Format::F64].map(dtype), [None, None]);
     }
 
     #[test]

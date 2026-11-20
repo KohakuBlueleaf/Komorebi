@@ -347,6 +347,56 @@ fn two_partitions_of_one_range_are_one_and_two_that_differ_are_two() {
     assert!(refused[0].what.contains("another count"), "{refused:?}");
 }
 
+#[test]
+fn the_ranges_and_values_not_built_are_refused_by_name() {
+    let streams = "let out = sink(dst, block = 1)\n        for xb in stream(src, block = 1) {";
+    let refused = |to: &str| {
+        let module = edited(streams, to);
+        let refusals = tensix::sources(&module).expect_err("refused");
+        assert!(refusals.iter().all(|r| r.code == "K964"), "{refusals:?}");
+        refusals
+            .into_iter()
+            .map(|r| r.what)
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    // a sink of tiles and a loop over a partition
+    let mixed = refused(
+        "let out = sink(y.tiles(first, tiles), block = 1)\n        for xb in stream(src, block = 1) {",
+    );
+    assert!(
+        mixed.contains("a sink of a partition and its loop's stream of tiles"),
+        "{mixed}"
+    );
+    // a named value no stream reads
+    let unread = refused(
+        "let n = first + 1\n        let out = sink(dst, block = 1)\n        for xb in stream(src, block = 1) {",
+    );
+    assert!(unread.contains("a named value no stream reads"), "{unread}");
+    // a read stream whose count is a named value: compute would print it
+    let counted = refused(
+        "let n = tiles + 1\n        let out = sink(y.tiles(first, n), block = 1)\n        \
+         for xb in stream(x.tiles(first, n), block = 1) {",
+    );
+    assert!(
+        counted.contains("a read stream's count of a named value"),
+        "{counted}"
+    );
+    // the same streams of tiles over words: built, no partition printed
+    let module = edited(
+        streams,
+        "let out = sink(y.tiles(first, tiles), block = 1)\n        for xb in stream(x.tiles(first, tiles), block = 1) {",
+    );
+    let files = tensix::sources(&module).unwrap_or_else(|r| panic!("{r:?}"));
+    let movement = &files
+        .iter()
+        .find(|(n, _)| n == "movement.cpp")
+        .expect("movement")
+        .1;
+    assert!(movement.contains("Y(y), first, tiles,"), "{movement}");
+    assert!(!movement.contains("km_size"), "{movement}");
+}
+
 fn target(arch: &str) -> Target {
     Target {
         arch: arch.to_string(),

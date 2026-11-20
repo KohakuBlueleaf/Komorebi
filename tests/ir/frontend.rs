@@ -1,7 +1,9 @@
-//! The DSL as a frontend, end to end with no card: the class form of the first lesson
-//! (`tensix/t1_class.py`) made by today's emitter, and by the frontend (`komorebi.dsl.ir`)
-//! then the IR and the Tensix backend; the module equal to the hand-written one
-//! (`tensix/t1_class.kom`, `tensix/t1_places.txt`), and each file byte for byte.
+//! The DSL as a frontend, end to end with no card: a class form made by today's
+//! emitter, and by the frontend (`komorebi.dsl.ir`) then the IR and the Tensix backend;
+//! each file byte for byte, the kernels and buffers handed to the runtime, the folder.
+//! The first lesson (`tensix/t1_class.py`): its module equal to the hand-written one
+//! (`tensix/t1_class.kom`, `tensix/t1_places.txt`). The corpus's program 1
+//! (`tensix/scalars_line.py`, `Scalars.line`).
 //!
 //! The Python side (`frontend/made.py`) runs under `python3` (or `KOMO_IR_PYTHON`) with
 //! the repository's `src` on its path. Without it the test fails and says so;
@@ -12,22 +14,26 @@ use std::process::Command;
 
 use komorebi_ir::api::origin::{Given, Mapped};
 use komorebi_ir::api::{self, origin};
-use komorebi_ir::backend::tensix;
-use komorebi_ir::backend::tensix::load::{thread_header, LoadTensor};
+use komorebi_ir::backend::tensix::load::{self, thread_header, LoadTensor};
+use komorebi_ir::backend::tensix::{self, chip, Tensix};
+use komorebi_ir::backend::{Backend, Build, Processor, Setting, Target};
 use komorebi_ir::bytecode;
 use komorebi_ir::bytecode::hash::{hex, sha256};
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::notes::{Anchor, Owner};
 use komorebi_ir::program::BodyRef;
+use komorebi_ir::program::Module;
 use komorebi_ir::types::{HandlerId, ProgramId};
 
 fn here() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir")
 }
 
-/// What `made.py` printed: today's build folder, and the frontend's text and origin.
+/// What `made.py` printed: today's build folder, its kernels and buffers (the
+/// `KERNEL`, `BUFFER` and `PAIR` lines), and the frontend's text and origin.
 struct Made {
     folder: PathBuf,
+    printed: Vec<String>,
     text: String,
     given: Given,
 }
@@ -38,11 +44,17 @@ fn numbers(rest: &str) -> Vec<u32> {
         .collect()
 }
 
-fn made(dir: &Path) -> Made {
+/// `made.py` run on a copy of `tensix/<script>.py` in its own folder, for `class`.
+fn made(name: &str, script: &str, class: &str) -> Made {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("frontend-{name}"));
+    std::fs::create_dir_all(&dir).expect("a folder for the script");
+    let file = format!("{script}.py");
+    std::fs::copy(here().join("tensix").join(&file), dir.join(&file)).expect("the script copied");
     let python = std::env::var("KOMO_IR_PYTHON").unwrap_or_else(|_| "python3".into());
     let out = Command::new(&python)
         .arg(here().join("frontend/made.py"))
-        .current_dir(dir)
+        .args([script, class])
+        .current_dir(&dir)
         .env(
             "PYTHONPATH",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
@@ -57,11 +69,13 @@ fn made(dir: &Path) -> Made {
     );
     let (head, text) = stdout.split_once("TEXT\n").expect("a TEXT line");
     let mut folder = None;
+    let mut printed = Vec::new();
     let mut given = Given::default();
     for line in head.lines() {
         let (kind, rest) = line.split_once(' ').expect("a line of made.py");
         match kind {
             "FOLDER" => folder = Some(PathBuf::from(rest)),
+            "KERNEL" | "BUFFER" | "PAIR" => printed.push(line.to_string()),
             "FILE" => given.files.push(rest.to_string()),
             "LINE" => {
                 let mut parts = rest.splitn(3, ' ');
@@ -89,6 +103,7 @@ fn made(dir: &Path) -> Made {
     }
     Made {
         folder: folder.expect("a FOLDER line"),
+        printed,
         text: text.to_string(),
         given,
     }
@@ -128,17 +143,118 @@ fn first_difference(a: &str, b: &str) -> String {
     )
 }
 
+/// The module's output against today's: each file (the compile's, and the thread
+/// header at load from `stand_ins`) against today's folder less its report, the
+/// kernels and buffers against `made.py`'s lines, and the folder's name
+/// (`<prefix>-<text_key>`).
+fn same_as_today(made: &Made, module: &Module, stand_ins: &[LoadTensor], prefix: &str) {
+    let mut files = tensix::sources(module).unwrap_or_else(|r| panic!("{r:?}"));
+    let header = thread_header(module, stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
+    files.push((format!("{prefix}_thread.h"), header));
+    files.sort();
+    let mut today: Vec<String> = std::fs::read_dir(&made.folder)
+        .expect("the build folder")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n != "program.txt")
+        .collect();
+    today.sort();
+    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, today, "the files");
+    for (name, text) in &files {
+        let want = std::fs::read_to_string(made.folder.join(name)).expect("today's file");
+        assert!(
+            *text == want,
+            "{name} differs, {}",
+            first_difference(&want, text)
+        );
+    }
+    // The kernels the load hands the runtime, field by field as describe hands them on,
+    // then the buffers (their formats by the loader's names) and their pairs.
+    let target = Target {
+        arch: chip::ARCH.to_string(),
+        features: Default::default(),
+    };
+    let output = Tensix
+        .compile(module, &target)
+        .unwrap_or_else(|r| panic!("{r:?}"));
+    let Build::Kernels {
+        kernels: built,
+        buffers,
+    } = &output.build
+    else {
+        panic!("kernels built at load");
+    };
+    let loaded = load::kernels(module, built, stand_ins).unwrap_or_else(|r| panic!("{r:?}"));
+    let joined = |mut pairs: Vec<(String, String)>| {
+        pairs.sort();
+        let pairs: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+        pairs.join(",")
+    };
+    let mut ours: Vec<String> = loaded
+        .iter()
+        .map(|k| {
+            let (role, number) = match k.processor {
+                Processor::Reader => ("reader", 0),
+                Processor::Writer => ("writer", 1),
+                Processor::Compute => ("compute", 2),
+            };
+            let args: Vec<String> = k.args.iter().map(u64::to_string).collect();
+            let options = k
+                .options
+                .iter()
+                .map(|(name, v)| {
+                    let v = match v {
+                        Setting::Bool(b) => b.to_string(),
+                        Setting::Text(t) => t.clone(),
+                    };
+                    (name.clone(), v)
+                })
+                .collect();
+            format!(
+                "KERNEL {role} {} {number} args={} defines={} options={}",
+                k.source,
+                args.join(","),
+                joined(k.defines.clone()),
+                joined(options)
+            )
+        })
+        .collect();
+    ours.extend(buffers.iter().map(|b| {
+        let dtype = chip::dtype(b.format).unwrap_or("none");
+        format!("BUFFER {} {dtype} {} {}", b.index, b.page_bytes, b.pages)
+    }));
+    ours.extend(
+        buffers
+            .iter()
+            .filter_map(|b| b.pair.filter(|o| b.index < *o).map(|o| (b.index, o)))
+            .map(|(a, b)| format!("PAIR {a} {b}")),
+    );
+    assert_eq!(
+        ours, made.printed,
+        "the kernels and buffers handed to the runtime"
+    );
+    // The same files give the same folder (dsl/files.py, text_key).
+    let mut digest = Vec::new();
+    for (name, text) in &files {
+        digest.extend_from_slice(format!("{name}\0{}\0", text.len()).as_bytes());
+        digest.extend_from_slice(text.as_bytes());
+    }
+    let key = &hex(&sha256(&digest))[..16];
+    assert_eq!(
+        made.folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+        Some(format!("{prefix}-{key}"))
+    );
+}
+
 #[test]
 fn the_class_through_the_frontend_is_todays_text_byte_for_byte() {
     if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
         eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
         return;
     }
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("frontend-t1");
-    std::fs::create_dir_all(&dir).expect("a folder for the script");
-    std::fs::copy(here().join("tensix/t1_class.py"), dir.join("t1_class.py"))
-        .expect("the script copied");
-    let made = made(&dir);
+    let made = made("t1", "t1_class", "Scale");
 
     // The module: the hand-written one's program and hints, its places the table's.
     let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
@@ -158,45 +274,30 @@ fn the_class_through_the_frontend_is_todays_text_byte_for_byte() {
         .collect();
     assert_eq!(handler, table(), "the handler's places");
 
-    // The files: the Tensix backend's, and the thread header at load from the stand-in
-    // tensors, against today's folder less its report.
-    let mut files = tensix::sources(&module).unwrap_or_else(|r| panic!("{r:?}"));
+    // The files, kernels and buffers, the thread header from the stand-in tensors.
     let stand_in = LoadTensor {
         pages: 2048,
         layout: vec![2, 2048],
         dram_page: None,
     };
-    let header =
-        thread_header(&module, &[stand_in.clone(), stand_in]).unwrap_or_else(|r| panic!("{r:?}"));
-    files.push(("scale_thread.h".to_string(), header));
-    files.sort();
-    let mut today: Vec<String> = std::fs::read_dir(&made.folder)
-        .expect("the build folder")
-        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
-        .filter(|n| n != "program.txt")
-        .collect();
-    today.sort();
-    let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, today, "the files");
-    for (name, text) in &files {
-        let want = std::fs::read_to_string(made.folder.join(name)).expect("today's file");
-        assert!(
-            *text == want,
-            "{name} differs, {}",
-            first_difference(&want, text)
-        );
+    same_as_today(&made, &module, &[stand_in.clone(), stand_in], "scale");
+}
+
+#[test]
+fn program_1_through_the_frontend_is_todays_text_byte_for_byte() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
     }
-    // The same files give the same folder (dsl/files.py, text_key).
-    let mut digest = Vec::new();
-    for (name, text) in &files {
-        digest.extend_from_slice(format!("{name}\0{}\0", text.len()).as_bytes());
-        digest.extend_from_slice(text.as_bytes());
-    }
-    let key = &hex(&sha256(&digest))[..16];
-    assert_eq!(
-        made.folder
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned()),
-        Some(format!("scale-{key}"))
-    );
+    // Scalars.line: a word of the rank, streams of t.tiles(first, n) in blocks of 8, a
+    // tile expression as a function on blocks, a sink of f32 fed by bf16.
+    let made = made("scalars", "scalars_line", "Scalars");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    // The stand-ins: 768 pages each, a of bf16 pages of 2048 B, out of float32 of 4096.
+    let tensor = |page: u64| LoadTensor {
+        pages: 768,
+        layout: vec![2, page],
+        dram_page: None,
+    };
+    same_as_today(&made, &module, &[tensor(2048), tensor(4096)], "scalars");
 }
