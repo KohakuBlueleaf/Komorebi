@@ -94,3 +94,50 @@ def test_run_gives_the_report_of_a_script():
         ir.run(BROKEN, SCRIPT)
     with pytest.raises(ir.IrError, match="line 1"):
         ir.run(T1, "tensor x\n")
+
+
+# T1 as a frontend prints it for a class whose `def run` is on line 18: the handler on
+# its def, each statement on its line, the loop on 21 to 22 and its push on 22.
+ORIGIN = ir.Origin(
+    files=["/work/t1_class.py"],
+    lines=[(0, n, f"line {n}") for n in range(18, 23)],
+    map=[
+        (11, 24, 0, 18, 18),
+        (18, 18, 0, 19, 19),
+        (19, 20, 0, 20, 20),
+        (21, 23, 0, 21, 22),
+        (22, 22, 0, 22, 22),
+    ],
+)
+
+
+def test_an_origin_changes_only_the_full_hash():
+    program = ir.compile(T1, ORIGIN)
+    assert program != ir.compile(T1)
+    plain, placed = ir.hashes(T1), ir.hashes(program)
+    assert (plain.semantic, plain.build) == (placed.semantic, placed.build)
+    assert plain.full != placed.full
+    assert ir.check(T1, ORIGIN) == []
+    renamed = ORIGIN._replace(renames=[("tiles", "group"), ("src", "stream")])
+    again = ir.hashes(ir.compile(T1, renamed))
+    assert again[:2] == placed[:2] and again.full != placed.full
+
+
+def test_a_diagnostic_is_placed_in_the_frontends_source():
+    broken = T1.replace("out.push(times(xb, k))", "out.push(times(xb, q))")
+    found = ir.check(broken, ORIGIN)
+    assert found and all(d.line == 22 for d in found)
+    assert all(d.place == ir.Place("/work/t1_class.py", 22, 22) for d in found)
+    assert all(d.place is None for d in ir.check(broken))
+    with pytest.raises(ir.IrError) as refused:
+        ir.compile(broken, ORIGIN)
+    assert ir.diagnostics(refused.value)[0].place.first == 22
+
+
+def test_an_origin_is_refused_by_what_is_wrong():
+    crossing = ORIGIN._replace(map=[*ORIGIN.map, (20, 21, 0, 20, 20)])
+    with pytest.raises(ir.IrError, match="the origin is refused: .*crossing"):
+        ir.compile(T1, crossing)
+    unknown = ORIGIN._replace(renames=[("nothing", "x")])
+    with pytest.raises(ir.IrError, match="`nothing` names no value"):
+        ir.check(T1, unknown)

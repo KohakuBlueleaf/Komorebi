@@ -8,8 +8,10 @@ crate feature `python`) as the extension module `komorebi_ir._rs`, and the thin 
 
 ```
 pip install maturin
-maturin build --release -m packaging/ir/pyproject.toml --out dist     # a wheel
-maturin develop -m packaging/ir/pyproject.toml                          # into the venv
+cd packaging/ir
+maturin build --release --out dist     # a wheel
+maturin develop                        # into the venv
+cd ../..
 python -m pytest tests/ir/python
 ```
 

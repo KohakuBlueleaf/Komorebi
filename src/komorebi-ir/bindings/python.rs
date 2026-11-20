@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList};
 
 use crate::api;
+use crate::api::origin::{Given, Mapped, Place, Refused};
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
 use crate::errors::{Diagnostic, Severity};
@@ -26,8 +27,9 @@ create_exception!(
     "A module, a byte-code file or a run script refused; `diagnostics` says why."
 );
 
-/// One diagnostic as data: (code, message, line, column, severity, byte). A text's
-/// diagnostic has a line and a column; a byte-code file's refusal has the byte.
+/// One diagnostic as data: (code, message, line, column, severity, byte, place). A
+/// text's diagnostic has a line and a column; a byte-code file's refusal has the byte; a
+/// frontend's text's diagnostic has the place of its source, (file, first, last).
 type Row = (
     String,
     String,
@@ -35,7 +37,36 @@ type Row = (
     Option<usize>,
     &'static str,
     Option<u64>,
+    Option<(String, u32, u32)>,
 );
+
+/// What a frontend gives beside its text, as Python passes it: (files, lines, map,
+/// renames), each map range (text's first, text's last, file, first, last).
+type GivenRow = (
+    Vec<String>,
+    Vec<(u32, u32, String)>,
+    Vec<(u32, u32, u32, u32, u32)>,
+    Vec<(String, String)>,
+);
+
+fn given((files, lines, map, renames): GivenRow) -> Given {
+    let map = map
+        .into_iter()
+        .map(|(text_first, text_last, file, first, last)| Mapped {
+            text_first,
+            text_last,
+            file,
+            first,
+            last,
+        })
+        .collect();
+    Given {
+        files,
+        lines,
+        map,
+        renames,
+    }
+}
 
 fn severity(s: Severity) -> &'static str {
     match s {
@@ -52,7 +83,22 @@ fn of_text(d: &Diagnostic) -> Row {
         Some(d.start.col),
         severity(d.severity),
         None,
+        None,
     )
+}
+
+fn of_placed(given: &Given, (d, place): &(Diagnostic, Option<Place>)) -> Row {
+    let mut row = of_text(d);
+    row.6 = place.and_then(|p| {
+        let file = given.files.get(p.file as usize)?;
+        Some((file.clone(), p.first, p.last))
+    });
+    row
+}
+
+/// The `IrError` of a refused origin: what is wrong, and no diagnostic.
+fn origin_refused(py: Python<'_>, what: &str) -> PyErr {
+    error(py, &format!("the origin is refused: {what}"), Vec::new())
 }
 
 fn of_file(r: &Refusal) -> Row {
@@ -63,6 +109,7 @@ fn of_file(r: &Refusal) -> Row {
         None,
         "error",
         r.at,
+        None,
     )
 }
 
@@ -117,25 +164,52 @@ fn format(py: Python<'_>, source: &str) -> PyResult<String> {
     })
 }
 
-/// Every diagnostic of a module's text, as rows; none when it checks.
+/// Every diagnostic of a module's text, as rows; none when it checks. With a
+/// frontend's origin, each is placed in its source, and a refused origin raises.
 #[pyfunction]
-fn check(source: &str) -> Vec<Row> {
-    match api::check(source) {
-        Ok(_) => Vec::new(),
-        Err(d) => d.iter().map(of_text).collect(),
+#[pyo3(signature = (source, origin=None))]
+fn check(py: Python<'_>, source: &str, origin: Option<GivenRow>) -> PyResult<Vec<Row>> {
+    let Some(origin) = origin else {
+        return Ok(match api::check(source) {
+            Ok(_) => Vec::new(),
+            Err(d) => d.iter().map(of_text).collect(),
+        });
+    };
+    let given = given(origin);
+    match api::origin::check(source, &given) {
+        Ok(rows) => Ok(rows.iter().map(|r| of_placed(&given, r)).collect()),
+        Err(what) => Err(origin_refused(py, &what)),
     }
 }
 
-/// The byte-code program of a module's text.
+/// The byte-code program of a module's text; with a frontend's origin, the origin in
+/// its notes (`api::origin`).
 #[pyfunction]
-fn compile<'py>(py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyBytes>> {
-    match api::compile(source) {
+#[pyo3(signature = (source, origin=None))]
+fn compile<'py>(
+    py: Python<'py>,
+    source: &str,
+    origin: Option<GivenRow>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let Some(origin) = origin else {
+        return match api::compile(source) {
+            Ok(bytes) => Ok(PyBytes::new(py, &bytes)),
+            Err(d) => Err(error(
+                py,
+                "the module is refused",
+                d.iter().map(of_text).collect(),
+            )),
+        };
+    };
+    let given = given(origin);
+    match api::origin::compile(source, &given) {
         Ok(bytes) => Ok(PyBytes::new(py, &bytes)),
-        Err(d) => Err(error(
+        Err(Refused::Text(rows)) => Err(error(
             py,
             "the module is refused",
-            d.iter().map(of_text).collect(),
+            rows.iter().map(|r| of_placed(&given, r)).collect(),
         )),
+        Err(Refused::Origin(what)) => Err(origin_refused(py, &what)),
     }
 }
 
