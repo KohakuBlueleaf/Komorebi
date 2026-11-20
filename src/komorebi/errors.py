@@ -261,6 +261,9 @@ def _only_normal_stop(core):
 
 
 LISTED_MAX = 32  # cores a not-reported group lists by index before "and n more"
+# an inspected core whose control area lacks this run's magic and tag (`not_there`): in
+# no known state, so not "left"; a give-up resets it
+NOT_THERE = "its control area is not there (no kernel of this run is running on it)"
 
 
 def _indices(cores):
@@ -410,6 +413,9 @@ def _core_parts(core):
         parts = [f"link core {core.get('link', core['core'])} {where}"]
     else:
         parts = [f"rank {core['rank']} {where}"]
+    if core.get("not_there"):  # its words are no kernel's of this run: not described
+        reset = ": reset and loaded again" if core.get("reset") else ""
+        return [f"{parts[0]}:", NOT_THERE + reset]
     line = (core.get("live") or {}).get("line")
     for kernel in ("reader", "writer", "compute"):
         gave = core.get(kernel)

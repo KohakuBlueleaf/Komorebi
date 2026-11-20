@@ -223,6 +223,10 @@
 #define KMD_UNIT_READY 0x77u
 /* A core's state word of its kernels' end bytes (km::kStEnds): not 0 once one ended */
 #define KMD_STATE_ENDS (2u * KM_RING_SLOTS + 12u)
+/* A core's state word of its kernel's magic (km::kStMagic): KMD_STATE_MAGIC_TOP in its
+ * top byte once the kernel started; zeros where the control area is not there */
+#define KMD_STATE_MAGIC (2u * KM_RING_SLOTS + 13u)
+#define KMD_STATE_MAGIC_TOP 0x4Bu /* km::kStateMagic >> 24 */
 /* A kernel's live word of its runtime wait (km::kLvWhere + role) when it waits for an
  * island's answer to its ask or put (km::kWhereAsk) */
 #define KMD_WHERE_ASK 52u
@@ -448,6 +452,22 @@ static inline uint32_t kmd_verify_word(uint32_t index, uint32_t word) {
 static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
     const uint32_t count = 1u + kmd_verify_word(index, 10u) % cores;
     return kmd_verify_word(index, 11u) % (cores - count + 1u) | count << 16;
+}
+
+/* Whether a core left command `sequence`: the magic of run `tag`'s kernel there and
+ * none of its live sequence words holding it (else in no known state, so not left). */
+static inline int kmd_core_left(
+    uint32_t magic, uint32_t tag, const volatile uint32_t* sequences, uint32_t sequence
+) {
+    if (magic >> 24 != KMD_STATE_MAGIC_TOP || (magic >> 8 & 0xFFFFu) != tag) {
+        return 0;
+    }
+    for (uint32_t role = 0; role < KM_LIVE_ROLES; role++) {
+        if (sequences[role] == sequence) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory

@@ -24,10 +24,14 @@ namespace td {
         );
     }
 
+    static_assert(KMD_STATE_MAGIC == km::kStMagic, "the magic's state word");
+    static_assert(KMD_STATE_MAGIC_TOP == km::kStateMagic >> 24, "the magic's top byte");
+
     // An inspect of cores [first, first + count): a deadline's (its slot given up once
     // every core left the command after its abort word) or, later, the host's.
     struct Inspect {
         uint32_t block = 0, control = 0;
+        uint32_t tag = 0;  // the load's: in its kernels' magic
         bool active = false, leaving = false;
         uint32_t kind = 0, request = 0, first = 0, count = 0, next = 0;
         uint32_t slot = 0, sequence = 0;
@@ -134,20 +138,20 @@ namespace td {
             line[KMD_IR_MTIME] = static_cast<uint32_t>(km::wall64());
         }
 
-        // Whether core `worker` runs no part of the inspect's command any more: none of
-        // its kernels' live sequence words holds it (read into `scratch`, 32 bytes).
+        // Whether core `worker` runs no part of the inspect's command any more
+        // (kmd_core_left), its words read into `scratch` (48 bytes).
         template <typename Core>
         bool left(uint32_t worker, Core core, uint32_t scratch) const {
+            const uint32_t magic_at = control + KM_CONTROL_STATE + 4 * KMD_STATE_MAGIC;
             noc_async_read(core(worker, control + KM_CONTROL_LIVE + 16), scratch, 32);
+            noc_async_read(core(worker, magic_at & ~15u), scratch + 32, 16);
             noc_async_read_barrier();
             invalidate_l1_cache();
             volatile tt_l1_ptr uint32_t* live = km::l1(scratch);
-            for (uint32_t role = 0; role < KM_LIVE_ROLES; role++) {
-                if (live[KM_LIVE_SEQUENCE - 4 + role] == sequence) {
-                    return false;
-                }
-            }
-            return true;
+            const uint32_t magic = km::l1(scratch + 32)[(magic_at % 16) / 4];
+            return (
+                kmd_core_left(magic, tag, live + (KM_LIVE_SEQUENCE - 4), sequence) != 0
+            );
         }
 
         // The block's records written: the ticks they took, then the mark.

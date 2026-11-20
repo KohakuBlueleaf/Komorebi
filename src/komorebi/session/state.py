@@ -488,12 +488,11 @@ def lost(words, abi_headers=None):
     return out
 
 
-def inspect(block, abi_headers=None):
+def inspect(block, abi_headers=None, tag=None):
     """An inspect block (uint32 words: the header, then a record per core) as a dict:
-    its kind, whether it is complete, what it answers, and per core what core_state
-    gives, its live words and its trace entries (None for a core it could not read);
-    `reset`: the cores (count, and per core) a timeout reset because they did not leave.
-    """
+    its kind, completeness, what it answers, per core what core_state gives, its live
+    words, trace entries, `reset` (a timeout reset it: it did not leave) and `not_there`
+    (read, without the magic of run `tag`'s kernels; any tag if None)."""
     abi_headers = abi_headers or abi.headers()
     words = np.asarray(block, dtype=np.int64).ravel() & abi.M32
     header = [int(word) for word in words[: abi_headers["KMD_INSPECT_HEAD"] // 4]]
@@ -549,9 +548,13 @@ def inspect(block, abi_headers=None):
             )
             if flags & abi_headers["KMD_INSPECT_TRACED"] and line[at : at + entry].any()
         ]
+        said = core_state(state, core, abi_headers)
+        magic = int(state[core][abi_headers["kStMagic"]])  # the dispatcher's own test
         cores.append(
-            core_state(state, core, abi_headers)
+            said
             | {
+                "not_there": magic >> 24 != abi_headers["kStateMagic"] >> 24
+                or (tag is not None and said["tag"] != tag),
                 "read": True,
                 "live": live(
                     line[live_at : live_at + abi_headers["KM_LIVE_READ"] // 4],

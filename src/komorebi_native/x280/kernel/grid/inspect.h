@@ -161,8 +161,8 @@ static void inspect_core(kmd_t* dispatcher, uint32_t index, uint32_t core) {
     line[KMD_IR_MTIME] = (uint32_t)x280_mtime();
 }
 
-/* Whether core `core` runs no part of command `sequence` any more: none of its kernels'
- * live sequence words (16 to 40 bytes into its live words) holds it; 0 unreachable. */
+/* Whether core `core` runs no part of command `sequence` any more (kmd_core_left: its
+ * control area there and none of its live sequence words holds it); 0 unreachable. */
 KMD_COLD int inspect_left(kmd_t* dispatcher, uint32_t core, uint32_t sequence) {
     volatile const uint8_t* window = inspect_aim(dispatcher, core);
     if (window == 0) {
@@ -180,12 +180,18 @@ KMD_COLD int inspect_left(kmd_t* dispatcher, uint32_t core, uint32_t sequence) {
         live[2u * word] = (uint32_t)pair;
         live[2u * word + 1u] = (uint32_t)(pair >> 32);
     }
-    for (uint32_t role = 0; role < KM_LIVE_ROLES; role++) {
-        if (live[KM_LIVE_SEQUENCE - 4u + role] == sequence) {
-            return 0;
-        }
-    }
-    return 1;
+    const uint32_t magic = (
+        *(volatile const uint32_t*)(
+            window + dispatcher->control_address + KM_CONTROL_STATE +
+            4u * KMD_STATE_MAGIC
+        )
+    );
+    /* the magic only: this dispatcher is not given the run's tag */
+    return (
+        kmd_core_left(
+            magic, magic >> 8 & 0xFFFFu, live + (KM_LIVE_SEQUENCE - 4u), sequence
+        )
+    );
 }
 
 /* Whether a kernel of core `core` ended (its own wait gave up): the core runs no

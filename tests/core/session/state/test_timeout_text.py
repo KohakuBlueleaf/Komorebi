@@ -64,3 +64,40 @@ def test_a_list_of_only_normal_stops_is_listed_as_before():
     text = str(CommandTimeout(1, 0, 1, (0, 3), cores))
     assert "core 0 reader gave up (stop) in next; core 1 reader" in text
     assert "waited:" not in text
+
+
+def test_a_core_without_this_runs_magic_is_named_apart_and_counted_among_the_reset():
+    head, record = H["KMD_INSPECT_HEAD"] // 4, H["KMD_INSPECT_RECORD"] // 4
+    group = [0, 12, 24, 36, 60]
+    block = np.zeros(head + record * len(group), np.uint32)
+    block[H["KMD_I_MARK"]], block[H["KMD_I_KIND"]] = (
+        H["KMD_INSPECT_MARK"],
+        H["KMD_INSPECT_TIMEOUT"],
+    )
+    block[H["KMD_I_COUNT"]] = block[H["KMD_I_DONE"]] = len(group)
+    block[H["KMD_I_SEQUENCE"]] = 5
+    state_at, live_at = H["KMD_INSPECT_STATE"] // 4, H["KMD_INSPECT_LIVE"] // 4
+    for index, core in enumerate(group):
+        line = block[head + index * record :]
+        line[H["KMD_IR_CORE"]] = core
+        line[H["KMD_IR_FLAGS"]] = H["KMD_INSPECT_READ"]
+        if core == 36:  # zeros: no magic, no tag, no live word
+            line[H["KMD_IR_FLAGS"]] |= H["KMD_INSPECT_RESET"]
+            continue
+        line[state_at + H["kStMagic"]] = H["kStateMagic"] | 0x6543 << 8 | core
+        sequences = live_at + H["KM_LIVE_SEQUENCE"]
+        line[sequences : sequences + H["KM_LIVE_ROLES"]] = 5
+        if core == 60:  # its reader's word missing: the stalled one
+            line[sequences] = 0
+            line[H["KMD_IR_FLAGS"]] |= H["KMD_INSPECT_RESET"]
+    cores = device_state.inspect(block, H, tag=0x6543)["cores"]
+    assert [core["core"] for core in cores if core["not_there"]] == [36]
+    reset = [core["core"] for core in cores if core["reset"]]
+    text = str(CommandTimeout(6, 0, 5, (0, 109), cores, given_up=True, recovered=reset))
+    assert (
+        "core 36: its control area is not there (no kernel of this run is running on "
+        "it): reset and loaded again"
+    ) in text
+    assert "recovered (reset and loaded again): cores [36, 60]" in text
+    other = device_state.inspect(block, H, tag=0x6545)["cores"]  # another run's tag
+    assert all(core["not_there"] for core in other)
