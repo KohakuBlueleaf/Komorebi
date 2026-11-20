@@ -2125,12 +2125,18 @@ fn compute_fields(
                 .map(|k| format!("{} > 0", sums(*k)))
                 .collect();
             let firsts = buffer(gate.vars[0]);
-            let copies: Vec<String> = gate
-                .vars
-                .iter()
-                .enumerate()
-                .map(|(dst, k)| format!("        copy_tile({}, {tile}, {dst});", buffer(*k)))
+            // each var into the Dst tiles the unit reads its parameter from, the result
+            // packed from the tile the unit states (`Unit::dst_layout`)
+            let layout = unit.dst_layout();
+            let tile = &tile;
+            let copies: Vec<String> = (gate.vars.iter().zip(&layout.params))
+                .flat_map(|(k, dsts)| {
+                    dsts.iter().map(move |dst| {
+                        format!("        copy_tile({}, {tile}, {dst});", buffer(*k))
+                    })
+                })
                 .collect();
+            let result = layout.result[0];
             let pops: Vec<String> = gate
                 .vars
                 .iter()
@@ -2150,7 +2156,7 @@ fn compute_fields(
                  {out_room} = {out_room} && compute.reserve_back({rows}, 1);\n        \
                  if ({out_room}) {{\n            \
                  KM_PACK_FORMAT({rows});\n            \
-                 pack_tile(0, {rows});\n            \
+                 pack_tile({result}, {rows});\n            \
                  cb_push_back({rows}, 1);\n        \
                  }}\n        \
                  tile_regs_release();\n    \
@@ -2375,11 +2381,27 @@ fn compute_mapped(
         ),
     );
     comment(out, 6, lines.comment(Anchor::Inst(body, call.inst), None));
+    // read i is the call's tile parameter i: each into the Dst tiles the unit reads it
+    // from, the result packed from the tile the unit states (`Unit::dst_layout`), each
+    // counted from the call's first tile, `dst` a call
+    let layout = unit.dst_layout();
     let copies: String = (0..plan.reads.len())
-        .map(|i| {
-            format!("{INDENT}copy_tile(km_half{i}, km_tile0 + km_slot0, {dst} * km_slot0 + {i});\n")
+        .flat_map(|i| {
+            layout
+                .params
+                .get(i)
+                .into_iter()
+                .flatten()
+                .map(move |d| (i, d))
+        })
+        .map(|(i, d)| {
+            format!("{INDENT}copy_tile(km_half{i}, km_tile0 + km_slot0, {dst} * km_slot0 + {d});\n")
         })
         .collect();
+    let result = match layout.result[0] {
+        0 => String::new(),
+        r => format!(" + {r}"),
+    };
     indented(
         out,
         6,
@@ -2395,7 +2417,7 @@ fn compute_mapped(
              if (km_room0) {{\n\
              {INDENT}KM_PACK_FORMAT(km_out0);\n\
              {INDENT}for (uint32_t km_slot0 = 0; km_slot0 < km_batch0; km_slot0++) {{\n\
-             {INDENT}{INDENT}pack_tile<true>({dst} * km_slot0, km_out0, km_tile0 + km_slot0);\n\
+             {INDENT}{INDENT}pack_tile<true>({dst} * km_slot0{result}, km_out0, km_tile0 + km_slot0);\n\
              {INDENT}}}\n\
              }}\n\
              tile_regs_release();"

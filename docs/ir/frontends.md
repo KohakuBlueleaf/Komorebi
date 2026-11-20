@@ -212,7 +212,8 @@ are today's `kc.Call`s of the chain on the session's cores of its span (a call's
 from the span's first core), each call's words its handler's with the mask word after them.
 `built.chain(run, entry, ...)` gives them to `run.chain`, which proves them and writes their
 records as today (`kc.build`, `kc.records`), and runs the command on the chain's entry. For
-program 7 the records are today's word for word, on a span from core 0 or core 4.
+program 7 the records are today's word for word, on a span from core 0 or core 4. An outside read
+carries no range (today's gives `x` one); a record does not hold the reads.
 
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past

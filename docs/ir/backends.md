@@ -130,8 +130,9 @@ the read pair and the arrivals to Dst as float32, unrounded (a buffer's `unpack`
 It also emits the corpus's program 3 (`StepHandlers.add`). Its loop zips two read streams, one
 tile a block each, and pushes a tile function of both (`plus(x, y)`) into a sink. Both read pairs
 and the write pair move in one call (`movement.move(km_read0, km_read1, km_write0)`). Compute
-waits for each read half, copies each tile to its own Dst tile and frees each half. A call takes
-the Dst tiles its unit states (today's larger of its operands and results), so a batch is the Dst
+waits for each read half, copies each tile to the Dst tiles the unit reads that parameter from,
+packs the result from the tile the unit states (`Unit::dst_layout`), and frees each half. A call
+takes the Dst tiles its unit states (today's larger of its operands and results), so a batch is the Dst
 half's tiles over that: two calls of `plus` an acquire. The call's tiles must be the loop's, in
 order, followed by `f32` words; any other call, a third read stream, or a loop other than one
 over each read stream once is refused by name.
@@ -195,8 +196,8 @@ and fits Dst's half (`stream_field_product`), and a product other than the first
 matrix unit for its own streams and back. After the loop one store goes into a rectangle of one
 row of c tiles: a var, its field copied to Dst and packed into rows of c tiles (`kOutRows<c>`,
 `write_sums`); or a function on one tile of the vars (`gate(h, g)`), each tile of their fields
-copied to Dst tiles in the function's order, its unit run and its tile packed
-(`write_function_of_sums`). Rows of one width and another format are `kOutRows<c>b`. Mover B
+copied to the Dst tiles the unit reads that parameter from, its unit run and its result packed
+from the Dst tile the unit states (`Unit::dst_layout`, `write_function_of_sums`). Rows of one width and another format are `kOutRows<c>b`. Mover B
 counts the loop's blocks of each var as compute does, and writes the rows when there were some.
 With buffers of more than one format, compute sets the formats again before each unpack and pack
 (`mixed_formats`). The kernels' layout arguments are the program's tensors in the order the
