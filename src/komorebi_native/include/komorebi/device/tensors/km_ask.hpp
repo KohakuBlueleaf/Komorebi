@@ -3431,7 +3431,9 @@ namespace km {
     };
 
     // After the island table's meeting words: two words (the pages' address and page
-    // bytes), then at the next 32 B the row.
+    // bytes), then at the next KM_COLL_GEN_ALIGN bytes the row (a DRAM read's L1 end
+    // matches its DRAM address modulo 64 B on Blackhole: a row at 32 mod 64 reads
+    // wrong).
     inline CollGen coll_gen_of(const Islands& view) {
         const uint32_t meets = view.meetings();
         if (meets == 0) {
@@ -3442,7 +3444,10 @@ namespace km {
         if (words[0] == 0) {
             return {0, 0, 0};
         }
-        return {(at + 4 * 2 + 31) / 32 * 32, words[0], words[1]};
+        const uint32_t row = (
+            (at + 4 * 2 + KM_COLL_GEN_ALIGN - 1) / KM_COLL_GEN_ALIGN * KM_COLL_GEN_ALIGN
+        );
+        return {row, words[0], words[1]};
     }
 
     // This CPU's generation, read as its collective began (an overlay part's own, as

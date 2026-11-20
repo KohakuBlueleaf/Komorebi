@@ -1,12 +1,13 @@
 """The island table's meeting words (km::team_meet): after the children, their number
 and then a word a rank, each 0 at the load; a rank writes a meeting's marker into its
 word of the leader's. Two words follow them, the collectives' generation pages' DRAM
-address and page bytes, then at the next 32 B the core's generation row."""
+address and page bytes, then at the next 64 B the core's generation row."""
 
 from types import SimpleNamespace
 
 import numpy as np
 
+from komorebi import abi
 from komorebi.islands.parts import link_plan
 
 
@@ -40,5 +41,41 @@ def test_the_island_table_holds_a_meeting_word_a_rank_of_its_largest_island():
     assert not words[:, 20:].any()
     # in DRAM, a page a core: generation 1, no mark, led under none
     assert self._coll_gen[0].tolist() == [[1] + [0] * 15] * 2
-    # 20 words, up to 8 to align the row (its address at 32 B), its 8: 16 at a time
+    # 20 words, up to 16 to align the row (its address at 64 B), its 8: 16 at a time
     assert words.shape == (2, 48)
+
+
+def test_the_generation_row_is_at_blackholes_dram_read_alignment_inside_the_table():
+    # two cards of 120 cores, 118 ranks an island: a row at the next 32 B fell at 32
+    # mod 64, and Blackhole's DRAM read lands at its DRAM address mod 64 (a leader read
+    # its generation wrong and refused its first collective)
+    h = abi.headers()
+    count, ranks, cores = 2, 118, 120
+    graph = SimpleNamespace(
+        islands=[SimpleNamespace(cores=range(cores))] * count,
+        table=lambda island: np.zeros(2 * count, np.uint32).tobytes(),
+        children=lambda island: np.zeros(count, np.uint32),
+        count=lambda island: ranks,
+    )
+
+    class Words(np.ndarray):
+        address, aligned_page_bytes = 0x6B3E80, 64
+
+    session = SimpleNamespace(
+        grid=(12, 10), tensor=lambda words, *a, **k: words.view(Words)
+    )
+    self = SimpleNamespace(
+        graph=graph,
+        split=1,
+        sessions=[session, session],
+        _coll_gen={},
+        _far_tiles=lambda island: [np.zeros(count, np.uint32)] * 2,
+    )
+    words = link_plan.LinkPlanMixin._table_of(self, session)
+    align = h["KM_COLL_GEN_ALIGN"]
+    assert align % 64 == 0  # Blackhole's DRAM read alignment (Wormhole's: 32)
+    for table in range(0x17DBC0, 0x17DBC0 + align, 16):  # an L1 tensor: 16 B steps
+        at = table + 4 * (6 * count + 1 + words[0, 6 * count])  # km_ask coll_gen_of
+        row = (at + 4 * 2 + align - 1) // align * align
+        assert row % align == 0
+        assert row + h["KM_COLL_GEN_BYTES"] <= table + 4 * words.shape[1]

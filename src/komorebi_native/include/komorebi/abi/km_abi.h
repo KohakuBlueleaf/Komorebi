@@ -689,7 +689,8 @@ KM_STATIC_ASSERT(
    link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids */
 #define KM_ISLAND_ENTRY_BYTES 8u
 /* after them the meeting words (their number m, then m words), the generation pages'
-   DRAM address and page bytes, then at the next 32 B the core's generation row */
+   DRAM address and page bytes, then at the next KM_COLL_GEN_ALIGN bytes the core's
+   generation row */
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
 #endif
@@ -725,6 +726,10 @@ KM_STATIC_ASSERT(
 #define KM_COLL_GEN_SEQUENCE 5u /* the given-up command's sequence */
 #define KM_COLL_GEN_STAGE 6u    /* the stage it had reached (kCs*) */
 #define KM_COLL_GEN_BYTES 32u
+/* the row's L1 alignment: a NoC read from DRAM lands at an L1 address equal to its
+   DRAM address modulo the chip's DRAM read alignment (Blackhole 64 B, Wormhole 32 B),
+   and a page starts at a multiple of it */
+#define KM_COLL_GEN_ALIGN 64u
 /* after the ports: a word, the link area's L1 address on this island's cores (0: no
    link area) */
 #define KM_ISLAND_LINK_AREA \
