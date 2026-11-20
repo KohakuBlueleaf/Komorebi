@@ -1,5 +1,6 @@
 {
   "name": "komorebi-ir",
+  "publisher": "komorebi",
   "displayName": "Komorebi IR",
   "description": "Syntax highlighting for the text form of a Komorebi IR module (.kom).",
   "version": "0.1.0",
