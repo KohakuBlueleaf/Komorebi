@@ -23,24 +23,15 @@ FORMATS = {"bfloat16": "bf16", "float32": "f32"}
 TILE_FORMATS = {"fp32": "f32", "bf16": "bf16"}
 # The make's keywords that are no part of the module: load facts and the report's log.
 LOAD_OPTIONS = ("log", "l1", "depth")
-# Names a value or a parameter cannot have in the text: the IR's keywords, and its
-# built-in names a module's text reads.
-RESERVED = frozenset(
-    {
-        # keywords
-        *("let", "var", "if", "else", "for", "in", "while", "return", "store"),
-        *("consume", "await", "true", "false"),
-        # names the text reads
-        *("worker", "group", "island", "stream", "sink", "partition", "zip", "min"),
-        *("max", "range", "zeros", "gather", "reduce", "all_reduce", "broadcast"),
-        *("sync", "past", "send", "forward", "offer", "invoke", "outcome", "where"),
-        *("matmul", "tile", "format"),
-        # types and formats
-        *("u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64"),
-        "bf16",
-    }
-)
 INDENT = "    "
+
+
+def quoted(name):
+    """A name the class gives (R50), as the walk writes it: between backticks, which
+    the writer's layout (`komorebi_ir.layout`) keeps only where the language has a
+    name of that spelling where it stands, so `def zip` is `handler zip` and a field
+    `store` is `` `store` ``."""
+    return f"`{name}`"
 
 
 @dataclass
@@ -132,7 +123,6 @@ def written(cls, **make):
     class_refusals(cls, methods)
     constants = constant_values(cls, make)
     fields = field_vars(cls, methods, constants)
-    reserved_refusals(cls, methods, constants, fields)
     text = Text()
     walks = [Handler(cls, method, tensors, constants, fields) for method in methods]
     chains = [Chain(cls, method, constants) for method in chain_methods(cls)]
@@ -151,7 +141,7 @@ def written(cls, **make):
         for value in [*walk.params.values(), *walk.scope.values(), *walk.vars()]:
             if value.kind in ("tensor", "tile") and value.format not in formats:
                 formats.append(value.format)
-    text.line(0, f"module {cls.__name__.lower()}")
+    text.line(0, f"module {quoted(cls.__name__.lower())}")
     text.line(0, "")
     text.line(0, "tile [32, 32]")
     text.line(0, f"format {', '.join(formats)}")
@@ -160,7 +150,7 @@ def written(cls, **make):
         text.line(0, "")
     for name in constants:
         # fixed when the module is built: the make's value (a compile input)
-        text.line(0, f"param {name}: u32 = {constants[name]} @bind(build)")
+        text.line(0, f"param {quoted(name)}: u32 = {constants[name]} @bind(build)")
     helpers = {}
     for function, kinds, result in functions.values():
         text.line(0, "")
@@ -173,7 +163,7 @@ def written(cls, **make):
                 text.line(0, "")
                 tile_function(text, helper, kinds, helpers)
     text.line(0, "")
-    text.line(0, f"program {cls.__name__} {{")
+    text.line(0, f"program {quoted(cls.__name__)} {{")
     for walk in walks:
         walk.write(text)
     for chain in chains:
@@ -260,20 +250,6 @@ def class_refusals(cls, methods):
                 )
 
 
-def reserved_refusals(cls, methods, constants, fields):
-    """The names the text writes as the class gives them, refused by name when one is
-    an IR word: its program's, its handlers', its constants' and its fields'."""
-    named = [("the class", cls.__name__), ("the module", cls.__name__.lower())]
-    named += [("a handler", m.name) for m in methods]
-    named += [("a constant", c) for c in constants]
-    named += [("a field", f"self.{f}") for f in fields]
-    for what, name in named:
-        if name.removeprefix("self.") in RESERVED:
-            raise Refused(
-                f"{cls.__name__}: {what} {name} is named by an IR word: rename it"
-            )
-
-
 def field_vars(cls, methods, constants):
     """Each field's var type (R48), placed by today's `compiler.field_users`: a field
     one handler fills and another reads is kept, a state member, not written yet; a
@@ -338,7 +314,7 @@ class Handler:
         self.functions = {}
         self.restated = {}  # (partition, tensor) -> the name of its restatement
         self.statements = []  # (node, [(depth offset, text)], children)
-        self.renames, self.names = [], {}
+        self.renames = []
         used = {n.id for n in ast.walk(definition) if isinstance(n, ast.Name)}
         self.used = used | {a.arg for a in definition.args.args}
 
@@ -368,16 +344,20 @@ class Handler:
         return name
 
     def name(self, python):
-        """The text's name of a Python name: itself, or a safe name with its rename."""
-        if python not in self.names:
-            safe = python
-            while safe in RESERVED or (safe != python and safe in self.used):
-                safe += "_"
-            if safe != python:
-                self.renames.append((safe, python))
-            self.names[python] = safe
-            self.used.add(safe)
-        return self.names[python]
+        """The text's name of a Python name: the name itself (R50)."""
+        self.used.add(python)
+        return quoted(python)
+
+    def invent(self, base):
+        """A name the walk makes, which the class never wrote: `base`, with `_` added
+        until it is no name the handler uses. It is no name of the language where a
+        value stands either (`zeros`, `worker`, `group`, `island`): a base is `i` or
+        holds a `_` between two names."""
+        name = base
+        while name in self.used:
+            name += "_"
+        self.used.add(name)
+        return name
 
     def read(self):
         """The parameters, then each line, into `statements`."""
@@ -699,7 +679,9 @@ class Handler:
         tiles = [f"tile<{self.fields[f].format}>" for f in fields]
         self.functions[function.name] = (function, tuple(tiles), tiles[0])
         operands = ", ".join(self.name(f) for f in fields)
-        return f"store {self.view(node, pages, [])} <- {function.name}({operands})"
+        return (
+            f"store {self.view(node, pages, [])} <- {quoted(function.name)}({operands})"
+        )
 
     def pages_of(self, view):
         """Whether `view` is `t.pages(a, b)` of a tensor parameter t."""
@@ -747,7 +729,7 @@ class Handler:
         if key not in self.restated:
             # One partition applied to a second tensor: the IR states the same range of
             # the other tensor, partitioned alike.
-            name = self.name(f"{part}_{tensor}")
+            name = quoted(self.invent(f"{part}_{tensor}"))
             self.restated[key] = name
             text = f"{self.name(tensor)}.tiles({held.first}, {held.count})"
             lines.append(f"let {name} = {partition_text(text)}")
@@ -811,7 +793,7 @@ class Handler:
         if self.column(view):
             return f"[{text}, 1]"
         rows = self.rows_of(node, call)
-        return f"[{rows[0]}, {rows[1]}]"
+        return f"[{quoted(rows[0])}, {quoted(rows[1])}]"
 
     def one_row(self, view):
         """Whether a rectangle is one row of tiles: `r : r + 1`, or two numbers one
@@ -869,7 +851,7 @@ class Handler:
             and block.value.id == "self"
             and block.attr in self.constants
         ):
-            return block.attr, self.constants[block.attr]
+            return quoted(block.attr), self.constants[block.attr]
         self.refuse(
             node,
             "a stream's block that is not a number or a constant of the class",
@@ -938,10 +920,7 @@ class Handler:
         repeat = self.repeat_of(node, calls)
         if repeat is not None:
             # `repeat=r` is a counted loop around the stream's loop (reading R46)
-            counter = "i"
-            while counter in self.used or counter in RESERVED:
-                counter += "_"
-            self.used.add(counter)
+            counter = quoted(self.invent("i"))
             lines.append(f"for {counter} in range({repeat}) {{")
         lines.append(f"for {held} in {walked}{self.pattern_of(node, calls)} {{")
         for name, call in zip(names, calls):
@@ -958,8 +937,8 @@ class Handler:
             elif shaped.startswith("["):  # [A, C]: A rows of C tiles
                 rows, cols = shaped[1:-1].split(", ")
                 value.cols, value.block = cols, rows
-                value.tiles = self.constants[cols]
-                value.rows = self.constants[rows]
+                value.tiles = self.constants[cols.strip("`")]
+                value.rows = self.constants[rows.strip("`")]
             self.scope[name.id] = value
         children = self.body(node.body)
         return (node, lines, children)
@@ -1024,7 +1003,7 @@ class Handler:
         for leaf in ast.walk(value):
             if isinstance(leaf, ast.Name) and leaf.id not in names:
                 names.append(leaf.id)
-        name = f"tile_line_{node.lineno}"
+        name = self.invent(f"tile_line_{node.lineno}")
         function = Inline(name, node, value, names, self.where)
         return self.tile_operands(node, function, names, "a tile expression")
 
@@ -1091,7 +1070,7 @@ class Handler:
                 "pass the block first",
             )
         self.functions[function.name] = (function, tuple(kinds), result or kinds[0])
-        return f"{function.name}({', '.join(self.name(n) for n in names)})"
+        return f"{quoted(function.name)}({', '.join(self.name(n) for n in names)})"
 
     def kind(self, name):
         value = self.scope.get(name)
@@ -1137,7 +1116,7 @@ class Handler:
         ):
             return "worker.rank"
         if self_attribute(expression) in self.constants:
-            return expression.attr
+            return quoted(expression.attr)
         operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*"}
         operators |= {ast.FloorDiv: "/", ast.Mod: "%"}
         if isinstance(expression, ast.BinOp) and type(expression.op) in operators:
@@ -1150,7 +1129,7 @@ class Handler:
 
     def write(self, text):
         """The handler's lines into `text`, each range of them with its place."""
-        start = text.line(1, f"handler {self.method.name}(")
+        start = text.line(1, f"handler {quoted(self.method.name)}(")
         for name, value in self.params.items():
             kind = f"tensor<{value.format}>" if value.kind == "tensor" else value.kind
             kind = "u32" if kind == "pattern" else kind
@@ -1212,13 +1191,6 @@ class Chain:
         if arguments.vararg or arguments.kwarg or arguments.kwonlyargs:
             self.refuse(self.definition, "*args and keywords", "name each parameter")
         names = [a.arg for a in arguments.args[1:]]
-        for name in names:
-            if name in RESERVED:
-                self.refuse(
-                    self.definition,
-                    f"parameter {name} is named by an IR word",
-                    "rename it",
-                )
         types = {}
         for node in self.definition.body:
             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
@@ -1312,17 +1284,17 @@ class Chain:
 
     def write(self, text):
         """The chain's lines into `text`, each with its place."""
-        start = text.line(1, f"chain {self.method.name}(")
+        start = text.line(1, f"chain {quoted(self.method.name)}(")
         for name, kind in self.params.items():
-            text.line(2, f"{name}: {kind},")
+            text.line(2, f"{quoted(name)}: {kind},")
         text.line(1, ") @on(group) {")
         low, count = self.span
         for node, handler, call, (first, cores) in self.calls:
-            args = ", ".join(arg.id for arg in call.args)
+            args = ", ".join(quoted(arg.id) for arg in call.args)
             part = ""
             if (first, cores) != self.span:
                 part = f" @on(group[{first - low}:{first - low + cores}])"
-            at = text.line(2, f"call {handler}({args}){part}")
+            at = text.line(2, f"call {quoted(handler)}({args}){part}")
             text.place(at, self.file, node.lineno, node.end_lineno)
         text.line(1, "}")
         line = self.definition.lineno
@@ -1464,15 +1436,13 @@ def tile_function(text, function, kinds, helpers, result=None):
             )
         value = returned.value
         names = function.function.__globals__
-    if (set(parameters) | {function.name}) & RESERVED:
-        refuse(where, definition, "a name that is an IR word", "rename it")
     body = Body(
         where, returned, dict(zip(parameters, kinds)), returned.lineno, names, helpers
     )
     written = bare(expression(body, value))
-    start = text.line(0, f"func {function.name}(")
+    start = text.line(0, f"func {quoted(function.name)}(")
     for name, kind in zip(parameters, kinds):
-        text.line(1, f"{name}: {kind},")
+        text.line(1, f"{quoted(name)}: {kind},")
     fidelity = getattr(function, "fidelity", None)
     hint = f" @tensix.fidelity({fidelity})" if fidelity else ""
     text.line(0, f") -> {result or kinds[0]}{hint} {{")
@@ -1509,7 +1479,7 @@ def expression(body, value):
     of helpers on its parameters."""
     operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
     if isinstance(value, ast.Name) and value.id in body.kinds:
-        return value.id
+        return quoted(value.id)
     if isinstance(value, ast.Constant) and type(value.value) in (int, float):
         return repr(value.value)
     if isinstance(value, ast.BinOp) and isinstance(value.op, ast.MatMult):
@@ -1577,7 +1547,7 @@ def call(body, value):
             f"{func.id} called on {body.helpers[func.id][1]} and on {kinds}",
             "call a helper on one kind",
         )
-    return f"{func.id}({', '.join(a.id for a in value.args)})"
+    return f"{quoted(func.id)}({', '.join(quoted(a.id) for a in value.args)})"
 
 
 def bare(text):

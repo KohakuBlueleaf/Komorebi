@@ -222,3 +222,119 @@ fn the_writers_layout_carries_each_range_to_where_its_text_went() {
     // a range starts where its first character went, past the new indentation
     assert_eq!(laid.map[1].start(), (18, 9));
 }
+
+/// A frontend's text with every name it was given between backticks (R50), as the
+/// class frontend writes it: a function `square` called beside the language's
+/// `square`, a value `group` beside the language's `group.size`, a var `store` (a
+/// field's var named by a word of the text) and names that need none.
+const QUOTED: &str = "module `quoted`
+
+tile [32, 32]
+format f32
+
+func `square`(`a`: tile<f32>) -> tile<f32> {
+    return square(`a`) * `a`
+}
+
+program `P` {
+    handler `run`(`x`: tensor<f32>, `y`: tensor<f32>, `group`: u32) @on(group) {
+        let `src` = partition(`x`.tiles(0, `group`), worker.rank, group.size)
+        let `dst` = partition(`y`.tiles(0, `group`), worker.rank, group.size)
+        let `out` = sink(`dst`, block = 1)
+        var `store`: tile<f32> = zeros
+        for `xb` in stream(`src`, block = 1) {
+            `store` += `square`(`xb`)
+            `out`.push(`store`)
+        }
+    }
+}
+";
+
+/// The range of `text` that holds exactly the `n`th (from 0) `word`, as (line, column)
+/// from 1, both ends held.
+fn word_at(text: &str, word: &str, n: usize) -> Mapped {
+    let (line, col) = text
+        .lines()
+        .enumerate()
+        .flat_map(|(i, l)| l.match_indices(word).map(move |(c, _)| (i, c)))
+        .nth(n)
+        .expect("the word");
+    let first = l1(line, col);
+    let last = (first.0, first.1 + word.chars().count() as u32 - 1);
+    Mapped {
+        text_first: first.0,
+        text_first_col: first.1,
+        text_last: last.0,
+        text_last_col: last.1,
+        file: 0,
+        first: 3,
+        last: 3,
+    }
+}
+
+fn l1(line: usize, col: usize) -> (u32, u32) {
+    (line as u32 + 1, col as u32 + 1)
+}
+
+/// The text a range holds (on one line).
+fn held(text: &str, m: &Mapped) -> String {
+    let line = text
+        .lines()
+        .nth(m.text_first as usize - 1)
+        .expect("the line");
+    line.chars()
+        .skip(m.text_first_col as usize - 1)
+        .take((m.text_last_col - m.text_first_col + 1) as usize)
+        .collect()
+}
+
+/// Whether two texts with their origins compile to the same byte code, bytes compared.
+fn same_program(a: (&str, &Given), b: (&str, &Given)) -> bool {
+    match (origin::compile(a.0, a.1), origin::compile(b.0, b.1)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+#[test]
+fn the_layout_keeps_the_backticks_a_name_needs_and_the_byte_code_is_the_raw_texts() {
+    let lines = QUOTED.lines().count() as u32;
+    let given = Given {
+        files: vec!["/work/quoted.py".into()],
+        lines: vec![(0, 1, "line 1".into()), (0, 3, "line 3".into())],
+        map: vec![
+            range(QUOTED, 1, lines, 1, 1),
+            // a note on the call of the module's `square`, which keeps its backticks,
+            // and one on the loop's `xb`, which needs none
+            word_at(QUOTED, "`square`", 1),
+            word_at(QUOTED, "`xb`", 1),
+        ],
+        renames: Vec::new(),
+    };
+    let (text, laid) = origin::layout(QUOTED, &given).expect("laid out");
+    // kept where the language has a name of that spelling where the name stands
+    for kept in [
+        "func `square`(a: tile<f32>) -> tile<f32> {",
+        "    return square(a) * a",
+        "    handler run(x: tensor<f32>, y: tensor<f32>, `group`: u32) @on(group) {",
+        "partition(x.tiles(0, `group`), worker.rank, group.size)",
+        "        var `store`: tile<f32> = zeros",
+        "            `store` += `square`(xb)",
+        "            out.push(`store`)",
+    ] {
+        assert!(text.contains(kept), "{kept}\n{text}");
+    }
+    assert!(text.starts_with("module quoted\n") && text.contains("program P {"));
+    // a range on a name still holds the name after the layout, with its backticks
+    // where they were kept (as the name's own span does), without where taken away
+    assert_eq!(held(&text, &laid.map[1]), "`square`");
+    assert_eq!(held(&text, &laid.map[2]), "xb");
+    // the laid-out text is the same program as the raw one, bytes compared
+    assert!(same_program((QUOTED, &given), (&text, &laid)));
+    // a writer that dropped a needed pair would be caught: the call of the module's
+    // `square` read as the language's, or the value `group` declared bare (K120)
+    let call = text.replace("`square`(xb)", "square(xb)");
+    assert!(!same_program((QUOTED, &given), (&call, &laid)));
+    let value = text.replace("`group`", "group");
+    assert!(!same_program((QUOTED, &given), (&value, &laid)));
+}

@@ -22,7 +22,7 @@ link the folder into `~/.vscode/extensions/`).
 | files | the frontend's source files, as it resolved them; a place names one by its index |
 | lines | the source lines its places cover: (file, line number from 1, the line as written), in (file, number) order, each once |
 | map | ranges of the text, each with the place of the source it was printed for: (text's first line, its column, text's last line, its column, file, first line, last line); columns count characters from 1, both ends held, and a range of whole lines runs from column 1 of its first to the end of its last |
-| renames | (the safe name the text writes, the source's name), for values and parameters |
+| renames | (the name the text writes, the source's name), for values and parameters the source spells otherwise |
 
 ## From the text's positions to places
 
@@ -53,13 +53,17 @@ line as well as the text's.
 The text a frontend hands over is in the writer's own layout, the one `komo fmt` gives.
 `komorebi_ir.layout(text, origin)` (`api::origin::layout`) lays a frontend's text out and carries
 its origin: each range starts where its first character went and ends where its last went. The
-layout moves only whitespace and commas, so the other characters are the same, in order, on both
-sides. A text where they are not is refused by name, not guessed.
+layout moves only whitespace and commas, and takes away the backticks a name does not need (R50),
+so the other characters are the same, in order, on both sides. A text where they are not is
+refused by name, not guessed. A frontend writes every name it was given between backticks, and
+the layout keeps them only where the language has a name of that spelling where the name stands:
+where a name needs them is decided once, by the writer.
 
 ## Names
 
-A source's name may be a word of the IR (`group`, `tile`, `stream`), which cannot be written as a name
-in the text. The frontend writes a safe name, and gives the source's name in `renames`. After
+A source's name is written as given (R50): one that is a word of the language is written between
+backticks where it needs them, not renamed. `renames` gives a value's name in the source where it
+is spelled otherwise than in the text: the class frontend's var `h` of the field `self.h`. After
 lowering, each name of a value, a slot or a parameter that is a safe name is replaced by its source
 name. The renames are applied all at once, so a source's name may be another's safe name. A renamed
 name stays in P, which only the full hash covers.
@@ -192,8 +196,12 @@ refused by name, as is a field with a value. A stream's block over a rectangle o
 and columns is written `[A, C]` from its declaration `W_BLOCK = A * C`, C the rectangle's
 columns (`c : c + self.C`); any other is refused by name. A loop zips two streams or more, and
 `t.tiles[r0:r1, c0:c1].write(f(self.h, self.g))`, f a tile function of fields, stores `f(h, g)`
-of the vars (program 7, `SwiGLU.up` and `SwiGLU.down`). The class, a handler, a constant or a
-field named by an IR word is refused by name, not renamed: the text writes those names as given.
+of the vars (program 7, `SwiGLU.up` and `SwiGLU.down`). A name is the name the class gives it
+(R50): the class, a handler, a constant, a field, a parameter, a local or a tile function named
+by a word of the language is written as given, between backticks where it needs them (a field
+`store` is `` `store` ``, a handler `zip` is `handler zip`), never renamed and never refused. A
+name the walk makes itself (a `repeat=` loop's counter, a partition restated on a second tensor,
+a tile expression's function `tile_line_<line>`) takes `_` until it is no name the handler uses.
 
 A `km.chain` method is written as a `chain` of the program, its calls in order, each
 `self.h(names..., cores=(first, count))` a `call h(names...)`: R47's form, with nothing of how

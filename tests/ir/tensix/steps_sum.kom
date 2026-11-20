@@ -1,5 +1,5 @@
 // Program 2's module, StepHandlers.sum, as the class DSL's frontend gives it for
-// steps_sum.py (the frontend renames the loop's `tile`, an IR word, to `tile_`).
+// steps_sum.py (the loop's `tile` written as given, R50).
 module stephandlers
 
 tile [32, 32]

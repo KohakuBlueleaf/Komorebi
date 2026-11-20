@@ -8,8 +8,8 @@ program StepHandlers {
     handler sum(s: tensor<f32>, t: tensor<f32>, tiles: u32) @on(group) {
         let part = partition(s.tiles(0, tiles), worker.rank, group.size)
         var total: tile<f32> = zeros
-        for tile_ in stream(part, block = 1) {
-            total += tile_
+        for tile in stream(part, block = 1) {
+            total += tile
         }
         let whole = reduce(total, with = sum)
         if worker.is_leader {

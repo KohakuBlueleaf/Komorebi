@@ -264,12 +264,29 @@ def test_the_class_is_the_hand_written_module_with_its_origin():
     assert report.splitlines()[0] == "#0 Scale.run group(0, 1): completed"
 
 
-def test_a_name_that_is_an_ir_word_is_renamed():
+def test_a_name_that_is_a_word_of_the_language_is_written_as_given():
+    # R50: the parameter `group` is written as the class gives it, between backticks
+    # where the language has a `group` (`group.size`), and not renamed
     m = made(Grouped)
-    assert ("group_", "group") in m.renames and "group_: u32" in m.text
+    assert m.renames == [] and "`group`: u32" in m.text
+    assert "x.tiles(first, `group`)" in m.text and "group.size" in m.text
     hand = HAND.replace("module scale", "module grouped").replace("Scale", "Grouped")
-    renamed, plain = ir.hashes(ir.compile(m.text, m.origin)), ir.hashes(hand)
-    assert (renamed.semantic, renamed.build) == (plain.semantic, plain.build)
+    ours, plain = ir.hashes(ir.compile(m.text, m.origin)), ir.hashes(hand)
+    assert (ours.semantic, ours.build) == (plain.semantic, plain.build)
+
+
+class Counter(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, tiles: int, i: int):
+        for _ in km.Stream(x.pages(0, tiles), repeat=i):
+            pass
+
+
+def test_a_name_the_walk_makes_is_none_the_class_uses():
+    # the repeat's counter, which the class never wrote, is not its parameter `i`
+    m = made(Counter)
+    assert "for i_ in range(i) {" in m.text and m.renames == []
+    assert ir.check(m.text, m.origin) == []
 
 
 @pytest.mark.parametrize(
@@ -860,24 +877,78 @@ def test_program_7s_chain_it_does_not_write_is_refused_with_its_line(
     assert "SwiGLU.forward, line " in str(refused.value)
 
 
-@pytest.mark.parametrize(
-    "old, new, why",
-    [
-        # a field named by an IR word: its var would not read
-        ("out", "store", "a field self.store is named by an IR word: rename it"),
-        # a handler named by an IR word
-        ("def down(", "def zip(", "a handler zip is named by an IR word: rename it"),
-    ],
-)
-def test_program_7s_name_that_is_an_ir_word_is_refused_by_name(
-    tmp_path, monkeypatch, old, new, why
-):
+def swiglu_named(folder, monkeypatch, *pairs):
+    """Program 7's script with names replaced, each (old, new) pair once or more."""
     source = (ROOT / "tests" / "ir" / "tensix" / "swiglu_class.py").read_text()
-    for spelled in (f"    {old}:", f"self.{old}", f"    {old}"):
-        source = source.replace(spelled, spelled.replace(old, new))
-    p7 = swiglu_script(tmp_path, monkeypatch, source)
-    with pytest.raises(Refused, match=why):
+    for old, new in pairs:
+        assert old in source, old
+        source = source.replace(old, new)
+    return swiglu_script(folder, monkeypatch, source)
+
+
+def assert_todays(p7, given):
+    """Program 7's class made through the IR and today: the same files and words."""
+    today = p7.SwiGLU(log=lambda line: None, **given)
+    ours = program(p7.SwiGLU, log=lambda line: None, **given)
+    assert ours.header == today.built.folder / "swiglu.h"
+    for field in ("name", "depth", "defines", "compute", "handlers", "compile_args"):
+        assert getattr(ours, field) == getattr(today, field), field
+    # a build folder is named by its files' text: the same folder, the same bytes
+    assert ours.sources() == today.sources()
+    assert ours.buffers == today.buffers
+    assert halves(ours.pairs) == halves(today.pairs)
+    return ours
+
+
+# program 7 with its field `out` named `store` (a word of the text) and its handler
+# `down` named `zip` (a call of the language, where no handler stands)
+STORE_ZIP = [
+    ("    out: km.L1", "    store: km.L1"),
+    ("self.out", "self.store"),
+    ("def down(", "def zip("),
+    ("self.down(", "self.zip("),
+]
+
+
+def test_program_7s_names_that_are_words_are_written_as_given(tmp_path, monkeypatch):
+    p7 = swiglu_named(tmp_path, monkeypatch, *STORE_ZIP)
+    given = p7.made_with()
+    m = module(p7.SwiGLU, l1=1 << 20, **given)
+    assert "var `store`: tile<f32>[WIDTH] = zeros" in m.text
+    assert "    handler zip(" in m.text and "        call zip(hidden, w2, y)" in m.text
+    assert ("store", "self.store") in m.renames
+    ours = assert_todays(p7, given)
+    assert ours.entry("zip").point.name == "SwiGLU.zip"
+
+
+def test_program_7s_refusal_names_its_handler_zip(tmp_path, monkeypatch):
+    first = "        first = self.rank * self.WIDTH  # this core's columns of y\n"
+    p7 = swiglu_named(
+        tmp_path, monkeypatch, *STORE_ZIP, (first, first + "        n = 2.0 * 3.0\n")
+    )
+    with pytest.raises(Refused, match="an assignment") as refused:
         module(p7.SwiGLU, l1=1 << 20, **p7.made_with())
+    assert "SwiGLU.zip, line " in str(refused.value)
+
+
+def test_program_7s_tile_function_named_square_is_written_as_given(
+    tmp_path, monkeypatch
+):
+    # `gate` named `square`, a call of the language where a function stands, and its
+    # body calling the language's square: the module's is `square` between backticks
+    p7 = swiglu_named(
+        tmp_path,
+        monkeypatch,
+        ("def gate(h, g):", "def square(h, g):"),
+        ("return km.silu(h) * g", "return km.square(km.silu(h)) * g"),
+        ("write(gate(self.h", "write(square(self.h"),
+    )
+    given = p7.made_with()
+    m = module(p7.SwiGLU, l1=1 << 20, **given)
+    assert "func `square`(h: tile<f32>, g: tile<f32>) -> tile<f32> {" in m.text
+    assert "    return square(silu(h)) * g" in m.text
+    assert "<- `square`(h, g)" in m.text
+    assert_todays(p7, given)
 
 
 # Each program the frontend takes end to end (T1, programs 1 to 7) and the class whose
@@ -896,8 +967,9 @@ PROGRAMS = [
 
 
 def kept(text):
-    """A text's characters the writer's layout keeps: all but whitespace and commas."""
-    return "".join(c for c in text if not c.isspace() and c != ",")
+    """A text's characters the writer's layout keeps: all but whitespace, commas and
+    backticks."""
+    return "".join(c for c in text if not c.isspace() and c not in ",`")
 
 
 def held(text, row):

@@ -30,11 +30,11 @@ program Movement {
             output.tiles(first, tiles),
             block = BLOCK,
         ) @tensix.pattern(pattern)
-        for tile_ in stream(
+        for tile in stream(
             source.tiles(first, tiles),
             block = BLOCK,
         ) @tensix.pattern(pattern) {
-            out.push(tile_)
+            out.push(tile)
         }
     }
 }

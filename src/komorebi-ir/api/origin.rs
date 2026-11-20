@@ -154,9 +154,10 @@ impl Given {
 
 /// A frontend's text in the writer's own layout (`format`), its origin carried to the
 /// text as returned: a range starts where its first character went and ends where its
-/// last went (whitespace and commas aside).
-/// The layout moves only whitespace and commas, so the other characters, in order, are
-/// the same on both sides; a text where they are not is refused.
+/// last went (whitespace, commas and backticks aside).
+/// The layout moves only whitespace and commas, and takes away the backticks a name
+/// does not need (R50), so the other characters, in order, are the same on both sides;
+/// a text where they are not is refused.
 pub fn layout(source: &str, given: &Given) -> Result<(String, Given), Refused> {
     if let Some(what) = given.fault() {
         return Err(Refused::Origin(what));
@@ -166,15 +167,15 @@ pub fn layout(source: &str, given: &Given) -> Result<(String, Given), Refused> {
     Ok((text, laid))
 }
 
-/// `given`'s ranges of `source` carried to `text`, the same characters but whitespace
-/// and commas; any other difference refused.
+/// `given`'s ranges of `source` carried to `text`, the same characters but whitespace,
+/// commas and backticks; any other difference refused.
 fn carried(source: &str, text: &str, given: &Given) -> Result<Given, Refused> {
     // the characters the layout keeps, each with its (line, column) from 1
     let kept = |t: &str| -> Vec<(char, (u32, u32))> {
         let mut out = Vec::new();
         for (n, line) in (1u32..).zip(t.lines()) {
             for (c, ch) in (1u32..).zip(line.chars()) {
-                if !ch.is_whitespace() && ch != ',' {
+                if !ch.is_whitespace() && ch != ',' && ch != '`' {
                     out.push((ch, (n, c)));
                 }
             }
@@ -185,19 +186,43 @@ fn carried(source: &str, text: &str, given: &Given) -> Result<Given, Refused> {
     let same = was.len() == now.len() && was.iter().zip(&now).all(|(a, b)| a.0 == b.0);
     if !same {
         return Err(Refused::Origin(
-            "the writer's layout changed more than whitespace and commas".into(),
+            "the writer's layout changed more than whitespace, commas and backticks".into(),
         ));
     }
     let (first, last) = (
         now.first().map_or((1, 1), |c| c.1),
         now.last().map_or((1, 1), |c| c.1),
     );
-    // where the first kept character at or after `p` went, and the last at or before
-    let from = |p: (u32, u32)| was.iter().position(|c| c.1 >= p).map_or(last, |i| now[i].1);
+    // the character at (line, column) from 1 of a text, if any
+    let char_at = |t: &str, (line, col): (u32, u32)| -> Option<char> {
+        let line = t.lines().nth((line as usize).checked_sub(1)?)?;
+        line.chars().nth((col as usize).checked_sub(1)?)
+    };
+    // where the first kept character at or after `p` went, and the last at or before;
+    // a range that starts (ends) at a name's backtick holds the name's backtick where
+    // the layout kept it, as the name's own span does (R50)
+    let from = |p: (u32, u32)| {
+        let a = was.iter().position(|c| c.1 >= p).map_or(last, |i| now[i].1);
+        let tick = (a.0, a.1.saturating_sub(1));
+        let both = char_at(source, p) == Some('`') && char_at(text, tick) == Some('`');
+        if both {
+            tick
+        } else {
+            a
+        }
+    };
     let to = |p: (u32, u32)| {
-        was.iter()
+        let b = was
+            .iter()
             .rposition(|c| c.1 <= p)
-            .map_or(first, |i| now[i].1)
+            .map_or(first, |i| now[i].1);
+        let tick = (b.0, b.1 + 1);
+        let both = char_at(source, p) == Some('`') && char_at(text, tick) == Some('`');
+        if both {
+            tick
+        } else {
+            b
+        }
     };
     let map = given
         .map
@@ -329,7 +354,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_layout_that_changes_more_than_whitespace_and_commas_is_refused() {
+    fn a_layout_that_changes_more_than_whitespace_commas_and_backticks_is_refused() {
         let given = Given {
             files: vec!["a.py".into()],
             lines: vec![(0, 1, "a".into())],
@@ -350,7 +375,14 @@ mod tests {
         assert_eq!((split.map[0].start(), split.map[0].end()), ((1, 1), (4, 1)));
         // a character changed: refused by name
         let changed = carried(source, "let a = f(b; c)", &given);
-        let what = "the writer's layout changed more than whitespace and commas";
+        let what = "the writer's layout changed more than whitespace, commas and backticks";
         assert!(matches!(changed, Err(Refused::Origin(w)) if w == what));
+        // backticks taken away or kept (R50): carried, a range ending at a kept one holding
+        // it; a name changed between them is refused
+        let quoted = "let `a` = f(`b`, c)";
+        let kept = carried(quoted, "let a = f(`b`, c)", &given).expect("carried");
+        assert_eq!((kept.map[0].start(), kept.map[0].end()), ((1, 1), (1, 13)));
+        let renamed = carried(quoted, "let a = f(`d`, c)", &given);
+        assert!(matches!(renamed, Err(Refused::Origin(w)) if w == what));
     }
 }
