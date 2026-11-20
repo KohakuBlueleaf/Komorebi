@@ -36,6 +36,10 @@ A frontend therefore gives these ranges:
   statement's instructions.
 - for a compound statement, the range runs from its first line to its closing brace. It places the
   loop or the branch itself, and its inner statements have narrower ranges of their own.
+- for a call inside a statement that starts on a later source line than the statement, the call
+  on lines of its own, in parentheses, with a range mapped to the call's lines. It places that
+  call's instruction at the call's first line, the line today's tile trace names for the node a
+  call makes (`caller_line`: the call's frame, its first line when the call spans several).
 
 A diagnostic of the text is placed by the same rule, so a refusal names the source's line as well as
 the text's.
@@ -94,6 +98,13 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
 
 A stream with no `block=` is of one tile a block, as today's.
 
+A tile function is one `return` (a docstring before it writes nothing) of `+ - * /` of its
+parameters and numbers, the tile compiler's functions of one tile by their names (`km.exp(x)` is
+written `exp(x)`; `exp`, `exp2`, `sigmoid`, `silu`, `tanh`, `erf`, `log`, `sqrt`, `rsqrt`,
+`reciprocal`, `relu`, `square`, `floor`), and calls of a plain function of its module on its
+parameters (a helper), which is written as a `func` of its own, its lines its own. A call with a
+keyword (`exp(x, error=...)`) and a helper called on other than parameters are refused by name.
+
 A stream of blocks of n tiles gives the loop `tile<F>[n]`, so its tile function is declared on
 blocks (`tile<F>[n]` for the block and the result). Every other line is refused by name, with the
 class's line, and so is a make keyword that would change the module. The make's tensors
@@ -134,3 +145,23 @@ komorebi-ir wheel, which `komorebi.dsl.ir` does not.
 For the first lesson, each of these fields is today's, and the folder is the same. The path
 through the IR checks each range a handler's entry point states at submit, refusing a range past
 its tensor's end before anything is sent; today's make checks only the ranges of `items(...)`.
+
+### On islands, not yet
+
+What depends on the machine is sized at load from its islands ([backends](backends.md)): a tree
+reduce's arrival slots, today's `tree_slots`. Every other place today's make reads a session's
+islands (`compiled.islands`) is in a construct the IR path refuses by name until a program needs
+it:
+
+| Today | What it sizes | On the IR path |
+|---|---|---|
+| `dsl/compile/tiles/reduce.py:907` | a reduce over a group of `size` (`island_reduce.group_slots`) | a reduce's `group=` is refused |
+| `dsl/compile/tiles/reduce.py:904` | `reduce_local=True`, every group on one island | a reduce's `reduce_local=` is refused |
+| `dsl/program.py:277` | a chain's K shared by island (`KM_CHAIN_K_ISLANDS`, `KM_CHAIN_BY_ISLAND`) | `chain=` and a class's chains are refused |
+| `dsl/program.py:1729` | the link cores' buffer index kept from a direct input (`KM_LINK_CB`) | `direct=` is refused |
+| `dsl/program_sources.py:100` | the island table after a rectangle's grid words | `rect=`, `nocs=` and a rectangle parameter are refused |
+| `dsl/compile/handler/handler_compile.py:365`, `:369` | a rectangle's grid and place on islands (`rect_glue`) | a rectangle parameter is refused |
+| `dsl/compile/casts/broadcasts.py:738` | a broadcast's place on islands | `km.broadcast` is a line the walk does not take |
+| `dsl/compile/pages/ranges.py:52` | DRAM items not of whole 64 B refused on islands | unreachable while a page is one tile: every tile size is a whole number of 64 B; a page of other items needs this check |
+| `dsl/first_use.py:112`, `:161` | `km.ANY` handlers compiled on first use | `handlers=` is refused |
+| `dsl/merged.py:609` | `km.merge` | a path of its own the IR does not take |

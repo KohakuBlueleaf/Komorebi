@@ -452,3 +452,40 @@ fn program_3_through_the_frontend_is_todays_text_byte_for_byte() {
     };
     assert_eq!(output.entries[0].bounds, [bound(0), bound(1), bound(2)]);
 }
+
+#[test]
+fn a_tile_functions_calls_keep_their_own_lines_as_todays_listing_names_them() {
+    if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
+        eprintln!("the frontend's identity skipped: KOMO_IR_NO_PYTHON=1");
+        return;
+    }
+    // `spread` calls km.exp on a continuation line, in a call that itself spans two
+    // lines, and in a helper it calls: today's listing names each call's own line
+    // (`caller_line`), and the module's origin places each call there.
+    let made = made("lines", "lines_class", "Lines");
+    let module = origin::build(&made.text, &made.given).unwrap_or_else(|r| panic!("{r:?}"));
+    let tensor = LoadTensor {
+        pages: 768,
+        layout: vec![2, 4096],
+        dram_page: None,
+    };
+    same_as_today(
+        &made,
+        &module,
+        &[tensor.clone(), tensor.clone(), tensor],
+        "lines",
+    );
+    let files = tensix::sources(&module).unwrap_or_else(|r| panic!("{r:?}"));
+    let listing = &files
+        .iter()
+        .find(|(n, _)| n == "tile_spread.txt")
+        .expect("listing")
+        .1;
+    for line in [
+        "lines_class.py:20",
+        "lines_class.py:21",
+        "lines_class.py:13",
+    ] {
+        assert!(listing.contains(&format!("exp (line {line})")), "{line}");
+    }
+}

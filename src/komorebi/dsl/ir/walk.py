@@ -4,6 +4,8 @@ streams, a loop pushing a tile function's result or expression, a sum reduced an
 written by the leader); any other is refused by name, with its class's line."""
 
 import ast
+import inspect
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -129,9 +131,17 @@ def module(cls, **make):
     text.line(0, "")
     text.line(0, "tile [32, 32]")
     text.line(0, f"format {', '.join(formats)}")
+    helpers = {}
     for function, kinds in functions.values():
         text.line(0, "")
-        tile_function(text, function, kinds)
+        tile_function(text, function, kinds, helpers)
+    written = set()
+    while len(written) < len(helpers):  # a helper's own helpers join as it is written
+        for name, (helper, kinds) in list(helpers.items()):
+            if name not in written:
+                written.add(name)
+                text.line(0, "")
+                tile_function(text, helper, kinds, helpers)
     text.line(0, "")
     text.line(0, f"program {cls.__name__} {{")
     for walk in walks:
@@ -796,27 +806,63 @@ def partition_text(view):
     return f"partition({view}, worker.rank, group.size)"
 
 
-def tile_function(text, function, kinds):
+@dataclass
+class Helper:
+    """A plain function a tile function calls (`def grown(x): return km.exp(x) * 2`),
+    written as a `func` of its own, its lines its own."""
+
+    name: str
+    function: object
+
+
+# the tile compiler's functions of one tile the IR writes by the same name (`exp(x)`)
+MATH = tuple(
+    f"math_{name}"
+    for name in ("exp", "exp2", "sigmoid", "silu", "tanh", "erf", "log", "sqrt")
+    + ("rsqrt", "reciprocal", "relu", "square", "floor")
+)
+# a call's own lines in the text: `(`, the call on lines of its own placed at the
+# call's source lines (a node's line today is its call's, `caller_line`), then `)`
+CALL_OPEN, CALL_CLOSE = "\x00", "\x01"
+
+
+@dataclass
+class Body:
+    """What a tile function's expression is read with: its place, its parameters'
+    kinds, its statement's first line, its module's names, the helpers it calls."""
+
+    where: Where
+    node: ast.AST
+    kinds: dict
+    first: int
+    names: dict
+    helpers: dict
+
+
+def tile_function(text, function, kinds, helpers):
     """A tile function as a `func`: its one `return` of + - * / over its parameters and
-    numbers, its parameters typed by the call; a tile expression (`Inline`) alike."""
+    numbers, the tile compiler's functions of one tile and calls of helpers, its
+    parameters typed by the call; a tile expression (`Inline`) alike. A call on a line
+    after the statement's first is written on a line of its own, placed at the call."""
     if isinstance(function, Inline):
         where, parameters = function.where, function.names
         definition = returned = function.node
         value = function.value
+        names = {}
     else:
         definition, lines, first = source_of(function.function)
-        where = Where(
-            function.name, "tile function", lines, first, file_of(function.function)
-        )
+        what = "helper" if isinstance(function, Helper) else "tile function"
+        where = Where(function.name, what, lines, first, file_of(function.function))
         parameters = [a.arg for a in definition.args.args]
-        if len(parameters) != len(kinds) or len(definition.body) != 1:
+        statements = definition.body[1:] if docstring(definition) else definition.body
+        if len(parameters) != len(kinds) or len(statements) != 1:
             refuse(
                 where,
                 definition,
                 "not one return over its parameters",
                 "write `return <expression>`",
             )
-        returned = definition.body[0]
+        returned = statements[0]
         if not isinstance(returned, ast.Return) or returned.value is None:
             refuse(
                 where,
@@ -825,37 +871,117 @@ def tile_function(text, function, kinds):
                 "write `return <expression>`",
             )
         value = returned.value
-    names = set(parameters)
-    if (names | {function.name}) & RESERVED:
+        names = function.function.__globals__
+    if (set(parameters) | {function.name}) & RESERVED:
         refuse(where, definition, "a name that is an IR word", "rename it")
-    body = bare(expression(where, returned, value, names))
+    body = Body(
+        where, returned, dict(zip(parameters, kinds)), returned.lineno, names, helpers
+    )
+    written = bare(expression(body, value))
     start = text.line(0, f"func {function.name}(")
     for name, kind in zip(parameters, kinds):
         text.line(1, f"{name}: {kind},")
     text.line(0, f") -> {kinds[0]} {{")
-    line = text.line(1, f"return {body}")
+    line = len(text.lines) + 1
+    depth, current, opened = 1, "return ", []
+    marks = f"({CALL_OPEN}[0-9]+,[0-9]+{CALL_OPEN}|{CALL_CLOSE})"
+    for token in re.split(marks, written):
+        if token.startswith(CALL_OPEN):
+            text.line(depth, current.rstrip())
+            lo, hi = (int(n) for n in token.strip(CALL_OPEN).split(","))
+            opened.append((len(text.lines) + 1, lo, hi))
+            depth, current = 2, ""
+        elif token == CALL_CLOSE:
+            text.line(2, current.rstrip())
+            first, lo, hi = opened.pop()
+            text.place(first, where.file, lo, hi)
+            current = ""
+        else:
+            current += token
+    text.line(depth, current.rstrip())
     text.place(line, where.file, returned.lineno, returned.end_lineno)
     text.line(0, "}")
     text.place(start, where.file, definition.lineno, definition.lineno)
 
 
-def expression(where, node, value, names):
-    """A tile function's expression: + - * / of its parameters and numbers."""
+def docstring(definition):
+    """Whether a function's first statement is its docstring (which writes nothing)."""
+    first = definition.body[0]
+    text = isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+    return text and isinstance(first.value.value, str) and len(definition.body) > 1
+
+
+def expression(body, value):
+    """A tile function's expression: + - * / of its parameters and numbers, the tile
+    compiler's functions of one tile (`km.exp(x)`) and calls of helpers on its
+    parameters."""
     operators = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
-    if isinstance(value, ast.Name) and value.id in names:
+    if isinstance(value, ast.Name) and value.id in body.kinds:
         return value.id
     if isinstance(value, ast.Constant) and type(value.value) in (int, float):
         return repr(value.value)
     if isinstance(value, ast.BinOp) and type(value.op) in operators:
-        left = expression(where, node, value.left, names)
-        right = expression(where, node, value.right, names)
+        left = expression(body, value.left)
+        right = expression(body, value.right)
         return f"({left} {operators[type(value.op)]} {right})"
+    if isinstance(value, ast.Call):
+        return own_line(body, value, call(body, value))
     refuse(
-        where,
-        node,
+        body.where,
+        body.node,
         "an expression the IR module does not write yet",
         "write + - * / of its parameters",
     )
+
+
+def own_line(body, value, written):
+    """A call as written, on lines of its own in parentheses when it starts after the
+    statement's first line (the call's line, as today's trace names it)."""
+    if value.lineno == body.first:
+        return written
+    at = f"{CALL_OPEN}{value.lineno},{value.end_lineno}{CALL_OPEN}"
+    return f"({at}{written}{CALL_CLOSE})"
+
+
+def call(body, value):
+    """`km.exp(x)`, one of the tile compiler's functions of one tile on one operand;
+    or `helper(a, b)`, a plain function of the module on parameters."""
+    func = value.func
+    if value.keywords:
+        refuse(
+            body.where,
+            body.node,
+            f"a call's {value.keywords[0].arg}= is not written in an IR module yet",
+            "leave it out",
+        )
+    if isinstance(func, ast.Attribute) and kind_of(func.attr, MATH):
+        if len(value.args) != 1:
+            refuse(body.where, body.node, f"{func.attr} of other than one operand", "")
+        return f"{func.attr}({bare(expression(body, value.args[0]))})"
+    helper = body.names.get(func.id) if isinstance(func, ast.Name) else None
+    if not inspect.isfunction(helper):
+        refuse(
+            body.where,
+            body.node,
+            "a call the IR module does not write yet",
+            "call km's functions of a tile, or a helper on its parameters",
+        )
+    if not all(isinstance(a, ast.Name) and a.id in body.kinds for a in value.args):
+        refuse(
+            body.where,
+            body.node,
+            f"a call of {func.id} on other than its parameters",
+            "pass the function's parameters",
+        )
+    kinds = tuple(body.kinds[a.id] for a in value.args)
+    if body.helpers.setdefault(func.id, (Helper(func.id, helper), kinds))[1] != kinds:
+        refuse(
+            body.where,
+            body.node,
+            f"{func.id} called on {body.helpers[func.id][1]} and on {kinds}",
+            "call a helper on one kind",
+        )
+    return f"{func.id}({', '.join(a.id for a in value.args)})"
 
 
 def bare(text):

@@ -140,6 +140,52 @@ class IntoWritten(km.Program):
             out.push(plus(a, b))
 
 
+@km.tile_function
+def erred(a, b):
+    return km.exp(a, error=1e-3) + b
+
+
+def doubled(x):
+    return x * 2.0
+
+
+@km.tile_function
+def unhelped(a, b):
+    return doubled(a * b)
+
+
+class Erring(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a, b in zip(km.Stream(x.pages(0, tiles)), km.Stream(x.pages(0, tiles))):
+            out.push(erred(a, b))
+
+
+class Unhelping(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, y: km.Tensor, tiles: int):
+        out = km.Stream(y.pages(0, tiles), write=True)
+        for a, b in zip(km.Stream(x.pages(0, tiles)), km.Stream(x.pages(0, tiles))):
+            out.push(unhelped(a, b))
+
+
+@pytest.mark.parametrize(
+    "cls, function, why",
+    [
+        (Erring, erred, "a call's error= is not written in an IR module yet"),
+        (Unhelping, unhelped, "a call of doubled on other than its parameters"),
+    ],
+)
+def test_a_call_in_a_tile_function_it_does_not_write_is_refused_by_name(
+    cls, function, why
+):
+    with pytest.raises(Refused, match=why) as refused:
+        made(cls)
+    line = inspect.getsourcelines(function.function)[1] + 2
+    assert f"line {line}," in str(refused.value)
+
+
 def line_of(cls, text):
     """The file's line number of the line of `cls` that holds `text`."""
     lines, first = inspect.getsourcelines(cls)
