@@ -281,7 +281,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 28, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 29, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -483,6 +483,30 @@ fn placeless(text: &str) -> String {
         .join("\n")
 }
 
+/// A listing's templates pass with each `(line <place>)` as `(line ?)`, as
+/// `placeless` writes a chain's record.
+fn listing_placeless(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for l in text.split('\n') {
+        if !l.starts_with("  pass algebra templates: ") {
+            out.push(l.to_string());
+            continue;
+        }
+        let mut line = String::new();
+        let mut rest = l;
+        while let Some(open) = rest.find(" (line ") {
+            let after = &rest[open + " (line ".len()..];
+            let Some(close) = after.find(')') else { break };
+            line.push_str(&rest[..open]);
+            line.push_str(" (line ?)");
+            rest = &after[close + 1..];
+        }
+        line.push_str(rest);
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 #[test]
 fn each_functions_chain_is_todays() {
     let Some(folder) = today() else { return };
@@ -525,7 +549,7 @@ fn each_functions_chain_is_todays() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 31);
+    assert_eq!(compared, 32);
 }
 
 #[test]
@@ -569,7 +593,10 @@ fn each_unit_programs_listing_is_todays() {
         };
         let want =
             std::fs::read_to_string(folder.join(format!("{case}.txt"))).expect("the listing");
-        let got = unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n";
+        // today's templates pass names the Python line that traced the function
+        let want = listing_placeless(&want);
+        let got =
+            listing_placeless(&(unit.dump().unwrap_or_else(|e| panic!("{case}: {e}")) + "\n"));
         assert!(
             got == want,
             "{name} differs, {}",
@@ -587,6 +614,7 @@ fn each_unit_programs_listing_is_todays() {
         ] {
             let want = std::fs::read_to_string(folder.join(format!("{case}.{file}")))
                 .unwrap_or_else(|e| panic!("{case}.{file}: {e}"));
+            let (want, got) = (listing_placeless(&want), listing_placeless(&got));
             assert!(
                 got == want,
                 "{name}'s {file} differs, {}",
@@ -598,38 +626,41 @@ fn each_unit_programs_listing_is_todays() {
     let not_emitted = std::fs::read_to_string(folder.join("not_emitted.txt")).expect("the file");
     assert_eq!(not_emitted, "", "today's emit refuses none of the corpus");
     // the whole-tile arithmetic, `a * k` among it, with and without a load macro;
-    // smooth's checks repair its code (an SFPNOP after its constant register's setup)
+    // smooth's checks repair its code (an SFPNOP after its constant register's setup);
+    // exp, recip and sigmoid with their lane conditions; gate's 2-word constants tie
+    // for the registers (first loaded first); two reciprocals share their 2.0
     let whole = [
         "t_times",
         "t_plus",
         "t_plus_bfp8",
+        "t_gate",
+        "t_silu_gate_bf16",
         "t_smooth",
         "t_scaled_sum",
+        "t_exp",
+        "t_sigmoid",
+        "t_silu",
+        "t_recip",
         "t_square",
         "t_neg",
+        "t_divide",
         "t_twice_k",
         "t_chained",
+        "t_two_recips",
         "times_on_blocks",
     ];
     assert_eq!(same, whole);
     let refused = [
         "plus_band: the band (a body on the live rows)",
-        "gate: the vector function sigmoid",
-        "silu_gate_bf16: the vector function sigmoid",
         "clamp01: the vector operation min",
         "leaky: the vector operation select",
         "project: a function that is one tile product",
-        "exp: the vector function exp",
-        "sigmoid: the vector function sigmoid",
-        "silu: the vector function sigmoid",
         "tanh: the vector function tanh",
         "erf: the vector function erf",
         "log: the vector function log",
         "sqrt: the vector function sqrt",
         "rsqrt: the vector function rsqrt",
-        "recip: the vector function recip",
         "relu: the vector operation max",
-        "divide: the vector function recip",
         "floor: the vector operation select",
         "called: the vector operation select",
     ];

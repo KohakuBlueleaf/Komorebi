@@ -5,10 +5,10 @@
 //! compiler (`stream_chain`).
 //!
 //! Ported: the whole-tile stream form of one result on `+`, `-`, `*`, negation,
-//! `abs`, multiply-add, constants and run-time scalars, with every pass of that path
-//! and the load macro. Refused by name (K964) where it would act: the vector functions,
-//! `min` / `max`, selects, several results, per-row operands, tile products and the
-//! band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
+//! `abs`, multiply-add, constants, run-time scalars and the vector functions `exp`,
+//! `recip` and `sigmoid`, with every pass of that path and the load macro. Refused by
+//! name (K964) where it would act: the other vector functions, `min` / `max`, selects,
+//! several results, per-row operands, tile products and the band. Not on this path, so not ported: `drop_copies`, `common_values`, the per-row
 //! pre-pass and `allocate`'s high registers.
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use super::py;
 use super::r#macro::{self, NoFit, Plan};
 use super::unit::{
     insns, op_named, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Sync, UnitError,
-    UnitProgram, FIXED, PROGRAMMABLE, REPLAY_ENTRIES, SAVED, WORK,
+    UnitProgram, FIXED, IADD_IMM, IADD_NO_CC, PROGRAMMABLE, REPLAY_ENTRIES, SAVED, WORK,
 };
 use super::vector::{FnResult, VId, VValue, Vs};
 
@@ -59,7 +59,9 @@ pub const TILE_DTYPES: [&str; 5] = ["float32", "bfloat16", "bfp8_b", "bfp4_b", "
 pub const A_DTYPES: [&str; 4] = ["float16", "bfp8", "bfp4", "bfp2"];
 /// SFPENCC's (imm, mod1): the condition on, every lane's flag set.
 pub const CC_RESET: (i64, i64) = (3, 10);
-/// The vector functions today's unit program builds (none ported yet).
+/// +inf's high half: SFPMULI's immediate (a bf16).
+pub const INF_BF16: i64 = 0x7F80;
+/// The vector functions today's unit program builds (`PORTED` of them so far).
 pub const FUNCTIONS: [&str; 8] = [
     "exp", "sigmoid", "rsqrt", "recip", "sqrt", "tanh", "erf", "log",
 ];
@@ -116,6 +118,8 @@ pub struct Body {
     pub mode: i64,
     /// Each run-time scalar's value by its index, held across the rows.
     pub scalars: Vec<(usize, String)>,
+    /// The programmable constant registers by the bits they hold.
+    bits: Vec<(i64, String)>,
 }
 
 impl Body {
@@ -127,6 +131,17 @@ impl Body {
     /// Appends `name`; a written register argument left out gets a new value, any
     /// other field 0. Returns the value written.
     fn op(&mut self, op: &str, note: &str, args: &[(&str, Arg)]) -> Result<Arg, ChainError> {
+        self.word(op, note, args)?
+            .ok_or_else(|| ChainError::Unit(format!("{op} writes no value")))
+    }
+
+    /// `op` as `op` appends it, a word that may write no value (none returned).
+    fn word(
+        &mut self,
+        op: &str,
+        note: &str,
+        args: &[(&str, Arg)],
+    ) -> Result<Option<Arg>, ChainError> {
         let o = op_named(op).ok_or_else(|| UnitError(format!("no operation {op}")))?;
         let mut all: Vec<(&str, Arg)> = args.to_vec();
         for w in o.writes {
@@ -143,7 +158,68 @@ impl Body {
         let made = Insn::new(op, &all, note)?;
         let written = made.writes()?.into_iter().next();
         self.code.push(made);
-        written.ok_or_else(|| ChainError::Unit(format!("{op} writes no value")))
+        Ok(written)
+    }
+
+    /// A programmable constant register holding fp32 `value`, set once by the setup
+    /// after the schedule pass hoists it: its name until the layout pass.
+    fn register_const(&mut self, value: f64) -> Result<Arg, ChainError> {
+        let bits = i64::from((value as f32).to_bits());
+        if let Some((_, reg)) = self.bits.iter().find(|(b, _)| *b == bits) {
+            return Ok(name(reg));
+        }
+        if self.prog.len() == PROGRAMMABLE.len() {
+            return Err(ChainError::Unit(
+                "more constants than the 3 programmable registers".into(),
+            ));
+        }
+        let reg = format!("p{}", self.prog.len());
+        self.bits.push((bits, reg.clone()));
+        let constant = Constant::Float(value);
+        let note = constant.repr();
+        self.prog.push((reg.clone(), constant));
+        self.code.extend(config(&reg, bits, &note)?);
+        Ok(name(&reg))
+    }
+
+    /// ±(a b) ± c, rounded once, into `into` or a new value.
+    #[allow(clippy::too_many_arguments)]
+    fn mad_of(
+        &mut self,
+        a: Arg,
+        b: Arg,
+        c: Arg,
+        note: &str,
+        neg_a: bool,
+        neg_c: bool,
+        into: Option<Arg>,
+    ) -> Result<Arg, ChainError> {
+        let mode = i64::from(neg_a) | i64::from(neg_c) << 1;
+        let mut args = vec![
+            ("lreg_src_a", a),
+            ("lreg_src_b", b),
+            ("lreg_src_c", c),
+            ("instr_mod1", Arg::Num(mode)),
+        ];
+        if let Some(into) = into {
+            args.push(("lreg_dest", into));
+        }
+        self.op("SFPMAD", note, &args)
+    }
+
+    /// A flag-setting word: the lanes where it holds run what follows until `end`.
+    fn when(&mut self, op: &str, note: &str, args: &[(&str, Arg)]) -> Result<(), ChainError> {
+        self.word(op, note, args).map(|_| ())
+    }
+
+    /// Every lane on again.
+    fn end(&mut self) -> Result<(), ChainError> {
+        let (imm, mode) = CC_RESET;
+        let args = [
+            ("imm12_math", Arg::Num(imm)),
+            ("instr_mod1", Arg::Num(mode)),
+        ];
+        self.word("SFPENCC", "every lane on", &args).map(|_| ())
     }
 
     fn load(&mut self, address: i64, note: &str) -> Result<Arg, ChainError> {
@@ -234,13 +310,13 @@ impl Body {
         self.op("SFPMUL", note, &args)
     }
 
-    fn add(&mut self, a: Arg, b: Arg) -> Result<Arg, ChainError> {
+    fn add(&mut self, a: Arg, b: Arg, note: &str) -> Result<Arg, ChainError> {
         let args = [
             ("lreg_src_a", name("one")),
             ("lreg_src_b", a),
             ("lreg_src_c", b),
         ];
-        self.op("SFPADD", "", &args)
+        self.op("SFPADD", note, &args)
     }
 
     fn neg(&mut self, a: Arg) -> Result<Arg, ChainError> {
@@ -251,6 +327,180 @@ impl Body {
             &[("lreg_c", a), ("instr_mod1", Arg::Num(1))],
         )
     }
+}
+
+/// exp's constants as today writes them, by their bits: 1 / ln 2 (`1.442695`), the
+/// polynomial's start (`0.00137805939`), ln 2's high and low parts (`-0.693145752`,
+/// `-1.42860677e-06`), and the polynomial's other coefficients, highest first.
+const EXP_INV_LN2: f64 = f64::from_bits(0x3FF7_1547_5A31_A4BE);
+const EXP_START: f64 = f64::from_bits(0x3F56_9400_00C4_89A7);
+const EXP_LN2_HIGH: f64 = f64::from_bits(0xBFE6_2E40_0006_7144);
+const EXP_LN2_LOW: f64 = f64::from_bits(0xBEB7_F7D1_C150_7ED8);
+const EXP_POLYNOMIAL: [f64; 4] = [
+    f64::from_bits(0x3F81_25ED_BFD4_7362),
+    f64::from_bits(0x3FA5_55B5_A027_ABAA),
+    f64::from_bits(0x3FC5_5545_00E6_0400),
+    f64::from_bits(0x3FDF_FFFF_6003_311E),
+];
+
+/// The vector functions lowered so far (of `FUNCTIONS`).
+const PORTED: [&str; 3] = ["exp", "recip", "sigmoid"];
+
+/// A field set to a number.
+fn n(field: &'static str, value: i64) -> (&'static str, Arg) {
+    (field, Arg::Num(value))
+}
+
+/// e^a in fp32 (tt-metal's `_sfpu_exp_fp32_accurate_`, guarded form): round a / ln 2 to
+/// an integer, a two-part Cody-Waite reduction, a degree-6 polynomial, then the exponent
+/// added back with overflow to infinity and underflow to 0.
+fn exp(b: &mut Body, a: Arg) -> Result<Arg, ChainError> {
+    let inv_ln2 = b.constant(EXP_INV_LN2)?;
+    let j = b.mul(a.clone(), inv_ln2, "a / ln 2")?;
+    let mut r = b.constant(EXP_START)?;
+    let sm = b.op(
+        "SFP_STOCH_RND",
+        "round to sign-magnitude 16",
+        &[
+            ("lreg_src_b", name("zero")),
+            ("lreg_src_c", j),
+            n("instr_mod1", 7),
+        ],
+    )?;
+    let j = b.op("SFPCAST", "back to fp32", &[("lreg_src_c", sm.clone())])?;
+    let high = b.constant(EXP_LN2_HIGH)?;
+    let f = b.mad_of(
+        j.clone(),
+        high,
+        a,
+        "f = a - j ln 2 (high)",
+        false,
+        false,
+        None,
+    )?;
+    let low = b.constant(EXP_LN2_LOW)?;
+    let f = b.mad_of(j.clone(), low, f, "f -= j ln 2 (low)", false, false, None)?;
+    for c in EXP_POLYNOMIAL {
+        let c = b.constant(c)?;
+        r = b.mad_of(r, f.clone(), c, "polynomial", false, false, None)?;
+    }
+    let i = b.op("SFPABS", "|j| as an integer", &[("lreg_c", sm)])?;
+    let y = b.mad_of(r, f.clone(), name("one"), "polynomial", false, false, None)?;
+    let i = b.op(
+        "SFPSETSGN",
+        "j's sign on |j|",
+        &[("lreg_c", i), ("lreg_dest", j)],
+    )?;
+    let r = b.mad_of(y.clone(), f, name("one"), "e^f", false, false, None)?;
+    let y = b.op(
+        "SFPMULI",
+        "overflow: inf",
+        &[n("imm16_math", INF_BF16), ("lreg_dest", y)],
+    )?;
+    let e = b.op(
+        "SFPEXEXP",
+        "biased exponent of e^f",
+        &[("lreg_c", r.clone()), n("instr_mod1", 1)],
+    )?;
+    let e = b.op(
+        "SFPIADD",
+        "+ j",
+        &[("lreg_c", i), ("lreg_dest", e), n("instr_mod1", IADD_NO_CC)],
+    )?;
+    b.when(
+        "SFPIADD",
+        "exponent < 255",
+        &[
+            n("imm12_math", 0xF01), // -255
+            ("lreg_c", e.clone()),
+            n("instr_mod1", IADD_IMM),
+        ],
+    )?;
+    b.op(
+        "SFPMOV",
+        "",
+        &[("lreg_c", e.clone()), ("lreg_dest", y.clone())],
+    )?;
+    b.op(
+        "SFPSETEXP",
+        "2^j e^f",
+        &[("lreg_c", r), ("lreg_dest", y.clone())],
+    )?;
+    b.when(
+        "SFPIADD",
+        "exponent < 1",
+        &[
+            n("imm12_math", 0xFFF), // -1
+            ("lreg_c", e.clone()),
+            ("lreg_dest", e),
+            n("instr_mod1", IADD_IMM),
+        ],
+    )?;
+    b.op(
+        "SFPMOV",
+        "underflow: 0",
+        &[("lreg_c", name("zero")), ("lreg_dest", y.clone())],
+    )?;
+    b.end()?;
+    Ok(y)
+}
+
+/// 1 / x (tt-metal's `sfpu_reciprocal_iter<2>`): the unit's estimate and two Newton
+/// steps, the second only where the first is not NaN (t < 0).
+fn recip(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let two = b.register_const(2.0)?;
+    let y = b.op("SFPARECIP", "estimate of 1 / x", &[("lreg_c", x.clone())])?;
+    let t = b.mad_of(
+        x.clone(),
+        y.clone(),
+        two.clone(),
+        "t = x y - 2",
+        false,
+        true,
+        None,
+    )?;
+    let minus_t = b.neg(t.clone())?;
+    let zero = b.constant(-0.0)?;
+    let y1 = b.mad_of(
+        y.clone(),
+        minus_t,
+        zero,
+        "y1 = y (-t) - 0",
+        false,
+        false,
+        None,
+    )?;
+    b.when(
+        "SFPGT",
+        "t < 0",
+        &[
+            ("lreg_c", t),
+            ("lreg_dest", name("zero")),
+            n("instr_mod1", 1),
+        ],
+    )?;
+    let t = b.mad_of(x, y1.clone(), two, "t = x y1 - 2", false, true, None)?;
+    let minus_t = b.neg(t)?;
+    let zero = b.constant(-0.0)?;
+    b.mad_of(
+        y1,
+        minus_t,
+        zero,
+        "y = y1 (-t) - 0",
+        false,
+        false,
+        Some(y.clone()),
+    )?;
+    b.end()?;
+    Ok(y)
+}
+
+/// 1 / (1 + e^-x) on fp32 registers, as tt-metal's `_sfpu_sigmoid_<true>`.
+fn sigmoid(b: &mut Body, x: Arg) -> Result<Arg, ChainError> {
+    let minus_x = b.neg(x)?;
+    let e = exp(b, minus_x)?;
+    let sum = b.add(e, name("one"), "1 + e^-x")?;
+    recip(b, sum)
 }
 
 /// The value of vector node `id` (an operand, a constant, an operation), each node
@@ -318,10 +568,10 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
                         .is_some_and(|n| n.kind == "call");
                     b.mul(x, y, if called { "x sigmoid(x)" } else { "" })?
                 }
-                ("add", Some(x), Some(y)) => b.add(x, y)?,
+                ("add", Some(x), Some(y)) => b.add(x, y, "")?,
                 ("sub", Some(x), Some(y)) => {
                     let negated = b.neg(y)?;
-                    b.add(x, negated)?
+                    b.add(x, negated, "")?
                 }
                 ("neg", Some(x), _) => b.neg(x)?,
                 _ => {
@@ -330,6 +580,16 @@ fn value(b: &mut Body, vs: &Vs, id: VId, done: &mut Vec<(VId, Arg)>) -> Result<A
                         node.kind
                     )))
                 }
+            }
+        }
+        ("call", VValue::Call(f)) if PORTED.contains(f) => {
+            let Some(x) = args(b, done)?.into_iter().next() else {
+                return Err(ChainError::NotPorted(format!("a call of {f} on no value")));
+            };
+            match *f {
+                "exp" => exp(b, x)?,
+                "recip" => recip(b, x)?,
+                _ => sigmoid(b, x)?,
             }
         }
         ("call", VValue::Call(f)) if FUNCTIONS.contains(f) => {
@@ -1653,4 +1913,32 @@ pub fn stream_chain(ir: &KernelIR) -> Result<Chain, ChainError> {
     stream_chains(ir)?
         .pop()
         .ok_or_else(|| ChainError::NotPorted("a kernel of no store".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exps_constants_are_todays_bits() {
+        // Python: (1.442695).hex(), and so on, of lower.exp's literals
+        let hex: Vec<String> = [EXP_INV_LN2, EXP_START, EXP_LN2_HIGH, EXP_LN2_LOW]
+            .into_iter()
+            .chain(EXP_POLYNOMIAL)
+            .map(py::float_hex)
+            .collect();
+        assert_eq!(
+            hex,
+            [
+                "0x1.715475a31a4bep+0",
+                "0x1.6940000c489a7p-10",
+                "-0x1.62e4000067144p-1",
+                "-0x1.7f7d1c1507ed8p-20",
+                "0x1.125edbfd47362p-7",
+                "0x1.555b5a027abaap-5",
+                "0x1.5554500e60400p-3",
+                "0x1.fffff6003311ep-2",
+            ]
+        );
+    }
 }

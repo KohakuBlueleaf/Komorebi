@@ -69,6 +69,8 @@ CASES = [
     ("twice_k", lambda a, k: a * k + k * a, [F, SCALAR], {}),
     # a value takes the register of an operand dying there, not the lowest free one
     ("chained", lambda a, b, c: a * b * c - a, [F, F, F], {}),
+    # two reciprocals share the register of their 2.0
+    ("two_recips", lambda a, b: km.reciprocal(a) * km.reciprocal(b), [F, F], {}),
     ("five", lambda a, b, c, d, e: a * b + (c - d) * e, [F] * 5, {}),
     ("by5", lambda a, j, k, m, n, p: a * j * k * m * n * p, [F, *[SCALAR] * 5], {}),
     (

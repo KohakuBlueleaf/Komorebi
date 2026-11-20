@@ -124,6 +124,10 @@ func t_chained(a: tile<f32>, b: tile<f32>, c: tile<f32>) -> tile<f32> {
     return a * b * c - a
 }
 
+func t_two_recips(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return reciprocal(a) * reciprocal(b)
+}
+
 func t_five(a: tile<f32>, b: tile<f32>, c: tile<f32>, d: tile<f32>, e: tile<f32>) -> tile<f32> {
     return a * b + (c - d) * e
 }
