@@ -204,7 +204,7 @@ fn every_script_gives_the_same_report_on_the_interpreter_and_the_cpu() {
             .unwrap_or_else(|r| panic!("{name}: {r:?}"));
         let built = build::build(&output, &cache)
             .unwrap_or_else(|e| panic!("{name}: {e} (KOMO_IR_NO_CXX=1 skips this test)"));
-        let run = std::process::Command::new(built.driver())
+        let run = std::process::Command::new(build::driver(&built))
             .arg(&path)
             .output()
             .expect("the driver runs");

@@ -8,12 +8,13 @@ use std::path::{Path, PathBuf};
 
 use komorebi_ir::backend::emit::{walk, Event};
 use komorebi_ir::backend::{
-    check_load, check_statement, Backend, CacheKey, LoadStatement, Machine, Output, Provided,
-    Refusal, Statement, Target,
+    check_load, check_statement, ArgWord, Backend, Build, Built, CacheKey, LoadStatement, Machine,
+    Output, Provided, Reads, Refusal, Statement, Target, TILE_NOT_COMPUTED,
 };
 use komorebi_ir::backend::{
     Limit, FORMAT_NOT_COMPUTED, NOT_BUILT, NOT_PROVIDED, NO_IMPLEMENTATION, OVER_LIMIT,
 };
+use komorebi_ir::bytecode::hashes;
 use komorebi_ir::program::body::Body;
 use komorebi_ir::program::notes::Anchor;
 use komorebi_ir::program::Module;
@@ -66,6 +67,8 @@ fn bare() -> Statement {
         limits: Vec::new(),
         formats: Format::ALL.to_vec(),
         formats_document: "docs/ir/backends.md",
+        tile_shapes: Vec::new(),
+        tensor_words: 1,
         hints: Vec::new(),
         progress: Vec::new(),
     }
@@ -81,10 +84,13 @@ impl Backend for Test {
     fn version(&self) -> String {
         "0".into()
     }
+    fn reads(&self) -> Reads {
+        Reads::ProgramAndHints
+    }
     fn statement(&self, _: &Target) -> Statement {
         bare()
     }
-    fn statement_at(&self, _: &Target, machine: &Machine) -> LoadStatement {
+    fn statement_at(&self, _: &Target, machine: &Machine, _: &Built) -> LoadStatement {
         LoadStatement {
             workers: Some(machine.workers),
             islands: Some(machine.islands),
@@ -195,7 +201,25 @@ fn a_limit_and_a_format_are_refused_by_name() {
         "{r:?}"
     );
 
+    let mut s = bare();
+    s.limits = vec![(Limit::ArgumentWords, 3)];
+    s.tensor_words = 2;
+    let r = check_statement(&t02, &s);
+    assert!(
+        r.iter()
+            .any(|r| r.code == OVER_LIMIT && r.what.starts_with("4 argument words")),
+        "{r:?}"
+    );
+
     let t01 = lesson("t01_scale");
+    let mut s = bare();
+    s.tile_shapes = vec![TileShape { rows: 16, cols: 16 }];
+    let r = check_statement(&t01, &s);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0].code, TILE_NOT_COMPUTED);
+    s.tile_shapes.push(TileShape { rows: 32, cols: 32 });
+    assert_eq!(check_statement(&t01, &s), Vec::new());
+
     let mut s = bare();
     s.formats = vec![Format::F32];
     let r = check_statement(&t01, &s);
@@ -208,23 +232,24 @@ fn a_limit_and_a_format_are_refused_by_name() {
 fn islands_and_local_state_are_compared_at_load() {
     let machine = |islands, worker_memory| Machine {
         workers: 8,
+        options: vec![("depth".to_string(), 2)],
         worker_memory,
         islands,
     };
     let t12 = lesson("t12_spread");
-    let at = Test.statement_at(&target(), &machine(1, 1 << 20));
+    let at = Test.statement_at(&target(), &machine(1, 1 << 20), &Built::default());
     let r = check_load(&t12, &Test, &at);
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(r[0].code, NOT_PROVIDED);
     assert!(r[0].what.starts_with("`islands >= 2`"), "{r:?}");
-    let at = Test.statement_at(&target(), &machine(2, 1 << 20));
+    let at = Test.statement_at(&target(), &machine(2, 1 << 20), &Built::default());
     assert_eq!(check_load(&t12, &Test, &at), Vec::new());
 
     // `local_state >= tiles(1)`: one tile of 32 by 32, four bytes an element here.
     let t03 = lesson("t03_gain");
-    let at = Test.statement_at(&target(), &machine(1, 4095));
+    let at = Test.statement_at(&target(), &machine(1, 4095), &Built::default());
     assert_eq!(check_load(&t03, &Test, &at).len(), 1);
-    let at = Test.statement_at(&target(), &machine(1, 4096));
+    let at = Test.statement_at(&target(), &machine(1, 4096), &Built::default());
     assert_eq!(check_load(&t03, &Test, &at), Vec::new());
 }
 
@@ -234,8 +259,9 @@ fn the_cache_key_follows_the_build_hash_the_backend_and_the_target() {
         .into_iter()
         .find(|(n, _)| n == "t13_hinted")
         .expect("t13");
-    let key =
-        |text: &str, version: &str, t: &Target| CacheKey::of(&built(text), "test", version, t);
+    let key = |text: &str, version: &str, t: &Target| {
+        CacheKey::of(&hashes(&built(text)).build, "test", version, t)
+    };
     let t = target();
     let base = key(&text, "1", &t);
     assert_eq!(base, key(&text, "1", &t), "one module, one key");
@@ -255,8 +281,32 @@ fn the_cache_key_follows_the_build_hash_the_backend_and_the_target() {
     assert_eq!(avx.canonical(), "x86_64 avx2");
     assert_ne!(
         base,
-        CacheKey::of(&built(&text), "other", "1", &t),
+        CacheKey::of(&hashes(&built(&text)).build, "other", "1", &t),
         "the backend's name is in the key"
+    );
+}
+
+/// A backend's key covers exactly the parts it says it reads: the program and hints
+/// (a comment changes nothing), or also the positions and names (a comment changes it).
+#[test]
+fn the_key_covers_the_parts_the_backend_reads() {
+    let (_, text) = modules("lessons")
+        .into_iter()
+        .find(|(n, _)| n == "t13_hinted")
+        .expect("t13");
+    let commented = text.replacen("tile [32, 32]\n", "// a comment\ntile [32, 32]\n", 1);
+    let t = target();
+    let (a, b) = (hashes(&built(&text)), hashes(&built(&commented)));
+    let key = |reads: Reads, h| CacheKey::of(&reads.hash(h), "test", "1", &t);
+    assert_eq!(
+        key(Reads::ProgramAndHints, &a),
+        key(Reads::ProgramAndHints, &b)
+    );
+    assert_ne!(key(Reads::Everything, &a), key(Reads::Everything, &b));
+    assert_eq!(
+        CacheKey::for_backend(&built(&text), &Test, &t),
+        CacheKey::of(&a.build, "test", "0", &t),
+        "Test reads the program and hints"
     );
 }
 
@@ -364,6 +414,19 @@ fn the_cpu_output_of_the_first_lesson_builds() {
     assert_eq!(out, cpu.compile(&t01, &target()).expect("again"), "pure");
     assert_eq!(out.entries.len(), 1);
     assert_eq!(out.entries[0].name, "Scale.run");
+    assert_eq!(out.entries[0].number, 0);
+    assert_eq!(
+        out.entries[0].words,
+        [
+            ArgWord::TensorAddress(0),
+            ArgWord::TensorAddress(1),
+            ArgWord::Word(2),
+            ArgWord::Word(3),
+            ArgWord::Word(4),
+        ]
+    );
+    assert!(out.entries[0].bounds.is_empty());
+    assert!(matches!(out.build, Build::Steps(_)));
     let source = out
         .files
         .iter()
@@ -382,8 +445,8 @@ fn the_cpu_output_of_the_first_lesson_builds() {
     let cache = Path::new(env!("CARGO_TARGET_TMPDIR")).join("komo-ir-cache");
     let built = komorebi_ir::backend::cpu::build::build(&out, &cache)
         .unwrap_or_else(|e| panic!("{e} (KOMO_IR_NO_CXX=1 skips this)"));
-    assert!(built.library().is_file());
-    assert!(built.driver().is_file());
+    assert!(komorebi_ir::backend::cpu::build::library(&built).is_file());
+    assert!(komorebi_ir::backend::cpu::build::driver(&built).is_file());
     let again = komorebi_ir::backend::cpu::build::build(&out, &cache).expect("found built");
     assert_eq!(built, again, "built once, then found");
 }

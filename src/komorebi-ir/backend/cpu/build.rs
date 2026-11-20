@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::backend::Output;
+use crate::backend::{Build, Built, Output};
 use crate::bytecode::hash::{hex, sha256};
 
 use super::{DRIVER, LIBRARY};
@@ -30,23 +30,14 @@ pub fn compiler() -> String {
     std::env::var("CXX").unwrap_or_else(|_| "c++".to_string())
 }
 
-/// A built output: the directory that holds the library and the driver.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Built {
-    /// The directory.
-    pub dir: PathBuf,
+/// The shared library of a built output.
+pub fn library(built: &Built) -> PathBuf {
+    built.dir.join(LIBRARY)
 }
 
-impl Built {
-    /// The shared library.
-    pub fn library(&self) -> PathBuf {
-        self.dir.join(LIBRARY)
-    }
-
-    /// The driver.
-    pub fn driver(&self) -> PathBuf {
-        self.dir.join(DRIVER)
-    }
+/// The driver of a built output.
+pub fn driver(built: &Built) -> PathBuf {
+    built.dir.join(DRIVER)
 }
 
 fn write_files(output: &Output, dir: &Path) -> Result<(), String> {
@@ -108,6 +99,9 @@ fn compiler_line(program: &str) -> Result<String, String> {
 
 /// Builds `output` in `cache` with the compiler `compiler()`, or finds it built.
 pub fn build(output: &Output, cache: &Path) -> Result<Built, String> {
+    let Build::Steps(steps) = &output.build else {
+        return Err("the CPU build runs steps, and this output's build is kernels".into());
+    };
     let base = cache.join("cpu").join(output.key.hex());
     let sources = base.join("src");
     if !sources.is_dir() {
@@ -115,7 +109,7 @@ pub fn build(output: &Output, cache: &Path) -> Result<Built, String> {
     }
     let program = compiler();
     let mut key = compiler_line(&program)?.into_bytes();
-    for step in &output.build {
+    for step in steps {
         key.push(0);
         key.extend_from_slice(step.program.as_bytes());
         for arg in &step.args {
@@ -125,11 +119,14 @@ pub fn build(output: &Output, cache: &Path) -> Result<Built, String> {
     }
     let dir = base.join(&hex(&sha256(&key))[..16]);
     if dir.is_dir() {
-        return Ok(Built { dir });
+        return Ok(Built {
+            dir,
+            facts: Vec::new(),
+        });
     }
     place(&dir, |staged| {
         write_files(output, staged)?;
-        for step in &output.build {
+        for step in steps {
             let run = if step.program == "c++" {
                 program.as_str()
             } else {
@@ -150,5 +147,8 @@ pub fn build(output: &Output, cache: &Path) -> Result<Built, String> {
         }
         Ok(())
     })?;
-    Ok(Built { dir })
+    Ok(Built {
+        dir,
+        facts: Vec::new(),
+    })
 }

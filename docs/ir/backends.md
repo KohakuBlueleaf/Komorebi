@@ -1,8 +1,9 @@
 # Backends
 
-A backend turns a checked module into something a machine runs. It reads the program and its
-hints only (the byte code's parts S and H, see [the byte-code file](bytecode.md)); the notes never
-change what it emits, so one build hash names one output on every backend.
+A backend turns a checked module into something a machine runs. Each backend says which parts of
+a [byte-code file](bytecode.md) its output depends on: the program and its hints (S and H), or
+also the positions and names (P), as a backend must whose text carries a script's names and lines.
+Its cache key covers exactly those parts: the build hash, or the full hash.
 
 ## What a backend states
 
@@ -10,25 +11,34 @@ On a target (an architecture and its features) a backend states, before it sees 
 
 - the abilities it provides beyond the base: `group = grid`, `dynamic`, islands, local state;
 - the external implementations it has, by name;
-- its limits on a program's text: handlers in a program, parameters of a handler, run or chain,
-  fields of a message;
-- the formats it computes, and this page's section on how;
+- its limits on a program's text: handlers in a program, parameters or argument words of a
+  handler, run or chain, fields of a message;
+- the formats and the tile shapes it computes, and this page's section on how;
 - the hints it reads, and its guarantees of progress.
 
-On a machine (workers, worker memory, islands) it states, when a program is loaded, what depends
-on that machine: how many workers and islands, how many bytes of state a worker holds, how many
-invocations may be in flight. Islands are a count; nothing names their shape.
+On a machine (workers, worker memory, islands, and the load's named options) it states what
+depends on that machine and on what was built: how many workers and islands, how many bytes of
+state a worker holds, how many invocations may be in flight. Islands are a count; nothing names
+their shape. The order is: compile, build, this statement, then the check at load.
 
 A program that asks for more is refused by name at the construct that asks, before anything is
-emitted (`K960` to `K964`, [the checks](checks.md)). A backend never substitutes other behaviour.
+emitted (`K960` to `K965`, [the checks](checks.md)). A backend never substitutes other behaviour.
 
-Its output is files, the entries an invocation names, and the steps that build them, as data.
-Compiling runs nothing and writes nothing. The output is kept under a key over the build hash,
-the backend's name and version, and the target.
+Its output is files, the entries an invocation names, and its build, as data: steps to run in the
+output's directory, or kernels the machine's runtime compiles at load (a kernel's source, the
+processor it runs on, defines, compile arguments, a tensor's layout among them filled at load,
+and options). Each entry carries the invocation's ABI, the same on every backend: its number,
+its argument words in order (a tensor's address, a tensor's tile count, a parameter's value), and
+the bounds a host checks before sending it. Compiling runs nothing and writes nothing. The
+output's files are kept under a key over the hash of the parts the backend reads, the backend's
+name and version, and the target; what a build makes of them is the build's own cache.
 
 ## The CPU backend
 
-Portable C++17 on a small framework the crate carries, one thread for each worker. It provides no
+Portable C++17 on a small framework the crate carries, one thread for each worker. Its output
+depends on the program and its hints only; its key covers the build hash. Its build is steps; an
+entry's number is its index, a tensor is one argument word, and it has no bounds: the framework
+checks a view itself. It provides no
 ability beyond the base, has no external implementation, and has no limit on a program's text.
 One invocation is in flight at a time.
 

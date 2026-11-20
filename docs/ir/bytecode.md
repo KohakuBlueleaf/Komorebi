@@ -82,8 +82,8 @@ Each is SHA-256 over a tag, the version (u32, little-endian) and its parts:
 | Hash | Tag | Parts | What it means |
 |---|---|---|---|
 | `semantic` | `komorebi-ir semantic` and a zero byte | S | The same program |
-| `build` | `komorebi-ir build` and a zero byte | S, H | The key of a backend's cache: a hint may change what a backend emits; a position or a name may not |
-| `full` | `komorebi-ir full` and a zero byte | S, H, P | This exact file |
+| `build` | `komorebi-ir build` and a zero byte | S, H | The program and what may change how it is built: the key of the cache of a backend that reads S and H only (the CPU backend) |
+| `full` | `komorebi-ir full` and a zero byte | S, H, P | This exact file: the key of the cache of a backend that also reads the positions and names |
 
 A comment added changes only `full`; a hint changed changes `build` and `full`; a declaration
 moved changes all three. A hash is printed as 64 lowercase hex digits.

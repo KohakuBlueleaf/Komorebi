@@ -10,11 +10,12 @@ pub mod emit;
 
 use crate::bytecode::hash::{hashes, hex};
 use crate::program::Module;
+use crate::types::Type;
 use crate::types::{Entry, Format, HandlerId, ProgramId, TileShape};
 
 use super::{
-    check_statement, ArgKind, Backend, CacheKey, EntryPoint, LoadStatement, Machine, Output,
-    Refusal, Statement, Step, Target,
+    check_statement, ArgKind, ArgWord, Backend, Build, Built, CacheKey, EntryPoint, LoadStatement,
+    Machine, Output, Reads, Refusal, Statement, Step, Target,
 };
 
 /// The framework's files, as the output carries them.
@@ -49,6 +50,10 @@ impl Backend for Cpu {
         format!("{}+{}", env!("CARGO_PKG_VERSION"), hex(&framework_hash()))
     }
 
+    fn reads(&self) -> Reads {
+        Reads::ProgramAndHints
+    }
+
     fn statement(&self, _target: &Target) -> Statement {
         Statement {
             backend: "cpu",
@@ -57,12 +62,14 @@ impl Backend for Cpu {
             limits: Vec::new(),
             formats: vec![Format::U32, Format::F32, Format::Bf16],
             formats_document: "docs/ir/backends.md",
+            tile_shapes: Vec::new(),
+            tensor_words: 1,
             hints: Vec::new(),
             progress: vec!["every worker of a group runs on its own thread"],
         }
     }
 
-    fn statement_at(&self, _target: &Target, machine: &Machine) -> LoadStatement {
+    fn statement_at(&self, _target: &Target, machine: &Machine, _built: &Built) -> LoadStatement {
         LoadStatement {
             workers: Some(machine.workers),
             islands: Some(1),
@@ -103,22 +110,34 @@ impl Backend for Cpu {
         let mut entries = Vec::new();
         for (p, prog) in program.programs.iter().enumerate() {
             for (h, handler) in prog.handlers.iter().enumerate() {
+                let words = handler
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| match t {
+                        Type::Tensor(..) => ArgWord::TensorAddress(i),
+                        _ => ArgWord::Word(i),
+                    })
+                    .collect();
                 entries.push(EntryPoint {
                     name: format!("{}.{}", prog.name, handler.name),
                     entry: Entry::Handler(ProgramId(p as u32), HandlerId(h as u32)),
+                    number: entries.len() as u32,
                     symbol: format!("p{p}_h{h}"),
                     params: handler.params.iter().filter_map(ArgKind::of).collect(),
+                    words,
+                    bounds: Vec::new(),
                 });
             }
         }
         Ok(Output {
-            key: CacheKey::of(program, self.name(), &self.version(), target),
+            key: CacheKey::for_backend(program, self, target),
             files,
             entries,
-            build: vec![
+            build: Build::Steps(vec![
                 compiler_step(&["-shared", SOURCE, "pool.cpp", "-o", LIBRARY]),
                 compiler_step(&[SOURCE, "pool.cpp", "driver.cpp", "-o", DRIVER]),
-            ],
+            ]),
         })
     }
 }

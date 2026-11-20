@@ -5,21 +5,25 @@
 //!
 //! What a backend states has two halves. `Backend::statement` is what is known at
 //! compile, from the target alone: the abilities it provides, its implementations, the
-//! limits a program's text can exceed, the formats it computes, the hints it reads.
-//! `Backend::statement_at` is what is known only on a machine at load: how many workers
-//! and islands, how much worker memory for state, how many invocations in flight.
-//! `check` compares a program with the first; `check_at` with the second.
+//! limits a program's text can exceed, the formats and tile shapes it computes, the
+//! hints it reads. `Backend::statement_at` is what is known only on a machine at load,
+//! and after the build: how many workers and islands, how much worker memory for state,
+//! how many invocations in flight. The order is compile, build, `statement_at`, then
+//! `check_load`; `check` compares a program with the first half before compiling.
 //!
-//! The text a backend emits depends on the program (S) and its hints (H) only, never on
-//! a position or a name of the notes' positions (P): the cache key covers S and H, so
-//! two files with one key must give one output.
+//! A backend says which parts of a byte-code file its output depends on (`Reads`): the
+//! program and its hints (S, H), or also the positions and names (P), as a backend
+//! whose text must carry a script's names and lines does. Its cache key covers exactly
+//! those parts, so two files with one key give one output.
 
 pub mod cpu;
 pub mod emit;
 
 use std::collections::BTreeSet;
 
-use crate::bytecode::hash::{hashes, hex, sha256};
+use std::path::PathBuf;
+
+use crate::bytecode::hash::{hashes, hex, sha256, Hashes};
 use crate::program::derive::Cause;
 use crate::program::notes::Anchor;
 use crate::program::Module;
@@ -36,6 +40,8 @@ pub const OVER_LIMIT: &str = "K962";
 pub const FORMAT_NOT_COMPUTED: &str = "K963";
 /// A construct the backend does not emit yet.
 pub const NOT_BUILT: &str = "K964";
+/// A backend does not compute on the module's tile shape.
+pub const TILE_NOT_COMPUTED: &str = "K965";
 
 /// The machine a compile is for: only what the output depends on, so that two machines
 /// that differ in nothing else share one output.
@@ -58,7 +64,7 @@ impl Target {
 
 /// What a machine is at load, beyond its target: facts the output reads when it is
 /// loaded and never at compile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Machine {
     /// Its workers.
     pub workers: u64,
@@ -66,6 +72,9 @@ pub struct Machine {
     pub worker_memory: u64,
     /// Its islands.
     pub islands: u64,
+    /// The load's named options (`depth`, `max_live`), as data: what each means is the
+    /// backend's.
+    pub options: Vec<(String, u64)>,
 }
 
 /// An ability beyond the base six that a backend provides on a target. Its amounts, if
@@ -89,6 +98,9 @@ pub enum Limit {
     HandlersPerProgram,
     /// The parameters of one handler, run or chain.
     Parameters,
+    /// The argument words of one handler, run or chain: a tensor takes the statement's
+    /// `tensor_words`, a scalar of 64 bits two, every other parameter one.
+    ArgumentWords,
     /// The fields of one message type.
     MessageFields,
 }
@@ -98,6 +110,7 @@ impl Limit {
         match self {
             Limit::HandlersPerProgram => "handlers in a program",
             Limit::Parameters => "parameters of a handler, run or chain",
+            Limit::ArgumentWords => "argument words of a handler, run or chain",
             Limit::MessageFields => "fields of a message",
         }
     }
@@ -118,6 +131,10 @@ pub struct Statement {
     pub formats: Vec<Format>,
     /// Where that document is: a page of the docs.
     pub formats_document: &'static str,
+    /// The tile shapes it computes on; none listed means any.
+    pub tile_shapes: Vec<TileShape>,
+    /// The argument words one tensor parameter takes (`Limit::ArgumentWords`).
+    pub tensor_words: u64,
     /// The hints it reads, by dotted name (`cpu.vector`). Every other hint is ignored.
     pub hints: Vec<&'static str>,
     /// Its forward-progress guarantees, as sentences.
@@ -174,17 +191,60 @@ impl ArgKind {
     }
 }
 
-/// One thing of the module an invocation names, in the output.
+/// One word of an invocation's arguments, by the parameter it comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgWord {
+    /// The address of the tensor passed as parameter `p`.
+    TensorAddress(usize),
+    /// The tile count of the tensor passed as parameter `p`.
+    TensorTiles(usize),
+    /// The value of parameter `p`: a scalar's bits (a float as its bits), a boolean as
+    /// 0 or 1.
+    Word(usize),
+}
+
+/// A number computed from an invocation's argument words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expr {
+    /// Argument word `i` (an index into `EntryPoint.words`).
+    Word(usize),
+    /// A constant.
+    Const(u64),
+    /// A sum.
+    Add(Box<Expr>, Box<Expr>),
+}
+
+/// What a host checks before it sends an invocation: tiles `first` to
+/// `first + count - 1` of the tensor passed as parameter `tensor` lie in it. One that
+/// does not ends the invocation failed (`view_end`) without sending it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bound {
+    /// The tensor's parameter.
+    pub tensor: usize,
+    /// The first tile.
+    pub first: Expr,
+    /// The tiles.
+    pub count: Expr,
+}
+
+/// One thing of the module an invocation names, in the output: the invocation ABI, the
+/// same on every backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryPoint {
     /// `Program.handler`.
     pub name: String,
     /// What it is.
     pub entry: Entry,
-    /// Its symbol in the output.
+    /// Its number in an invocation's command.
+    pub number: u32,
+    /// Its symbol in the output, where the backend has symbols.
     pub symbol: String,
     /// Its parameters, in order.
     pub params: Vec<ArgKind>,
+    /// Its argument words, in word order.
+    pub words: Vec<ArgWord>,
+    /// What a host checks before sending it; none on a backend that checks itself.
+    pub bounds: Vec<Bound>,
 }
 
 /// One step of building an output: a program and its arguments, run in the directory
@@ -197,6 +257,53 @@ pub struct Step {
     pub args: Vec<String>,
 }
 
+/// The processor of a core a kernel runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Processor {
+    /// The one that reads into the core.
+    Reader,
+    /// The one that writes out of it.
+    Writer,
+    /// The one that computes.
+    Compute,
+}
+
+/// A compile-time argument of a kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompileArg {
+    /// A word known at compile.
+    Word(u32),
+    /// The layout of the tensor passed as parameter `param`, filled at load.
+    TensorLayout {
+        /// The parameter.
+        param: usize,
+    },
+}
+
+/// A kernel for the machine's runtime to compile at load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kernel {
+    /// Its source: a path in the output's files.
+    pub source: String,
+    /// The processor it runs on.
+    pub processor: Processor,
+    /// Its defines, by name.
+    pub defines: Vec<(String, String)>,
+    /// Its compile-time arguments, in order.
+    pub args: Vec<CompileArg>,
+    /// Its compile options, by name.
+    pub options: Vec<(String, String)>,
+}
+
+/// How an output is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Build {
+    /// Programs run in order in the directory the output's files are written to.
+    Steps(Vec<Step>),
+    /// Kernels the machine's runtime compiles at load.
+    Kernels(Vec<Kernel>),
+}
+
 /// A backend's output: files, the entries, and how to build them; nothing is run and
 /// nothing written to make it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,21 +314,57 @@ pub struct Output {
     pub files: Vec<(String, Vec<u8>)>,
     /// The entries, in the module's order.
     pub entries: Vec<EntryPoint>,
-    /// The build, in order.
-    pub build: Vec<Step>,
+    /// The build.
+    pub build: Build,
 }
 
-/// The key of a backend's output in a cache: SHA-256 over a tag, the module's build
-/// hash (its program and hints), the backend's name and version, and the target.
+/// What a build made, as `statement_at` is given it: the directory, and the facts the
+/// backend measured of it by name (a kernel's bytes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Built {
+    /// The directory that holds what was built.
+    pub dir: PathBuf,
+    /// Its facts, by name.
+    pub facts: Vec<(String, u64)>,
+}
+
+/// The parts of a byte-code file a backend's output depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    /// The program and its hints (S, H): the build hash.
+    ProgramAndHints,
+    /// Also the positions and names (P): the full hash.
+    Everything,
+}
+
+impl Reads {
+    /// The hash that covers these parts.
+    pub fn hash(self, h: &Hashes) -> [u8; 32] {
+        match self {
+            Reads::ProgramAndHints => h.build,
+            Reads::Everything => h.full,
+        }
+    }
+}
+
+/// The key of a backend's output files in a cache: SHA-256 over a tag, the hash of the
+/// parts of the module the backend reads (`Reads`), the backend's name and version,
+/// and the target. What a build makes of the files is the build's own cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CacheKey(pub [u8; 32]);
 
 impl CacheKey {
-    /// The key of `module`'s output from a backend of this name and version on
-    /// `target`.
-    pub fn of(module: &Module, backend: &str, version: &str, target: &Target) -> CacheKey {
+    /// The key of `backend`'s output for `module` on `target`.
+    pub fn for_backend(module: &Module, backend: &dyn Backend, target: &Target) -> CacheKey {
+        let hash = backend.reads().hash(&hashes(module));
+        CacheKey::of(&hash, backend.name(), &backend.version(), target)
+    }
+
+    /// The key over `hash` (the build hash or the full hash, as the backend reads),
+    /// from a backend of this name and version on `target`.
+    pub fn of(hash: &[u8; 32], backend: &str, version: &str, target: &Target) -> CacheKey {
         let mut bytes = b"komorebi-ir backend\0".to_vec();
-        bytes.extend_from_slice(&hashes(module).build);
+        bytes.extend_from_slice(hash);
         for part in [backend, version, &target.canonical()] {
             bytes.extend_from_slice(part.as_bytes());
             bytes.push(0);
@@ -241,10 +384,12 @@ pub trait Backend {
     fn name(&self) -> &'static str;
     /// Its version: part of every cache key, so a change to what it emits changes it.
     fn version(&self) -> String;
+    /// The parts of a byte-code file its output depends on; its key covers them.
+    fn reads(&self) -> Reads;
     /// What it states on a target, known at compile.
     fn statement(&self, target: &Target) -> Statement;
-    /// What it states on a machine at load.
-    fn statement_at(&self, target: &Target, machine: &Machine) -> LoadStatement;
+    /// What it states on a machine at load, after the build, given what was built.
+    fn statement_at(&self, target: &Target, machine: &Machine, built: &Built) -> LoadStatement;
     /// The bytes a tile of this format and shape takes in its worker memory: how it
     /// stores a tile is its own (a format is a notation).
     fn tile_bytes(&self, format: Format, shape: TileShape) -> u64;
@@ -288,7 +433,8 @@ fn ability_text(a: &Ability) -> String {
 
 /// The shared half of a backend's check at compile: every requirement the statement
 /// does not provide (`K960`), every implementation it lacks (`K961`), every limit the
-/// program's text exceeds (`K962`), every declared format it does not compute (`K963`).
+/// program's text exceeds (`K962`), every declared format it does not compute (`K963`),
+/// and a tile shape it does not compute on (`K965`).
 pub fn check_statement(module: &Module, s: &Statement) -> Vec<Refusal> {
     let mut out = Vec::new();
     for r in &module.requirements {
@@ -325,6 +471,15 @@ pub fn check_statement(module: &Module, s: &Statement) -> Vec<Refusal> {
             });
         }
     }
+    let words = |list: &[Type]| -> usize {
+        list.iter()
+            .map(|t| match t {
+                Type::Tensor(..) => s.tensor_words as usize,
+                Type::Scalar(sc) if sc.bits() > 32 => 2,
+                _ => 1,
+            })
+            .sum()
+    };
     let limit = |l: Limit| s.limits.iter().find(|(k, _)| *k == l).map(|(_, n)| *n);
     let over = |l: Limit, count: usize, at: Anchor, out: &mut Vec<Refusal>| {
         if let Some(n) = limit(l) {
@@ -349,22 +504,36 @@ pub fn check_statement(module: &Module, s: &Statement) -> Vec<Refusal> {
             Anchor::Program(pid),
             &mut out,
         );
+        let params = |list: &[Type], at: Anchor, out: &mut Vec<Refusal>| {
+            over(Limit::Parameters, list.len(), at, out);
+            over(Limit::ArgumentWords, words(list), at, out);
+        };
         for (h, handler) in program.handlers.iter().enumerate() {
             let at = Anchor::Handler(pid, crate::types::HandlerId(h as u32));
-            over(Limit::Parameters, handler.params.len(), at, &mut out);
+            params(&handler.params, at, &mut out);
         }
         for (r, run) in program.runs.iter().enumerate() {
             let at = Anchor::Run(pid, crate::types::RunId(r as u32));
-            over(Limit::Parameters, run.params.len(), at, &mut out);
+            params(&run.params, at, &mut out);
         }
         for (c, chain) in program.chains.iter().enumerate() {
             let at = Anchor::Chain(pid, crate::types::ChainId(c as u32));
-            over(Limit::Parameters, chain.params.len(), at, &mut out);
+            params(&chain.params, at, &mut out);
         }
     }
     for (m, message) in module.messages.iter().enumerate() {
         let at = Anchor::Message(crate::types::MessageId(m as u32));
         over(Limit::MessageFields, message.fields.len(), at, &mut out);
+    }
+    if !s.tile_shapes.is_empty() && !s.tile_shapes.contains(&module.tile) {
+        out.push(Refusal {
+            code: TILE_NOT_COMPUTED,
+            what: format!(
+                "the {} backend does not compute on tiles of {} by {}",
+                s.backend, module.tile.rows, module.tile.cols
+            ),
+            at: Some(Anchor::Module),
+        });
     }
     for f in &module.formats {
         if !s.formats.contains(f) {
