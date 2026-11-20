@@ -883,6 +883,35 @@ a core, `AAAB`) keep every half at a multiple of 16 pages.
 
 Described in [Programs written as classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use).
 
+### An overlay loaded on Blackhole with the reader's branch predictor on
+
+**The hazard.** On Blackhole, a core whose reader (its BRISC) loads an overlay into a
+slot could stall just after the load: the kernel does not go on, the dispatcher gives
+the command up and reloads the core, and the run goes on. It was seen with
+`examples/17_leader_overlay` at a kernel buffer of 192,192 B: with the slots at two of
+the addresses tried, 13 and 22 of 40 runs had a core given up; at the other addresses
+none. Which addresses fail follows where the reader's code and the slots lie, down to
+the place of one instruction. What is known: the fault needs the BRISC's branch
+predictor to be on while the slot's new code is fetched and waited for. With the
+predictor off from before the first fetch until after the load, 0 of 160 runs at six
+slot addresses were given up, where the unchanged kernel beside them was given up in 35
+of 80; with it off only from the cache invalidate on, 6 of 40 still were. What is not
+known: the mechanism inside the core. No stall of a processor that only follows a load
+(the NCRISC, the TRISCs) has been seen, and they are not changed.
+
+**The rule.** A reader on Blackhole loads an overlay with the predictor off:
+`load_tile` sets `cfg0.DisBp` (CSR `0x7c0`, bit 1) before its first fetch and clears it
+33 instructions after the load, on every way out. The library does this in one
+out-of-line function a kernel; a hand-written reader that fetches code into a slot
+itself must do the same. The firmware clears the bit at each start of a core, and the
+bit read clear on 119 of 119 cores after a run.
+
+**The cost.** About 2 percent a round on that example, which loads an overlay nearly
+every round (10.589 to 10.823 µs a round); a program that loads none pays nothing. A
+kernel that loads overlays grows by the window: 336 B and 192 B on the two programs of
+the bounds check (`experiments/language/bounds`), whose kernel buffers went up to the next
+64 B.
+
 ## Tile formats and the matrix unit
 
 ### A compute loop that does not check the stop word
