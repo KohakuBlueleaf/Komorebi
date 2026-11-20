@@ -71,11 +71,37 @@ pub struct Machine {
     pub workers: u64,
     /// The bytes of one worker's memory.
     pub worker_memory: u64,
-    /// Its islands.
-    pub islands: u64,
+    /// Its islands, as a graph.
+    pub islands: IslandGraph,
     /// The load's named options (`depth`, `max_live`), as data: what each means is the
     /// backend's.
     pub options: Vec<(String, u64)>,
+}
+
+/// A machine's islands as a graph: which workers each holds and the connections that
+/// exist between them (any connected set: nothing names a shape or a count).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IslandGraph {
+    /// The workers each island holds, in order: island 0 the first `sizes[0]`, island
+    /// 1 the next `sizes[1]`, and so on.
+    pub sizes: Vec<u64>,
+    /// The connections between islands, by number, each both ways.
+    pub links: Vec<(u32, u32)>,
+}
+
+impl IslandGraph {
+    /// One island holding `workers` workers.
+    pub fn one(workers: u64) -> IslandGraph {
+        IslandGraph {
+            sizes: vec![workers],
+            links: Vec::new(),
+        }
+    }
+
+    /// How many islands.
+    pub fn count(&self) -> u64 {
+        self.sizes.len() as u64
+    }
 }
 
 /// An ability beyond the base six that a backend provides on a target. Its amounts, if

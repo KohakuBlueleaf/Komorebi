@@ -15,7 +15,8 @@ use crate::api;
 use crate::api::origin::{Given, Mapped, Place, Refused};
 use crate::backend::tensix::load::LoadTensor;
 use crate::backend::{
-    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, Kernel, Processor, Setting,
+    ArgKind, ArgWord, Build, CompileArg, EntryPoint, Expr, IslandGraph, Kernel, Machine, Processor,
+    Setting,
 };
 use crate::bytecode::{self, Refusal};
 use crate::deep::on_deep_stack;
@@ -508,17 +509,23 @@ fn setting<'py>(py: Python<'py>, value: &Setting) -> PyResult<Bound<'py, PyAny>>
 /// A tensor a load is given: (pages, layout words, DRAM page bytes or None).
 type TensorRow = (u64, Vec<u64>, Option<u64>);
 
+/// The machine a load is on: (workers, a worker's memory bytes, its islands (each
+/// one's workers, the connections), the named options).
+type MachineRow = (u64, u64, (Vec<u64>, Vec<(u32, u32)>), Vec<(String, u64)>);
+
 /// A load on Tensix (`api::load`) of a module given its tensors by parameter name, on
 /// `chip` when one is named: (thread header's name, its text, kernels, buffers); a
 /// kernel (source, processor, defines, compile arguments, options), a buffer (index,
-/// the loader's format name, page bytes, pages, the pair's other half).
+/// the loader's format name, page bytes, pages, the pair's other half); on `machine`
+/// when one is given (none: one island holding every worker).
 #[pyfunction]
-#[pyo3(signature = (program, tensors, chip=None))]
+#[pyo3(signature = (program, tensors, chip=None, machine=None))]
 fn load<'py>(
     py: Python<'py>,
     program: &Bound<'py, PyAny>,
     tensors: Vec<(String, TensorRow)>,
     chip: Option<&str>,
+    machine: Option<MachineRow>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let m = module(py, program)?;
     let given: Vec<(String, LoadTensor)> = tensors
@@ -532,7 +539,15 @@ fn load<'py>(
             (name, tensor)
         })
         .collect();
-    let loaded = match api::load::load(&m, &given, chip) {
+    let machine = machine.map(
+        |(workers, worker_memory, (sizes, links), options)| Machine {
+            workers,
+            worker_memory,
+            islands: IslandGraph { sizes, links },
+            options,
+        },
+    );
+    let loaded = match api::load::load(&m, &given, chip, machine.as_ref()) {
         Ok(loaded) => loaded,
         Err(refusals) => {
             let rows = refusals

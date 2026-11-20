@@ -2,14 +2,16 @@
 //! header an X280 thread includes to submit the program's commands
 //! (`<program>_thread.h`, today's `dsl/thread/class_thread.py`, `header_text`). It
 //! holds each tensor's page count and kind, which a compile does not know; so it is
-//! not one of the compiled files and not in the compile's key.
+//! not one of the compiled files and not in the compile's key. A load also checks the
+//! machine it is on against what the compile sized (`machine`).
 
-use crate::backend::{CompileArg, Kernel, Processor, Refusal, Setting, Target, NOT_BUILT};
-use crate::program::Module;
+use crate::backend::{CompileArg, Kernel, Machine, Processor, Refusal, Setting, Target, NOT_BUILT};
+use crate::program::notes::Anchor;
+use crate::program::{BodyRef, Module};
 
 use super::chip::Chip;
 
-use super::plan::{Plan, WordKind};
+use super::plan::{Plan, Shape, WordKind};
 use super::Lines;
 
 /// A tensor a load is given for a tensor parameter, as the header reads it.
@@ -86,6 +88,41 @@ pub fn thread_header(module: &Module, tensors: &[LoadTensor]) -> Result<String, 
         }]);
     }
     Ok(text(name, &plans, &names, tensors, &lines))
+}
+
+/// What a load refuses of `machine` for `module`: a machine of more than one island
+/// when a reduce's arrivals are sized for one (a tree's rounds; today's make sizes
+/// them from a session's graph, which this backend does not read yet).
+pub fn machine(module: &Module, machine: &Machine) -> Result<(), Vec<Refusal>> {
+    let (plans, _) = super::planned(module)?;
+    let islands = machine.islands.count();
+    if islands <= 1 {
+        return Ok(());
+    }
+    let refusals: Vec<Refusal> = plans
+        .iter()
+        .filter_map(|plan| match &plan.shape {
+            Shape::Summed(sum) => Some(Refusal {
+                code: NOT_BUILT,
+                what: format!(
+                    "a reduce's arrivals are sized for one island ({} slots, a tree's \
+                     rounds); a load on a machine of {islands} islands does not size them \
+                     from the machine's graph yet",
+                    super::TREE_ROUNDS
+                ),
+                at: Some(Anchor::Inst(
+                    BodyRef::Handler(plan.program, plan.handler),
+                    sum.reduce,
+                )),
+            }),
+            Shape::Mapped { .. } => None,
+        })
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals)
+    }
 }
 
 /// A kernel as a load hands it to the chip's runtime: a compiled `Kernel` with each

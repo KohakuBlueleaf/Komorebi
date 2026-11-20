@@ -527,7 +527,7 @@ fn the_statement_is_the_chips() {
     let machine = komorebi_ir::backend::Machine {
         workers: 120,
         worker_memory: 1 << 20,
-        islands: 1,
+        islands: komorebi_ir::backend::IslandGraph::one(120),
         options: vec![("depth".to_string(), 100)],
     };
     let at = Tensix.statement_at(&target("blackhole"), &machine, &Default::default());
@@ -587,7 +587,7 @@ fn a_load_takes_its_tensors_by_name_and_names_formats_as_the_loader_does() {
     let given = |names: &[&str]| -> Vec<(String, LoadTensor)> {
         names.iter().map(|n| (n.to_string(), t.clone())).collect()
     };
-    let loaded = load(&module, &given(&["y", "x"]), Some("wormhole_b0")).expect("loads");
+    let loaded = load(&module, &given(&["y", "x"]), Some("wormhole_b0"), None).expect("loads");
     assert_eq!(loaded.thread.0, "scale_thread.h");
     let ordered = [t.clone(), t.clone()];
     assert_eq!(
@@ -596,7 +596,8 @@ fn a_load_takes_its_tensors_by_name_and_names_formats_as_the_loader_does() {
     );
     assert!(loaded.buffers.iter().all(|b| b.dtype == "bfloat16"));
     assert_eq!(loaded.kernels[0].args, [2, 2048, 2, 2048]);
-    let refused = |names: &[&str], chip| load(&module, &given(names), chip).expect_err("refused");
+    let refused =
+        |names: &[&str], chip| load(&module, &given(names), chip, None).expect_err("refused");
     assert!(refused(&["x"], None)[0]
         .what
         .contains("no tensor given for `y`"));
@@ -641,4 +642,50 @@ fn a_sum_other_than_program_2s_is_refused_by_name() {
          if worker.is_leader {\n            store t.tiles(0, 1) <- whole\n        }",
     );
     assert!(after.contains("lines after its leader's store"), "{after}");
+}
+
+#[test]
+fn a_load_on_islands_of_a_reduce_sized_for_one_is_refused_by_name() {
+    use komorebi_ir::api::load::load;
+    use komorebi_ir::backend::{IslandGraph, Machine};
+    let machine = |sizes: Vec<u64>| Machine {
+        workers: sizes.iter().sum(),
+        worker_memory: 1 << 20,
+        islands: IslandGraph {
+            links: (1..sizes.len() as u32).map(|i| (i - 1, i)).collect(),
+            sizes,
+        },
+        options: Vec::new(),
+    };
+    let tensor = |pages| LoadTensor {
+        pages,
+        layout: vec![2, 4096],
+        dram_page: None,
+    };
+    let source = std::fs::read_to_string(here().join("steps_sum.kom")).expect("the .kom");
+    let sum = komorebi_ir::api::build(&source).unwrap_or_else(|d| panic!("{d:?}"));
+    let given = vec![("s".to_string(), tensor(768)), ("t".to_string(), tensor(1))];
+    // two islands: the arrivals' 7 slots are one island's, refused by name
+    let refused = load(&sum, &given, None, Some(&machine(vec![6, 6]))).expect_err("refused");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].code, "K964");
+    assert!(
+        refused[0].what.contains(
+            "a reduce's arrivals are sized for one island (7 slots, a tree's rounds); a load \
+             on a machine of 2 islands does not size them from the machine's graph yet"
+        ),
+        "{refused:?}"
+    );
+    // one island, or none given (one island of every worker): the same load as today
+    let one = load(&sum, &given, None, Some(&machine(vec![12]))).expect("loads");
+    assert_eq!(one, load(&sum, &given, None, None).expect("loads"));
+    // a program with no reduce loads on two islands
+    let scale = edited("module scale", "module scale");
+    let t = LoadTensor {
+        pages: 2048,
+        layout: vec![2, 2048],
+        dram_page: None,
+    };
+    let both = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
+    load(&scale, &both, None, Some(&machine(vec![6, 6]))).expect("no reduce: loads");
 }

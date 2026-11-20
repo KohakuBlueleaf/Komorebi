@@ -5,7 +5,7 @@
 
 use crate::backend::tensix::load::{self, LoadTensor, LoadedKernel};
 use crate::backend::tensix::{chip, Tensix};
-use crate::backend::{Backend, Build, Refusal, Target, NOT_BUILT};
+use crate::backend::{Backend, Build, Machine, Refusal, Target, NOT_BUILT};
 use crate::program::Module;
 
 /// A buffer as the loader makes it.
@@ -47,12 +47,14 @@ fn refused(what: String) -> Vec<Refusal> {
 
 /// The load of `module` given `tensors` by parameter name, each name once and every
 /// tensor parameter named; on `chip` (`blackhole`, `wormhole_b0`) when one is named, a
-/// chip of another name refused. A load names no chip when nothing is loaded yet (a
-/// make with no session).
+/// chip of another name refused; on `machine`, what the compile sized checked against
+/// its islands (`load::machine`), none one island holding every worker. A load names
+/// no chip when nothing is loaded yet (a make with no session).
 pub fn load(
     module: &Module,
     tensors: &[(String, LoadTensor)],
     chip: Option<&str>,
+    machine: Option<&Machine>,
 ) -> Result<Loaded, Vec<Refusal>> {
     if let Some(arch) = chip {
         let target = Target {
@@ -88,6 +90,9 @@ pub fn load(
             Some((_, t)) => ordered.push(t.clone()),
             None => return Err(refused(format!("no tensor given for `{name}`"))),
         }
+    }
+    if let Some(machine) = machine {
+        load::machine(module, machine)?;
     }
     let header = load::thread_header(module, &ordered)?;
     let kernels = load::kernels(module, kernels, &ordered)?;

@@ -214,7 +214,9 @@ def program(cls, **make):
     tensors = {
         name: load_tensor(tensor) for name, tensor in given_tensors(cls, make).items()
     }
-    loaded = komorebi_ir.load(compiled, tensors)
+    # no machine: one island holding every worker (a make's session= is refused by
+    # the walk, so none is known here)
+    loaded = komorebi_ir.load(compiled, tensors, machine=None)
     files = {name: data.decode() for name, data in out.files}
     files[loaded.thread_name] = loaded.thread
     name = cls.__name__.lower()

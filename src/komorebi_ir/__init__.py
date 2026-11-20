@@ -224,6 +224,24 @@ class LoadBuffer(NamedTuple):
     unpack: str | None
 
 
+class Islands(NamedTuple):
+    """A machine's islands as a graph: the workers each holds, in order (island 0 the
+    first ``sizes[0]``), and the connections between them, by number, each both ways."""
+
+    sizes: list[int]
+    links: list[tuple[int, int]]
+
+
+class Machine(NamedTuple):
+    """The machine a load is on: its workers, a worker's memory in bytes, its islands
+    and the load's named options (``depth``, ``max_live``)."""
+
+    workers: int
+    worker_memory: int
+    islands: Islands
+    options: list[tuple[str, int]]
+
+
 class Loaded(NamedTuple):
     """What a load on Tensix makes from its tensors: the thread header (its name and
     text), the kernels and the buffers."""
@@ -235,15 +253,22 @@ class Loaded(NamedTuple):
 
 
 def load(
-    program: str | bytes, tensors: dict[str, LoadTensor], chip: str | None = None
+    program: str | bytes,
+    tensors: dict[str, LoadTensor],
+    chip: str | None = None,
+    machine: Machine | None = None,
 ) -> Loaded:
     """A load of a module on Tensix given a tensor for each tensor parameter, by name;
-    ``chip`` (``blackhole``, ``wormhole_b0``) checked when named. Nothing is written
-    or run."""
+    ``chip`` (``blackhole``, ``wormhole_b0``) checked when named; on ``machine`` (None:
+    one island holding every worker). Nothing is written or run."""
     rows = [
         (name, (t.pages, list(t.layout), t.dram_page)) for name, t in tensors.items()
     ]
-    name, text, kernels, buffers = _rs.load(program, rows, chip)
+    given = None
+    if machine is not None:
+        islands = (list(machine.islands.sizes), list(machine.islands.links))
+        given = (machine.workers, machine.worker_memory, islands, list(machine.options))
+    name, text, kernels, buffers = _rs.load(program, rows, chip, given)
     return Loaded(
         name,
         text,
@@ -259,11 +284,13 @@ __all__ = [
     "EntryPoint",
     "Hashes",
     "IrError",
+    "Islands",
     "Kernel",
     "LoadBuffer",
     "LoadTensor",
     "Loaded",
     "LoadedKernel",
+    "Machine",
     "Origin",
     "Place",
     "Requirement",

@@ -233,3 +233,19 @@ def test_load_refuses_by_name():
             ir.load(T1, tensors)
     with pytest.raises(ir.IrError, match="blackhole or wormhole_b0, not `tensix`"):
         ir.load(T1, {"x": x, "y": x}, chip="tensix")
+
+
+def test_load_on_islands_refuses_a_reduce_sized_for_one():
+    steps = (ROOT / "tests" / "ir" / "tensix" / "steps_sum.kom").read_text()
+    s, t = ir.LoadTensor(768, [2, 4096]), ir.LoadTensor(1, [2, 4096])
+
+    def machine(*sizes):
+        links = [(i - 1, i) for i in range(1, len(sizes))]
+        return ir.Machine(sum(sizes), 1 << 20, ir.Islands(list(sizes), links), [])
+
+    with pytest.raises(ir.IrError, match="a load on a machine of 2 islands"):
+        ir.load(steps, {"s": s, "t": t}, machine=machine(6, 6))
+    one = ir.load(steps, {"s": s, "t": t}, machine=machine(12))
+    assert one == ir.load(steps, {"s": s, "t": t})
+    x = ir.LoadTensor(2048, [2, 2048])
+    ir.load(T1, {"x": x, "y": x}, machine=machine(6, 6))

@@ -105,7 +105,9 @@ the group's totals, and the leader stores the result in one tile. Which worker i
 the backend's statement, not the language's: on Tensix it is rank 0 of the group
 (`km_rank == 0`). A `reduce` whose combine is commutative leaves the grouping and order to the
 backend. On Tensix that is a tree over the NoC, as today's `form="tree"`. Its arrival buffer holds
-7 slots of one tile, one a round, on one island. Its out buffer holds two tiles. Compute unpacks
+7 slots of one tile, one a round, on one island. A load on a machine of more than one island is
+refused by name for such a program until the slots are sized from the machine's graph at load.
+Its out buffer holds two tiles. Compute unpacks
 the read pair and the arrivals to Dst as float32, unrounded (a buffer's `unpack`, today's
 `unpack_to_dest_mode`). A reduce with another combine is refused. Everything else is refused with
 `K964`, by name.
@@ -147,13 +149,16 @@ The result, `Emitted`, holds:
 A backend's refusal raises `IrError` with each refusal's code, and so does a backend name that
 is not one of these two.
 
-`komorebi_ir.load(program, tensors, chip=None)` gives what a load on Tensix makes. Its
-`tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words and its page
-in DRAM. The result holds:
+`komorebi_ir.load(program, tensors, chip=None, machine=None)` gives what a load on Tensix makes.
+Its `tensors` are `LoadTensor`s by parameter name, each with its pages, its layout words and its
+page in DRAM. Its `machine` is a `Machine`: its workers, a worker's memory, its islands as a graph
+(`Islands`: the workers each holds, in order, and the connections between them) and the load's
+options. With none, the machine is one island holding every worker. The result holds:
 - the thread header, its name and text;
 - the kernels, each tensor's layout among the compile arguments;
 - the buffers, each format by the name today's loader gives it (`bfloat16`; the block-float
   formats are the `_b` family, `bfp8` as `bfp8_b`).
 
 A named chip must be `blackhole` or `wormhole_b0`. A missing tensor, a tensor named twice and a
-name the program does not take are each refused by name.
+name the program does not take are each refused by name, and so is a machine of more than one
+island for a program whose reduce's arrivals are sized for one.

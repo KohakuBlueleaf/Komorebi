@@ -56,7 +56,7 @@ const DST_HALF: u64 = 4;
 const FIRST_OTHER: u32 = 8;
 /// A tree reduce's arrival slots over the command's group on one island: a slot a
 /// round (`reduce.TREE_ROUNDS`, `km::kTreeRounds`).
-const TREE_ROUNDS: u64 = 7;
+pub(crate) const TREE_ROUNDS: u64 = 7;
 
 /// The compute kernel's includes (`program_sources.COMPUTE_INCLUDES`), in order, each
 /// with the need that brings it (none: every program's); the needs this emitter makes.
@@ -1276,7 +1276,7 @@ impl Backend for Tensix {
             .map_or(0, |(_, v)| *v);
         LoadStatement {
             workers: Some(machine.workers),
-            islands: Some(machine.islands),
+            islands: Some(machine.islands.count()),
             local_state_bytes: Some(machine.worker_memory.saturating_sub(used)),
             in_flight: Some(option("depth").unwrap_or(chip::DEPTH).min(chip::RING_SLOTS)),
             live_messages: Some(option("max_live").unwrap_or(chip::MAX_LIVE)),

@@ -35,6 +35,10 @@ def load(
     program: str | bytes,
     tensors: list[tuple[str, tuple[int, list[int], int | None]]],
     chip: str | None = None,
+    machine: (
+        tuple[int, int, tuple[list[int], list[tuple[int, int]]], list[tuple[str, int]]]
+        | None
+    ) = None,
 ) -> tuple[
     str,
     str,

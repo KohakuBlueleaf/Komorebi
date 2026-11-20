@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use komorebi_ir::backend::emit::{walk, Event};
 use komorebi_ir::backend::{
-    check_load, check_statement, ArgWord, Backend, Build, Built, CacheKey, LoadStatement, Machine,
-    Output, Provided, Reads, Refusal, Statement, Target, TILE_NOT_COMPUTED,
+    check_load, check_statement, ArgWord, Backend, Build, Built, CacheKey, IslandGraph,
+    LoadStatement, Machine, Output, Provided, Reads, Refusal, Statement, Target, TILE_NOT_COMPUTED,
 };
 use komorebi_ir::backend::{
     Limit, FORMAT_NOT_COMPUTED, NOT_BUILT, NOT_PROVIDED, NO_IMPLEMENTATION, OVER_LIMIT,
@@ -93,7 +93,7 @@ impl Backend for Test {
     fn statement_at(&self, _: &Target, machine: &Machine, _: &Built) -> LoadStatement {
         LoadStatement {
             workers: Some(machine.workers),
-            islands: Some(machine.islands),
+            islands: Some(machine.islands.count()),
             local_state_bytes: Some(machine.worker_memory),
             ..LoadStatement::default()
         }
@@ -230,11 +230,14 @@ fn a_limit_and_a_format_are_refused_by_name() {
 
 #[test]
 fn islands_and_local_state_are_compared_at_load() {
-    let machine = |islands, worker_memory| Machine {
+    let machine = |islands: u64, worker_memory| Machine {
         workers: 8,
         options: vec![("depth".to_string(), 2)],
         worker_memory,
-        islands,
+        islands: IslandGraph {
+            sizes: vec![8 / islands; islands as usize],
+            links: (1..islands as u32).map(|i| (i - 1, i)).collect(),
+        },
     };
     let t12 = lesson("t12_spread");
     let at = Test.statement_at(&target(), &machine(1, 1 << 20), &Built::default());
