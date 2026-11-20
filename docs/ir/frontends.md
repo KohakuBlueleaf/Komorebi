@@ -125,6 +125,8 @@ It takes the lines of the first lesson and of the corpus's programs 1 (`Scalars.
   result's page write (`t.pages(0, 1).write(whole)`), written `store t.tiles(0, 1) <- whole`.
   `self.leader` as a number is refused by name.
 
+A handler's docstring, as a tile function's, writes nothing.
+
 A stream with no `block=` is of one tile a block, as today's. A class's int constant
 (`BLOCK = km.constant(8)`) is written as a module parameter fixed at build,
 `param BLOCK: u32 = 8 @bind(build)`, its value the make's (`BLOCK=4` at the make writes 4). It

@@ -931,6 +931,24 @@ def test_program_7s_refusal_names_its_handler_zip(tmp_path, monkeypatch):
     assert "SwiGLU.zip, line " in str(refused.value)
 
 
+def test_program_7s_handlers_docstrings_write_nothing(tmp_path, monkeypatch):
+    up = (
+        "    def up(self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, "
+        "hidden: km.Tensor):\n"
+    )
+    down = "    def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor):\n"
+    p7 = swiglu_named(
+        tmp_path,
+        monkeypatch,
+        (up, up + '        """The hidden\'s columns of this core."""\n'),
+        (down, down + '        """y\'s columns of this core:\n\n        a sum."""\n'),
+    )
+    given = p7.made_with()
+    m = module(p7.SwiGLU, l1=1 << 20, **given)
+    assert "columns of this core" not in m.text
+    assert_todays(p7, given)
+
+
 def test_program_7s_tile_function_named_square_is_written_as_given(
     tmp_path, monkeypatch
 ):

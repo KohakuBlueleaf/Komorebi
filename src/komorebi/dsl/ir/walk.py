@@ -367,7 +367,8 @@ class Handler:
         for parameter in arguments.args[1:]:
             self.params[parameter.arg] = self.parameter(parameter)
         self.scope = dict(self.params)
-        self.statements = self.body(self.definition.body)
+        lines = self.definition.body
+        self.statements = self.body(lines[1:] if docstring(self.definition) else lines)
 
     def parameter(self, parameter):
         annotation = parameter.annotation
