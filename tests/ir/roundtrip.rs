@@ -317,6 +317,11 @@ const NAMES: &[&str] = &[
     "on", "seed", "M", "Visit", "Job", "go", "state", "call",
 ];
 
+/// Names that are words of the text, or of a type.
+const WORD_NAMES: &[&str] = &[
+    "store", "past", "fit", "let", "in", "true", "u32", "tile", "bool",
+];
+
 struct Gen {
     rng: Rng,
 }
@@ -326,7 +331,22 @@ fn sp() -> Span {
 }
 
 impl Gen {
+    /// A name: now and then a word of the text, which the writer puts between
+    /// backticks (R50), or a type's word, between them where a type is.
     fn ident(&mut self) -> Ident {
+        let names = if self.rng.chance(15) {
+            WORD_NAMES
+        } else {
+            NAMES
+        };
+        Ident {
+            name: self.rng.pick(names).to_string(),
+            span: sp(),
+        }
+    }
+
+    /// A name of what is never a word: a format, a part of an attribute's name.
+    fn plain(&mut self) -> Ident {
         Ident {
             name: self.rng.pick(NAMES).to_string(),
             span: sp(),
@@ -578,7 +598,7 @@ impl Gen {
         (0..self.rng.below(3))
             .map(|_| {
                 let parts = 1 + self.rng.below(2);
-                let path = (0..parts).map(|_| self.ident()).collect();
+                let path = (0..parts).map(|_| self.plain()).collect();
                 let args = self.rng.chance(60).then(|| {
                     let n = self.rng.below(3);
                     self.list(n, |g| g.arg(1))
@@ -602,14 +622,15 @@ impl Gen {
     }
 
     fn ty(&mut self) -> Type {
-        let format = self.ident();
+        let format = self.plain();
+        let named = self.ident();
         let (kind, countable) = match self.rng.below(6) {
             0 => (TypeKind::Scalar(*self.rng.pick(&Scalar::ALL)), true),
             1 => (TypeKind::Bool, false),
             2 => (TypeKind::Tile { format }, true),
             3 => (TypeKind::Tensor { format }, false),
             4 => (TypeKind::View, false),
-            _ => (TypeKind::Named(format), false),
+            _ => (TypeKind::Named(named), false),
         };
         let count = (countable && self.rng.chance(40)).then(|| Box::new(self.expr(1)));
         // a tile's block of rows (R45): `tile<F>[r, c]`
@@ -825,7 +846,7 @@ impl Gen {
                 span: sp(),
             }),
             1 => Item::Format(FormatDecl {
-                formats: (0..1 + self.rng.below(3)).map(|_| self.ident()).collect(),
+                formats: (0..1 + self.rng.below(3)).map(|_| self.plain()).collect(),
                 span: sp(),
             }),
             2 => {
@@ -911,4 +932,98 @@ fn generated_trees_round_trip() {
         let module = g.module();
         assert_round_trip(&module, &format!("generated tree {k}"));
     }
+}
+
+/// Every kind of name a word of the text (R50): a constant, a function and its
+/// parameter, the program, a message and its member, a handler and its parameter, a
+/// var, a loop's name, a chain and its parameter, each between backticks.
+const WORDS_MODULE: &str = "// every kind of name a word of the text, each between backticks
+module words
+
+tile [32, 32]
+format f32
+
+param `for`: u32 = 4 @bind(build)
+
+func `return`(`let`: tile<f32>) -> tile<f32> {
+    return `let` * `let`
+}
+
+program `in` {
+    message `await` { `var`: u32 }
+    handler `store`(x: tensor<f32>, `while`: tensor<f32>) @on(group) {
+        var `past`: tile<f32> = zeros
+        let first = worker.rank * `for`
+        let out = sink(`while`.tiles(first, `for`), block = 1)
+        for `consume` in stream(x.tiles(first, `for`), block = 1) {
+            `past` += `consume`
+            out.push(`return`(`past`))
+        }
+    }
+    chain `true`(a: tensor<f32>, `false`: tensor<f32>) @on(group) {
+        call `store`(a, `false`)
+    }
+}
+";
+
+#[test]
+fn names_that_are_words_are_written_between_backticks_and_round_trip() {
+    use komorebi_ir::bytecode::{decode, encode};
+    // the text is canonical, and checks
+    let tree = parse(WORDS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(write(&tree), WORDS_MODULE);
+    // the names are the names: the backticks are only how the text writes them
+    let module = komorebi_ir::api::build(WORDS_MODULE).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(module.params[0].name, "for");
+    assert_eq!(module.funcs[0].name, "return");
+    let program = &module.programs[0];
+    assert_eq!(
+        (program.name.as_str(), program.handlers[0].name.as_str()),
+        ("in", "store")
+    );
+    assert_eq!(program.chains[0].name, "true");
+    assert_eq!(module.messages[0].name, "await");
+    assert_eq!(module.messages[0].fields[0].0, "var");
+    // text to byte code and back: the same module, the same bytes
+    let bytes = encode(&module);
+    let back = decode(&bytes).unwrap_or_else(|r| panic!("{r:?}"));
+    assert_eq!(back, module);
+    assert_eq!(encode(&back), bytes);
+    // each word written bare where a name is does not read; between backticks it does
+    for word in komorebi_ir::syntax::WORDS {
+        let text =
+            |name: &str| format!("module m\n\nprogram P {{\n    message {name} {{ a: u32 }}\n}}\n");
+        assert!(parse(&text(word)).is_err(), "{word} bare reads as a name");
+        let quoted = text(&format!("`{word}`"));
+        assert_eq!(
+            write(&parse(&quoted).unwrap_or_else(|d| panic!("{word}: {d:?}"))),
+            quoted
+        );
+    }
+    // the words are the grammar's `keyword` rule, no more and no fewer
+    let pest = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/komorebi-ir/syntax/komorebi.pest"),
+    )
+    .expect("the grammar");
+    let rule = &pest[pest.find("keyword    = @{").expect("the rule")..];
+    let rule = &rule[..rule.find('}').expect("its end")];
+    let mut quoted: Vec<&str> = rule.split('"').skip(1).step_by(2).collect();
+    let mut words = komorebi_ir::syntax::WORDS.to_vec();
+    quoted.sort_unstable();
+    words.sort_unstable();
+    assert_eq!(quoted, words);
+}
+
+#[test]
+fn needless_backticks_are_taken_away_and_a_type_word_kept_where_a_type_is() {
+    let given = "module m\n\nformat f32\n\nprogram `P` {\n    record `u32` { a: u32 }\n    \
+                 message `M` { r: `u32` }\n    handler h(`x`: u32) @on(group) {\n        \
+                 let `tile` = `x`\n    }\n}\n";
+    let tree = parse(given).unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(
+        write(&tree),
+        "module m\n\nformat f32\n\nprogram P {\n    record u32 { a: u32 }\n    \
+         message M { r: `u32` }\n    handler h(x: u32) @on(group) {\n        let tile = x\n    \
+         }\n}\n"
+    );
 }

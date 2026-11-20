@@ -529,8 +529,14 @@ impl<'s> Builder<'s> {
     }
 
     fn ident(&self, pair: Pair<'_, Rule>) -> Ident {
+        let written = pair.as_str();
+        // a name between backticks (a word of the text, R50) is the name inside them
+        let name = written
+            .strip_prefix('`')
+            .and_then(|w| w.strip_suffix('`'))
+            .unwrap_or(written);
         Ident {
-            name: pair.as_str().to_string(),
+            name: name.to_string(),
             span: span_of(&pair),
         }
     }

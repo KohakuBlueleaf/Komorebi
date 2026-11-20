@@ -6,6 +6,15 @@
 
 `//` starts a comment and is no operator.
 
+A name is the name its author gave (R50). A name that is a word of the text (`let`, `var`, `if`,
+`else`, `for`, `in`, `while`, `return`, `store`, `consume`, `await`, `true`, `false`, `past`,
+`fit`) is written between backticks, `` `store` ``, wherever a name is; a type named by a word a
+type is written with (`tile`, `tensor`, `view`, `bool`, `u32` and the other scalar types) is
+written between them where a type is. Any name may be written between backticks; the canonical
+layout (`komo fmt`) writes them exactly where they are needed and takes the others away. The
+backticks are not part of the name: the byte code, a backend and a message use the name itself
+(`` handler `store` `` is the handler `store`).
+
 Each operation has one form, the one the lessons write; another spelling is refused (`K111` in
 [the IR's checks](checks.md)). An operand is either **by position**, in the order given, or **by
 name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left

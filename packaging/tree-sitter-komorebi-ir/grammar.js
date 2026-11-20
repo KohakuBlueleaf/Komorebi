@@ -326,7 +326,8 @@ module.exports = grammar({
     true: _ => 'true',
     false: _ => 'false',
 
-    identifier: _ => /[A-Za-z_][A-Za-z0-9_]*/,
+    // a name, or one between backticks: a word of the text as a name (R50)
+    identifier: _ => token(choice(/[A-Za-z_][A-Za-z0-9_]*/, /`[A-Za-z_][A-Za-z0-9_]*`/)),
   },
 });
 

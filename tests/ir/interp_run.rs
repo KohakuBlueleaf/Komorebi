@@ -763,7 +763,7 @@ fn t10_a_chain_runs_its_calls_in_order() {
     );
 }
 
-const PAST: &str = "module past
+const PAST: &str = "module `past`
 
 tile [32, 32]
 format f32

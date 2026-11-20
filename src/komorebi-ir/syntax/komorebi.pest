@@ -17,11 +17,13 @@ else_gap = _{ (sp* ~ NEWLINE)+ ~ sp* }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 ident_raw  = _{ (ASCII_ALPHA | "_") ~ ident_char* }
+// The words of the text (`syntax::WORDS`): a name that is one is written between
+// backticks (R50), which any name may be.
 keyword    = @{
     ("let" | "var" | "if" | "else" | "for" | "in" | "while" | "return" | "store"
-    | "consume" | "await" | "true" | "false") ~ !ident_char
+    | "consume" | "await" | "true" | "false" | "past" | "fit") ~ !ident_char
 }
-ident = @{ !keyword ~ ident_raw }
+ident = @{ "`" ~ ident_raw ~ "`" | !keyword ~ ident_raw }
 
 kw_module   = @{ "module" ~ !ident_char }
 kw_tile     = @{ "tile" ~ !ident_char }

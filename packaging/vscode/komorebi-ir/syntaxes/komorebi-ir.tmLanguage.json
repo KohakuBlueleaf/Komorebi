@@ -57,7 +57,7 @@
     "declaration": {
       "patterns": [
         {
-          "match": "^\\s*(module)\\s+([A-Za-z_]\\w*)",
+          "match": "^\\s*(module)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))",
           "captures": {
             "1": {
               "name": "storage.type.module.komorebi-ir"
@@ -98,7 +98,7 @@
           ]
         },
         {
-          "match": "^\\s*(param)\\s+([A-Za-z_]\\w*)",
+          "match": "^\\s*(param)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))",
           "captures": {
             "1": {
               "name": "storage.type.param.komorebi-ir"
@@ -109,7 +109,7 @@
           }
         },
         {
-          "match": "^\\s*(message|record|program)\\s+([A-Za-z_]\\w*)",
+          "match": "^\\s*(message|record|program)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))",
           "captures": {
             "1": {
               "name": "storage.type.$1.komorebi-ir"
@@ -120,7 +120,7 @@
           }
         },
         {
-          "begin": "^\\s*(extern)\\s+(func)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "begin": "^\\s*(extern)\\s+(func)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(\\()",
           "end": "\\)",
           "patterns": [
             {
@@ -151,7 +151,7 @@
           }
         },
         {
-          "begin": "^\\s*(func|combine)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "begin": "^\\s*(func|combine)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(\\()",
           "end": "\\)",
           "patterns": [
             {
@@ -179,7 +179,7 @@
           }
         },
         {
-          "begin": "^\\s*(handler|control|chain|run)\\s+([A-Za-z_]\\w*)\\s*(\\()",
+          "begin": "^\\s*(handler|control|chain|run)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(\\()",
           "end": "\\)",
           "patterns": [
             {
@@ -223,7 +223,7 @@
           }
         },
         {
-          "match": "^\\s*(on)\\s+([A-Za-z_]\\w*)\\s*(\\()\\s*([A-Za-z_]\\w*)\\s*(\\))",
+          "match": "^\\s*(on)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(\\()\\s*((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(\\))",
           "captures": {
             "1": {
               "name": "keyword.control.on.komorebi-ir"
@@ -243,7 +243,7 @@
           }
         },
         {
-          "match": "^\\s*(call)\\s+([A-Za-z_]\\w*)",
+          "match": "^\\s*(call)\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))",
           "captures": {
             "1": {
               "name": "keyword.control.call.komorebi-ir"
@@ -254,7 +254,7 @@
           }
         },
         {
-          "match": "(?<![\\w.])(fallback)\\b(?=\\s*\\{)",
+          "match": "(?<![\\w.`])(fallback)\\b(?=\\s*\\{)",
           "captures": {
             "1": {
               "name": "keyword.control.fallback.komorebi-ir"
@@ -347,11 +347,11 @@
             },
             {
               "name": "constant.language.attribute-argument.komorebi-ir",
-              "match": "(?<![\\w.])(group|grid|build|load|invoke|element|worker|program|island)(?!\\w)(?!\\s*[(.=])"
+              "match": "(?<![\\w.`])(group|grid|build|load|invoke|element|worker|program|island)(?!\\w)(?!\\s*[(.=])"
             },
             {
               "name": "variable.other.readwrite.attribute-argument.komorebi-ir",
-              "match": "(?<![\\w.])[A-Za-z_]\\w*(?!\\w)(?!\\s*[(.=])"
+              "match": "(?<![\\w.`])(?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*)(?!\\w)(?!\\s*[(.=])"
             },
             {
               "include": "#expression"
@@ -415,11 +415,11 @@
         },
         {
           "name": "variable.other.constant.komorebi-ir",
-          "match": "(?<![\\w.])[A-Z][A-Z0-9_]*(?!\\w)(?!\\s*\\()"
+          "match": "(?<![\\w.`])[A-Z][A-Z0-9_]*(?!\\w)(?!\\s*\\()"
         },
         {
           "name": "variable.other.readwrite.komorebi-ir",
-          "match": "(?<![\\w.])[A-Za-z_]\\w*(?!\\w)"
+          "match": "(?<![\\w.`])(?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*)(?!\\w)"
         }
       ]
     },
@@ -427,15 +427,15 @@
       "patterns": [
         {
           "name": "constant.numeric.hex.komorebi-ir",
-          "match": "(?<![\\w.])0x[0-9A-Fa-f]+(?!\\w)"
+          "match": "(?<![\\w.`])0x[0-9A-Fa-f]+(?!\\w)"
         },
         {
           "name": "constant.numeric.float.komorebi-ir",
-          "match": "(?<![\\w.])\\d+(?:\\.\\d+(?:[eE][+-]?\\d+)?|[eE][+-]?\\d+)(?!\\w)"
+          "match": "(?<![\\w.`])\\d+(?:\\.\\d+(?:[eE][+-]?\\d+)?|[eE][+-]?\\d+)(?!\\w)"
         },
         {
           "name": "constant.numeric.integer.decimal.komorebi-ir",
-          "match": "(?<![\\w.])\\d+(?!\\w)"
+          "match": "(?<![\\w.`])\\d+(?!\\w)"
         }
       ]
     },
@@ -443,14 +443,14 @@
       "patterns": [
         {
           "name": "constant.language.boolean.komorebi-ir",
-          "match": "(?<![\\w.])(true|false)(?!\\w)"
+          "match": "(?<![\\w.`])(true|false)(?!\\w)"
         },
         {
           "name": "keyword.control.komorebi-ir",
-          "match": "(?<![\\w.])(if|else|for|in|while|return|await)(?!\\w)"
+          "match": "(?<![\\w.`])(if|else|for|in|while|return|await)(?!\\w)"
         },
         {
-          "match": "(?<![\\w.])(let|var)(?!\\w)(?:\\s+([A-Za-z_]\\w*))?",
+          "match": "(?<![\\w.`])(let|var)(?!\\w)(?:\\s+((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*)))?",
           "captures": {
             "1": {
               "name": "storage.type.komorebi-ir"
@@ -462,18 +462,18 @@
         },
         {
           "name": "keyword.other.komorebi-ir",
-          "match": "(?<![\\w.])(store|consume)(?!\\w)"
+          "match": "(?<![\\w.`])(store|consume)(?!\\w)"
         },
         {
           "name": "keyword.other.past.komorebi-ir",
-          "match": "(?<![\\w.])(past)(?=\\s*\\()"
+          "match": "(?<![\\w.`])(past)(?=\\s*\\()"
         }
       ]
     },
     "type": {
       "patterns": [
         {
-          "match": "(?<![\\w.])(tile|tensor)\\s*(<)\\s*([A-Za-z_]\\w*)\\s*(>)",
+          "match": "(?<![\\w.`])(tile|tensor)\\s*(<)\\s*([A-Za-z_]\\w*)\\s*(>)",
           "captures": {
             "1": {
               "name": "storage.type.komorebi-ir"
@@ -491,15 +491,15 @@
         },
         {
           "name": "storage.type.komorebi-ir",
-          "match": "(?<![\\w.])(tile|tensor|view|bool)(?!\\w)"
+          "match": "(?<![\\w.`])(tile|tensor|view|bool)(?!\\w)"
         },
         {
           "name": "support.type.primitive.komorebi-ir",
-          "match": "(?<![\\w.])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?!\\w)(?!\\s*\\()"
+          "match": "(?<![\\w.`])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?!\\w)(?!\\s*\\()"
         },
         {
           "name": "support.type.format.komorebi-ir",
-          "match": "(?<![\\w.])(bf16|bfp8|bfp4|bfp2)(?!\\w)"
+          "match": "(?<![\\w.`])(bf16|bfp8|bfp4|bfp2)(?!\\w)"
         }
       ]
     },
@@ -507,23 +507,23 @@
       "patterns": [
         {
           "name": "support.function.builtin.komorebi-ir",
-          "match": "(?<![\\w.])(min|max|range|where|maximum|minimum|matmul|reduce_sum|reduce_max|reduce_min|neg|abs|relu|square|floor|exp|exp2|tanh|erf|log|sigmoid|silu|sqrt|rsqrt|reciprocal|partition|stream|sink|zip|reduce|gather|broadcast|sync|all_reduce|all_gather|send|forward|offer|invoke|outcome|group|reduce_to|broadcast_from)(?=\\s*\\()"
+          "match": "(?<![\\w.`])(min|max|range|where|maximum|minimum|matmul|reduce_sum|reduce_max|reduce_min|neg|abs|relu|square|floor|exp|exp2|tanh|erf|log|sigmoid|silu|sqrt|rsqrt|reciprocal|partition|stream|sink|zip|reduce|gather|broadcast|sync|all_reduce|all_gather|send|forward|offer|invoke|outcome|group|reduce_to|broadcast_from)(?=\\s*\\()"
         },
         {
           "name": "support.function.builtin.convert.komorebi-ir",
-          "match": "(?<![\\w.])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?=\\s*\\()"
+          "match": "(?<![\\w.`])(u8|u16|u32|u64|i8|i16|i32|i64|f16|f32|f64)(?=\\s*\\()"
         },
         {
           "name": "support.variable.komorebi-ir",
-          "match": "(?<![\\w.])(worker|group|island)(?=\\s*\\.)"
+          "match": "(?<![\\w.`])(worker|group|island)(?=\\s*\\.)"
         },
         {
           "name": "constant.language.builtin.komorebi-ir",
-          "match": "(?<![\\w.])(zeros|row|col|sum|max|min|and|or|grid)(?!\\w)"
+          "match": "(?<![\\w.`])(zeros|row|col|sum|max|min|and|or|grid)(?!\\w)"
         },
         {
           "name": "constant.language.failure.komorebi-ir",
-          "match": "(?<![\\w.])(view_end|empty_state|send_refused|capacity|given_up|dependency|not_a_peer|over_bound|divide_by_zero|out_of_range)(?!\\w)"
+          "match": "(?<![\\w.`])(view_end|empty_state|send_refused|capacity|given_up|dependency|not_a_peer|over_bound|divide_by_zero|out_of_range)(?!\\w)"
         }
       ]
     },
@@ -552,7 +552,7 @@
           }
         },
         {
-          "match": "(\\.)\\s*([A-Za-z_]\\w*)(?=\\s*\\()",
+          "match": "(\\.)\\s*((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))(?=\\s*\\()",
           "captures": {
             "1": {
               "name": "punctuation.accessor.komorebi-ir"
@@ -563,7 +563,7 @@
           }
         },
         {
-          "match": "(\\.)\\s*([A-Za-z_]\\w*)",
+          "match": "(\\.)\\s*((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))",
           "captures": {
             "1": {
               "name": "punctuation.accessor.komorebi-ir"
@@ -576,7 +576,7 @@
       ]
     },
     "call": {
-      "match": "(?<![\\w.])([A-Za-z_]\\w*)(?=\\s*\\()",
+      "match": "(?<![\\w.`])((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))(?=\\s*\\()",
       "name": "entity.name.function.call.komorebi-ir"
     },
     "parens": {
@@ -649,7 +649,7 @@
       ]
     },
     "named_argument": {
-      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(?==(?!=))",
+      "match": "(?<![\\w.`])((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(?==(?!=))",
       "captures": {
         "1": {
           "name": "variable.parameter.named.komorebi-ir"
@@ -657,7 +657,7 @@
       }
     },
     "field": {
-      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(:)(?!:)",
+      "match": "(?<![\\w.`])((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(:)(?!:)",
       "captures": {
         "1": {
           "name": "variable.other.member.komorebi-ir"
@@ -687,7 +687,7 @@
       ]
     },
     "parameter": {
-      "match": "(?<![\\w.])([A-Za-z_]\\w*)\\s*(:)(?!:)",
+      "match": "(?<![\\w.`])((?:`[A-Za-z_]\\w*`|[A-Za-z_]\\w*))\\s*(:)(?!:)",
       "captures": {
         "1": {
           "name": "variable.parameter.komorebi-ir"

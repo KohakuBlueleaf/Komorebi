@@ -90,6 +90,25 @@ fn width(text: &str) -> usize {
     text.chars().count()
 }
 
+/// A name as the text writes it: between backticks when it is a word of the text (R50).
+fn named(name: &Ident) -> String {
+    if super::WORDS.contains(&name.name.as_str()) {
+        format!("`{}`", name.name)
+    } else {
+        name.name.clone()
+    }
+}
+
+/// A type's name where a type is written: between backticks when it is a word of the
+/// text or one a type is written with.
+fn type_name(name: &Ident) -> String {
+    if super::TYPE_WORDS.contains(&name.name.as_str()) {
+        format!("`{}`", name.name)
+    } else {
+        named(name)
+    }
+}
+
 fn text(s: impl Into<String>) -> Piece {
     Piece::Text(s.into())
 }
@@ -170,7 +189,7 @@ impl Writer {
 
     fn module(&mut self, module: &Module) {
         self.leads(0, &module.trivia.leading);
-        let head = format!("module {}", module.name.name);
+        let head = format!("module {}", named(&module.name));
         self.line(0, &head, comment_text(&module.trivia.trailing));
         for line in &module.items.lines {
             self.leads(0, &line.trivia.leading);
@@ -197,7 +216,7 @@ impl Writer {
                 });
             }
             Item::Param(param) => {
-                let mut pieces = vec![text(format!("param {}: ", param.name.name))];
+                let mut pieces = vec![text(format!("param {}: ", named(&param.name)))];
                 pieces.extend(ty(&param.ty));
                 pieces.push(text(" = "));
                 match &param.value {
@@ -212,7 +231,7 @@ impl Writer {
             Item::Func(func) => self.func("func", func, indent, trailing),
             Item::Combine(func) => self.func("combine", func, indent, trailing),
             Item::Extern(ext) => {
-                let mut head = vec![text(format!("extern func {}", ext.name.name))];
+                let mut head = vec![text(format!("extern func {}", named(&ext.name)))];
                 head.push(params(&ext.params));
                 head.push(text(" -> "));
                 head.extend(ty(&ext.ret));
@@ -226,13 +245,13 @@ impl Writer {
                 }
             }
             Item::Program(program) => {
-                let head = vec![text(format!("program {}", program.name.name))];
+                let head = vec![text(format!("program {}", named(&program.name)))];
                 self.lines_block(head, &program.body, indent, trailing, |w, p, i, t| {
                     w.program_item(p, i, t)
                 });
             }
             Item::Control(control) => {
-                let mut head = vec![text(format!("control {}", control.name.name))];
+                let mut head = vec![text(format!("control {}", named(&control.name)))];
                 head.push(params(&control.params));
                 if let Some(ret) = &control.ret {
                     head.push(text(" -> "));
@@ -245,7 +264,7 @@ impl Writer {
     }
 
     fn message(&mut self, message: &Message, indent: usize, trailing: Option<&str>) {
-        let mut pieces = vec![text(format!("message {}", message.name.name))];
+        let mut pieces = vec![text(format!("message {}", named(&message.name)))];
         pieces.extend(attrs(&message.attrs));
         pieces.push(text(" "));
         pieces.push(fields(&message.fields));
@@ -254,14 +273,14 @@ impl Writer {
 
     fn record(&mut self, record: &Record, indent: usize, trailing: Option<&str>) {
         let pieces = vec![
-            text(format!("record {} ", record.name.name)),
+            text(format!("record {} ", named(&record.name))),
             fields(&record.fields),
         ];
         self.emit(&pieces, indent, "", trailing);
     }
 
     fn func(&mut self, word: &str, func: &Func, indent: usize, trailing: Option<&str>) {
-        let mut head = vec![text(format!("{word} {}", func.name.name))];
+        let mut head = vec![text(format!("{word} {}", named(&func.name)))];
         head.push(params(&func.params));
         head.push(text(" -> "));
         head.extend(ty(&func.ret));
@@ -277,14 +296,14 @@ impl Writer {
                 let mut head = vec![text("state")];
                 head.extend(attrs(&state.attrs));
                 self.lines_block(head, &state.members, indent, trailing, |w, m, i, t| {
-                    let mut pieces = vec![text(format!("{}: ", m.name.name))];
+                    let mut pieces = vec![text(format!("{}: ", named(&m.name)))];
                     pieces.extend(ty(&m.ty));
                     pieces.extend(attrs(&m.attrs));
                     w.emit(&pieces, i, "", t);
                 });
             }
             ProgramItem::Handler(handler) => {
-                let mut head = vec![text(format!("handler {}", handler.name.name))];
+                let mut head = vec![text(format!("handler {}", named(&handler.name)))];
                 head.push(params(&handler.params));
                 if let Some(ret) = &handler.ret {
                     head.push(text(" -> "));
@@ -294,7 +313,7 @@ impl Writer {
                 self.blocky(head, &[("", &handler.body)], indent, trailing);
             }
             ProgramItem::Run(run) => {
-                let mut head = vec![text(format!("run {}", run.name.name))];
+                let mut head = vec![text(format!("run {}", named(&run.name)))];
                 head.push(params(&run.params));
                 head.extend(attrs(&run.attrs));
                 self.lines_block(
@@ -305,19 +324,19 @@ impl Writer {
                     |w, part, i, t| match part {
                         RunPart::Seed(body) => w.blocky(vec![text("seed")], &[("", body)], i, t),
                         RunPart::On(on) => {
-                            let head = format!("on {}({})", on.message.name, on.binding.name);
+                            let head = format!("on {}({})", named(&on.message), named(&on.binding));
                             w.blocky(vec![text(head)], &[("", &on.body)], i, t);
                         }
                     },
                 );
             }
             ProgramItem::Chain(chain) => {
-                let mut head = vec![text(format!("chain {}", chain.name.name))];
+                let mut head = vec![text(format!("chain {}", named(&chain.name)))];
                 head.push(params(&chain.params));
                 head.extend(attrs(&chain.attrs));
                 self.lines_block(head, &chain.calls, indent, trailing, |w, call, i, t| {
                     let mut pieces = vec![
-                        text(format!("call {}", call.handler.name)),
+                        text(format!("call {}", named(&call.handler))),
                         args(&call.args, false),
                     ];
                     pieces.extend(attrs(&call.attrs));
@@ -417,7 +436,7 @@ fn comment_text(comment: &Option<Comment>) -> Option<&str> {
 }
 
 fn for_head(vars: &[Ident], iter: &Expr, a: &[Attr]) -> Vec<Piece> {
-    let names: Vec<&str> = vars.iter().map(|v| v.name.as_str()).collect();
+    let names: Vec<String> = vars.iter().map(named).collect();
     let mut head = vec![text(format!("for {} in ", names.join(", ")))];
     head.extend(expr(iter));
     head.extend(attrs(a));
@@ -433,7 +452,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             value,
             attrs: a,
         } => {
-            p.push(text(format!("let {}", name.name)));
+            p.push(text(format!("let {}", named(name))));
             if let Some(t) = t {
                 p.push(text(": "));
                 p.extend(ty(t));
@@ -443,7 +462,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             p.extend(attrs(a));
         }
         Stmt::Var { name, ty: t, value } => {
-            p.push(text(format!("var {}: ", name.name)));
+            p.push(text(format!("var {}: ", named(name))));
             p.extend(ty(t));
             p.push(text(" = "));
             p.extend(expr(value));
@@ -459,7 +478,7 @@ fn simple_stmt(stmt: &Stmt) -> Vec<Piece> {
             p.push(text(" <- "));
             p.extend(expr(value));
         }
-        Stmt::Consume(name) => p.push(text(format!("consume {}", name.name))),
+        Stmt::Consume(name) => p.push(text(format!("consume {}", named(name)))),
         Stmt::Return(None) => p.push(text("return")),
         Stmt::Return(Some(value)) => {
             p.push(text("return "));
@@ -518,7 +537,7 @@ fn list_doc<T>(
 
 fn params(list: &List<ParamDecl>) -> Piece {
     Piece::List(list_doc(list, "(", ")", false, |p| {
-        let mut pieces = vec![text(format!("{}: ", p.name.name))];
+        let mut pieces = vec![text(format!("{}: ", named(&p.name)))];
         pieces.extend(ty(&p.ty));
         pieces.extend(attrs(&p.attrs));
         pieces
@@ -527,7 +546,7 @@ fn params(list: &List<ParamDecl>) -> Piece {
 
 fn fields(list: &List<Field>) -> Piece {
     Piece::List(list_doc(list, "{", "}", true, |f| {
-        let mut pieces = vec![text(format!("{}: ", f.name.name))];
+        let mut pieces = vec![text(format!("{}: ", named(&f.name)))];
         pieces.extend(ty(&f.ty));
         pieces
     }))
@@ -537,7 +556,7 @@ fn args(list: &List<Arg>, in_attr: bool) -> Piece {
     let mut doc = list_doc(list, "(", ")", false, |a| {
         let mut pieces = Vec::new();
         if let Some(name) = &a.name {
-            pieces.push(text(format!("{} = ", name.name)));
+            pieces.push(text(format!("{} = ", named(name))));
         }
         pieces.extend(expr(&a.value));
         pieces
@@ -565,7 +584,7 @@ fn ty(t: &Type) -> Vec<Piece> {
         TypeKind::Tile { format } => format!("tile<{}>", format.name),
         TypeKind::Tensor { format } => format!("tensor<{}>", format.name),
         TypeKind::View => "view".to_string(),
-        TypeKind::Named(name) => name.name.clone(),
+        TypeKind::Named(name) => type_name(name),
     })];
     if let Some(count) = &t.count {
         pieces.push(text("["));
@@ -590,7 +609,7 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
         ExprKind::Int(s) | ExprKind::Float(s) => p.push(text(s.clone())),
         ExprKind::Str(s) => p.push(text(format!("\"{s}\""))),
         ExprKind::Bool(b) => p.push(text(if *b { "true" } else { "false" })),
-        ExprKind::Name(name) => p.push(text(name.name.clone())),
+        ExprKind::Name(name) => p.push(text(named(name))),
         ExprKind::Paren(inner) => {
             p.push(text("("));
             push_expr(p, inner);
@@ -600,17 +619,17 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
         ExprKind::List(list) => p.push(Piece::List(list_doc(list, "[", "]", false, expr))),
         ExprKind::Init { ty, fields } => {
             if let Some(ty) = ty {
-                p.push(text(format!("{} ", ty.name)));
+                p.push(text(format!("{} ", named(ty))));
             }
             p.push(Piece::List(list_doc(fields, "{", "}", true, |f| {
-                let mut pieces = vec![text(format!("{}: ", f.name.name))];
+                let mut pieces = vec![text(format!("{}: ", named(&f.name)))];
                 pieces.extend(expr(&f.value));
                 pieces
             })));
         }
         ExprKind::Member { base, name } => {
             push_expr(p, base);
-            p.push(text(format!(".{}", name.name)));
+            p.push(text(format!(".{}", named(name))));
         }
         ExprKind::Call { callee, args: a } => {
             push_expr(p, callee);
@@ -647,8 +666,8 @@ fn push_expr(p: &mut Vec<Piece>, e: &Expr) {
             p.push(text(format!(" {} ", op.text())));
             push_expr(p, rhs);
         }
-        ExprKind::Await(name) => p.push(text(format!("await {}", name.name))),
-        ExprKind::Past(name) => p.push(text(format!("past({})", name.name))),
+        ExprKind::Await(name) => p.push(text(format!("await {}", named(name)))),
+        ExprKind::Past(name) => p.push(text(format!("past({})", named(name)))),
     }
 }
 

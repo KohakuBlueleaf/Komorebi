@@ -416,6 +416,34 @@ fn the_textmate_grammar_names_every_word_of_the_language() {
     );
 }
 
+/// A name between backticks (a word of the text as a name, R50) is coloured as a name:
+/// no word's pattern matches inside backticks, and each pattern that names a declared
+/// name or a name in an expression takes the backticked form too.
+#[test]
+fn the_textmate_grammar_colours_a_name_between_backticks_as_a_name() {
+    let mut res = Vec::new();
+    patterns(&parse_json(TEXTMATE), &mut res);
+    let text = read(TEXTMATE);
+    assert!(
+        !text.contains("(?<![\\\\w.])"),
+        "a word's pattern that would match inside backticks"
+    );
+    let quoted = "(?:`[A-Za-z_]\\\\w*`|[A-Za-z_]\\\\w*)";
+    let declared = text
+        .lines()
+        .filter(|l| l.contains("^\\\\s*(") && l.contains(quoted))
+        .count();
+    assert!(
+        declared >= 8,
+        "the declarations' names ({declared} take backticks)"
+    );
+    let tree_sitter = read("packaging/tree-sitter-komorebi-ir/grammar.js");
+    assert!(
+        tree_sitter.contains("/`[A-Za-z_][A-Za-z0-9_]*`/"),
+        "tree-sitter's identifier takes a name between backticks"
+    );
+}
+
 #[test]
 fn every_scope_the_grammar_gives_is_one_the_default_themes_colour() {
     let grammar = parse_json(TEXTMATE);
