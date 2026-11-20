@@ -673,19 +673,17 @@ impl Insn {
         names
     }
 
-    /// The register arguments written (SFPSWAP writes only work registers).
-    pub fn writes(&self) -> Vec<Arg> {
-        let mut out: Vec<Arg> = self
-            .op
-            .writes
-            .iter()
-            .filter_map(|n| self.arg(n).cloned())
-            .collect();
-        if self.op.name == "SFPSWAP" {
-            out.retain(work_register);
+    /// The register arguments written (SFPSWAP writes only work registers), or a
+    /// register's name today cannot read.
+    pub fn writes(&self) -> Result<Vec<Arg>, UnitError> {
+        let mut out = Vec::new();
+        for value in self.op.writes.iter().filter_map(|n| self.arg(n)) {
+            if self.op.name != "SFPSWAP" || work_register(value)? {
+                out.push(value.clone());
+            }
         }
         out.extend(self.uses.iter().cloned());
-        out
+        Ok(out)
     }
 
     /// True when it changes the lanes' condition flags.
@@ -699,15 +697,18 @@ impl Insn {
 }
 
 /// True for LReg 0-7, by number, by `L<n>` or by a value's name (not a fixed or
-/// programmable constant's).
-pub fn work_register(value: &Arg) -> bool {
+/// programmable constant's); refused where today raises: an empty name, or `L` and
+/// no number.
+pub fn work_register(value: &Arg) -> Result<bool, UnitError> {
+    let refused =
+        |name: &str| UnitError(format!("work register: {} names none", py::str_repr(name)));
     match value {
-        Arg::Num(n) => *n < i64::from(WORK),
+        Arg::Num(n) => Ok(*n < i64::from(WORK)),
+        Arg::Name(name) if name.is_empty() => Err(refused(name)),
         Arg::Name(name) => match name.strip_prefix('L').map(str::parse::<i64>) {
-            Some(Ok(n)) => n < i64::from(WORK),
-            // today raises on an `L` name that is no number; none is made
-            Some(Err(_)) => false,
-            None => !FIXED.iter().any(|(f, _)| f == name) && !name.starts_with('p'),
+            Some(Ok(n)) => Ok(n < i64::from(WORK)),
+            Some(Err(_)) => Err(refused(name)),
+            None => Ok(!FIXED.iter().any(|(f, _)| f == name) && !name.starts_with('p')),
         },
     }
 }
@@ -1156,7 +1157,7 @@ fn price_items<'u>(
                     // Recording with execution: what follows runs as pushed words.
                     state.recording = Some((start, len));
                     state.buffer.insert(start, Vec::new());
-                    issue(insn, times, terms, state, "word");
+                    issue(insn, times, terms, state, "word")?;
                     continue;
                 }
                 let played: Vec<&Insn> = state
@@ -1170,11 +1171,11 @@ fn price_items<'u>(
                     )));
                 }
                 for insn in played {
-                    issue(insn, times, terms, state, "replayed");
+                    issue(insn, times, terms, state, "replayed")?;
                 }
             }
             Item::Insn(insn) => {
-                issue(insn, times, terms, state, "word");
+                issue(insn, times, terms, state, "word")?;
                 if let Some((start, count)) = state.recording {
                     let recorded = state.buffer.entry(start).or_default();
                     recorded.push(insn);
@@ -1217,13 +1218,19 @@ fn term(what: &str, n: i64, cycles: Option<f64>, source: &str) -> Term {
 
 /// The price of `insn` issued `times` (pushed: "word", or "replayed") and of the stall
 /// in front of it, if any (today's `_issue`).
-fn issue<'u>(insn: &'u Insn, times: i64, terms: &mut Vec<Term>, state: &mut State<'u>, how: &str) {
+fn issue<'u>(
+    insn: &'u Insn,
+    times: i64,
+    terms: &mut Vec<Term>,
+    state: &mut State<'u>,
+    how: &str,
+) -> Result<(), UnitError> {
     let mut stall = None;
     if let Some(previous) = state.previous {
         let reads = insn.reads();
         if previous.op.kind == Kind::Mad
             && insn.op.name != "SFPSTORE"
-            && previous.writes().iter().any(|w| reads.contains(w))
+            && previous.writes()?.iter().any(|w| reads.contains(w))
         {
             stall = Some("mad_stall");
         }
@@ -1256,6 +1263,7 @@ fn issue<'u>(insn: &'u Insn, times: i64, terms: &mut Vec<Term>, state: &mut Stat
     };
     terms.push(term(&name, times, Some(times as f64 * cycles), source));
     state.previous = Some(insn);
+    Ok(())
 }
 
 /// Cycles of matrix-unit `words` ((op, Dst block) in issue order): one a cycle, a word
@@ -1448,6 +1456,20 @@ mod tests {
         );
         let named = named.expect("registers may be names");
         assert_eq!(named.reads(), [Arg::Name("x".into())]);
-        assert_eq!(named.writes(), [Arg::Name("y".into())]);
+        assert_eq!(named.writes().expect("written"), [Arg::Name("y".into())]);
+        // where today's int() raises, the port refuses
+        let swap = |lreg: &str| {
+            let args = [
+                ("imm12_math", a(0)),
+                ("lreg_src_c", Arg::Name(lreg.into())),
+                ("lreg_dest", a(1)),
+                ("instr_mod1", a(0)),
+            ];
+            Insn::new("SFPSWAP", &args, "").expect("a swap").writes()
+        };
+        assert_eq!(swap("L3").expect("written"), [Arg::Name("L3".into()), a(1)]);
+        let refused = swap("Lx").expect_err("no number");
+        assert_eq!(refused.0, "work register: 'Lx' names none");
+        assert!(swap("").is_err());
     }
 }

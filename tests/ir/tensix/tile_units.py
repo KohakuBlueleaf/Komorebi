@@ -1,8 +1,10 @@
-"""Today's tile compiler on a corpus of tile functions: the reference for the port's
-unit program (backend/tensix/tile/unit.rs). Writes each unit as data (`<case>.unit`)
-and as today's listing (`<case>.txt`), every word's encoding (`encode.txt`) and the
-refusals (`refused.txt`). No card, no compiler. Usage: python tile_units.py <folder>."""
+"""Today's tile compiler on a corpus of tile functions: the reference for the port
+(backend/tensix/tile/; tile_units.kom has the functions in the IR's text). Writes each
+KernelIR (`<case>.ir`), unit as data (`.unit`) and as today's listing (`.txt`), every
+word's encoding (`encode.txt`), the refusals (`refused.txt`). Usage: <this> <folder>."""
 
+import inspect
+import operator
 import random
 import sys
 from pathlib import Path
@@ -27,6 +29,13 @@ from komorebi.dsl.tile.unit import (
 
 BF, F = "bfloat16", "float32"
 SEP = "\x1f"  # between the items of a list in one field
+
+
+def half(a):
+    """A function the corpus calls from another; `called` also compares a number on
+    the left (`0.0 < b`, which Python reflects)."""
+    return a * 0.5
+
 
 # (case, function, formats, unit_program's options): the lessons' and the examples'
 # functions, and one of each vector function at the 1-tile width.
@@ -55,13 +64,20 @@ CASES = [
     ("neg", lambda a: -a, [F], {}),
     ("divide", lambda a, b: a / b, [F, F], {}),
     ("floor", lambda a: km.floor(a), [F], {}),
+    ("twice_k", lambda a, k: a * k + k * a, [F, SCALAR], {}),
+    (
+        "called",
+        lambda a, b: half(a) + half(km.where(operator.lt(0.0, b), b, a)),
+        [F, F],
+        {},
+    ),
 ]
 
 
 def traced(name, function, formats):
     """The KernelIR of `function` on one tile of each format, as today's call site
     traces it (compile/tiles/functions.py, tile_unit, at the 1-tile width)."""
-    names = "abcdefgh"[: len(formats)]
+    names = list(inspect.signature(function).parameters)
     tensors = [
         TensorParam(p, False, TILE_FORMATS[f])
         for p, f in zip(names, formats, strict=True)
@@ -195,6 +211,7 @@ def main(folder):
             refused.append(f"{case}\t{error}")
             continue
         (folder / f"{case}.unit").write_text("\n".join(unit_lines(unit)) + "\n")
+        (folder / f"{case}.ir").write_text(ir.dump() + "\n")
         (folder / f"{case}.txt").write_text(text + "\n")
     (folder / "encode.txt").write_text("\n".join(encodings()) + "\n")
     (folder / "refused.txt").write_text("".join(f"{r}\n" for r in refused))

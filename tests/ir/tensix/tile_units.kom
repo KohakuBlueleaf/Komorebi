@@ -1,0 +1,120 @@
+module tile_units
+
+tile [32, 32]
+format f32, bf16
+
+// The functions of tile_units.py's corpus, each under its case's name with `t_`
+// before it; `smooth_let` and `twice_k` write a scalar once and use it twice.
+
+func t_times(a: tile<bf16>, k: f32) -> tile<bf16> {
+    return a * k
+}
+
+func t_plus(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> {
+    return a + b
+}
+
+func t_plus_band(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a + b
+}
+
+func t_gate(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return silu(a) * b
+}
+
+func t_silu_gate_bf16(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> {
+    return silu(a) * b
+}
+
+func t_clamp01(a: tile<f32>) -> tile<f32> {
+    return minimum(maximum(a, 0.0), 1.0)
+}
+
+func t_leaky(a: tile<f32>) -> tile<f32> {
+    return where(a > 0.0, a, a * 0.01)
+}
+
+func t_smooth(a: tile<f32>) -> tile<f32> {
+    return a * 0.5 + abs(a) * 0.5
+}
+
+func smooth_let(a: tile<f32>) -> tile<f32> {
+    let h = 0.5
+    return a * h + abs(a) * h
+}
+
+func t_project(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
+    return matmul(x, w)
+}
+
+func t_scaled_sum(a: tile<f32>, b: tile<f32>, k: f32) -> tile<f32> {
+    return (a + b) * k
+}
+
+func t_exp(a: tile<f32>) -> tile<f32> {
+    return exp(a)
+}
+
+func t_sigmoid(a: tile<f32>) -> tile<f32> {
+    return sigmoid(a)
+}
+
+func t_silu(a: tile<f32>) -> tile<f32> {
+    return silu(a)
+}
+
+func t_tanh(a: tile<f32>) -> tile<f32> {
+    return tanh(a)
+}
+
+func t_erf(a: tile<f32>) -> tile<f32> {
+    return erf(a)
+}
+
+func t_log(a: tile<f32>) -> tile<f32> {
+    return log(a)
+}
+
+func t_sqrt(a: tile<f32>) -> tile<f32> {
+    return sqrt(a)
+}
+
+func t_rsqrt(a: tile<f32>) -> tile<f32> {
+    return rsqrt(a)
+}
+
+func t_recip(a: tile<f32>) -> tile<f32> {
+    return reciprocal(a)
+}
+
+func t_relu(a: tile<f32>) -> tile<f32> {
+    return relu(a)
+}
+
+func t_square(a: tile<f32>) -> tile<f32> {
+    return square(a)
+}
+
+func t_neg(a: tile<f32>) -> tile<f32> {
+    return -a
+}
+
+func t_divide(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return a / b
+}
+
+func t_floor(a: tile<f32>) -> tile<f32> {
+    return floor(a)
+}
+
+func t_twice_k(a: tile<f32>, k: f32) -> tile<f32> {
+    return a * k + k * a
+}
+
+func half(a: tile<f32>) -> tile<f32> {
+    return a * 0.5
+}
+
+func t_called(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return half(a) + half(where(0.0 < b, b, a))
+}

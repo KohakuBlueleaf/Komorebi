@@ -1,13 +1,15 @@
 //! The tile compiler's port against today's compiler, stage by stage, with no card:
 //! today's `tests/ir/tensix/tile_units.py` runs on a corpus of tile functions and
-//! writes each one's unit program as data and as today's listing; the port reads the
-//! data and must print the same listing byte for byte, costs included, and encode
-//! every word of the operation table as today does.
+//! writes each one's KernelIR, and its unit program as data and as today's listing.
+//! The port must trace the same functions written in the IR (`tile_units.kom`) into
+//! the same KernelIR, print the same listing from the data byte for byte, costs
+//! included, and encode every word of the operation table as today does.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
+use komorebi_ir::backend::tensix::tile::ir::kernel_ir;
 use komorebi_ir::backend::tensix::tile::unit::{
     decode, encode, Arg, Call, Check, Constant, Count, Insn, Item, Loop, Pass, Product, Runtime,
     Sync, UnitProgram, CPUS, OPS,
@@ -16,9 +18,15 @@ use komorebi_ir::backend::tensix::tile::unit::{
 /// Between the items of a list in one field.
 const SEP: char = '\x1f';
 
-/// Today's compiler run on the corpus into a folder: the folder, or none when the
-/// tests are told to skip Python.
+/// Today's compiler run on the corpus into a folder, once for all the tests (they run
+/// at once): the folder, or none when the tests are told to skip Python.
 fn today() -> Option<PathBuf> {
+    static FOLDER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    FOLDER.get_or_init(run_today).clone()
+}
+
+/// Today's compiler run on the corpus.
+fn run_today() -> Option<PathBuf> {
     if std::env::var("KOMO_IR_NO_PYTHON").is_ok_and(|v| v == "1") {
         eprintln!("the tile identity skipped: KOMO_IR_NO_PYTHON=1");
         return None;
@@ -215,7 +223,7 @@ fn each_unit_programs_listing_and_costs_are_todays() {
         .filter(|p| p.extension().is_some_and(|e| e == "unit"))
         .collect();
     cases.sort();
-    assert_eq!(cases.len(), 24, "the corpus: {cases:?}");
+    assert_eq!(cases.len(), 26, "the corpus: {cases:?}");
     for case in &cases {
         let data = std::fs::read_to_string(case).expect("the data");
         let want = std::fs::read_to_string(case.with_extension("txt")).expect("the listing");
@@ -279,4 +287,80 @@ fn every_word_of_the_table_encodes_and_decodes_as_today() {
     // ten words of each operation of the table; each field one bit too wide
     let fields: usize = OPS.iter().map(|o| o.args.len()).sum();
     assert_eq!((words, wide), (10 * OPS.len(), fields));
+}
+
+/// The corpus in the IR's text, built.
+fn corpus() -> komorebi_ir::program::Module {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ir/tensix/tile_units.kom");
+    let text = std::fs::read_to_string(path).expect("tile_units.kom");
+    komorebi_ir::api::build(&text).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+/// The number of the function named `name`.
+fn func(module: &komorebi_ir::program::Module, name: &str) -> komorebi_ir::types::FuncId {
+    let at = module.funcs.iter().position(|f| f.name == name);
+    komorebi_ir::types::FuncId(at.unwrap_or_else(|| panic!("no func {name}")) as u32)
+}
+
+#[test]
+fn each_function_traces_to_todays_kernel_ir() {
+    let Some(folder) = today() else { return };
+    let module = corpus();
+    let mut cases: Vec<String> = std::fs::read_dir(&folder)
+        .expect("the folder")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "ir"))
+        .filter_map(|p| Some(p.file_stem()?.to_str()?.to_string()))
+        .collect();
+    cases.sort();
+    let funcs: Vec<&str> = module
+        .funcs
+        .iter()
+        .filter_map(|f| f.name.strip_prefix("t_"))
+        .collect();
+    let mut sorted = funcs.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted, cases,
+        "a func `t_<case>` for each case and no other"
+    );
+    // `smooth_let` binds its 0.5 once: today's tracer makes a node at each use
+    let pairs = funcs
+        .iter()
+        .map(|c| (format!("t_{c}"), c.to_string()))
+        .chain([("smooth_let".to_string(), "smooth".to_string())]);
+    for (f, case) in pairs {
+        let want = std::fs::read_to_string(folder.join(format!("{case}.ir"))).expect("the IR");
+        let ir = kernel_ir(&module, func(&module, &f), &case)
+            .unwrap_or_else(|r| panic!("{f}: {}", r.what));
+        let got = ir.dump() + "\n";
+        assert!(
+            got == want,
+            "{f} differs, {}",
+            first_difference(&want, &got)
+        );
+    }
+}
+
+#[test]
+fn what_the_trace_would_not_make_is_refused_by_name() {
+    let text = "module refused\n\ntile [32, 32]\nformat f32, bfp8\n\n\
+        func blocky(a: tile<bfp8>) -> tile<bfp8> {\n    return a\n}\n\n\
+        func scalars(a: tile<f32>, k: f32) -> tile<f32> {\n    return a * (k * 2.0)\n}\n\n\
+        func spread(a: tile<f32>) -> tile<f32> {\n    return a.T\n}\n\n\
+        func none(k: f32) -> tile<f32> {\n    return zeros\n}\n";
+    let module = komorebi_ir::api::build(text).unwrap_or_else(|e| panic!("{e:?}"));
+    for (f, what) in [
+        (
+            "blocky",
+            "a tile of Bfp8: today's tile level has two families",
+        ),
+        ("scalars", "arithmetic on two scalars"),
+        ("spread", "the operation Transpose"),
+        ("none", "a function of no tile"),
+    ] {
+        let refusal = kernel_ir(&module, func(&module, f), f).expect_err(f);
+        assert_eq!(refusal.code, "K964", "{f}");
+        assert!(refusal.what.contains(what), "{f}: {}", refusal.what);
+    }
 }
