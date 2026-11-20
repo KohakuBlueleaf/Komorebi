@@ -46,7 +46,7 @@ One invocation is in flight at a time.
 
 At this stage it emits what the first lesson uses: a handler on a group over tensors and scalars,
 views of tiles, a partition by rank, streams and sinks of blocks of one tile, and functions on
-tiles. Everything else is refused with `K964`, by name.
+tiles (a function on blocks is refused). Everything else is refused with `K964`, by name.
 
 The output builds into `module.so`, the module behind a C interface (`komo_cpu.h`), and `driver`,
 which runs a [run script](run-scripts.md) on the module and prints the same report as

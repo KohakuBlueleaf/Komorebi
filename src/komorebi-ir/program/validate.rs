@@ -45,8 +45,9 @@ pub fn validate(module: &Module) -> Vec<Violation> {
 
 /// What a body may refer to.
 struct Ctx<'m> {
-    /// The owner's parameters.
-    params: &'m [Type],
+    /// The owner's parameters, as its body reads them (a function on blocks: a tile of
+    /// each block).
+    params: std::borrow::Cow<'m, [Type]>,
     /// The result `return` gives: `None` for none.
     ret: Option<Type>,
     /// The program the body belongs to.
@@ -135,9 +136,12 @@ impl<'m> Validator<'m> {
         let mut out = Vec::new();
         for (i, f) in m.funcs.iter().enumerate() {
             if let Some(body) = &f.body {
+                let inner: Vec<Type> = (0..f.params.len())
+                    .filter_map(|i| f.inner(Some(i)))
+                    .collect();
                 let ctx = Ctx {
-                    params: &f.params,
-                    ret: Some(f.ret.clone()),
+                    params: std::borrow::Cow::Owned(inner),
+                    ret: f.inner(None),
                     program: None,
                     arrived: None,
                 };
@@ -148,7 +152,7 @@ impl<'m> Validator<'m> {
             let pid = ProgramId(p as u32);
             for (h, handler) in prog.handlers.iter().enumerate() {
                 let ctx = Ctx {
-                    params: &handler.params,
+                    params: std::borrow::Cow::Borrowed(&handler.params),
                     ret: handler.ret.map(Type::Scalar),
                     program: Some(pid),
                     arrived: None,
@@ -159,7 +163,7 @@ impl<'m> Validator<'m> {
             for (r, run) in prog.runs.iter().enumerate() {
                 let rid = super::RunId(r as u32);
                 let seed = Ctx {
-                    params: &run.params,
+                    params: std::borrow::Cow::Borrowed(&run.params),
                     ret: None,
                     program: Some(pid),
                     arrived: None,
@@ -167,7 +171,7 @@ impl<'m> Validator<'m> {
                 out.push((BodyRef::Seed(pid, rid), &run.seed, seed));
                 for (k, (message, body)) in run.on_message.iter().enumerate() {
                     let ctx = Ctx {
-                        params: &run.params,
+                        params: std::borrow::Cow::Borrowed(&run.params),
                         ret: None,
                         program: Some(pid),
                         arrived: Some(*message),
@@ -178,7 +182,7 @@ impl<'m> Validator<'m> {
         }
         for (c, control) in m.controls.iter().enumerate() {
             let ctx = Ctx {
-                params: &control.params,
+                params: std::borrow::Cow::Borrowed(&control.params),
                 ret: control.ret.map(Type::Scalar),
                 program: None,
                 arrived: None,
@@ -247,6 +251,33 @@ impl<'m> Validator<'m> {
             let missing = f.body.is_none() && !matches!(f.kind, FuncKind::Extern { .. });
             if missing {
                 self.fail(None, None, format!("function {i} has no body"));
+            }
+            if f.on_blocks() {
+                // a plain function, its tile parameters and result blocks of one count
+                let tiles: Vec<&Type> = f
+                    .params
+                    .iter()
+                    .chain(std::iter::once(&f.ret))
+                    .filter(|t| matches!(t, Type::Tile(_) | Type::Block(..)))
+                    .collect();
+                let count = |t: &Type| match t {
+                    Type::Block(_, n) => Some(*n),
+                    _ => None,
+                };
+                let first = tiles.first().and_then(|t| count(t));
+                let one = tiles
+                    .iter()
+                    .all(|t| count(t).is_some() && count(t) == first);
+                if f.kind != FuncKind::Plain || !one || count(&f.ret).is_none() {
+                    self.fail(
+                        None,
+                        None,
+                        format!(
+                            "function {i} on blocks: a plain function whose tile parameters and \
+                             result are blocks of one count"
+                        ),
+                    );
+                }
             }
         }
         for (p, prog) in m.programs.iter().enumerate() {

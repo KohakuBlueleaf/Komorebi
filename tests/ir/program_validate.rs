@@ -486,3 +486,30 @@ fn float_formats_are_a_notation_integer_formats_are_not() {
         "`return` of another type",
     );
 }
+
+#[test]
+fn a_function_on_blocks_reads_one_tile_and_its_blocks_have_one_count() {
+    let block = |n| Type::Block(Format::F32, Count::Const(n));
+    let tile = Type::Tile(Format::F32);
+    // `f(x: tile<f32>[3], k: f32) -> tile<f32>[3] { return x * k }`: a tile of the block
+    let make = |x: Type, ret: Type| {
+        module(
+            vec![x, F32],
+            ret,
+            vec![tile.clone(), F32, tile.clone()],
+            vec![
+                inst(Op::Arg(0), &[0]),
+                inst(Op::Arg(1), &[1]),
+                inst(Op::Binary(BinOp::Mul, v(0), v(1)), &[2]),
+                inst(Op::Return(Some(v(2))), &[]),
+            ],
+        )
+    };
+    let m = make(block(3), block(3));
+    assert!(validate(&m).is_empty(), "{:?}", found(&m));
+    has(&make(block(3), block(4)), "on blocks");
+    has(&make(block(3), tile.clone()), "on blocks");
+    let mut m = make(block(3), block(3));
+    m.funcs[0].kind = FuncKind::Combine { commutative: false };
+    has(&m, "on blocks");
+}

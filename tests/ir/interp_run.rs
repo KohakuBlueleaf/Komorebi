@@ -1714,3 +1714,47 @@ fn t13_hints_change_nothing_a_run_gives() {
     assert!(!bare.contains("@tensix") && !bare.contains("@cpu") && !bare.contains("@place"));
     assert_eq!(hinted_run(&bare), (y, printed));
 }
+
+/// A function declared on blocks of 3 tiles (reading R40): its body runs on each tile,
+/// a scalar going to every tile; over 7 tiles the last block is 1 tile, its result 1.
+const ON_BLOCKS: &str = "module blocks
+
+tile [32, 32]
+format f32
+
+func shifted(x: tile<f32>[3], k: f32) -> tile<f32>[3] {
+    return x * k + 1.0
+}
+
+program Blocks {
+    handler run(a: tensor<f32>, out: tensor<f32>, k: f32) @on(group) {
+        let results = sink(out.tiles(0, 7), block = 3)
+        for x in stream(a.tiles(0, 7), block = 3) {
+            results.push(shifted(x, k))
+        }
+    }
+}
+";
+
+#[test]
+fn a_function_on_blocks_runs_on_each_tile_and_a_last_block_is_shorter() {
+    let m = module(ON_BLOCKS);
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let a = tensor(&mut run, Format::F32, (1, 7), |i, _| (i + 1) as f64);
+    let out = tensor(&mut run, Format::F32, (1, 7), |_, _| -1.0);
+    let args = [
+        Arg::Tensor(a),
+        Arg::Tensor(out),
+        Arg::Scalar(Scalar::F32(Format::F32, 2.0)),
+    ];
+    assert_eq!(
+        run.invoke("Blocks.run", &args, (0, 1), &[]),
+        End::Completed(None)
+    );
+    // tile i holds i + 1: 2 (i + 1) + 1 = 3, 5, 7, 9, 11, 13 and, the last block's
+    // one tile, 15
+    let want = [3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0];
+    for (i, w) in want.into_iter().enumerate() {
+        assert!(all(&tile_f64(&run, out, i), w), "tile {i}");
+    }
+}

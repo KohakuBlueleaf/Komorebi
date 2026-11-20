@@ -19,8 +19,8 @@ use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
 use crate::types::{
-    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, MemberId, MessageId, Peers, ProgramId,
-    ReduceOp, SplitBy, Type, UnaryOp,
+    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, FuncId, MemberId, MessageId, Peers,
+    ProgramId, ReduceOp, SplitBy, Type, UnaryOp,
 };
 
 /// A value a body computes with, as the interpreter holds it.
@@ -699,6 +699,32 @@ pub struct Frame {
     sending: Vec<(Option<usize>, LineKey)>,
     /// The message that arrived, in an `on M(m)` body.
     arrived: Option<Value>,
+    /// A call of a function on blocks: its body runs on each tile in turn.
+    per_tile: Option<Box<PerTile>>,
+}
+
+/// A call of a function on blocks under way (`Func::on_blocks`): the arguments as
+/// given, the tile the body runs on now, and the result's tiles so far.
+#[derive(Clone, Debug, PartialEq)]
+struct PerTile {
+    func: FuncId,
+    args: Vec<Value>,
+    at: usize,
+    count: usize,
+    done: Vec<Tile>,
+}
+
+impl PerTile {
+    /// The arguments of the body on tile `at`: a block's tile `at`, any other as given.
+    fn args(&self) -> Vec<Value> {
+        self.args
+            .iter()
+            .map(|a| match a {
+                Value::Block(b) => Value::Tile(b.tiles[self.at].clone()),
+                other => other.clone(),
+            })
+            .collect()
+    }
 }
 
 impl Frame {
@@ -723,6 +749,7 @@ impl Frame {
             made: 0,
             sending: Vec::new(),
             arrived: None,
+            per_tile: None,
         })
     }
 }
@@ -831,7 +858,41 @@ impl Thread {
                 }
                 Ok(Next::Call(callee)) => self.frames.push(*callee),
                 Ok(Next::Return(value)) => {
-                    let done = self.frames.pop();
+                    let mut done = self.frames.pop();
+                    // a function on blocks: the tile's result kept, the next tile run
+                    let mut value = value;
+                    if let Some(mut state) = done.as_mut().and_then(|f| f.per_tile.take()) {
+                        let to = done.as_ref().and_then(|f| f.result_to);
+                        let Some(Value::Tile(tile)) = value else {
+                            return Stop::Faulted {
+                                fault: Fault::undefined(
+                                    "a function on blocks that returned no tile",
+                                ),
+                                at: (at, InstId(pc as u32)),
+                            };
+                        };
+                        state.done.push(tile);
+                        state.at += 1;
+                        if state.at < state.count {
+                            let next =
+                                Frame::new(cx.module, BodyRef::Func(state.func), state.args());
+                            match next {
+                                Ok(mut next) => {
+                                    next.result_to = to;
+                                    next.per_tile = Some(state);
+                                    self.frames.push(next);
+                                    continue;
+                                }
+                                Err(fault) => {
+                                    return Stop::Faulted {
+                                        fault,
+                                        at: (at, InstId(pc as u32)),
+                                    }
+                                }
+                            }
+                        }
+                        value = Some(Value::Block(Block { tiles: state.done }));
+                    }
                     let Some(caller) = self.frames.last_mut() else {
                         return Stop::Returned(value);
                     };
@@ -1568,9 +1629,42 @@ fn step(
             for a in args {
                 values.push(get(frame, *a)?.clone());
             }
-            let mut callee = Frame::new(module, BodyRef::Func(*f), values)?;
-            callee.result_to = defs.first().copied();
-            return Ok(Next::Call(Box::new(callee)));
+            if func.on_blocks() {
+                // each tile of the blocks in turn; a shorter last block, a shorter result
+                let counts: Vec<usize> = values
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::Block(b) => Some(b.tiles.len()),
+                        _ => None,
+                    })
+                    .collect();
+                let count = counts.first().copied().unwrap_or(0);
+                if counts.iter().any(|&n| n != count) {
+                    return Err(Fault::undefined(format!(
+                        "`{}` given blocks of different counts {counts:?}",
+                        func.name
+                    )));
+                }
+                if count == 0 {
+                    Value::Block(Block { tiles: Vec::new() })
+                } else {
+                    let state = PerTile {
+                        func: *f,
+                        args: values,
+                        at: 0,
+                        count,
+                        done: Vec::new(),
+                    };
+                    let mut callee = Frame::new(module, BodyRef::Func(*f), state.args())?;
+                    callee.result_to = defs.first().copied();
+                    callee.per_tile = Some(Box::new(state));
+                    return Ok(Next::Call(Box::new(callee)));
+                }
+            } else {
+                let mut callee = Frame::new(module, BodyRef::Func(*f), values)?;
+                callee.result_to = defs.first().copied();
+                return Ok(Next::Call(Box::new(callee)));
+            }
         }
         // ---- views of a tensor ----
         Op::Tiles {

@@ -503,3 +503,24 @@ fn a_backend_is_named_and_compiles_for_its_default_target() {
         other => panic!("not refused: {other:?}"),
     }
 }
+
+#[test]
+fn the_cpu_backend_refuses_a_function_on_blocks_by_name() {
+    let m = built(
+        "module blocks\n\ntile [32, 32]\nformat f32\n\n\
+         func twice(x: tile<f32>[2], k: f32) -> tile<f32>[2] {\n    return x * k\n}\n",
+    );
+    let target = Target {
+        arch: std::env::consts::ARCH.to_string(),
+        features: BTreeSet::new(),
+    };
+    let refused = komorebi_ir::backend::cpu::Cpu
+        .compile(&m, &target)
+        .expect_err("refused");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].code, "K964");
+    assert!(
+        refused[0].what.contains("a function on blocks"),
+        "{refused:?}"
+    );
+}

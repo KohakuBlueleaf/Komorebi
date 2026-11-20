@@ -66,9 +66,20 @@ name (`K010`).
 | `a.T` | none | a tile | the tile turned | T4 |
 | `zeros` | none | | a tile, or the scalars, of zeros | T4, T16 |
 | A number constant, a scalar parameter | | | a scalar | T1, T2 |
-| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`) | its result | T1, T8 |
+| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`); a block of the declared count for a parameter `tile<F>[n]` (`K102`) | its result | T1, T8 |
 
 The function body of a `func` uses only these (`K202`). Operands of different formats may be mixed.
+
+### A function on blocks
+
+A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. Each of its
+tile parameters and its result is then a block, all of one count n (`K102`); n is a number in the text
+or a module parameter, the block of the stream the blocks come from. Its body is written on one tile
+and works on each tile of the blocks in turn: the elementwise operations above (the arithmetic, the
+elementary functions, `where`, a conversion), a scalar going to every tile. It gives a block of the
+same count; a last block that is shorter gives a shorter result. `matmul`, a reduction, `.col()`,
+`.row()` and `.T` in its body work on a whole tile and are refused by name (`K010`), as is a `combine`
+or an `extern func` on blocks. A function on one tile is never given a block (`K203`).
 
 ## Views of a tensor
 
@@ -175,4 +186,5 @@ The language names these and the build does not have them yet. Each is refused b
 - A `store` of scalars.
 - A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
 - Several tile shapes in one module.
-- A function on a block of several tiles, `tile<F>[n]`.
+- In a function on blocks: `matmul`, a reduction, `.col()`, `.row()` and `.T`; a `combine` or an
+  `extern func` on blocks.

@@ -789,8 +789,13 @@ impl<'c> Cx<'c> {
     ) -> Res<pg::Func> {
         let params_t = self.params(params, None)?;
         let ret_t = self.ty(ret, &[], None)?;
+        // A function on blocks: its body is the one on each tile (`pg::per_tile`).
+        let inner: Vec<Type> = params_t
+            .iter()
+            .map(|t| pg::per_tile(&params_t, t))
+            .collect();
         let body = match body {
-            Some(b) => Some(self.body(BodyRef::Func(id), None, params, &params_t, None, b)?),
+            Some(b) => Some(self.body(BodyRef::Func(id), None, params, &inner, None, b)?),
             None => None,
         };
         Ok(pg::Func {

@@ -1,0 +1,18 @@
+// refused: a function on blocks is given blocks of its own count (Compute functions)
+module blocks
+
+tile [32, 32]
+format f32
+
+func twice(x: tile<f32>[4], k: f32) -> tile<f32>[4] {
+    return x * k
+}
+
+program Blocks {
+    handler run(a: tensor<f32>, out: tensor<f32>, k: f32) @on(group) {
+        let results = sink(out.tiles(0, 8), block = 2)
+        for x in stream(a.tiles(0, 8), block = 2) {
+            results.push(twice(x, k))
+        }
+    }
+}

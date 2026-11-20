@@ -153,6 +153,34 @@ pub struct Func {
     pub effects: Effects,
 }
 
+impl Func {
+    /// True when the function is declared on blocks (`tile<F>[n]`): its body is the
+    /// one on each tile, a block parameter read as one tile of the block (`Op::Arg`)
+    /// and the result returned as one tile of the result's block; a call on blocks of
+    /// m tiles runs it on each of the m tiles, in order.
+    pub fn on_blocks(&self) -> bool {
+        self.params.iter().any(|t| matches!(t, Type::Block(..)))
+    }
+
+    /// The type the body reads parameter `i` as, or returns (`None`).
+    pub fn inner(&self, i: Option<usize>) -> Option<Type> {
+        let t = match i {
+            Some(i) => self.params.get(i)?,
+            None => &self.ret,
+        };
+        Some(per_tile(&self.params, t))
+    }
+}
+
+/// `t` as the body of a function of parameters `params` reads or returns it: a block's
+/// tile in a function on blocks, else `t`.
+pub fn per_tile(params: &[Type], t: &Type) -> Type {
+    match t {
+        Type::Block(f, _) if params.iter().any(|p| matches!(p, Type::Block(..))) => Type::Tile(*f),
+        other => other.clone(),
+    }
+}
+
 /// A program: its messages, its state, and what a worker can be asked to do.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {

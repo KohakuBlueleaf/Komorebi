@@ -142,6 +142,13 @@ pub fn unbuilt_parts(m: &Module) -> Vec<Refusal> {
             ));
             continue;
         };
+        if func.on_blocks() {
+            out.push(not_built(
+                "a function on blocks (`tile<F>[n]`)".into(),
+                Anchor::Func(fid),
+            ));
+            continue;
+        }
         for (k, t) in func.params.iter().chain([&func.ret]).enumerate() {
             if !matches!(t, Type::Tile(_) | Type::Scalar(_)) || cpp_type(t).is_none() {
                 let at = if k < func.params.len() {

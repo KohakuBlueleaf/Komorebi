@@ -18,14 +18,17 @@ use super::Checker;
 pub(crate) enum Place {
     /// A state member: a count `[n]` may follow a scalar or a tile type.
     StateMember,
-    /// A parameter of a `func`, a `combine` or an `extern func`.
+    /// A parameter of a `func`, a `combine` or an `extern func`: a count `[n]` may
+    /// follow a tile type (a block; a `func`'s only).
     FuncParam,
     /// A parameter of a handler, a run, a chain or a control program.
     Param,
     /// A field of a message or a record.
     Field,
-    /// The result of a function, a handler or a control program.
+    /// The result of a handler or a control program.
     Result,
+    /// The result of a `func`, a `combine` or an `extern func`: as a parameter's.
+    FuncResult,
     /// The type of a `let`, a `var` or a module parameter.
     Local,
 }
@@ -233,15 +236,17 @@ impl Checker<'_> {
                         FuncKind::Combine
                     };
                     let params = self.func_params(&env, &f.params, kind);
-                    let ret = self.ty(&env, &f.ret, Place::Result);
+                    let ret = self.ty(&env, &f.ret, Place::FuncResult);
+                    self.on_blocks(&f.name.name, kind, &params, &ret, f.span);
                     env.funcs
                         .insert(f.name.name.clone(), FuncSig { kind, params, ret });
                 }
                 Item::Extern(f) => {
                     names.declare(self, &f.name);
                     let params = self.func_params(&env, &f.params, FuncKind::Extern);
-                    let ret = self.ty(&env, &f.ret, Place::Result);
+                    let ret = self.ty(&env, &f.ret, Place::FuncResult);
                     let kind = FuncKind::Extern;
+                    self.on_blocks(&f.name.name, kind, &params, &ret, f.span);
                     env.funcs
                         .insert(f.name.name.clone(), FuncSig { kind, params, ret });
                 }
@@ -338,6 +343,51 @@ impl Checker<'_> {
         out
     }
 
+    /// The rules of a function declared on blocks (`tile<F>[n]`): a `func` only
+    /// (`K010` for a `combine` or an `extern func`), every tile parameter and the
+    /// result a block, all of one count (`K102`). Its body works on each tile.
+    fn on_blocks(&mut self, name: &str, kind: FuncKind, params: &[Ty], ret: &Ty, span: Span) {
+        let counts: Vec<Count> = params
+            .iter()
+            .chain(std::iter::once(ret))
+            .filter_map(|t| match t {
+                Ty::Block(_, n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        let Some(&first) = counts.first() else {
+            return;
+        };
+        if kind != FuncKind::Func {
+            self.error(
+                codes::NOT_BUILT,
+                format!(
+                    "`{name}`: a `combine` or an `extern func` on a block of several tiles is \
+                     named in the language and not built yet"
+                ),
+                span,
+            );
+            return;
+        }
+        let tiles = params.iter().chain(std::iter::once(ret));
+        if tiles.clone().any(|t| matches!(t, Ty::Tile(_))) || !matches!(ret, Ty::Block(..)) {
+            self.error(
+                codes::WRONG_TYPE,
+                format!(
+                    "`{name}` is declared on blocks: each of its tile parameters and its result \
+                     is a block `tile<F>[n]`"
+                ),
+                span,
+            );
+        } else if counts.iter().any(|&n| n != first) {
+            self.error(
+                codes::WRONG_TYPE,
+                format!("`{name}`: its blocks and its result have one count"),
+                span,
+            );
+        }
+    }
+
     fn func_params(&mut self, env: &Env, params: &List<ParamDecl>, kind: FuncKind) -> Vec<Ty> {
         let mut names = Names::default();
         let mut out = Vec::new();
@@ -396,7 +446,7 @@ impl Checker<'_> {
                     let what = match place {
                         Place::StateMember => "of state",
                         Place::Field => "of a field",
-                        Place::Result => "of a result",
+                        Place::Result | Place::FuncResult => "of a result",
                         _ => "of a parameter",
                     };
                     self.error(
@@ -473,20 +523,23 @@ impl Checker<'_> {
                 Ty::Unknown => Ty::Unknown,
                 other => Ty::Scalars(Box::new(other), n),
             },
-            Place::FuncParam if matches!(base, Ty::Tile(_)) => {
-                self.error(
-                    codes::NOT_BUILT,
-                    "a function on a block of several tiles is named in the language and not \
-                     built yet"
-                        .into(),
-                    ty.span,
-                );
-                Ty::Unknown
-            }
+            Place::FuncParam | Place::FuncResult => match base {
+                Ty::Tile(f) => Ty::Block(f, n),
+                Ty::Unknown => Ty::Unknown,
+                _ => {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        "a count `[n]` follows a type of a function only after a tile type".into(),
+                        ty.span,
+                    );
+                    Ty::Unknown
+                }
+            },
             _ => {
                 self.error(
                     codes::WRONG_TYPE,
-                    "a count `[n]` follows a type only in a state member".into(),
+                    "a count `[n]` follows a type only in a state member, or a tile type of a function"
+                        .into(),
                     ty.span,
                 );
                 Ty::Unknown

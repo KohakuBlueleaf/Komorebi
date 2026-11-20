@@ -405,9 +405,54 @@ impl Checker<'_> {
         let mut cx = self.cx(env, Kind::Func, None);
         let sig = env.funcs.get(&f.name.name).cloned();
         let params: Vec<Ty> = sig.as_ref().map(|s| s.params.clone()).unwrap_or_default();
-        cx.ret = Some(sig.map(|s| s.ret).unwrap_or(Ty::Unknown));
+        let ret = sig.map(|s| s.ret).unwrap_or(Ty::Unknown);
+        // A function declared on blocks: its body works on each tile, a block
+        // parameter one tile of the block and the result one tile of the result's.
+        let on_blocks = params.iter().any(|t| matches!(t, Ty::Block(..)));
+        let tile = |t: &Ty| match t {
+            Ty::Block(f, _) if on_blocks => Ty::Tile(*f),
+            other => other.clone(),
+        };
+        let params: Vec<Ty> = params.iter().map(tile).collect();
+        cx.ret = Some(tile(&ret));
         self.bind_params(&mut cx, &f.params, &params);
         self.block(&mut cx, &f.body);
+        if on_blocks {
+            self.whole_block_ops(&f.name.name, f.body.span);
+        }
+    }
+
+    /// `K010` for each operation in `span` (a function on blocks) that works on a whole
+    /// tile rather than on each element: named in the language on a block and not built.
+    fn whole_block_ops(&mut self, name: &str, span: Span) {
+        let mut found: Vec<(usize, usize, &'static str)> = self
+            .ops
+            .iter()
+            .filter(|((start, end), _)| *start >= span.start && *end <= span.end)
+            .filter_map(|(&(start, end), r)| {
+                let what = match r.kind {
+                    OpKind::Matmul => "`matmul`",
+                    OpKind::Reduce(..) => "a reduction",
+                    OpKind::SpreadCol => "`.col()`",
+                    OpKind::SpreadRow => "`.row()`",
+                    OpKind::Transpose => "`.T`",
+                    _ => return None,
+                };
+                Some((start, end, what))
+            })
+            .collect();
+        found.sort();
+        for (start, end, what) in found {
+            self.error(
+                codes::NOT_BUILT,
+                format!(
+                    "{what} in `{name}`, a function on blocks, is named in the language and not \
+                     built yet: a function on blocks works on each tile with elementwise \
+                     operations"
+                ),
+                Span { start, end },
+            );
+        }
     }
 
     pub(super) fn fallback(&mut self, env: &Env, f: &Extern) {
@@ -634,6 +679,18 @@ impl Checker<'_> {
                     format!("a block of several tiles is given to `{what}`, declared on one tile"),
                     arg.value.span,
                 );
+            } else if let (Ty::Block(_, n), Ty::Block(_, m)) = (want, &ty) {
+                if n != m && *n != Count::Unknown && *m != Count::Unknown {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        format!(
+                            "a block {} is given to `{what}`, declared on a block {}",
+                            count_text(m),
+                            count_text(n)
+                        ),
+                        arg.value.span,
+                    );
+                }
             } else {
                 self.fit(&arg.value, &ty, want, &format!("an operand of `{what}`"));
             }
@@ -1943,5 +2000,15 @@ impl Checker<'_> {
                 Ty::Unknown
             }
         }
+    }
+}
+
+/// A block's count as a message gives it.
+fn count_text(n: &Count) -> String {
+    match n {
+        Count::Known(n) => format!("of {n} tiles"),
+        Count::GroupSize => "of `group.size` tiles".into(),
+        Count::Param(_) => "of a module parameter's tiles".into(),
+        Count::Unknown => "of some tiles".into(),
     }
 }
