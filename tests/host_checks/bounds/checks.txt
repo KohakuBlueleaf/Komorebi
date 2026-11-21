@@ -1,7 +1,7 @@
 # A limit in seconds, then the command, run from the repository's root. Off the card:
 # the kernel buffers experiments/language/bounds/README.md gives still hold the kernels.
 40 kmr prebuild --cards 0 {root}/experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 101376
-55 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213632
+55 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 215936
 50 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1
 80 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 227584 --format bfp4_b --pages 1 2/7 4/7
 35 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1 --patterns AB --whole

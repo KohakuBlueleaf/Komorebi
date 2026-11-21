@@ -302,7 +302,7 @@ o reads 128) and gate's and up's outputs (672) cannot be gathered. o reads a and
 reads m instead.
 
 ```
-python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213632
+python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 215936
 ```
 
 The kernel buffer is the one the session named on main bdd6b963 (2026-11-18), raised
