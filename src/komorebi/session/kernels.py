@@ -537,11 +537,12 @@ def built_files(recipes, started):
     return len(elves) - compiled, compiled
 
 
-def fit_slots(built, declared, free, rows, log):
+def fit_slots(built, declared, free, rows, log, level=False):
     """`built` with the undeclared slot counts lowered until `rows` (the L1 table's
-    rows besides the slots) and the slots fit `free` bytes, where they can."""
+    rows besides the slots) and the slots fit `free` bytes, where they can (`level`:
+    a switching run's, the counts kept level: overlay.fitted)."""
     room = free - sum(size for _, size in rows)
-    return overlay.choose(built, declared, room, log)
+    return overlay.choose(built, declared, room, log, level)
 
 
 def _recipe_group(recipe):

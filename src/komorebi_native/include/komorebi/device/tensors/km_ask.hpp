@@ -294,6 +294,12 @@ namespace km {
         }
         volatile tt_l1_ptr uint32_t* returned = l1(mine + queue.returned);
         returned[0] = kAskNoAnswer;
+        // the queue's counts taken read while the number comes (counts only grow: an
+        // earlier copy errs toward waiting), so both round trips overlap
+        const uint32_t build = block + KM_OWN_BUILD;
+        noc_async_read(
+            core.core_noc(link, area + KM_PUT_TAKEN), build, KM_PUT_RING_READ
+        );
         invalidate_l1_cache();  // a fence: the store lands before the answer can
         noc_fast_atomic_increment<noc_mode, true>(
             noc_index,
@@ -326,10 +332,13 @@ namespace km {
         held = number + 1;
 #endif
         // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
-        const uint32_t build = block + KM_OWN_BUILD;
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the mover's small stack
+        static PutRings rings;
+#else
         PutRings rings;
+#endif
         put_rings_clear(rings);
-        code = put_rings_read(core, link, area, build, rings, number);
+        code = put_rings_read(core, link, area, build, rings, number, true);
         if (code != kGaveNone) {
             return give_up(code);
         }
@@ -373,6 +382,17 @@ namespace km {
         if (queue.cursors && dram != 0) {
             made[KM_ASK_KEEPER] = keeper;
         }
+        // the line's L1 free: a get's line before left without a wait (below)
+        code = core.poll_at(
+            kWhereAskSent,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            limit
+        );
+        if (code != kGaveNone) {
+            return give_up(code);
+        }
         line_copy(l1(mine + queue.own), made, number + 1);
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
 #if KM_GUARD && defined(KM_PAGE_LINKS)
@@ -383,19 +403,26 @@ namespace km {
             port_at(core, port)[KM_PORT_FLIGHT] += pages;
         }
 #endif
-        code = core.poll_at(
-            kWhereAskSent,
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            limit
-        );
+        // a get's answer comes only after its line landed: no wait for it here
+        code = !queue.cursors
+            ? kGaveNone
+            : core.poll_at(
+                kWhereAskSent,
+                [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                },
+                limit
+            );
         if (queue.cursors) {  // its line on this parity, until the far island's word
             own[KM_OWN_PUT_SENT / 4] = own[KM_OWN_PUT_SENT / 4] + 1;
             own[KM_OWN_PUT_NUMBER / 4 + parity] = KM_OWN_CONFIRM(number, holder);
         }
         if (code == kGaveNone && ring) {
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the mover's small stack
+            static PutRun local;
+#else
             PutRun local;
+#endif
             PutRun& one = run != nullptr ? *run : local;  // run: put_piece sends
             put_run_clear(one);  // not an aggregate: its block clear calls memset
             one.rings = rings;
@@ -1049,7 +1076,11 @@ namespace km {
         held = number + 1;
 #endif
         // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the mover's small stack
+        static PutRings rings;
+#else
         PutRings rings;
+#endif
         put_rings_clear(rings);
         const uint32_t build = (
             mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_BUILD
@@ -1418,7 +1449,11 @@ namespace km {
         );
         const uint32_t build = block + KM_OWN_BUILD;
         // the rings and the landing (read with them), before a line is reserved
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the mover's small stack
+        static PutRings rings;
+#else
         PutRings rings;
+#endif
         put_rings_clear(rings);
         uint32_t code = put_rings_read(core, link, area, build, rings);
         if (code != kGaveNone) {
@@ -3781,6 +3816,51 @@ namespace km {
         }
     }
 
+    // A landed slot's pages from L1 `from` into their places in DRAM, the writes issued
+    // (not flushed); out of land_serve's frame. False: a page has no place.
+    __attribute__((noinline)) inline bool land_pages(
+        uint32_t from,
+        uint32_t target,
+        uint32_t q,
+        uint32_t pages,
+        uint32_t bytes,
+        uint32_t here
+    ) {
+        for (uint32_t k = 0; k < pages;) {
+            const PageAt to = gather_place(target, q + k, here);
+            if (to.address == 0) {
+                return false;
+            }
+            const uint32_t run = page_run(target, q + k, pages - k, to);
+            const InterleavedAddrGen<true> place = {
+                .bank_base_address = to.address, .page_size = bytes
+            };
+            for (uint32_t m = 0; m < run; m++) {
+                noc_async_write(
+                    from + (k + m) * bytes, place.get_noc_addr(to.index + m), bytes
+                );
+            }
+            k += run;
+        }
+        return true;
+    }
+
+    // Another generation's landing at `head` (its first word `word`): dropped, counted
+    // for the host, the generation written again; out of land_serve's frame.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t land_drop(
+        const Kernel& core,
+        const CollGen& gen,
+        volatile tt_l1_ptr uint32_t* head,
+        uint32_t word
+    ) {
+        if (head[0] == word) {  // not a new header landed meanwhile
+            head[0] = 0;
+        }
+        l1(gen.row)[KM_COLL_GEN_DROPS] += 1;  // for the host
+        return coll_gen_io(core, gen, true);
+    }
+
     // The leader: every full slot's pages into its DRAM, the slot cleared, its sender
     // credited, the pages counted for their share. False: gave up (recorded).
     template <typename Kernel>
@@ -3805,11 +3885,7 @@ namespace km {
                 const uint32_t from = tree_far(view, port);
                 // another generation's: dropped
                 if (word >> 8 != (coll_gen_now() & kLandGenBits)) {
-                    if (head[0] == word) {  // not a new header landed meanwhile
-                        head[0] = 0;
-                    }
-                    l1(l.gen.row)[KM_COLL_GEN_DROPS] += 1;  // for the host
-                    const uint32_t code = coll_gen_io(core, l.gen, true);
+                    const uint32_t code = land_drop(core, l.gen, head, word);
                     if (code != kGaveNone) {
                         return land_gave_up(core, command, code, kLandGen, port, from);
                     }
@@ -3826,27 +3902,12 @@ namespace km {
                         )
                     );
                 }
-                for (uint32_t k = 0; k < pages;) {
-                    const PageAt to = gather_place(target, q + k, here);
-                    if (to.address == 0) {
-                        return (
-                            land_gave_up(
-                                core, command, kGaveBadItem, kLandHeader, port, from
-                            )
-                        );
-                    }
-                    const uint32_t run = page_run(target, q + k, pages - k, to);
-                    const InterleavedAddrGen<true> place = {
-                        .bank_base_address = to.address, .page_size = bytes
-                    };
-                    for (uint32_t m = 0; m < run; m++) {
-                        noc_async_write(
-                            at + kLandHead + (k + m) * bytes,
-                            place.get_noc_addr(to.index + m),
-                            bytes
-                        );
-                    }
-                    k += run;
+                if (!land_pages(at + kLandHead, target, q, pages, bytes, here)) {
+                    return (
+                        land_gave_up(
+                            core, command, kGaveBadItem, kLandHeader, port, from
+                        )
+                    );
                 }
                 const uint32_t code = core.poll_at(
                     kWhereAsk,

@@ -3,6 +3,7 @@ cores' places and a card split into islands' rows."""
 
 from komorebi import abi
 from komorebi.device import chips
+from komorebi.errors import ProgramError
 
 # The kernel buffer ends where the allocator's L1 base begins; it starts at the chip's
 # kernel_buffer_base (chips), in its l1_bytes.
@@ -35,6 +36,32 @@ def check_depths(depth, host_depth, event_depth):
             f"power of two in range (depth 1 to {h['KM_RING_SLOTS']}, host_depth to "
             f"{h['KMD_HOST_DEPTH_MAX']}, event_depth to {EVENT_DEPTH_MAX})"
         )
+
+
+RING_DEFINE = "KM_RING_DEPTH_MAX"  # the ring slots a load's kernels can scan
+
+
+def ring_define(programs, depth):
+    """The (name, value) define of the ring slots a load's kernels are built for: a
+    bound a program declares (the least), else the smallest power of two at or above
+    `depth`; a depth past a declared bound is refused by name before the build."""
+    slots = abi.headers()["KM_RING_SLOTS"]
+    declared = [
+        (int(p.defines[RING_DEFINE]), p) for p in programs if RING_DEFINE in p.defines
+    ]
+    for bound, program in declared:
+        if not 1 <= bound <= slots or bound & (bound - 1):
+            raise ProgramError(
+                f"{program.name}: {RING_DEFINE}={bound}: not a power of two from 1 "
+                f"to {slots}"
+            )
+        if depth > bound:
+            raise ProgramError(
+                f"{program.name}: ring depth {depth}: its kernels are built for at "
+                f"most {bound} slots ({RING_DEFINE}); load it at depth {bound} or less"
+            )
+    bound = min((b for b, _ in declared), default=1 << (depth - 1).bit_length())
+    return (RING_DEFINE, str(bound))
 
 
 def kernel_buffer_max(arch):

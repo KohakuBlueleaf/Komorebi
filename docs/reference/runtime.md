@@ -252,7 +252,7 @@ the program's own.
 | `ready_slot`, `ready_base` | the leader's READY word at the dispatcher |
 | `tag` | per-process random tag, 16 bits; check-ins carry it |
 | `workers` | cores 0 to `workers - 1` run commands (the group of an EXIT) |
-| `depth` | ring slots scanned, 1 to 64 (`KM_RING_SLOTS`; 0: 64) |
+| `depth` | ring slots scanned, 1 to 64 (`KM_RING_SLOTS`); the kernels are built for it rounded up to a power of two (`KM_RING_DEPTH_MAX`: the reader's list of waiting commands has that many entries); 0: that bound; more: the reader refuses at its start |
 | `row` | cores per grid row for completion; 0: one level always |
 | `wait_limit` | timeout of a wait for another core, in 1024-cycle units |
 | `idle_limit` | timeout of a wait for the next command, in 1024-cycle units; 0: none |
@@ -516,6 +516,19 @@ into the rank's arrival slot (a broadcast's block, its VALID line, its marker ba
 the next part's or the sender's L1), through the link cores toward the rank's island, any
 number of links away, and the call returns once they landed (the port's 1 after them).
 A sender's wait is bounded and gives its command up (`emit`, the broadcast's own give-up).
+`km::write_l1(core, command, rank, address, from, bytes, port, km::posted)` is the same
+write posted: toward another island it sends every line unconfirmed (no wait for an
+earlier line to land, the port's line last) and returns once they are sent; on its own
+island it is the write above. A CPU's lines toward one island land in the order sent,
+so the port's 1 there says this write's bytes and every earlier one's landed. Until
+then the link cores still read `from`: it is not written until the CPU's next confirmed
+call toward that island (`km::write_l1` or `km::add_word` without `km::posted`) has
+returned, which is the fence; two posted writes in flight to the same bytes land in no
+set order. A refusal over there is named at the CPU's next call across, as a posted
+add's. A CPU has two lines in flight, so a posted write right behind another waits for
+the first one's lines. On Wormhole, one link, 985.5 MHz: a call of 10 KB takes 3.9 µs
+posted against 19.2 µs confirmed, and the bytes land 11.2 µs after the call against 16.9
+(20 KB: 3.9 and 20.4 µs, landed after 13.2 and 18.3).
 A `km::write_l1` or `km::add_word` the rank's island refuses (a rank past its ranks, a
 port past `KM_PORTS`) is confirmed as refused, nothing done: the call gives up
 `bad_item` in `far`, that island named; a posted add's refusal is named at the CPU's

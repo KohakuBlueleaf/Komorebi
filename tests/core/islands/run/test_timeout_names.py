@@ -16,9 +16,11 @@ from komorebi.session import state as device_state
 CONSTANTS = abi.headers().constants
 
 
-def fake_run(local, block):
+def fake_run(local, block, stopped=False):
     backend = SimpleNamespace(inspect=lambda count: {"block": block, "given_up": 0})
-    return SimpleNamespace(_local=lambda group: local, backend=backend, h=None)
+    return SimpleNamespace(
+        _local=lambda group: local, backend=backend, h=None, stopped=stopped
+    )
 
 
 def test_a_far_part_s_cores_are_named_with_their_island(monkeypatch):
@@ -55,6 +57,17 @@ def test_a_far_part_s_cores_are_named_with_their_island(monkeypatch):
     )
     assert island_run.IslandRun._ranked(run, 1, far) == far  # kept as it is
     blocks["island 0"]["count"] = 2  # another inspect since: not this part's
+    assert island_run.IslandRun._far_cores(run, 1, (118, 2)) == []
+
+
+def test_a_stopped_island_s_closed_dispatcher_is_not_read_for_far_cores():
+    def closed(count):  # a closed port: its block address is gone
+        raise TypeError("unsupported operand type(s) for +: 'NoneType' and 'int'")
+
+    stopped = fake_run((118, 1), "island 0", stopped=True)
+    stopped.backend.inspect = closed
+    graph = SimpleNamespace(split=lambda group: [(0, 118, 1), (1, 119, 1)])
+    run = SimpleNamespace(graph=graph, runs=(stopped, fake_run((0, 1), "island 1")))
     assert island_run.IslandRun._far_cores(run, 1, (118, 2)) == []
 
 

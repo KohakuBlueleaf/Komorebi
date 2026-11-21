@@ -80,6 +80,7 @@ class IslandRunPart:
     def __init__(self, first):
         self.island_first, self.island_ranks, self.cores = first, 118, 120
         self._flag_part, self.queued, self.handed = 1 << 3, [], 0
+        self.stored = False
 
     def _queue_command(self, handler, group, words, exclusive, flags, budget=None):
         self.queued.append((handler, group, words, flags))
@@ -89,8 +90,14 @@ class IslandRunPart:
         self.handed += 1
 
     def wait(self, handle, timeout):
-        assert self.handed == 1  # every island's command handed before a wait
+        assert self.stored  # every island's queue stored (run.send) before a wait
         return SimpleNamespace(kind="done")
+
+
+def send(runs):
+    """IslandRun.send as the live row sees it: every island's queue stored."""
+    for run in runs:
+        run.stored = True
 
 
 def live_session(table_address):
@@ -103,9 +110,8 @@ def live_session(table_address):
 
     made.sessions = (SimpleNamespace(tensor=tensor, dram_banks=8),) * 2
     made._tables = [SimpleNamespace(address=table_address)] * 2
-    made.run = SimpleNamespace(
-        stopped=False, runs=[IslandRunPart(0), IslandRunPart(118)]
-    )
+    runs = [IslandRunPart(0), IslandRunPart(118)]
+    made.run = SimpleNamespace(stopped=False, runs=runs, send=lambda: send(runs))
     row = bytes(range(islands.tensor_entry_bytes(2)))
     made._entries[3] = SimpleNamespace(entry=lambda banks: row)
     return made, row, freed, written
@@ -137,6 +143,7 @@ def test_a_live_row_of_many_islands_has_a_page_of_whole_lines_that_holds_it(coun
     made.sessions = made.sessions[:1] * count
     made._tables = made._tables[:1] * count
     made.run.runs = [IslandRunPart(118 * i) for i in range(count)]
+    made.run.send = lambda: send(made.run.runs)
     size = islands.tensor_entry_bytes(count)
     row = bytes(i % 251 for i in range(size))
     made._entries[3] = SimpleNamespace(entry=lambda banks: row)

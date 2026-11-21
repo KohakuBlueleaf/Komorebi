@@ -491,9 +491,9 @@ def live(words, abi_headers=None):
     if line >> 31:  # a page call past its tensor's end (kWherePageRange): its page
         out["line"], out["page"] = None, line & 0x7FFFFFFF
     else:
-        out["line"] = (
-            {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
-        )
+        role = line >> 16  # a role past ROLES (no kernel's word): its raw value
+        kernel = ROLES[role] if role < len(ROLES) else role
+        out["line"] = {"kernel": kernel, "line": line & 0xFFFF} if line else None
     out["lost"] = lost(words, abi_headers)
     return out
 

@@ -15,6 +15,7 @@ from komorebi.device import native
 from komorebi.errors import ProgramError
 from komorebi.program import overlay
 from komorebi.program.checks import instructions as insn_check
+from komorebi.program.checks import stack as stack_module
 from komorebi.program.description import messages_header, unguarded
 
 # The load's default room for added parts: bytes of parts, each stored in every bank.
@@ -210,6 +211,20 @@ def _part(card, each, made, kernel, part):
             native.metal_tree(card.tree),
             native.cache_directory() / "insn-check",
             card.device.arch(),
+        )
+    kernel_elf = getattr(linked, "kernel", "")
+    if kernel_elf:  # the kernel's stack with this part on it
+        arch = card.device.arch()
+        stack_module.judge(
+            made.name,
+            stack_module.margins(
+                stack_module.part_images({kernel_elf: [str(elf)]}),
+                native.metal_tree(card.tree),
+                native.cache_directory() / "stack-check",
+            ),
+            stack_module.ARCH_NAMES.get(arch, arch),
+            card.log,
+            bound=True,
         )
     return linked, hit
 

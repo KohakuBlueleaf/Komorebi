@@ -25,6 +25,7 @@ from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.checks import instructions as insn_check
 from komorebi.program.checks import near as near_module
+from komorebi.program.checks import stack as stack_module
 from komorebi.program.description import (
     Program,
     guard_says,
@@ -341,20 +342,48 @@ class LoadMixin:
             return descriptor, elves, build, built_at
 
     def _check_stack(self, program, elves):
-        """Under the Tensix dispatcher: refuses a build whose dispatcher image has no
-        room left for its stack (DispatcherStackError), else logs their margins."""
-        if self._dispatcher != dispatch_module.TENSIX:
-            return
-        found = tensix_module.check_stack(
+        """Refuses a build whose kernel image on any RISC has no room left for its
+        stack: the Tensix dispatcher's (DispatcherStackError), every other
+        (StackError); warns under stack.WARN; logs the margins."""
+        tree = native.metal_tree(self.tree)
+        cache = native.cache_directory() / "stack-check"
+        found = []
+        if self._dispatcher == dispatch_module.TENSIX:
+            found = tensix_module.check_stack(
+                program.name, elves, tree, cache, self.arch
+            )
+            if found:
+                margins = ", ".join(each.line() for each in found)
+                self.log(f"dispatcher stack margins: {margins}")
+        skip = [elf for _, _, elf in tensix_module.stack_images(elves)]
+        images = stack_module.kernel_images(elves, skip)
+        stack_module.judge(
             program.name,
-            elves,
-            native.metal_tree(self.tree),
-            native.cache_directory() / "stack-check",
-            self.arch,
+            stack_module.margins(images, tree, cache),
+            tensix_module.ARCH_NAMES.get(self.arch, self.arch),
+            self.log,
         )
-        if found:
-            margins = ", ".join(each.line() for each in found)
-            self.log(f"dispatcher stack margins: {margins}")
+
+    def _check_parts(self, programs):
+        """Warns by name when a kernel with the overlay parts it calls (an upper
+        bound of its need) has under stack.WARN left; logs as _check_stack."""
+        parts = {}
+        for program in programs:
+            built = getattr(program, "overlays_built", None)
+            for elf, own in getattr(built, "parts", {}).items():
+                parts.setdefault(elf, []).extend(own)
+        if parts:
+            stack_module.judge(
+                programs[0].name,
+                stack_module.margins(
+                    stack_module.part_images(parts),
+                    native.metal_tree(self.tree),
+                    native.cache_directory() / "stack-check",
+                ),
+                tensix_module.ARCH_NAMES.get(self.arch, self.arch),
+                self.log,
+                bound=True,
+            )
 
     def _log_kernel_buffer(self, program):
         """The built kernels' line: their bytes of the kernel buffer, each kernel's
@@ -639,8 +668,10 @@ class LoadMixin:
                 )
             if placed is not None:
                 backend.load_programs(placed, descriptor)
+                self._check_parts(list(placed.programs))
             else:
                 backend.load_overlays(program, descriptor)
+                self._check_parts([program])
             self._log_built(descriptor, built_at, program)
             if mock.active():  # built: a mock run stands in for the launch
                 self._starting = None
@@ -1000,6 +1031,7 @@ class LoadMixin:
                     )
                 try:
                     first.load_overlays(program, descriptor)
+                    self._check_parts([program])
                     break
                 except L1BudgetError:
                     if not ring or not kernel_module.rings_dropped(first):

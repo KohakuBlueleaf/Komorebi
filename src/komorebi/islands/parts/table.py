@@ -151,7 +151,7 @@ class TableMixin:
         """Entry `word` written by every island's ranks (ENTRY with KM_ENTRY_TABLE): the
         row in a page of each island's DRAM at its L1 place's offset mod 64, the page
         whole 64 B lines that hold it (an entry grows with the islands), one command
-        an island, all handed before any is waited for."""
+        an island, every island's queue stored (run.send) before any is waited for."""
         h = abi.headers()
         size = islands.tensor_entry_bytes(len(self.sessions))
         row = np.frombuffer(self._entries[word].entry(self.dram_banks), np.uint8)
@@ -180,8 +180,9 @@ class TableMixin:
                         h["KM_HANDLER_ENTRY"], group, words, False, part, budget=timeout
                     )
                 )
-            for run in self.run.runs:
-                run._hand()
+            # every island's queue stored: a crossing command queued before the row
+            # starts on every island, not on the one waited first alone
+            self.run.send()
             for island, (run, handle) in enumerate(zip(self.run.runs, handles)):
                 event = run.wait(handle, timeout)
                 if event.kind != "done":

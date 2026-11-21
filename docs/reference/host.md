@@ -1034,7 +1034,8 @@ All derive from `km.KomorebiError`.
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
-| `DispatcherStackError` | under the Tensix dispatcher, a RISC image of the dispatcher has no room left for its stack on the chip ([below](#the-dispatchers-stack)); a `ProgramError`, raised before anything is loaded | `margins`: each image's role, RISC, room, the firmware's frames and its deepest call chain |
+| `DispatcherStackError` | under the Tensix dispatcher, a RISC image of the dispatcher has no room left for its stack on the chip ([below](#a-kernels-stack)); a `ProgramError`, raised before anything is loaded | `margins`: each image's role, RISC, room, the firmware's frames and its deepest call chain |
+| `StackError` | a kernel image (the reader, the writer or a compute TRISC) has no room left for its stack on the chip, counted exactly, as a lower bound, or with the overlay parts it calls as an upper bound ([below](#a-kernels-stack)); a `ProgramError`, raised before anything is loaded (an added class's part: before it is added) | `margins`: each image counted, with its deepest part (`part`) |
 | `StartError` | the image is missing, an X280 cluster the load starts is not idle (the message names the live process that holds the card, or says that an earlier process left the dispatcher running, with the reset), a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, the dispatcher did not report READY, or under the Tensix dispatcher a Wormhole core's compute unit is not ready ([`Session`](#session): the text names the core and its status) | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `StopTimeout` | a run's `stop(timeout)` ran out of its `timeout` in one of its steps (the engines' stop, the drain, the EXIT, the STOP's store, the finish); the run is stopped. The message names the stop's own `timeout`, the step, what was still pending and the seconds spent, then the step's own error; a `WaitTimeout` | `step`, `timeout`, `spent`, `pending`, `result` (the finish's result block, else None) |
@@ -1143,31 +1144,56 @@ division and square root in [`divsqrt.hpp`](../../projects/raytrace/kernels/divs
 `KMR_INSN_CHECK=0` turns the check off, for a kernel that never executes the code
 found.
 
-### The dispatcher's stack
+### A kernel's stack
 
 A Tensix RISC's local memory holds the firmware's data, then the kernel's data, then
-the stack, which grows down from the top; on Wormhole that is 4 KiB on BRISC and
-NCRISC and 2 KiB on a TRISC, and the firmware's own data takes about half. tt-metal's
-loader keeps only a fixed minimum for the stack, so a kernel whose frames reach past
-its data writes over its own data and the firmware's, and the first sign is a wrong
-result on a chip. Under the Tensix dispatcher, after the build and before anything is
-loaded (the same in `kmr prebuild`), `Session.load` therefore counts the stack of each
-RISC image of the dispatcher (out, in, and its compute kernel's engines, thread and
-watch) from the linked ELFs: each function's frame from its prologue, the deepest
-chain of calls from the kernel's entry, and before it the firmware's own frames, read
-the same way from the firmware ELF the kernel was linked against (on Wormhole 96 B on
-BRISC, 144 B on NCRISC, whose IRAM trampoline saves its registers there too, 80 B on
-TRISC 0 and 2, 64 B on TRISC 1; the firmware enables no interrupt, so nothing else
-lands there). When the room between the kernel's data and the top is less than that
-need plus 16 B (one aligned frame), it raises `km.DispatcherStackError`, naming the image, both sizes, the chip and
-the chain ("the Tensix dispatcher's out needs 2,608 B of stack and has 2,144 on
-Wormhole"). An indirect call (a thread's `kmx_main` and `kmx_program`) is
-counted as a call of each function whose address the image takes. A call the count
-cannot follow (an indirect call where the image takes no function's address,
-recursion, sp moved by a register, a call outside the ELF) is refused as a
-`ProgramError` naming the function.
-The load's log has a line of every image's margin; a counted build is kept with its
-numbers, so it is not disassembled again.
+the stack, which grows down from the top. A kernel's stack room is what is left of
+that memory above the kernel's own data, not the memory's size: by the builds of the
+examples and projects, about 0.7 to 2 KB on Wormhole and 2 to 5 KB on Blackhole.
+tt-metal's loader keeps only a fixed minimum for the stack, so a kernel whose frames
+reach past its data writes over its own data and the firmware's, and the first sign
+is a wrong result or a core that never finishes. After the build and before anything
+is loaded (the same in `kmr prebuild`), `Session.load` therefore counts the stack of
+every Tensix kernel image from the linked ELFs: the reader (BRISC), the writer
+(NCRISC), the compute kernel's three TRISCs, and under the Tensix dispatcher its own
+images (out, in, and its compute kernel's engines, thread and watch). It counts each
+function's frame from its prologue, the deepest chain of calls from the kernel's
+entry, and before it the firmware's own frames, read the same way from the firmware
+ELF the kernel was linked against (on Wormhole 96 B on BRISC, 144 B on NCRISC, whose
+IRAM trampoline saves its registers there too, 80 B on TRISC 0 and 2, 64 B on TRISC 1;
+the firmware enables no interrupt, so nothing else lands there).
+
+- An indirect call reaches each function whose address the image takes (a thread's
+  `kmx_main` and `kmx_program`, a wait's ready test: an address stored, passed on or
+  jumped through, not one only loaded from or stored to) and may be the call of an
+  overlay part, unless the debug lines say it is inlined from a wait's ready test
+  (`km::SharedReady`): the part's own call and any call the count cannot place are
+  taken as calls of a part. The kernel counted alone takes the part as no frame: its
+  need is then a lower bound, printed "at least". Once the parts are built (the
+  load's overlays, then each part `run.addon` adds), the kernel is counted again
+  with the deepest part at the deepest such call: an upper bound of the need, which
+  a run may never meet. A part's own such call (the runtime form's program part
+  calling a handler part) goes on into the deepest part the same way; a part met
+  again on its own chain is counted once, and the need is then "at least".
+- A function met again on its own path (a cycle) is counted twice (the waits' shared
+  poll nests once more at run time), and a warning names the two functions.
+- A call the count cannot follow at all (sp moved by a register, a call outside the
+  ELF) is refused as a `ProgramError` naming the function.
+
+When the room of a kernel counted alone is less than the need plus 16 B (one
+aligned frame), exact or a lower bound, the load raises `km.StackError`
+(`km.DispatcherStackError` for the dispatcher's images), naming the image, its RISC,
+both sizes, the chip and the chain ("reader.cpp (BRISC) needs at least 1,392 B of
+stack and has 1,344 on Wormhole"). A kernel counted with its parts is refused the
+same way under 16 B, although its need is an upper bound: a run reaches it only when
+it takes the part's deepest path (a reduce or gather across islands, for the service
+reader part), and nothing at the load tells whether one will. The error names the
+part, the last functions of its deepest path and the kernel's own largest frame
+before the call into the part: make that frame smaller, or the part's path
+shallower. Under 256 B (the firmware's own least stack) it warns, naming the image's
+room, need and margin, and with its parts says the need is an upper bound. The
+load's log has a line of the smallest margin of each RISC, room / need / margin; a
+counted build is kept with its numbers, so it is not disassembled again.
 
 ### Building with no card
 

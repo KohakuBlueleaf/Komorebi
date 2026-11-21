@@ -8,7 +8,7 @@ import pytest
 from chain_fixture import Handlers, Steps, made, quiet, tensors
 
 from komorebi import chain
-from komorebi.dsl.program import walk_refused
+from komorebi.dsl.program import CASE_CALL, walk_refused
 from komorebi.errors import ProgramError
 
 GIVEN = tensors()
@@ -55,6 +55,17 @@ def test_the_runtime_form_walks_the_records_in_its_parts():
     assert "return km_chain_end(movement, command);" in movement
     assert "km::chain_compute(compute, command, km_case);" in compute
     assert "bool km_program(km::Writer& writer" in movement
+
+
+def test_the_runtime_form_walk_calls_each_case_as_its_own_function():
+    program = made_runtime(Steps)
+    movement = (program.built.folder / "movement.cpp").read_text()
+    cases = movement.count("case kHandler")
+    assert cases >= 2
+    assert movement.count(CASE_CALL) == cases
+    assert movement.count("}();") == cases
+    assert "KM_STREAM(km_read0," in movement
+    assert "const km::Stream" not in movement
 
 
 def test_a_runtime_form_class_without_a_chain_has_no_walk():

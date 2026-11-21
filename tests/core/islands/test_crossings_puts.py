@@ -58,7 +58,7 @@ class Load(LoadMixin):
         page = H["KM_COUNTS_PUT_PAGE"]
         self._counts_puts = [SimpleNamespace(address=0x2000, page=page)] * 2
         part = SimpleNamespace(own_commands={}, _queue_command=self.queue)
-        self.run = SimpleNamespace(island=lambda island: part)
+        self.run = SimpleNamespace(island=lambda island: part, send=self.send)
         session = SimpleNamespace(read=self.read)
         self.sessions = (session, session)
 
@@ -73,14 +73,18 @@ class Load(LoadMixin):
     def pair(self, island, k):
         return 1 - island, 0, None
 
+    def send(self):
+        self.commands.append("send")
+
     def wait_together(self, waits, timeout=10.0):
-        pass
+        self.commands.append("wait")
 
 
 def test_the_default_page_gives_no_put_words():
     load = Load()
     rows = load._crossings().rows
-    assert [w[H["KM_PAGES_PAGE"]] for w in load.commands] == [CROSS_PAGE] * 2
+    asked = load.commands[:2]
+    assert [w[H["KM_PAGES_PAGE"]] for w in asked] == [CROSS_PAGE] * 2
     assert set(rows) == {(0, 0, 1), (0, 1, 0)}
     for row in rows.values():
         assert row["messages"] == 7
@@ -91,8 +95,9 @@ def test_puts_asks_the_larger_page_and_names_the_put_words():
     load = Load()
     rows = load._crossings(puts=True).rows
     page = H["KM_COUNTS_PUT_PAGE"]
-    assert page == 128 and [w[H["KM_PAGES_PAGE"]] for w in load.commands] == [page] * 2
-    assert [w[H["KM_PAGES_TO"]] for w in load.commands] == [0x2000] * 2
+    asked = load.commands[:2]
+    assert page == 128 and [w[H["KM_PAGES_PAGE"]] for w in asked] == [page] * 2
+    assert [w[H["KM_PAGES_TO"]] for w in asked] == [0x2000] * 2
     for row in rows.values():
         assert row["messages"] == 7
         assert {f: row[f] for f in PUT_FIELDS} == {
@@ -104,6 +109,12 @@ def test_puts_asks_the_larger_page_and_names_the_put_words():
             "queue_pending": 3,
             "queue_last": 28,
         }
+
+
+def test_counts_of_one_island_store_every_island_s_queued_commands_first():
+    load = Load()
+    load._crossings(islands=(0,))
+    assert len(load.commands) == 3 and load.commands[1:] == ["send", "wait"]
 
 
 def test_put_words_reads_the_offsets_of_the_abi():

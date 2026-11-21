@@ -34,13 +34,13 @@ INTERNAL = {
     Run: {
         "arch", "batch", "dram", "far_cores", "grid", "half_added", "island_cores",
         "island_first", "island_number", "island_ranks", "island_span", "link_events",
-        "links_named", "named_cores", "own_commands", "port", "ranks", "thread_first",
-        "thread_program", "transfer",
+        "links_named", "named_cores", "own_commands", "port", "ranks", "send_islands",
+        "thread_first", "thread_program", "transfer",
     },
     Tensor: {"kept", "loaded", "sent"},
 }  # fmt: skip
 # Keywords of the card's calls that are the island split's own (a part, a chain's)
-OWN_KEYWORDS = {"part", "span", "records_at"}
+OWN_KEYWORDS = {"part", "span", "records_at", "checked"}
 # Not offered on islands yet
 NOT_YET = {Session: {}, Run: {}, Tensor: {}}
 REFUSED = {Run: same.RUN_REFUSED, Tensor: same.TENSOR_REFUSED, Session: {}}

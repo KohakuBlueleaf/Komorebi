@@ -32,6 +32,28 @@ ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before t
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
+# the runtime's wait refuses a run mailbox that is neither GO nor DONE (a core's
+# control words overwritten): the core it names did not stop
+MAILBOX_REFUSED = "unexpected run_mailbox value"
+MAILBOX_CORE = re.compile(r"unexpected run_mailbox value from core (\S+)")
+MAILBOX_VALUE = re.compile(r"unexpected run_mailbox value: (0x[0-9a-fA-F]+)")
+
+
+def mailbox_refused(text, group):
+    """The report of a grid wait the runtime refused on a core's run mailbox (`text`,
+    its message): the cores and raw values it names, and `group` (the cores waited for)
+    as not confirmed stopped; None for any other failure."""
+    if MAILBOX_REFUSED not in text:
+        return None
+    cores = ", ".join(dict.fromkeys(MAILBOX_CORE.findall(text))) or "not named"
+    values = ", ".join(dict.fromkeys(MAILBOX_VALUE.findall(text)))
+    raw = values or "not in the runtime's message (it prints it to stderr only)"
+    return (
+        "the grid did not stop: the runtime refused the run mailbox of at least core "
+        f"{cores} (raw value {raw}; neither GO nor DONE: its control words were "
+        "overwritten); its wait ends at the first such core, so none of "
+        f"{group} is confirmed stopped"
+    )
 
 
 def link_cb(device, taken=()):
@@ -404,6 +426,7 @@ class _Backend:
         `placed` (a programs.Plan) the runtime's kernels, per group of cores; `x280`:
         the X280 ranks' words of a dynamic program."""
         abi_headers = abi.headers()
+        ring = sizes.ring_define(placed.programs if placed else [program], depth)
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
@@ -493,12 +516,13 @@ class _Backend:
         launch = self.card.module.Launch(self.device)
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
-            self._describe_groups(launch, placed, sources, args, grid)
+            self._describe_groups(launch, placed, sources, args, grid, ring)
             self._dispatcher_kernel(launch, workers, grid)
             return launch
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
         defines = [(name, str(value)) for name, value in program.defines.items()]
+        defines += [] if ring[0] in program.defines else [ring]
         defines += self._one_island()
         defines += kernel_module.own_slot_path(program)
         defines += overlay.slots_define(self.slots_most)
@@ -570,7 +594,7 @@ class _Backend:
                 (name, str(value))
                 for name, value in program.defines.items()
                 if name in kernel_module.LINK_DEFINES
-            ] + [("KM_LINK_SERVICES", "1")]
+            ] + [("KM_LINK_SERVICES", "1"), ring]
             chunk = self._link_chunk(program, cores, apart)
             # the link cores' own L1, on them alone: the put queue, the chunks
             link_defines += self._link_queue(launch, program, grid, chunk)
@@ -815,9 +839,10 @@ class _Backend:
         self.switch_start, self.switch_shift = start, 0  # an added program's start
         return end
 
-    def _describe_groups(self, launch, placed, sources, args, grid):
+    def _describe_groups(self, launch, placed, sources, args, grid, ring):
         """The runtime's kernels and each group's buffers on its cores: a group's
-        kernels are built apart (KM_PROGRAM_GROUP), with its buffers and options."""
+        kernels are built apart (KM_PROGRAM_GROUP), with its buffers and options;
+        `ring`: the ring bound's define (sizes.ring_define), on every kernel."""
         include = [str(abi.headers().abi.parents[2])]
         free = self.card.l1()[1]
         self.group_buffers = []
@@ -873,6 +898,7 @@ class _Backend:
                 if self.added_entry:  # own overlays named ahead
                     defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
+            defines.append(ring)
             defines += self._one_island()
             defines += kernel_module.added_path(placed.programs)
             defines += kernel_module.guard_path(placed.programs)
@@ -912,7 +938,9 @@ class _Backend:
                     **config,
                 )
         if links:  # the island's link cores: the runtime's link kernels, its services
-            self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
+            self._link_cores(
+                launch, placed.programs, args, ranks, links, grid, [*queue, ring]
+            )
             self.link_kernels = links
             below = kernel_module._cbs_end([(0, "uint32", apart, 1)]) if apart else 0
             self.link_queue_at = (below, 0) if queue else None  # after the area
@@ -941,7 +969,8 @@ class _Backend:
     def _link_cores(self, launch, placed, args, ranks, links, grid, queue=()):
         """The runtime's link kernels on the cores after the `ranks` ranks, with the
         link defines of every program `placed` and `queue` (the put queue's, which the
-        ranks' put lines need served), and the runtime's buffers (its tokens)."""
+        ranks' put lines need served, and the ring bound's), and the runtime's buffers
+        (its tokens)."""
         include = [str(abi.headers().abi.parents[2])]
         served = programs.rectangles(ranks, links, grid[0])
         for index, fmt, page, pages in self._runtime_cbs():
@@ -1252,7 +1281,7 @@ class _Backend:
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = kernel_module.fit_slots(
-                common, declared, card.l1()[1], rows, card.log
+                common, declared, card.l1()[1], rows, card.log, level=True
             )
             kernel_module._own_slots_kept(placed, common)
             built = [
@@ -1430,11 +1459,24 @@ class _Backend:
         return range(self.rows[0] * grid_x, sum(self.rows) * grid_x)
 
     def _wait_grid(self, timeout):
-        """Whether this backend's cores (_cores) returned within `timeout`."""
+        """Whether this backend's cores (_cores) returned within `timeout`. A wait the
+        runtime refused on a core's run mailbox is False too: its report is logged and
+        kept in `grid_refused`; any other failure raises."""
         first, rows = self.rows or (0, self.port.grid_y)
-        return self.card.module.wait_grid(
-            self.device, self.port.grid_x, rows, timeout, first
-        )
+        self.grid_refused = None
+        try:
+            return self.card.module.wait_grid(
+                self.device, self.port.grid_x, rows, timeout, first
+            )
+        except RuntimeError as error:
+            group = (
+                f"the {len(self._cores())} cores of rows {first} to {first + rows - 1}"
+            )
+            self.grid_refused = mailbox_refused(str(error), group)
+            if self.grid_refused is None:
+                raise
+            self.card.log(self.grid_refused)
+            return False
 
     def read_back(self, stop_grid=False):
         """After the X280 runtime is closed: waits (with a timeout) for the grid's
@@ -1455,8 +1497,11 @@ class _Backend:
         timeout = self.card.grid_timeout
         if not self._wait_grid(timeout):
             self.card.mark_stuck()
+            why = self.grid_refused or (
+                f"the grid's kernels did not return within {timeout} s after the stop"
+            )
             raise GridTimeout(
-                f"the grid's kernels did not return within {timeout} s after the stop. "
+                f"{why}. "
                 "The session does not close the device; at the process's exit the "
                 f"runtime waits {process.exit_wait()} for the cores, leaves those that "
                 "did not end as they are, then holds their RISC CPUs in reset; the "

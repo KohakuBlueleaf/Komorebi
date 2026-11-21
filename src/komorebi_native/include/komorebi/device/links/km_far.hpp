@@ -14,8 +14,8 @@
 
 namespace km {
 
-    // km::add_word(..., km::posted): returns once its line is sent; a CPU's lines land
-    // in the order sent (puts too), so its next confirmed call is the fence.
+    // km::add_word, km::write_l1 with km::posted: true once the lines are sent; a CPU's
+    // lines to one island land in the order sent: its next confirmed call there fences.
     struct Posted {};
 
     constexpr Posted posted{};
@@ -260,8 +260,8 @@ namespace km {
     }
 
     // write_l1 to another island's rank: whole pieces of the packet's bytes a line,
-    // then 16s, then 4s inline; the line with the port after every other confirmed.
-    template <typename Kernel>
+    // then 16s, 4s inline; the port's line after the others confirmed, or all posted.
+    template <bool kConfirmed, typename Kernel>
     inline uint32_t far_write(
         const Kernel& core,
         uint32_t rank,
@@ -301,12 +301,12 @@ namespace km {
                 far.page = l1(source + done)[0];
             }
             const bool last = done + length == bytes;
-            if (last && sent != 0) {
+            if (kConfirmed && last && sent != 0) {
                 code = far_settled(core);  // every earlier line done: then the port
             }
             far.port = last && port >= 0 ? static_cast<uint32_t>(port) + 1 : 0;
             if (code == kGaveNone) {
-                code = far_line(core, far, last);
+                code = far_line(core, far, kConfirmed && last);
             }
             done += length;
             sent++;
@@ -315,8 +315,9 @@ namespace km {
     }
 #endif
 
-    // write_l1's steps, its kGave* code (`island`: the rank's).
-    template <typename Kernel>
+    // write_l1's steps, its kGave* code (`island`: the rank's); kConfirmed false: lines
+    // to another island posted (a write on this island lands at return either way).
+    template <bool kConfirmed = true, typename Kernel>
     inline uint32_t write_l1_at(
         const Kernel& core,
         uint32_t rank,
@@ -341,7 +342,9 @@ namespace km {
             return (
                 bytes == 0 && port < 0
                     ? kGaveNone
-                    : far_write(core, rank, island, address, source, bytes, port)
+                    : far_write<kConfirmed>(
+                        core, rank, island, address, source, bytes, port
+                    )
             );
 #else
             return far_refused();
@@ -399,6 +402,34 @@ namespace km {
         const uint32_t code = (
             write_l1_at(
                 core, rank, address, reinterpret_cast<uint32_t>(from), bytes, port, island
+            )
+        );
+        return code == kGaveNone || far_gave_up(core, command, code, island);
+    }
+
+    // The same, posted: across, true once its lines are sent (the port's last); `from`
+    // stays the CPU's until its next confirmed call to that island (the fence).
+    template <typename Kernel>
+    inline bool write_l1(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t rank,
+        uint32_t address,
+        const void* from,
+        uint32_t bytes,
+        int port,
+        Posted
+    ) {
+        uint32_t island = 0;
+        const uint32_t code = (
+            write_l1_at<false>(
+                core,
+                rank,
+                address,
+                reinterpret_cast<uint32_t>(from),
+                bytes,
+                port,
+                island
             )
         );
         return code == kGaveNone || far_gave_up(core, command, code, island);

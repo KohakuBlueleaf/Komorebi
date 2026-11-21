@@ -12,6 +12,11 @@
 #error "the host names the start-up buffers (KM_PROGRAM_CB_IN and KM_PROGRAM_CB_OUT)"
 #endif
 
+namespace km {
+    // the kept fields this CPU holds a fill of, a bit a buffer index (fields_held_word)
+    uint32_t fields_held __attribute__((used, externally_visible)) = 0;
+}  // namespace km
+
 void kernel_main() {
     km::Compute compute;
 #if defined(KM_PROGRAM_SWITCH)
@@ -38,6 +43,7 @@ void kernel_main() {
             PACK((setup_local_cb_read_write_interfaces<false, true, true>(
                 km::program_buffers(control), 0, mask
             )));
+            km::fields_held &= ~mask;  // the buffers set up anew hold no fill
         } else if (km::handler(command) - 1u >= KM_HANDLER_USER_MAX) {
             return;  // NOP: no program's
         }

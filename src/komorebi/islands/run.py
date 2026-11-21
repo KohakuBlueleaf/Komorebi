@@ -4,6 +4,7 @@ the host, events joined, links' calls served."""
 import contextlib
 import functools
 import time
+import warnings
 
 import numpy as np
 
@@ -15,6 +16,7 @@ from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
 from komorebi.errors import (
     CommandTimeout,
+    CrossingWarning,
     KomorebiError,
     MessagesGaveUp,
     WaitTimeout,
@@ -71,6 +73,124 @@ def _handler_label(handler):
     return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
 
 
+OUT_BLOCK = 256  # tickets a step of _out_before's search back
+
+
+def _unsent(run):
+    """Whether an island's Run has commands not yet handed, or handed and not yet
+    stored (a stand-in without those counts: assumed so)."""
+    port = getattr(run, "port", None)
+    counts = getattr(run, "_counts", None)
+    if port is None or counts is None:
+        return True
+    return bool(counts) or bool(port.queued)
+
+
+def _holders(parts, wanted):
+    """(the islands holding a part of a ticket of `wanted`, as a list; each island's
+    handles of those tickets, a row an island, 0: none) of an island run's parts."""
+    rows = np.asarray(parts)[:, wanted]
+    return np.flatnonzero(rows.any(axis=1)).tolist(), rows
+
+
+def _counted(graph, group, args):
+    """The islands whose links a first command's crossing line counts (a sorted
+    tuple): those its group's ranks lie on, and those holding pages of its tensors."""
+    islands = {island for island, _first, _count in graph.split(group)}
+    for value in args:
+        placement = getattr(value, "placement", None)
+        if placement is not None and not getattr(placement, "copy", True):
+            islands.update(i for i, (_, steps) in enumerate(placement.parts) if steps)
+    return tuple(sorted(islands))
+
+
+def _accesses(handler, args):
+    """[(name, "reads" | "writes" | "reads and writes" | "is given", placement)] of the
+    island tensors among a command's `args` that its handler moves (a class's moved
+    tensors; any other handler: every one), and whether it is a collective (it uses
+    ports or broadcasts; a handler not a class's is taken as one)."""
+    method = getattr(handler, "method", handler)
+    program = getattr(handler, "program", None)
+    name = getattr(method, "name", None)
+    places = method.places() if hasattr(method, "places") else []
+    moved = (getattr(program, "moved_tensors", None) or {}).get(name)
+    collective = program is None or name is None
+    collective = collective or name in getattr(program, "port_handlers", ())
+    collective = collective or name in (getattr(program, "broadcast_lines", None) or {})
+    out = []
+    for at, value in enumerate(args):
+        placement = getattr(value, "placement", None)
+        if placement is None or getattr(placement, "copy", True):
+            continue  # not an island tensor, or a copy on every island
+        tensor = places[at] if at < len(places) else f"argument {at}"
+        if moved is None:
+            out.append((tensor, "is given", placement))
+            continue
+        how = [w for w, names in zip(("reads", "writes"), moved) if tensor in names]
+        if how:
+            out.append((tensor, " and ".join(how), placement))
+    return out, collective
+
+
+def _off_islands(graph, handler, group, args):
+    """The line of a command whose tensors' placement (on the host, no card read) puts
+    pages on islands its group does not run on, or none on one it runs on (not said
+    of a collective, which brings them); None if every tensor is on its islands."""
+    runs_on = sorted({island for island, _first, _count in graph.split(group)})
+    accesses, collective = _accesses(handler, args)
+    said = []
+    for tensor, how, placement in accesses:
+        held = {
+            island: placement.part_pages(island)
+            for island, (_, steps) in enumerate(placement.parts)
+            if steps
+        }
+        off = [island for island in sorted(held) if island not in runs_on]
+        bare = [] if collective else [i for i in runs_on if i not in held]
+        bare = bare if len(off) < len(held) else []  # every page off: said so
+        if not off and not bare:
+            continue
+        where = ", ".join(f"{n} on island {i}" for i, n in sorted(held.items()))
+        text = f"{how} {tensor}, whose pages lie {where}"
+        if off:
+            text += f": those a call touches on {_islands_named(off)} cross the link"
+        if bare:
+            text += (
+                f"; its ranks on {_islands_named(bare)} hold none of them and read "
+                "them across the link"
+            )
+        said.append((tensor, text))
+    if not said:
+        return None
+    label, (first, count) = _handler_label(handler), group
+    names = " and ".join(tensor for tensor, _ in said)
+    return (
+        f"{label} on ranks {first}..{first + count - 1} ({_islands_named(runs_on)}) "
+        f"{'; '.join(text for _, text in said)}, at every call; if that is not meant, "
+        f"place {names} on the command's islands (split=0, group=({first}, {count})), "
+        "or copy=True if every rank reads all of it (run.crossing_line = 'off' "
+        "silences this)"
+    )
+
+
+def _sent_by(crossings, islands):
+    """The rows of Crossings `crossings` of what `islands` sent (their link cores')."""
+    rows = crossings.rows.items()
+    return island_records.Crossings({k: v for k, v in rows if k[1] in islands})
+
+
+def _words_once(island_run, island, handler, args):
+    """A class handler's command words made once for every part of a command
+    (Run._shared_words on island `island`'s run, errors named by it), or None."""
+    made = getattr(island_run.runs[island], "_shared_words", None)
+    if made is None:
+        return None
+    try:
+        return made(handler, args)
+    except KomorebiError as error:
+        raise island_run._error(error, island) from None
+
+
 class IslandRun(TreeCalls, RunCalls):
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
@@ -79,7 +199,8 @@ class IslandRun(TreeCalls, RunCalls):
     def __init__(self, graph, runs, linked=False, counts=None):
         self.graph = graph
         self.runs = tuple(runs)
-        self._counts = counts  # () -> Crossings of the links, read now (None: no link)
+        # (islands=None) -> Crossings of those islands' links, read now (None: no link)
+        self._counts = counts
         # a dynamic program's messages cross: a dynamic RUN takes every rank, and link
         # core 0 of each island serves it (a PAGES command of mode MESSAGES)
         self.linked = linked
@@ -98,13 +219,14 @@ class IslandRun(TreeCalls, RunCalls):
         self._chain_last = 0  # the last chain's ticket (_chain_after)
         self._timed_out = set()  # tickets whose timeout wait or drain raised (stop)
         self.stop_named = []  # the stop's failures of those tickets, not raised again
-        # per island, the handle of each ticket's part on that island (0: none)
-        self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
-        # a (handler, group)'s first command's crossing: "log", "error" or "off"; a
-        # traced run starts "off" (its COUNTS commands would take the trace's slots)
-        traced = any(getattr(run.backend, "trace_cap", 0) for run in self.runs)
-        self.crossing_line = "off" if traced else "log"
+        # a row an island: the handle of each ticket's part on that island (0: none)
+        self._parts = np.zeros((len(self.runs), 1024), np.int64)
+        # a first command's crossing: "check" (placements on the host), "measure" (and
+        # the links' counts read; "log" the same), "error" (measured, raised) or "off"
+        self.crossing_line = "check"
         self._crossed_seen, self._measured = set(), {}
+        self._placed_seen = set()  # (handler, group, its placements' ids) checked
+        self._placed_kept = []  # those placements
         # an add a later island's device refused: ("number", n) or ("program", p) ->
         # why a command naming it is refused (_half_added_error)
         self._half_added = {}
@@ -117,6 +239,7 @@ class IslandRun(TreeCalls, RunCalls):
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
             run.named_cores = lambda island=island: self._named_cores(island)
             run.island_number = island
+            run.send_islands = self.send  # a transfer on one island stores them all
 
     def _check_local(self, handler, group):
         """check_local over this run's islands."""
@@ -128,9 +251,8 @@ class IslandRun(TreeCalls, RunCalls):
 
     def _grow(self, tickets):
         while self._next + tickets > len(self._parts[0]):
-            self._parts = [
-                np.concatenate([parts, np.zeros_like(parts)]) for parts in self._parts
-            ]
+            parts = np.asarray(self._parts)
+            self._parts = np.concatenate([parts, np.zeros_like(parts)], axis=1)
 
     def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
         """Run.chain over flat ranks: each island's records in its own DRAM, walked on
@@ -283,13 +405,21 @@ class IslandRun(TreeCalls, RunCalls):
         parts = self.graph.split(group)
         self._check_local(handler, group)
         island_local.check_direct(self.graph, handler, group, args)
-        for island, _first, _count in parts[1:]:  # refused before any part is queued
-            self._part_checked(island, handler, group, args, exclusive, result)
+        # parts on several islands: each checked once (the second island's first),
+        # refused before any is queued, its checks given to its submit
+        checked = {}
+        if len(parts) > 1:
+            order = [island for island, _first, _count in parts[1:] + parts[:1]]
+            words = _words_once(self, order[0], handler, args)
+            for island in order:
+                checked[island] = self._part_checked(
+                    island, handler, group, args, exclusive, result, words
+                )
         self._x280_holder(handler, parts)
         self._check_quota(handler, parts)
         if self._dynamic(handler):
             self._serve_links(group)
-        before = self._first_use(handler, group)  # read before the command is queued
+        before = self._first_use(handler, group, args)  # read before it is queued
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
@@ -303,14 +433,15 @@ class IslandRun(TreeCalls, RunCalls):
                     result=result,
                     block=block,
                     part=True,
+                    **({"checked": checked[island]} if checked else {}),
                 )
             except KomorebiError as error:
                 raise self._error(error, island) from None
             self._parts[island][ticket] = handle
         self._next += 1
         if before is not None:  # earlier commands still out: counted with it
-            label = _handler_label(handler)
-            self._measured[ticket] = (label, group, before, self._out_before(ticket))
+            label, out = _handler_label(handler), self._out_before(ticket)
+            self._measured[ticket] = (label, group, before[1], out, before[0])
         return ticket
 
     def _submit_queued(self, handler, count, args, exclusive, result, block):
@@ -383,34 +514,69 @@ class IslandRun(TreeCalls, RunCalls):
         self._next += 1
         return ticket
 
-    def _first_use(self, handler, group):
-        """The links' counts before a (handler, group)'s first command (a COUNTS
-        command an island), or None: seen before, no link, crossing_line "off", or
-        a run whose messages cross."""
-        if self.crossing_line not in ("log", "error", "off"):
+    def _first_use(self, handler, group, args=()):
+        """(islands, their links' counts) before a (handler, group)'s first command (a
+        COUNTS command to each island its group touches or holding pages of its tensors
+        `args`), or None: seen before, no link, not measured, or a run whose messages
+        cross. A (handler, group, tensors)'s first: their placement checked."""
+        line = self.crossing_line
+        if line not in ("check", "measure", "log", "error", "off"):
             raise ValueError(
-                f"crossing_line={self.crossing_line!r}: 'log', 'error' or 'off'"
+                f"crossing_line={line!r}: 'check', 'measure' ('log'), 'error' or 'off'"
             )
+        if line == "off":
+            return None
         key = (_handler_label(handler), group)
-        if self.crossing_line == "off" or self._counts is None or self.linked:
+        self._placed_first(key, handler, group, args)
+        if line == "check" or self._counts is None or self.linked:
             return None  # a run whose messages cross: its counts wait behind the RUN
         if key in self._crossed_seen:
             return None
         self._crossed_seen.add(key)
-        return self.crossings()
+        islands = _counted(self.graph, group, args)
+        return islands, self._counts(islands=islands)
+
+    def _placed_first(self, key, handler, group, args):
+        """At a (handler, group, tensors)'s first command: the line of _off_islands, to
+        the session's log if it was given one, else as a CrossingWarning."""
+        held = [getattr(value, "placement", None) for value in args]
+        placed = (*key, *map(id, held))  # ids: no placement hashed at each submit
+        if placed in self._placed_seen:
+            return
+        self._placed_seen.add(placed)
+        self._placed_kept.extend(held)  # kept, so no other placement takes their ids
+        if len(self.runs) < 2 or getattr(self.session, "card_dram", False):
+            return  # one island, or every page in the card's own DRAM
+        line = _off_islands(self.graph, handler, group, args)
+        if line is None:
+            return
+        if getattr(self.session, "log_given", False):
+            self.session.log(line)
+        else:
+            warnings.warn(line, CrossingWarning, stacklevel=5)
 
     def _out_before(self, ticket):
-        """The tickets before `ticket` whose events the host has not yet filed."""
-        out = set()
-        for island, run in enumerate(self.runs):
-            handles = self._parts[island][1:ticket]
-            rows = handles - run._base
-            inside = (handles != 0) & (rows >= 0)  # below the base: filed and gone
-            filed = np.zeros_like(inside)
-            held = inside & (rows < run._has.size)
-            filed[held] = run._has[rows[held]]
-            late = inside & ~filed
-            out.update((np.flatnonzero(late) + 1).tolist())
+        """The tickets before `ticket` whose events the host has not yet filed, looked
+        for back from it a block at a time: an island's parts' handles grow with the
+        ticket, so a block whose every part is below its run's oldest unfiled handle
+        ends the search (each event before that one is filed)."""
+        parts, out, end = np.asarray(self._parts), set(), ticket
+        oldest = np.array([[getattr(run, "_oldest", 1)] for run in self.runs])
+        while end > 1:
+            start = max(1, end - OUT_BLOCK)
+            block = parts[:, start:end]
+            late = block >= oldest  # no part (0) is never late
+            if not late.any():
+                break
+            for island in np.flatnonzero(late.any(axis=1)).tolist():
+                run, handles = self.runs[island], block[island]
+                rows = handles - run._base
+                inside = (handles != 0) & (rows >= 0)  # below the base: filed, gone
+                filed = np.zeros_like(inside)
+                held = inside & (rows < run._has.size)
+                filed[held] = run._has[rows[held]]
+                out.update((np.flatnonzero(inside & ~filed) + start).tolist())
+            end = start
         return len(out)
 
     def _crossed(self, tickets, events=None):
@@ -420,10 +586,11 @@ class IslandRun(TreeCalls, RunCalls):
         mine = [int(t) for t in tickets if int(t) in self._measured]
         if not mine:
             return
-        after, raised = self.crossings(), []
+        islands = tuple(sorted(set().union(*(self._measured[t][4] for t in mine))))
+        after, raised = self._counts(islands=islands), []
         for ticket in mine:
-            label, group, before, out = self._measured.pop(ticket)
-            moved = (after - before).total()
+            label, group, before, out, counted = self._measured.pop(ticket)
+            moved = (_sent_by(after, counted) - before).total()
             if not (moved["pages"] or moved["asks"] or moved["puts"]):
                 continue
             others = out + self._next - ticket - 1  # before it, and queued after it
@@ -727,12 +894,16 @@ class IslandRun(TreeCalls, RunCalls):
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
 
-    def _part_checked(self, island, handler, group, args, exclusive, result=False):
+    def _part_checked(
+        self, island, handler, group, args, exclusive, result=False, words=None
+    ):
         """Island `island`'s part of a command checked as its submit checks it, nothing
-        queued (a block's bytes are checked by the first part's), named by island."""
+        queued (a block's bytes are checked by the first part's), named by island; its
+        _submit_words (`words`: the call's words made once, _shared_words)."""
+        given = () if words is None else (words,)
         try:
-            self.runs[island]._submit_words(
-                handler, group, args, exclusive, result, False, None, None, True
+            return self.runs[island]._submit_words(
+                handler, group, args, exclusive, result, False, None, None, True, *given
             )
         except KomorebiError as error:
             raise self._error(error, island) from None
@@ -808,27 +979,30 @@ class IslandRun(TreeCalls, RunCalls):
 
     def send(self):
         """Stores every island's queued commands on its card, so that the islands run
-        their parts at once (a run over a link needs every part started): all handed
-        first, then stored by one native call (every island's lines, one fence), then
-        the events read meanwhile filed."""
-        for island, run in enumerate(self.runs):
+        their parts at once (a run over a link needs every part started): all handed,
+        then stored by one native call (every island's lines, one fence), the events
+        read meanwhile filed; an island with nothing to hand or store is not called."""
+        runs = [(i, run) for i, run in enumerate(self.runs) if _unsent(run)]
+        if not runs:
+            return
+        for island, run in runs:
             try:
                 run._hand()
             except KomorebiError as error:
                 raise self._error(error, island) from None
-        ports = [run.port for run in self.runs]
+        ports = [run.port for _, run in runs]
         together = getattr(type(ports[0]), "store_together", None)
         if together is not None and all(type(port) is type(ports[0]) for port in ports):
             # one native call: every island's lines, then one fence
-            read = together(ports, [run._store_upto() for run in self.runs])
+            read = together(ports, [run._store_upto() for _, run in runs])
         else:
             read = []
-            for island, run in enumerate(self.runs):
+            for island, run in runs:
                 try:
                     read.append(run._store_handed())
                 except KomorebiError as error:
                     raise self._error(error, island) from None
-        for island, (run, rows) in enumerate(zip(self.runs, read)):
+        for (island, run), rows in zip(runs, read, strict=True):
             if len(rows):
                 try:
                     run._take(rows)
@@ -857,11 +1031,10 @@ class IslandRun(TreeCalls, RunCalls):
         self.send()
         self._store(wanted, deadline)
         parts = []
-        for island, run in enumerate(self.runs):
-            handles = self._parts[island][wanted]
+        held, rows = _holders(self._parts, wanted)
+        for island in held:
+            run, handles = self.runs[island], rows[island]
             mine = handles != 0
-            if not mine.any():
-                continue
             try:  # every island's parts arrived before any is forgotten: a ticket
                 # whose wait runs out on a later island is waited for again whole
                 run._wait_kept(handles[mine].tolist(), _left(deadline))
@@ -886,8 +1059,9 @@ class IslandRun(TreeCalls, RunCalls):
         in turn (store what its ring has room for, file its events), so that every
         island is fed while the host waits; Run.wait then returns or raises."""
         pending = {}
-        for island, run in enumerate(self.runs):  # what the stores filed is not waited
-            handles = self._parts[island][wanted]
+        held, rows = _holders(self._parts, wanted)  # the islands holding their parts
+        for island in held:  # what the stores filed is not waited
+            run, handles = self.runs[island], rows[island]
             handles = np.unique(handles[handles != 0])
             pending[island] = handles[~run._arrived(handles)]
         while any(handles.size for handles in pending.values()):
@@ -982,6 +1156,8 @@ class IslandRun(TreeCalls, RunCalls):
             run = self.runs[other]
             local = run._local(group)
             if other == island or local[1] == 0 or not hasattr(run.backend, "inspect"):
+                continue
+            if run.stopped:  # its dispatcher is closed: its stop named its cores
                 continue
             block = device_state.inspect(run.backend.inspect(local[1])["block"], run.h)
             if (

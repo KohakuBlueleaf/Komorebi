@@ -801,11 +801,6 @@ namespace km {
             return code == kGaveNone;
         };
         uint64_t counter = link_noc(r.counter & 0xFFu, r.counter >> 8, r.count);
-        for (uint32_t s = 0; s < groups * per_read; s++) {
-            link_header(area + kPagesHeaders + s * kPagesHeaderStride, r.hops);
-        }
-        auto& sender = link_sender();
-        sender.ready();
         // Read g goes into group g % groups with id 1 + its group (modulo the ids):
         // bank reads land out of order; groups sharing an id are waited for together.
         const auto id_of = [](uint32_t group) {
@@ -835,6 +830,13 @@ namespace km {
         for (uint32_t g = 0; g < ahead; g++) {
             read(g);
         }
+        // the headers of the slots this push fills (its first reads' groups), made
+        // while those reads land
+        for (uint32_t s = 0; s < ahead * per_read; s++) {
+            link_header(area + kPagesHeaders + s * kPagesHeaderStride, r.hops);
+        }
+        auto& sender = link_sender();
+        sender.ready();
         uint32_t batch = 0, sent = 0;
         // the issued count after the group before's last packet: that group is read
         // again once its packets left L1, a group later, so no send waits for it
@@ -2097,12 +2099,15 @@ namespace km {
         l1(area + KM_PUT_STAMPS)[step] = wall();
     }
 
-    // The lead page CPU: get line `at` on into the far link core 0's asks (through L1
-    // `copy`, numbered there) while every far page CPU has room; `sent`. kGave* code.
+    // The lead page CPU: get line `at` on into the far link core 0's asks (through the
+    // headers' room, numbered there) while every far page CPU has room. kGave* code.
     template <typename Kernel>
-    __attribute__((noinline)) uint32_t pages_get_across(
-        const Kernel& kernel, uint32_t area, uint32_t at, uint32_t copy, bool& sent
-    ) {
+    __attribute__((noinline)) uint32_t
+    pages_get_across(const Kernel& kernel, uint32_t area, uint32_t at, bool& sent) {
+        static_assert(
+            KM_ASK_LINES - KM_ASK_HEADERS >= 128,
+            "an ask's line after its header in the headers' room"
+        );
         volatile tt_l1_ptr uint32_t* words = l1(area);
         const uint32_t gets = words[KM_ASK_TAKEN / 4];  // get lines sent across
         sent = false;
@@ -2111,7 +2116,8 @@ namespace km {
                 return kGaveNone;  // the far asks are full
             }
         }
-        line_copy(l1(copy), l1(at), gets + 1);
+        const uint32_t line = area + KM_ASK_HEADERS + 64;
+        line_copy(l1(line), l1(at), gets + 1);
         const uint32_t xy = pages_far0;  // the far link core 0
         auto* header = pages_header(area + KM_ASK_HEADERS);
         link_write(
@@ -2121,7 +2127,7 @@ namespace km {
             ),
             64
         );
-        const uint32_t code = pages_packet(kernel, header, copy, 64);
+        const uint32_t code = pages_packet(kernel, header, line, 64);
         if (code == kGaveNone) {
             words[KM_ASK_TAKEN / 4] = gets + 1;
             cross_count(area, KM_CROSS_ASKS, 1, 64);
@@ -2361,9 +2367,7 @@ namespace km {
             if (lead) {  // the other page CPUs only take it
                 bool sent = true;
                 if (copy[KM_ASK_HOLDER] != islands_at(kernel.args().control).here()) {
-                    code = (
-                        pages_get_across(kernel, area, at, own + KM_PAGE_CPU_ASK, sent)
-                    );
+                    code = pages_get_across(kernel, area, at, sent);
                 } else {
                     words[KM_ASK_BAD / 4] += 1;
                 }
@@ -2911,8 +2915,8 @@ namespace km {
 
     constexpr uint32_t kPutNoLine = 0xFFFFFFFFu;
 
-    // Reads `rings` from link core `link0`'s `area` into L1 `room` until every page CPU
-    // said its ring and (with `number`) took line KM_QUEUE_LINES before it (bounded).
+    // Reads link core `link0`'s `rings` into `room` until every page CPU said its ring
+    // and (`number`) took the line before it; `issued`: that read is already in flight.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t put_rings_read(
         const Kernel& core,
@@ -2920,13 +2924,14 @@ namespace km {
         uint32_t area,
         uint32_t room,
         PutRings& rings,
-        uint32_t number = kPutNoLine
+        uint32_t number = kPutNoLine,
+        bool issued = false
     ) {
         const volatile tt_l1_ptr uint32_t* words = l1(room);
         const auto at = [&](uint32_t offset) {
             return words[(offset - KM_PUT_TAKEN) / 4];
         };
-        bool reading = false;
+        bool reading = issued;
         const uint32_t code = core.poll_at(
             kWhereAskPlace,
             [&] {
@@ -3156,7 +3161,11 @@ namespace km {
                 const uint32_t has = packet_pages(k, at);
                 const uint32_t h = run.build + k * kRingHeader;
                 const LinkHeaderAt header = link_header(h, run.hops);
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the mover's small stack
+                static uint64_t to[kPacketPages];
+#else
                 uint64_t to[kPacketPages];
+#endif
                 for (uint32_t i = 0; i < has; i++) {
                     to[i] = (
                         pages_far_dram(

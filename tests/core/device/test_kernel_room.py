@@ -218,6 +218,23 @@ def test_slots_not_asked_are_lowered_to_what_the_l1_left_allows():
     assert overlay.fitted(made, overlay.Slots(), 0).slots["reader"][0] == 1
 
 
+def test_a_switching_load_keeps_its_slot_counts_level():
+    sizes = {"reader": 15872, "writer": 18176, "unpack": 25280, "math": 18048}
+    sizes["pack"] = 26688  # each part's largest of four programs, a slot each
+    made = overlay.Built({}, {part: (4, size) for part, size in sizes.items()})
+    room = 318_400
+    plain = overlay.fitted(made, overlay.Slots(), room)
+    assert plain.slots["pack"][0] == 1 and plain.slots["unpack"][0] == 3
+    level = overlay.fitted(made, overlay.Slots(), room, level=True)
+    assert {count for count, _ in level.slots.values()} == {3}
+    assert level.slot_bytes == 312_192
+    quiet = lambda message: None  # noqa: E731
+    through = session_kernels.fit_slots(made, overlay.Slots(), room, [], quiet, True)
+    assert through.slots == level.slots
+    asked = overlay.fitted(made, overlay.Slots(count={"compute": 4}), room, level=True)
+    assert [asked.slots[part][0] for part in sizes] == [1, 1, 4, 4, 4]
+
+
 class Writes:
     """What a reopened session writes: (tensor, pages, first)."""
 

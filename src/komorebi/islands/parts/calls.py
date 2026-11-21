@@ -431,17 +431,18 @@ class CallsMixin:
         )
 
     def wait_together(self, waits, timeout=10.0):
-        """Waits, within one `timeout`, for [(island, handle)] of the islands' own runs,
-        one native round an island in turn: a host's commands reach an island's
-        ring only while the host waits on it, and pages crossing need both islands'.
-        Returns the events in the order given; errors name their island."""
+        """Waits, within one `timeout`, for [(island, handle)] of the islands' own runs:
+        every island's queued commands stored first (run.send), then one native round
+        a waited island in turn, as a wait of the run does (pages crossing need both
+        islands'). Returns the events in the order given; errors name their island."""
         mine = {}
         for island, handle in waits:
             mine.setdefault(island, []).append(handle)
         pending = {i: np.unique(np.asarray(h, np.int64)) for i, h in mine.items()}
         deadline = time.monotonic() + timeout
-        for island in pending:
-            self.run.island(island)._hand()
+        # every island stored, not only the waited ones: a command queued before may
+        # cross to islands not waited here, and it needs every part started
+        self.run.send()
         while any(handles.size for handles in pending.values()):
             if time.monotonic() > deadline:
                 island = next(i for i, h in pending.items() if h.size)

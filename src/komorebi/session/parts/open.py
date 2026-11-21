@@ -322,6 +322,7 @@ class OpenMixin:
             self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()
             self.device = None
+            self._nocs = None  # its grid, read again at the next open
         self._restore_visible()
         process._LIVE.discard(self)
 

@@ -361,12 +361,17 @@ def model_scan(slots, bound, prior):
     ]
 
 
+# Built as a load's kernels are (a bound of 8 slots) and as a build without the define.
+BOUNDS = [[], ["-DKM_RING_DEPTH_MAX=8"]]
+
+
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
-def test_the_model_scan_is_the_header_scan(tmp_path):
+@pytest.mark.parametrize("bound", BOUNDS)
+def test_the_model_scan_is_the_header_scan(tmp_path, bound):
     source_file = tmp_path / "scan.cpp"
     source_file.write_text(SCAN_CHECK)
     exe = tmp_path / "scan"
-    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(INCLUDE)]
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", *bound, "-I", str(INCLUDE)]
     subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
     cases = []
     for prior in (0, WRAP - 3):  # the second: sequences that wrap past 0
@@ -425,7 +430,8 @@ int main() {
             }
         }
         for (unsigned k = 0; k < waiting.count; k++) {
-            std::printf(k ? " %u" : "%u", waiting.order[(waiting.head + k) % 64]);
+            const unsigned at = (waiting.head + k) & (KM_RING_DEPTH_MAX - 1);
+            std::printf(k ? " %u" : "%u", waiting.order[at]);
         }
         std::printf("\n");
     }
@@ -435,11 +441,12 @@ int main() {
 
 
 @pytest.mark.skipif(shutil.which("c++") is None, reason="needs a C++ compiler")
-def test_the_header_list_is_the_model_list(tmp_path):
+@pytest.mark.parametrize("bound", BOUNDS)
+def test_the_header_list_is_the_model_list(tmp_path, bound):
     source_file = tmp_path / "list.cpp"
     source_file.write_text(LIST_CHECK)
     exe = tmp_path / "list"
-    command = ["c++", "-std=c++17", "-Wall", "-Werror", "-I", str(INCLUDE)]
+    command = ["c++", "-std=c++17", "-Wall", "-Werror", *bound, "-I", str(INCLUDE)]
     subprocess.run([*command, str(source_file), "-o", str(exe)], check=True)
     rng = random.Random(1)
     cases = []

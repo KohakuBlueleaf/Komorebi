@@ -1550,7 +1550,11 @@ namespace km {
                 ok = false;
                 break;
             }
+#if defined(KM_OVERLAY_PART)  // a part's .bss: off the writer's small stack
+            static uint32_t words[kChainWords];
+#else
             uint32_t words[kChainWords];
+#endif
             chain_copy(base + record, words);
             *chain_word(kChainWriterTaken) = base + record;
             chain_enter(record, base, words);
@@ -1559,9 +1563,11 @@ namespace km {
                 kChainMarksDue + 4 * (record & 1u)
             ) = (member ? chain_marks_due(shape, writer) : 0u);
             if (member) {
+#if !defined(KM_ONE_ISLAND)  // the record's command kept once, in chain_now
+                chain_now.command = chain_command(command, words);
+                const km_command_t& one = chain_now.command;
+#else
                 const km_command_t one = chain_command(command, words);
-#if !defined(KM_ONE_ISLAND)
-                chain_now.command = one;
 #endif
                 KM_CHAIN_STAMP(chain_stamp_take(chain_address(0), 1, words));
 #if defined(KM_ONE_ISLAND)

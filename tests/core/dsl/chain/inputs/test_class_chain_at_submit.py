@@ -37,6 +37,19 @@ def test_the_word_is_given_at_submit_and_the_records_hold_its_place():
         chain.args({})
 
 
+def test_a_call_named_through_the_class_takes_it_as_through_the_program():
+    program = made(Steps, GIVEN)
+    x, y = GIVEN["x"], GIVEN["y"]
+    through = run_of(program).chain(
+        [Steps.scale(x, y, km.at_submit("factor"), WIDTH)], cores=(0, CORES)
+    )
+    by_program = run_of(program).chain(
+        [program.scale(x, y, km.at_submit("factor"), WIDTH)], cores=(0, CORES)
+    )
+    assert [call.word for call in through.calls] == [("factor", 2)]
+    assert through.calls[0].word == by_program.calls[0].word
+
+
 def test_the_chain_method_passes_it_to_each_call_that_takes_it():
     program = made(Steps, GIVEN)
     run = run_of(program)

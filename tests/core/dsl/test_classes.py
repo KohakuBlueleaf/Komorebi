@@ -1031,7 +1031,8 @@ def test_a_line_the_hunt_found_unsound_is_refused_by_its_line(
 def test_the_hunts_generated_lines_hold_what_the_build_says():
     compiled = compile_class(KeptOwn, {}, {"source": tensor("bfloat16")})
     compute = "\n".join(render(prune(compiled.compute["load"]), 0))
-    assert compute.count("cb_pop_front(kFieldTree") == 1  # a held field: its last fill
+    part, kernel = compute.split("#else")  # a held field: its last fill, in each form
+    assert part.count("cb_pop_front(kFieldTree") == kernel.count("cb_pop_front(kF") == 1
     tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
     compiled = compile_class(Deep, {}, tensors)
     compute = "\n".join(render(prune(compiled.compute["apply"]), 0))

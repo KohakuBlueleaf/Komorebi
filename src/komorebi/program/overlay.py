@@ -87,6 +87,9 @@ TABLES = tuple(
     )
 )
 DROPPED_COMPILE = ("-MMD",)
+# the ring bound a launch's kernels are built for (sizes.ring_define): a part takes its
+# kernel's from the recipe, as the reader object's size depends on it
+RING_DEFINE = "KM_RING_DEPTH_MAX"
 DROPPED_DEFINE = "-DFULL_KERNEL_NAME="
 DROPPED_LINK = ("-T", "-Wl,--just-symbols=", "-Wl,--emit-relocs")
 SCRIPT = """\
@@ -375,6 +378,9 @@ class Linked:
     image: bytes
     tables: dict = field(default_factory=dict)  # TABLES it defines: {name: bytes}
     calls: tuple = ()  # ((name, address), ...): its calls and jumps out of the part
+    # its first link's ELF and the kernel's it is called from: for the stack's count
+    elf: str = field(default="", compare=False)
+    kernel: str = field(default="", compare=False)
 
 
 @dataclass(frozen=True)
@@ -684,6 +690,21 @@ def mop_defines(part, linked, persistent):
     return defines
 
 
+def check_ring(name, part, recipe, defines):
+    """Refuses a part whose own defines set another ring bound than its kernel's build
+    (the recipe's): the kernel object it is handed would differ in size."""
+    prefix = f"-D{RING_DEFINE}="
+    kernel = next(
+        (w[len(prefix) :] for w in recipe.defines if w.startswith(prefix)), None
+    )
+    if RING_DEFINE in defines and str(defines[RING_DEFINE]) != kernel:
+        raise OverlayError(
+            f"overlay {name}, {part} part: {RING_DEFINE}={defines[RING_DEFINE]} where "
+            f"its kernel is built with {kernel or 'none (the whole ring)'}: a part "
+            "takes its kernel's ring bound"
+        )
+
+
 def build_part(
     recipe, overlay, kernel, part, cache, slot_bytes=None, index=None, more=None
 ):
@@ -696,6 +717,7 @@ def build_part(
     scratch.mkdir(parents=True, exist_ok=True)
     defines, compile_args = part_defines(overlay, kernel)
     defines = {**defines, **(more or {})}
+    check_ring(overlay.name, part, recipe, defines)
     recipe_key = hashlib.sha256(
         repr((recipe, defines, compile_args)).encode()
     ).hexdigest()[:16]
@@ -757,9 +779,11 @@ def build_part(
         )
     resets = (MOP_STATUS,) if more else ()
     check(overlay.name, part, *links, persistent, slot_bytes, resets)
+    elf = work / f"part-{LINK_BASE:x}.elf"
+    first = replace(links[0], elf=str(elf), kernel=str(recipe.elf))
     if index is not None:
-        keep(index, links[0], preprocessed, work / f"part-{LINK_BASE:x}.elf")
-    return links[0]
+        keep(index, first, preprocessed, elf)
+    return first
 
 
 def included(preprocessed):
@@ -814,6 +838,7 @@ def keep(index, linked, preprocessed, elf):
             "extent": linked.extent,
             "image": linked.image.hex(),
             "calls": [list(call) for call in linked.calls],
+            "kernel": linked.kernel,
         },
         "elf": str(elf),
         "files": {path: file_digest(path) for path in included(preprocessed)},
@@ -843,6 +868,8 @@ def built(index):
         saved["extent"],
         bytes.fromhex(saved["image"]),
         calls=tuple(tuple(call) for call in saved.get("calls", ())),
+        elf=record["elf"],
+        kernel=saved.get("kernel", ""),
     )
     return linked, Path(record["elf"])
 
@@ -851,6 +878,7 @@ def build_part_cached(recipe, overlay, kernel, part, cache, slot_bytes=None):
     """build_part behind the cache of built parts (`cache`/built): a part whose key
     and included files are unchanged is not built again. (Linked, ELF, whether it was
     in the cache); a part larger than `slot_bytes` is refused either way."""
+    check_ring(overlay.name, part, recipe, part_defines(overlay, kernel)[0])
     index = Path(cache) / "built" / f"{built_key(recipe, overlay, kernel)}-{part}.json"
     found = built(index)
     if found is not None:
@@ -907,6 +935,7 @@ class Built:
     service: int = 0
     service_part: int = 0
     why: str = ""
+    parts: dict = field(default_factory=dict)  # {kernel ELF: [part ELFs]} (the stack)
 
     @property
     def slot_bytes(self):
@@ -938,7 +967,7 @@ def build_overlays(
         if island
         else (SERVICE_SLOT_MOST, "SERVICE_SLOT_MOST")
     )
-    declared, images, extents, service = {}, {}, {}, 0
+    declared, images, extents, service, parts = {}, {}, {}, 0, {}
     number = constants()["kOverlayService"]
     own = [overlay for overlay in overlays if overlay.number != number]
     for kernel in KERNELS:
@@ -968,6 +997,8 @@ def build_overlays(
                 else build_part(by_part[part], overlay, kernel, part, cache, size)
             )
             images[overlay.number, part] = linked.image
+            if linked.elf and linked.kernel:
+                parts.setdefault(linked.kernel, []).append(linked.elf)
             if overlay.number != number or cold:
                 extents.setdefault(part, []).append(linked.extent)
                 log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
@@ -985,13 +1016,13 @@ def build_overlays(
         for part in KERNEL_PARTS[kernel]:
             largest = -(-max(extents.get(part, [ALIGN])) // ALIGN) * ALIGN
             slots[part] = (count, size if size is not None else largest)
-    return Built(images, slots, service, service)
+    return Built(images, slots, service, service, parts=parts)
 
 
-def fitted(built, declared_slots, room, log=lambda message: None):
+def fitted(built, declared_slots, room, log=lambda message: None, level=False):
     """`built` with the slots of each kernel whose count was not declared lowered, one
-    slot at a time from the largest, until they take at most `room` bytes (or each is
-    at 1): what the L1 left allows."""
+    slot at a time from the largest (`level`: from the part with the most slots, the
+    largest of those), until they take at most `room` bytes (or each is at 1)."""
     slots = dict(built.slots)
     wanted = {part: count for part, (count, _) in slots.items()}
 
@@ -1005,7 +1036,7 @@ def fitted(built, declared_slots, room, log=lambda message: None):
         lowered = [part for part in slots if free(part)]
         if not lowered:
             break
-        part = max(lowered, key=lambda each: slots[each][1])
+        part = max(lowered, key=lambda each: (level * slots[each][0], slots[each][1]))
         slots[part] = (slots[part][0] - 1, slots[part][1])
     for part, (count, _) in slots.items():
         if count < wanted[part]:
@@ -1031,18 +1062,18 @@ def held(built, alone):
     return sum(count for count, _ in built.slots.values()) - alone
 
 
-def choose(built, declared_slots, room, log=lambda message: None):
+def choose(built, declared_slots, room, log=lambda message: None, level=False):
     """The service overlay's slot: its own (one more record) or the reader's shared,
     as `declared_slots.service` says, else as the L1 left (`room`) chooses; each
     fitted to the room, with why."""
     if not built.service_part:
-        return fitted(built, declared_slots, room, log)
+        return fitted(built, declared_slots, room, log, level)
     alone = "reader" not in built.slots
     quiet = lambda message: None  # noqa: E731
     own = fitted(
-        replace(built, service=built.service_part), declared_slots, room, quiet
+        replace(built, service=built.service_part), declared_slots, room, quiet, level
     )
-    common = fitted(shared(built), declared_slots, room, quiet)
+    common = fitted(shared(built), declared_slots, room, quiet, level)
     asked = declared_slots.service
     if asked not in (None, "own", "shared"):
         raise ValueError(f"service slot {asked!r}: 'own' or 'shared'")
@@ -1065,7 +1096,7 @@ def choose(built, declared_slots, room, log=lambda message: None):
     chosen = (
         replace(built, service=built.service_part) if pick == "own" else shared(built)
     )
-    made = fitted(chosen, declared_slots, room, log)  # its lowering logged
+    made = fitted(chosen, declared_slots, room, log, level)  # its lowering logged
     log(f"service overlay: {'its own slot' if pick == 'own' else 'the reader slots'}"
         f" ({why})")  # fmt: skip
     return replace(made, why=why)

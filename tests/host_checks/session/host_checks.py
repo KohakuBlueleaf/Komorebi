@@ -212,7 +212,7 @@ def h2():
         _parts=[np.zeros(4, np.int64), np.zeros(4, np.int64)],
         graph=SimpleNamespace(split=lambda g: [(0, 0, 4), (1, 0, 4)]),
         _check_half_added=lambda h: None, _x280_holder=lambda *a: None,
-        _dynamic=lambda h: False, _first_use=lambda h, g: None,
+        _dynamic=lambda h: False, _first_use=lambda h, g, a: None,
         _grow=lambda n: None, _error=lambda e, i: e, _check_local=lambda h, g: None,
     )  # fmt: skip
     fake._part_checked = lambda *a: island_run.IslandRun._part_checked(fake, *a)

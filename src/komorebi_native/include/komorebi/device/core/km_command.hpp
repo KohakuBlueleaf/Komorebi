@@ -6,6 +6,12 @@
 
 #include "../../abi/km_abi.h"
 
+// The ring slots a kernel of this build can scan: the load's depth rounded up to a
+// power of two (the host's define); a build without it: the whole ring.
+#ifndef KM_RING_DEPTH_MAX
+#define KM_RING_DEPTH_MAX KM_RING_SLOTS
+#endif
+
 namespace km {
 
     static_assert(sizeof(km_command_t) == 64, "a command is one 64-byte line");
@@ -136,17 +142,22 @@ namespace km {
 
     // The reader's own landed commands not yet taken, listed by sequence (newer()).
     struct Waiting {
-        uint32_t seen[KM_RING_SLOTS];  // slot's sequence decided: consumed, or listed
-        uint8_t order[KM_RING_SLOTS];  // listed slots from `head`, the smallest first
+        uint32_t seen[KM_RING_DEPTH_MAX];  // slot's sequence: consumed, or listed
+        uint8_t order[KM_RING_DEPTH_MAX];  // listed slots from `head`, smallest first
         uint32_t head;
         uint32_t count;
     };
 
     static_assert((KM_RING_SLOTS & (KM_RING_SLOTS - 1)) == 0, "a power of two");
+    static_assert(
+        KM_RING_DEPTH_MAX >= 1 && KM_RING_DEPTH_MAX <= KM_RING_SLOTS &&
+            (KM_RING_DEPTH_MAX & (KM_RING_DEPTH_MAX - 1)) == 0,
+        "KM_RING_DEPTH_MAX: a power of two, 1 to KM_RING_SLOTS"
+    );
 
     // Lists own waiting `slot` holding `sequence`, after every older one.
     inline void waiting_add(Waiting& waiting, uint32_t slot, uint32_t sequence) {
-        const uint32_t mask = KM_RING_SLOTS - 1;
+        const uint32_t mask = KM_RING_DEPTH_MAX - 1;
         uint32_t at = waiting.count++;
         for (; at > 0; at--) {
             const uint32_t before = waiting.order[(waiting.head + at - 1) & mask];
@@ -161,7 +172,7 @@ namespace km {
 
     // Takes `slot` off the list (none if not listed); seen[slot] goes back to `last`.
     inline void waiting_drop(Waiting& waiting, uint32_t slot, uint32_t last) {
-        const uint32_t mask = KM_RING_SLOTS - 1;
+        const uint32_t mask = KM_RING_DEPTH_MAX - 1;
         bool found = false;
         for (uint32_t at = 0; at < waiting.count; at++) {
             const uint32_t here = (waiting.head + at) & mask;
@@ -234,7 +245,7 @@ namespace km {
         uint32_t link = 0
     ) {
         Waiting none = {};
-        for (uint32_t slot_index = 0; slot_index < KM_RING_SLOTS; slot_index++) {
+        for (uint32_t slot_index = 0; slot_index < KM_RING_DEPTH_MAX; slot_index++) {
             none.seen[slot_index] = last[slot_index];
         }
         return scan(ring, last, none, depth, me, link);

@@ -177,6 +177,7 @@ class IslandSession(
         if self.split > 1:
             self.links = min(link.count for link in _links_of(self._split_pairs()))
         self.log = log or (lambda message: None)
+        self.log_given = log is not None  # a run's crossing notice: else a warning
         self._options = {
             "pll_mhz": pll_mhz,
             "tree": tree,

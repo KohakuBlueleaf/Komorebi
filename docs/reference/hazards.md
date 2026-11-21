@@ -465,6 +465,22 @@ build is seen; `KMR_INSN_CHECK=0` turns it off.
 
 Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
 
+### A kernel whose stack does not fit
+
+**The hazard.** A kernel's stack room is what is left of its RISC's local memory above
+the kernel's own data, not the local memory's size: about 0.7 to 2 KB on Wormhole and 2
+to 5 KB on Blackhole. More globals, a deeper call or a handler entered again from inside
+itself take it; frames past it write over the kernel's own data, and the core returns
+to garbage or never finishes.
+
+**The rule.** Keep large arrays out of frames, and do not enter a handler from inside
+itself.
+
+**The guard.** Refused at the load: `Session.load` counts every kernel image's stack from
+its ELF and raises `km.StackError` under 16 B to spare, alone and counted with the
+overlay parts it calls (an upper bound of the need, named as one); it warns under
+256 B ([Host API, a kernel's stack](host.md#a-kernels-stack)).
+
 ### A 64-bit division by a value that is not a power of two
 
 **The hazard.** The cores are 32-bit: a division (or remainder) of a 64-bit word by
@@ -1904,9 +1920,12 @@ always gave up, island 1's always finished.
 
 **The rule.** Store every island's part before waiting for any of them.
 
-**The guard.** `IslandRun.submit`, `wait` and `send` store every island's queued commands
-together. Commands queued on `run.island(i)` and waited for one island at a time are the
-caller's to store first (`run.send()`).
+**The guard.** `IslandRun.submit` queues a command's parts unsent; `IslandRun.wait` and
+`send` store every island's queued commands together, and so do the session's waits on
+some islands only (`wait_together`, a write or read through one island's run, the table
+row of a tensor made while a run lives): a command queued before them starts on every
+island it touches. Commands queued on `run.island(i)` and waited for one island at a
+time are the caller's to store first (`run.send()`).
 
 Described in [Islands, the session](islands.md#the-session).
 

@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 #include <type_traits>
+#if defined(KM_OVERLAY_PART)
+#include <new>
+#endif
 
 #include "../core/km_bits.hpp"
 #include "../core/km_core.hpp"
@@ -406,6 +409,17 @@ namespace km {
 
     template <typename T, typename... Rest>
     Stream(uint32_t, const T&, Rest...) -> Stream<StreamTensor<T>>;
+
+// A handler's stream: in an overlay part, built into the part's .bss (zeroed at each
+// call) instead of the mover's small stack; elsewhere a local as before.
+#if defined(KM_OVERLAY_PART)
+#define KM_STREAM(name, ...)                                                     \
+    using name##_type = decltype(::km::Stream(__VA_ARGS__));                     \
+    alignas(name##_type) static unsigned char name##_store[sizeof(name##_type)]; \
+    const name##_type& name = *new (name##_store) name##_type(__VA_ARGS__)
+#else
+#define KM_STREAM(name, ...) const ::km::Stream name(__VA_ARGS__)
+#endif
 
     // What one mover spent in a move: tiles moved, cycles in passes that moved a block.
     struct Moved {
@@ -1211,6 +1225,71 @@ namespace km {
             return km::move(moved, *this, streams...);
         }
     };
+
+    // A field's fill on both movers, block k by pattern.owner(k) into its L1; mover B
+    // pushes its share after mover A's (classes.md, Fields). False: gave up.
+    template <typename Kernel, typename T>
+    __attribute__((noinline)) bool fill_field(
+        const Kernel& core,
+        const km_command_t& command,
+        const T& tensor,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t block,
+        Pattern pattern,
+        uint32_t cb
+    ) {
+        if (!pattern.valid() || block == 0) {
+            return core.gave_up_at(kGaveBadItem, kWhereData, __LINE__);
+        }
+        uint32_t mine = 0;  // this mover's pages
+        for (uint32_t at = 0, k = 0; at < pages; at += block, k++) {
+            if (pattern.owner(k) == kMover) {
+                mine += pages - at < block ? pages - at : block;
+            }
+        }
+        if (mine == 0) {  // a mover with no block: the other pushes the whole field
+            return true;
+        }
+        if constexpr (kMover == kMoverA) {
+            if (!core.reserve(cb, pages)) {
+                return false;
+            }
+        } else if (!core.wait([&] {
+            return cb_pages_reservable_at_back(cb, mine);
+        })) {
+            return false;
+        }
+        LocalCBInterface& ring = get_local_cb_interface(cb);
+        const uint32_t start = ring.fifo_limit - ring.fifo_size;
+        for (uint32_t at = 0, k = 0; at < pages; at += block, k++) {
+            if (pattern.owner(k) != kMover) {
+                continue;
+            }
+            if (!read_pages(
+                core,
+                command,
+                tensor,
+                first + at,
+                pages - at < block ? pages - at : block,
+                start + at * ring.fifo_page_size
+            )) {
+                return false;
+            }
+            noc_async_read_barrier();  // one block in flight: the cores share the banks
+        }
+        if constexpr (kMover == kMoverB) {  // mover A's share pushed first
+            const uint32_t theirs = pages - mine;
+            if (!core.wait([&] {
+                return cb_pages_available_at_front(cb, theirs);
+            })) {
+                return false;
+            }
+        }
+        cb_push_back(cb, mine);
+        ring.fifo_wr_ptr = start;
+        return true;
+    }
 
 }  // namespace km
 #endif

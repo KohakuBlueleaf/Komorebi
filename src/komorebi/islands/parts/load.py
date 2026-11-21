@@ -127,15 +127,17 @@ class LoadMixin:
     _counts: list  # LinkPlanMixin
     _counts_puts: list  # LinkPlanMixin
 
-    def _crossings(self, timeout=10.0, puts=False):
+    def _crossings(self, timeout=10.0, puts=False, islands=None):
         """Crossings read now: a COUNTS command to every link core of each island (each
         CPU writes its row into the island's counts tensor), waited for together;
-        `puts`: each row also holds its link area's put block words (PUT_WORDS)."""
+        `puts`: each row also holds its link area's put block words (PUT_WORDS);
+        `islands`: those islands' link cores alone (their rows), default every one."""
         h = abi.headers()
         tensors = self._counts_puts if puts else self._counts
         page = h["KM_COUNTS_PUT_PAGE"] if puts else CROSS_PAGE
+        islands = range(len(self.graph.islands)) if islands is None else islands
         waits = []
-        for island in range(len(self.graph.islands)):
+        for island in islands:
             words = [0] * 10
             words[h["KM_PAGES_TO"]] = tensors[island].address
             words[h["KM_PAGES_PAGE"]] = page
@@ -149,13 +151,16 @@ class LoadMixin:
             )
             part.own_commands[handle] = "the links' counts for crossing_line"
             waits.append((island, handle))
+        # every island's queued commands stored first: a command queued before may
+        # cross to islands not counted here, and it needs every part started
+        self.run.send()
         self.wait_together(waits, timeout)
         fields = [
             h[f"KM_CROSS_{name.upper()}"]
             for name in island_records.Crossings.FIELDS[:-1]
         ]
         rows = {}
-        for island in range(len(self.graph.islands)):
+        for island in islands:
             (raw,) = self.sessions[island].read(tensors[island])
             words = raw.view("<u4").astype(np.int64)
             per = self.graph.per

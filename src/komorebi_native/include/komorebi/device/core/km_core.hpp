@@ -678,7 +678,8 @@ namespace km {
     }
 
 #if KM_WAIT_SHARED  // the waits out of line: one copy of poll_stop for every wait site
-    // A wait site's ready() called through a pointer: the one poll_stop instance's
+    // A wait site's ready() called through a pointer: the one poll_stop instance's.
+    // Made in poll_stop / poll_live only, never stored: the stack check relies on it.
     struct SharedReady {
         bool (*test)(void*);
         void* ready;
@@ -1177,8 +1178,8 @@ namespace km {
                 words[index] = get_arg_val<uint32_t>(index);
             }
             args_.tag &= 0xFFFFu;
-            if (args_.depth == 0 || args_.depth > KM_RING_SLOTS) {
-                args_.depth = KM_RING_SLOTS;
+            if (args_.depth == 0 || args_.depth > KM_RING_DEPTH_MAX) {
+                args_.depth = KM_RING_DEPTH_MAX;  // past it: the reader refuses (start)
             }
             invalidate_l1_cache();
             rank_offset_ = islands_at(args_.control).offset();

@@ -46,6 +46,26 @@ class Overlaid(km.Program):
             out.push(doubled(tile))
 
 
+class Kept(km.Program):
+    TILES = km.constant(2)
+    held: km.L1[km.bf16, TILES, 1, 32, 32]
+
+    @km.tile_function
+    def project(x, w):
+        return x @ w
+
+    @km.handler
+    def load(self, source: km.Tensor):
+        self.held.fill(km.Stream(source.pages(self.rank * self.TILES, self.TILES)))
+
+    @km.handler
+    def apply(self, source: km.Tensor, target: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 1)
+        for xb in km.Stream(source.tiles[0:1, 0 : self.TILES]):
+            acc += self.project(xb, self.held)
+        target.tiles[0:1, self.rank : self.rank + 1].write(acc)
+
+
 def test_the_form_is_in_the_key_and_the_kernel_forms_key_is_as_it_was():
     assert form_key("ab12cd34", "kernel") == "ab12cd34"
     runtime = form_key("ab12cd34", "runtime")
@@ -68,6 +88,15 @@ def test_the_two_forms_of_one_class():
         == runtime.built.folder / ("movement.cpp")
     )
     assert [b.index for b in runtime.buffers] == [b.index for b in kernel.buffers]
+
+
+def test_a_kept_fields_held_fill_is_the_runtime_kernels_word_in_a_part():
+    text = (made(Kept, form="runtime").built.folder / "compute.cpp").read_text()
+    part, kernel = text.split("#if defined(KM_OVERLAY_PART)")[1].split("#else")
+    # a part's statics are zeroed at each call: its next fill would never free this
+    assert "km_held_held = km::fields_held_word();" in part
+    assert "static bool" not in part
+    assert "static bool km_held_held = false;" in kernel.split("#endif")[0]
 
 
 def test_an_unknown_form_is_refused():

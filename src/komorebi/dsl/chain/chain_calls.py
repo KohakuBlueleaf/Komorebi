@@ -740,7 +740,7 @@ def describe(run, call, group, starts=(0,)):
         number, method = first_use.constant_handler(program, method, given_constants)
         handler = front.ClassHandler(number, program, method)
     label = f"{type(program).__name__}.{call.method.name}"
-    submitted = submitted_word(handler, method, at, label)
+    submitted = submitted_word(method, at, label)
     words = handler.args(*values, **named)
     if not getattr(program, "chain_handler", 0):
         raise kc.ChainRefused(
@@ -792,7 +792,7 @@ def describe(run, call, group, starts=(0,)):
     return described
 
 
-def submitted_word(handler, method, at, label):
+def submitted_word(method, at, label):
     """(name, its word's place) of a call's km.at_submit argument, or None: one a
     call, at an int word of the handler (not a constant, a tensor or a pattern)."""
     if not at:
@@ -814,8 +814,8 @@ def submitted_word(handler, method, at, label):
             f"{label}: {place} is a constant, fixed when the handler is built; "
             f"km.{spelling('at_submit')} gives a word"
         )
-    places = [p for p, _kind in handler.method.words]
-    kind = dict(handler.method.words).get(place)
+    places = [p for p, _kind in method.words]
+    kind = dict(method.words).get(place)
     if kind in ("tensor", "pages", "columns", "region", "bank", "pattern", "float",
                 None):  # fmt: skip
         raise kc.ChainRefused(

@@ -667,26 +667,55 @@ small DRAM tensor the host reads: it waits behind a command a link core runs, so
 a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
-The first command of each (handler, group) on an island run is bracketed so, without
-waiting: `run.submit` reads the counts before it queues the command and returns, and
-`run.wait` (or `run.drain`) reads them again when it has the command's event; when
-pages, asks or puts crossed the session's log then says so as a fact, `cross.cross on
-ranks 0..39 moved 40 pages across the link (asks 0, puts 80); if that is not meant, pass
-its tensors split=0, group=(0, 40) for cross.cross's group, or copy=True if every rank
-reads all of it` (a gather is meant to cross; a weight placed over another group than
-the handler's is not). The line names the hint that makes this command's reads local;
-the default placement stays the first ranks' (see [Tensors](#tensors)). The first use costs two reads (a `COUNTS` command to each
-island's link cores, each) and later commands of the same (handler, group) nothing.
-`run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
-command has run, its events on the error's `events`) or `"off"`; a run whose messages
-cross is not read (its counts wait behind its RUN). A run loaded with `trace=` starts at
-`"off"`, so that its trace holds the commands it was given: set to `"log"` or `"error"`,
-each first use takes two of the trace's slots on every island. A command past the
-trace's slots is refused by `trace.command`, which says how many slots the trace holds and
-what took them. The counts are a link's, so the line
-cannot name the tensor or the ranks that fetched across; commands in flight in the
-same span are counted with it, and the line says how many (`with 2 other commands in
-flight`).
+With `run.crossing_line = "measure"`, the first command of each (handler, group) on an
+island run is bracketed so, without waiting: `run.submit` reads the counts before it
+queues the command and returns, and `run.wait` (or `run.drain`) reads them again when it
+has the command's event; when pages, asks or puts crossed the session's log then says so
+as a fact, `cross.cross on ranks 0..39 moved 40 pages across the link (asks 0, puts 80);
+if that is not meant, pass its tensors split=0, group=(0, 40) for cross.cross's group,
+or copy=True if every rank reads all of it` (a gather is meant to cross; a weight placed
+over another group than the handler's is not). The line names the hint that makes this
+command's reads local; the default placement stays the first ranks' (see
+[Tensors](#tensors)). Both reads are of the islands the command's group touches and
+those holding pages of its tensors alone (a `COUNTS` command to each of their link
+cores), so the line counts what those islands' links sent: what an island between them
+forwards is not counted again. The first use costs those two reads and later commands of
+the same (handler, group) nothing. `run.crossing_line` is `"check"` (the default: the
+placement check below alone, no count read and no card command), `"measure"` (the check
+and this measured line; `"log"`, its earlier name, means the same), `"error"` (measured,
+and raised by that wait after the command has run, its events on the error's `events`)
+or `"off"` (neither); a run whose messages cross is not read (its counts wait behind its
+RUN). A measured first use costs its two reads of every island it counts, each a command
+to their link cores waited for; the check costs no card time. A run loaded with `trace=`
+starts at `"check"` too (it sends no command, so the trace keeps its slots); under
+`"measure"` or `"error"` each first use takes two of the trace's slots on every island.
+A command past the trace's slots is refused by `trace.command`, which says how many
+slots the trace holds and what took them. The counts are a link's, so the line cannot
+name the tensor or the ranks that fetched across; commands in flight in the same span
+are counted with it, and the line says how many (`with 2 other commands in flight`).
+
+The first command of each (handler, group, placements of its tensors) is also checked on
+the host, with no count and no card read, on every island run, linked or not (a run
+whose messages cross has no counts, so the measured line above never comes there): for
+each island tensor the command's handler reads or writes (a class's handler: the tensors
+its lines move; a handler of a kernel of your own: every island tensor given), its
+placement is compared with the islands of the command's group. A tensor with pages on an
+island the group does not run on, or a group with ranks on an island where the tensor
+has none, is said as one line naming the command, the tensor, its pages an island and
+the group's islands: `Attn.attend on ranks 0..39 (island 0) reads w, whose pages lie 8
+on island 1: those a call touches on island 1 cross the link, at every call; if that is
+not meant, place w on the command's islands (split=0, group=(0, 40)), or copy=True if
+every rank reads all of it (run.crossing_line = 'off' silences this)`. Every such line
+holds the words `whose pages lie`, to grep a log for. The pages are the whole tensor's,
+not those a call reads (the host does not know them). Nothing is said of a copy on every
+island; a handler that reduces, merges or broadcasts over its group (and a handler of a
+kernel of your own) is told only of pages on islands outside its group, since its
+collective brings the pages to its ranks; the run's own collectives (`reduce_to`,
+`broadcast_from`, a chain's `km.all_gather`) are not checked. With `log=` given to
+`IslandSession`, the line goes to that log; without one, it is issued as a
+`km.CrossingWarning` (the session's other lines stay quiet). The check costs the first
+command of each such key one pass over its arguments and later commands one set lookup;
+under `"error"` it is said, not raised; `run.crossing_line = "off"` silences it too.
 
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
 [05_forward](../../examples/05_forward/README.md) (16 messages of 4 forwards over 232
@@ -1353,6 +1382,39 @@ host, on the card, the median):
 
 Every run was exact on every island. Example 29's chain does not load on Wormhole:
 its writer is 18,336 B at the highest writer level, the same without the landing.
+
+A far `km::read_pages` from one core on the Galaxy (2026-11-21, chips 22 and 23
+joined by one link, `links=1`, and the line of chips 0 to 3; the asker's own time, the
+median of 10, every page exact): 2 KiB 7.99 µs one link away, 10 KiB 11.02, 40 KiB
+23.26, 128 KiB about 44 (3.0 GB/s); 0.60, 0.81 and 1.58 µs from its own island. Two
+links away the 2 KiB read takes 18.7 µs and three 27.3. Where the 2 KiB read's time
+goes, by timestamps on both islands' cores: the asker about 2 µs (its line's number,
+the queue's room, the line written), the link core's poll and its packet out about
+1.9, the fabric's routers both ways with the far poll about 2.0, the far link core's
+DRAM read and its write into the asker's L1 about 2.1, then the asker sees its count.
+The routers' part is tt-fabric's. Each island between adds about 10 µs: its two link
+cores pass the ask on through their queue and the answer through their forward rooms.
+A pass of a link core is 0.7 µs on two islands and 1.2 µs on four (it looks at each
+island's far put place every pass); the poll costs half a pass on each side.
+
+| `links=` | link cores and channels a pair | 2 KiB | 10 KiB | 40 KiB | 128 KiB |
+|---|---|---|---|---|---|
+| 1 | one core, one channel | 8.12 µs | 11.31 | 23.64 | 43.99 (3.0 GB/s) |
+| 2 | one core, its writer on a second channel | 8.22 | 11.91 | 26.15 | 51.02 |
+| 3 | two cores, a channel each and their writers | 8.63 | 10.20 | 16.26 | 35.88 (3.7 GB/s) |
+| 4 | two cores, four channels | 8.35 | 10.28 | 16.75 | 36.35 |
+
+For crossings heavy in bytes take `links=3`: it costs one rank a neighbour (the
+second link core). On Wormhole `links=2` is slower than 1 and `links=4` no better
+than 3.
+
+Under load the far read stays exact and its time depends on the local streams. While
+every other core of both islands reads DRAM in 20-page reads, each waited for before
+the next (about 190 GB/s an island), the 2 KiB read took 20 to 100 µs; about two
+thirds of it is the asker's NoC atomic for its line's number, behind those reads. A
+flood with no wait between reads (thousands outstanding a core) made it 3.2 ms, as
+the atomic and the link core's pass sit behind the NoC's queue: not a model of a
+real load, but a stream without barriers slows every far read of its island.
 
 ## The graph
 

@@ -109,7 +109,7 @@ def refuse_x280_image(tree, where):
 # sources, the compute kernel (or the one holding a thread) by its TRISC.
 ROLES = {OUT: "out", IN: "in"}
 COMPUTE_ROLES = {"trisc0": "engines", "trisc1": "thread", "trisc2": "watch"}
-ARCH_NAMES = {"wormhole_b0": "Wormhole", "blackhole": "Blackhole"}
+ARCH_NAMES = stack_module.ARCH_NAMES
 
 
 def stack_images(kernels):

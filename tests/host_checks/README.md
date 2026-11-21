@@ -21,7 +21,9 @@ folder. `kmr prebuild` runs a script on the mock card.
   name their way.
 - `bounds/`: the commands of `experiments/language/bounds/README.md` that give a kernel
   buffer, built on the mock at that size: a kernel that grows past it fails here first.
-- `islands/`: the island tensor table's growth and alignment on the mock, the dense
+- `islands/`: the island tensor table's growth and alignment on the mock, the posted
+  write into another island's L1 built on two cards (`posted/posted.py`; on two cards
+  or chips it checks the rows, the order and the fence and times both forms), the dense
   addition's two-card kernels against linear.py's kernel buffer, and the stream and
   graph references of `experiments/checks/stream_checks` and
   `experiments/checks/graph_checks`.

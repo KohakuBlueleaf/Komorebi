@@ -1,9 +1,12 @@
-"""A field's fill: mover A's read of pages into the field, compute's zero pages, the
-one producer of a field's pages, and a field kept across commands."""
+"""A field's fill: mover A's read of pages into the field (or both movers', by a
+pattern), compute's zero pages, the one producer of a field's pages, and a field kept
+across commands."""
+
+import ast
 
 from komorebi.dsl.compile import expressions, handler_buffers
-from komorebi.dsl.compile.cxx import camel, range_uses
-from komorebi.dsl.compile.pages import ranges
+from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses
+from komorebi.dsl.compile.pages import page_streams, ranges
 from komorebi.dsl.compile.source import (
     WAIT_DATA,
     WAIT_INPUT,
@@ -30,13 +33,14 @@ def fill(frame, node, call, field):
     if not (
         expressions.construct(frame, stream) == "stream"
         and len(stream.args) == 1
-        and not stream.keywords
+        and {k.arg for k in stream.keywords} <= {spelling("block"), "pattern"}
         and ranges.is_range(frame, stream.args[0])
     ):
         refuse(
             frame.where,
             node,
-            "a field is filled from a stream of a page range",
+            "a field is filled from a stream of a page range (block= and "
+            "pattern= the only options)",
             f"write self.{field}.fill(km.Stream(tensor.pages(first, count)))",
         )
     if frame.filled.get(field) is not None:
@@ -73,6 +77,8 @@ def fill(frame, node, call, field):
                 f"c:{spelling('min')}(c + {pitch}, e)]",
             )
     count = pages.count if pages.rect is None else ("rect", pitch or pages.rect[1])
+    tensor = f"{camel(pages.tensor)}({pages.tensor})"
+    movers = movers_fill(frame, node, stream, pages, tensor, buffer, pages_name)
     producer(frame, node, field, "fill")
     frame.compiled.fills.append((field, count, frame.method.name, node.lineno))
     frame.compiled.includes.add("ask")
@@ -80,7 +86,6 @@ def fill(frame, node, call, field):
     frame.fill_loops[field] = (len(frame.loops), node.lineno)
     frame.fill_loop_of[field] = frame.loops[-1] if frame.loops else None
     handler_buffers.moved(frame, node, pages.tensor, "fill")
-    tensor = f"{camel(pages.tensor)}({pages.tensor})"
     text = (
         f"if (!movement.reserve({buffer}, {pages_name}) ||\n"
         f"    !km::read_pages(movement, command, {tensor}, {pages.first}, "
@@ -109,25 +114,79 @@ def fill(frame, node, call, field):
             "noc_async_read_barrier();\n"
             f"cb_push_back({buffer}, {pages_name});"
         )
+    if movers is not None:
+        text = movers[0]
+        handler_buffers.held_cast_movers(frame, node, ["B"], "fill")
+        wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "mover A", WAIT_DATA)
     compute = []
     if kept_field(frame, field):
         held = f"km_held_{field}"
         wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+        free = (
+            f"    if (!compute.wait_front({buffer}, {pages_name})) {{\n"
+            "        return;\n    }\n"
+            f"    cb_pop_front({buffer}, {pages_name});\n"
+            "}\n"
+        )
         compute.append(
             Line(
                 f"// self.{field} stays between commands: the last fill freed "
                 "before this one\n"
+                "#if defined(KM_OVERLAY_PART)  // a part's statics are zeroed at "
+                "each call\n"
+                f"uint32_t& {held} = km::fields_held_word();\n"
+                f"if (({held} >> {buffer}) & 1u) {{\n"
+                f"{free}"
+                f"{held} |= 1u << {buffer};\n"
+                "#else\n"
                 f"static bool {held} = false;\n"
                 f"if ({held}) {{\n"
-                f"    if (!compute.wait_front({buffer}, {pages_name})) {{\n"
-                "        return;\n    }\n"
-                f"    cb_pop_front({buffer}, {pages_name});\n"
-                "}\n"
-                f"{held} = true;"
+                f"{free}"
+                f"{held} = true;\n"
+                "#endif"
             )
         )
-    return [Line(text, range_uses(pages, frame), mover="A")], compute
+    if movers is None:
+        return [Line(text, range_uses(pages, frame), mover="A")], compute
+    uses = range_uses(pages, frame) | movers[1]
+    return [Line(text, uses, mover="A"), Line(text, uses, mover="B")], compute
+
+
+def movers_fill(frame, node, stream, pages, tensor, buffer, pages_name):
+    """`fill(km.Stream(pages, block=b, pattern=p))`: both movers read their blocks
+    into the field (km::fill_field); its C++ and uses, or None without the options."""
+    if not stream.keywords:
+        return None
+    options = {k.arg: k.value for k in stream.keywords}
+    if len(options) != 2:
+        refuse(
+            frame.where,
+            node,
+            "a fill on both movers names its block= and its pattern=",
+            f'write km.Stream({ast.unparse(stream.args[0])}, block=b, pattern="AB")',
+        )
+    if pages.rect is not None:
+        refuse(
+            frame.where,
+            node,
+            "a fill of a rectangle of tiles is mover A's: block= and pattern= "
+            "take a page range",
+            f"write {pages.tensor}.{spelling('pages')}(first, count), or drop "
+            "block= and pattern=",
+        )
+    block = expressions.constant_int(frame, options[spelling("block")])
+    if block < 1:
+        refuse(frame.where, node, f"a block of {block} pages", "give block= a count")
+    pattern, letters = page_streams.stream_pattern(frame, options["pattern"])
+    word = pattern if letters is None else f'km::pattern("{letters}")'
+    text = (
+        f"if (!km::fill_field(movement, command, {tensor}, {pages.first}, "
+        f"{pages_name}, {block}, {word}, {buffer})) {{\n"
+        "    return false;\n"
+        "}"
+    )
+    return text, pattern_uses(pattern)
 
 
 def kept_field(frame, field):

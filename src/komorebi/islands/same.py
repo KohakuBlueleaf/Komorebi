@@ -84,8 +84,17 @@ class SessionCalls:
         return same(f"session.{name}", values, own)
 
     def nocs(self):
-        """The grid's NoC coordinates by core (Session.nocs), each island's the same."""
-        return self._same("nocs()", lambda session: session.nocs())
+        """The grid's NoC coordinates by core (Session.nocs), each island's the same;
+        compared again only when an island's own is read anew (a reopen)."""
+        values = [session.nocs() for session in self.sessions]
+        kept = getattr(self, "_nocs_kept", None)
+        if (
+            kept is None
+            or len(kept[0]) != len(values)
+            or any(one is not was for one, was in zip(values, kept[0]))
+        ):
+            kept = self._nocs_kept = (values, self._same("nocs()", lambda s: s.nocs()))
+        return kept[1]
 
     def l1(self):
         """(kernel buffer, L1 left for buffers) of each core (Session.l1), each

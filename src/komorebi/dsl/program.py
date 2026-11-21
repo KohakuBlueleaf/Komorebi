@@ -1137,6 +1137,28 @@ def runtime_movement_source(compiled):
     return "\n".join(lines) + "\n"
 
 
+CHAIN_CASE = re.compile(r"^( *)case kHandler\w+: \{")
+CASE_CALL = "return [&]() __attribute__((noinline)) -> bool {"
+
+
+def split_cases(lines):
+    """Each case of a chain switch as its own function (a lambda not inlined), so the
+    walk's frame on the writer's small stack holds one case's locals, not them all."""
+    out, closing = [], None
+    for line in lines:
+        found = CHAIN_CASE.match(line)
+        if found:
+            pad = found.group(1)
+            closing = pad + "}"
+            out += [line, f"{pad}{INDENT}{CASE_CALL}"]
+        elif closing is not None and line == closing:
+            out += [f"{closing[:-1]}{INDENT}}}();", line]
+            closing = None
+        else:
+            out.append(line)
+    return out
+
+
 def runtime_movement_walk(compiled):
     """km_handlers' body in a chain build of the runtime's form: the cases (with the
     input's waits and the marks) as one function, a chain command's records walked
@@ -1147,7 +1169,7 @@ def runtime_movement_walk(compiled):
         f"{INDENT * 3}__attribute__((noinline)) -> bool {{",
         *(
             line[len(INDENT) :] if line.startswith(INDENT) else line
-            for line in chain_cases(compiled)
+            for line in split_cases(chain_cases(compiled))
         ),
         f"{INDENT}}};",
         f"{INDENT}if (km::handler(command) != {chain}) {{",

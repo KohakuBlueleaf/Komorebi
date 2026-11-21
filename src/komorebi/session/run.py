@@ -234,6 +234,9 @@ class Run(EventsMixin, StopMixin):
         self.named_cores = None
         # an island's run: its island of the load's graph (IslandRun); None on one card
         self.island_number = None
+        # an island's run: () -> every island's queue stored (IslandRun.send), before a
+        # session transfer waits on this island alone; None on one card
+        self.send_islands = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -449,12 +452,13 @@ class Run(EventsMixin, StopMixin):
         cluster=None,
         block=None,
         part=False,
+        checked=None,
         **words,
     ):
         """Queues a command for `handler` on cores [first, first + count) (default all)
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
-        `part`: an island's part."""
+        `part`: an island's part; `checked`: its _submit_words without the block."""
         # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
         # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
@@ -472,9 +476,24 @@ class Run(EventsMixin, StopMixin):
         served(self, queued, cluster is not None, part)
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
-        handler, group, args, flags, program_field, ports, kept = self._submit_words(
-            handler, group, args, exclusive, result, queued, cluster, block, part
-        )
+        if checked is None:
+            handler, group, args, flags, program_field, ports, kept = (
+                self._submit_words(
+                    handler,
+                    group,
+                    args,
+                    exclusive,
+                    result,
+                    queued,
+                    cluster,
+                    block,
+                    part,
+                )
+            )
+        else:  # checked just before by the island run, nothing queued since
+            handler, group, args, flags, program_field, ports, kept = checked
+            if block is not None:
+                args, kept = self._block_words(block, args, cluster)
         written = None
         if not queued and cluster is None:
             written = self._check_order(handler, args, program_field, group, exclusive)
@@ -501,16 +520,19 @@ class Run(EventsMixin, StopMixin):
         cluster,
         block,
         part,
+        words=None,
     ):
         """A command's (handler, group, words, flags, program field, whether it is a
         port's, its kept block) as submit checks them, refused before anything is
-        queued (a prebuild's mock run checks its commands so)."""
+        queued (a prebuild's mock run checks its commands so). `words`: _class_words
+        of this call, made once for every island's part."""
         program_field, method, given = 0, None, args
-        if isinstance(handler, HandlerMethod | ClassHandler):
-            handler = self._built_for(handler, args)
-            method = handler if isinstance(handler, HandlerMethod) else handler.method
+        if words is not None:
+            handler, method, args = words
             result = result or method.returns
-            args = handler.args(*self._regions_named(method, args))
+        elif isinstance(handler, HandlerMethod | ClassHandler):
+            handler, method, args = self._class_words(handler, args)
+            result = result or method.returns
         if cluster is not None:
             handler, group = self._to_thread(handler, cluster, group, exclusive, queued)
         else:
@@ -592,6 +614,25 @@ class Run(EventsMixin, StopMixin):
             | (self._flag_part if part else 0)
         )
         return handler, group, args, flags, program_field, ports, kept
+
+    def _class_words(self, handler, args):
+        """A class handler's call as submit takes it: (the handler built for its
+        constants, its method, its command words)."""
+        handler = self._built_for(handler, args)
+        method = handler if isinstance(handler, HandlerMethod) else handler.method
+        return handler, method, handler.args(*self._regions_named(method, args))
+
+    def _shared_words(self, handler, args):
+        """_class_words of a class handler's call when they are the same on every
+        island (no constant parameter, no region named), else None."""
+        if not isinstance(handler, HandlerMethod | ClassHandler):
+            return None
+        method = handler if isinstance(handler, HandlerMethod) else handler.method
+        if front.constant_parameters(method.function) or any(
+            isinstance(value, str) for value in args
+        ):
+            return None
+        return self._class_words(handler, args)
 
     def thread_words(self, handler, args=()):
         """(program field, handler number, [command words]) of a call as submit would
@@ -1120,6 +1161,8 @@ class Run(EventsMixin, StopMixin):
         """A PUSH or PULL (the session's transfers) on `group` (first, count, program
         field: the field its cores hold), waited for; returns its Event."""
         first, count, program_field = group
+        if self.send_islands is not None:  # a crossing command queued before it
+            self.send_islands()  # starts on every island (nothing queued: no call)
         handle = self._queue_command(
             handler,
             self._group((first, count)),
@@ -1506,10 +1549,20 @@ class Run(EventsMixin, StopMixin):
     def _part(self, first, count):
         """The cores [low, high) of flat group (first, count) on this island (numbers
         or arrays; low == high: none); a group of link cores, its link cores."""
+        base, cores = self.island_cores
+        if first.__class__ is int and count.__class__ is int:  # a submit's: no numpy
+            if self._link_base <= first < self._cluster_base:
+                first, island_first = first - self._link_base + self.island_ranks, 0
+                end = base + self.island_span
+            else:
+                island_first, end = self.island_first, base + min(
+                    cores, self.island_ranks
+                )
+            low = min(max(first - island_first + base, base), end)
+            return low, min(max(first + count - island_first + base, low), end)
         link = (first >= self._link_base) & (first < self._cluster_base)
         first = np.where(link, first - self._link_base + self.island_ranks, first)
         island_first = np.where(link, 0, self.island_first)
-        base, cores = self.island_cores
         # a flat group ends at the island's last rank, never on a link core after it
         ranks = min(cores, self.island_ranks)
         end = np.where(link, base + self.island_span, base + ranks)

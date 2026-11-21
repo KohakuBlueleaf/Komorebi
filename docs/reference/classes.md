@@ -639,6 +639,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.cxx(..., takes=[report], on="mover_b")` after pack's body over `report` | mover B: the page waited for, the body, then the movers' write of it | (A page from several CPUs' words) |
 | `self.f.fill(km.Stream(t.pages(first, n)))` | mover A: `reserve` of the field, `km::read_pages` of its n tiles, the barrier, `cb_push_back` | |
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
+| `self.f.fill(km.Stream(t.pages(first, n), block=8, pattern="AAAB"))` | both movers: `km::fill_field`, block k of the n pages read by the pattern's mover k straight into the field, one block in flight a mover; mover A reserves the field and pushes its share, mover B its share after mover A's push | a kept weight filled at both NoCs' rate ([A fill on both movers](#a-fill-on-both-movers)) |
 | `self.f.zero()` | compute: a zero tile in DST 0 packed into each of the field's pages, `cb_push_back` of them (no DRAM read); then read as a filled field | a field that only needs zeros (a step's states, rows of running sums) |
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products); the zip in either order (the stream of the smaller block, x's, counts the loop) |
@@ -2305,6 +2306,9 @@ row; the card refuses rows past the field's). One `km.cxx` body in the same bloc
 it, or a product reads it; every core that fills it frees it. `@` of a field is the
 Products section's; slices and `.columns` of a field are not built.
 
+A fill of a page range may name `block=` and `pattern=` of a stream: both movers then
+read it ([below](#a-fill-on-both-movers)).
+
 A field one handler fills and another reads (a product, or a body that takes it) stays
 in L1 between commands, with no other line: the reader waits for it once and does not
 free it, and the filler frees its last fill before the next. The build prints it:
@@ -2316,6 +2320,42 @@ free it, and the filler frees its last fill before the next. The build prints it
 A field that no handler fills is still refused where it is read. A field is declared
 on the class itself: a subclass does not inherit its parent's fields (declare them
 again).
+
+### A fill on both movers
+
+```python
+self.w.fill(km.Stream(w.pages(own, n), block=8, pattern="AAAB"))
+```
+
+Block k of the n pages (the last one shorter) is read by the mover the pattern names
+for k (`AAAB`: mover B reads every fourth block), each block straight into its place in
+the field, and each mover waits for its block before it issues its next one. Mover A
+reserves the whole field and pushes its share; mover B waits for room for its share,
+reads it, waits until mover A's share is pushed and pushes its own, so the two never
+write the field's page count at once. Compute and the field's readers see one fill of
+n pages, as before; a kept field stays as it does after a plain fill. A mover with no
+block (a pattern of one letter, or fewer blocks than the pattern's letters) does
+nothing and the other pushes the whole field. `block=` is a count the build knows,
+`pattern=` letters or a pattern parameter (a pattern word that is not valid gives up).
+Refused at the line: one of the two alone, any other option, and a rectangle of tiles
+(`t.tiles[...]`: that fill stays mover A's). Without the options the fill's kernels
+are as before, byte for byte.
+
+Measured on one Wormhole chip, a kernel-form class in a chain: a fill of 25.07 MB of
+`bfp8_b` (348,160 B a core, each core's share one run of pages) into the kept fields
+of 72 cores takes 105.6 us a command with `block=8, pattern="AAAB"` (237 GB/s; the
+last core's fill ends 99.8-100.7 us after the record is taken), against 141.9-143.0 us
+(175-177 GB/s) for the plain fill and 105.0 us for a two-mover read stream of the same
+pages with the same block and pattern. `AAAB` with blocks of 4 to 16 pages takes
+105.6-106.7 us; blocks of 32, 117.0 us; `AAAAB` 109.8 us, `AAB` 124.7 us, `AB` 188.3
+us; mover A alone in blocks of 8 (`pattern="A"`), 122.3 us. The products against the
+field give the same result, bit for bit, after either fill. A record of another core
+that reads and writes DRAM at the same time is slowed while the fill runs (a copy of
+160 tiles on one core: 211.7 us against 179.2 beside the plain fill; the same after
+the fill, 347.0 against 349.6). On Wormhole the option adds about 1,140 B to the
+writer (mover B), so a class near the writer's 16 KiB builds a writer level higher:
+the measured class's writer was 15,752 B at level 3 without it and 15,416 B at level
+4 with it ([overlays](overlays.md)).
 
 A field of fewer than 1,024 `km.u32` words, `km.L1[km.u32, n]`, is words the host
 reads after the run: the class is made with a tensor of the field's name, one row of
@@ -3053,7 +3093,7 @@ chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing
 `komorebi.dsl.chain.chain_stamps` reads and zeroes them:
 
 ```python
-from komorebi.dsl import chain_stamps
+from komorebi.dsl.chain import chain_stamps
 
 tensor = chain_stamps.tensor_for(session, 16)  # a page a flat rank: first + count
 rows = chain_stamps.read(session, run, program, tensor, (0, 16))
@@ -3144,7 +3184,9 @@ How the class runs in this form:
 - **State.** A part keeps nothing from one call to the next (its `.bss` is zeroed at
   every call), and a class keeps nothing there: a field is a buffer, whose pages stay in
   L1 between commands; a stream's place is its buffer's pointers, which the runtime's
-  kernels keep; everything else is a handler's local.
+  kernels keep; whether a kept field holds a fill (which its next fill frees) is a bit
+  of a word of the runtime's compute kernel, one a buffer index, cleared for the
+  buffers a load sets up; everything else is a handler's local.
 - **Arguments.** The movers' compile arguments (each tensor's accessor) are the reader's
   and the writer's parts'. A rectangle's per-core arguments are given at the program's
   place among the run's ([host](host.md#several-programs-in-one-run)).

@@ -316,6 +316,14 @@ namespace km {
             for (uint32_t word = 0; word < kStateWords; word++) {
                 state()[word] = 0;
             }
+            // A depth past the build's bound: refused, never a scan past `waiting_`.
+            if (
+                get_arg_val<uint32_t>(__builtin_offsetof(Args, depth) / 4) >
+                KM_RING_DEPTH_MAX
+            ) {
+                gave_up(kStReader, kGaveRefused, kWhereCheckin, 0, 0);
+                return false;
+            }
             control(KM_CONTROL_BLOCK)[0] = 0;  // no command's block read in yet
             control(KM_CONTROL_BLOCK + KM_BLOCK_AREA_BYTES)[0] = 0;
             for (uint32_t slot_index = 0; slot_index < KM_RING_SLOTS; slot_index++) {
@@ -474,7 +482,7 @@ namespace km {
                     // drops the listed command once the new word 0 shows.
                     if (job->sequence == found.pick_sequence && KM_LANDED(job)) {
                         last[found.pick] = found.pick_sequence;
-                        waiting_.head = (waiting_.head + 1) & (KM_RING_SLOTS - 1);
+                        waiting_.head = (waiting_.head + 1) & (KM_RING_DEPTH_MAX - 1);
                         waiting_.count--;  // the list's first: the pick
                         const km_command_t& got = *const_cast<const km_command_t*>(job);
                         // A command names its own slot; one found elsewhere is not run.
@@ -1138,6 +1146,17 @@ namespace km {
         mutable uint32_t produces_ = 0;  // pack: the buffers it fills
         mutable uint32_t consumes_ = 0;  // unpack: the buffers it drains
     };
+
+#if defined(KM_OVERLAY_PART)
+    // The kept fields this CPU holds a fill of, a bit a buffer index: the runtime's
+    // compute kernel's word (a part's .bss is zeroed each call), else the part's own.
+    [[gnu::weak]] extern uint32_t fields_held;
+
+    inline uint32_t& fields_held_word() {
+        static uint32_t own = 0;
+        return &fields_held != nullptr ? fields_held : own;
+    }
+#endif
 
 }  // namespace km
 #endif

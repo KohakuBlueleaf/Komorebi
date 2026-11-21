@@ -329,6 +329,35 @@ On one core both movers read 1.92 to 1.98 times as fast as one. On the full grid
 `AAAB` (reads) and `BBBBBAAA` (writes) are best; on a row of 8, `AB` reads at 0.6 of
 the classic reader.
 
+**On Wormhole** (measured 2026-11-21 on one Wormhole chip, chip 8 of a Galaxy, AICLK
+1,000 MHz; bfloat16 pages of 2 KB, each core its own 48 pages, the pattern all `A` or
+all `B`, rates from the span between 2 and 8 repetitions; ns a page are per core):
+
+| cores reading at once | A, ns a page | B, ns a page | A, GB/s | B, GB/s |
+|---|---|---|---|---|
+| 1, block 1 | 813 | 840 | 2.5 | 2.4 |
+| 1, block 8 | 162 | 167 | 12.7 | 12.2 |
+| 1, block 48 | 82.5 | 82.5 | 24.8 | 24.8 |
+| 8 (one row), block 8 | 163 | 460 | 100.3 | 35.6 |
+| 8 (one row), block 48 | 104 | 477 | 158.0 | 34.4 |
+| 79, block 8 | 776 | 2,403 | 208.6 | 67.3 |
+
+By placement, eight one-core commands at once (block 8, the same pages), GB/s, A / B:
+a row 100.6 / 59.8, a column 69.5 / 86.7, a diagonal 99.9 / 87.1.
+
+A core alone reads as fast on either mover. Several cores reading on mover B at once
+share its NoC's (NoC 1's) response path back from DRAM: 34 GB/s for 8 cores in a row,
+87 in a column, about 67 for the whole chip, against mover A's 158 (a row) and 208 (the
+chip; its read ceiling is about 250 GB/s, `AAAB`). NoC 0 is the mirror: mover A loses
+when its readers share a column (69.5 GB/s). The request leaves as fast on either NoC (a
+counter around each request: 11 to 14 cycles a page waiting for the command buffer on
+both); the time is the wait for the data to land. The writer's optimisation level (`Os`
+against `O2`: within 1 to 4% on one core, nothing on 8 or 79), the bank and pages of
+8 KB (one request for four tiles) change nothing measurable under load. The rule on
+Wormhole: place the cores that read on mover B in a column, keep mover B's share of a
+chip-wide read at a quarter or less (`AAAB`), and never let a read on mover B pace a
+step.
+
 **Compute takes blocks in order, so the slower mover sets the pace.** The faster mover
 waits for room behind the slower one (`AB` reads on 120 cores: mover A busy 0.15 of
 the run, mover B 0.99).

@@ -59,9 +59,51 @@ class DispatcherStackError(ProgramError):
             f"of stack and has {over.room:,} on {arch}, {over.margin:,} B to spare "
             f"where {floor} B are kept ({over.thread}: the firmware's "
             f"{over.firmware:,} B, then {over.need.text()}). Not loaded "
-            "(docs/reference/host.md, 'The dispatcher's stack')."
+            "(docs/reference/host.md, 'A kernel's stack')."
         )
         self.margins = margins
+
+
+class StackError(ProgramError):
+    """A kernel image (a RISC of the reader, writer or compute kernel) has no room for
+    its stack on the chip: less than 16 B left, the need counted exactly, as a lower
+    bound or (`bound`: with the overlay parts it calls) as an upper bound; nothing was
+    loaded. `margins` lists each image counted (stack.Margin)."""
+
+    def __init__(self, program, over, arch, margins, floor, bound=False):
+        least = "at least " if over.at_least and not bound else ""
+        advice = _part_advice(over) if bound else ""
+        super().__init__(
+            f"{program}: {over.role} ({over.thread}) needs {least}{over.needed:,} B "
+            f"of stack and has {over.room:,} on {arch}, {over.margin:,} B to spare "
+            f"where {floor} B are kept (the firmware's {over.firmware:,} B, then "
+            f"{over.need.text()}).{advice} Not loaded (docs/reference/host.md, "
+            "'A kernel's stack')."
+        )
+        self.margins = margins
+
+
+def _part_advice(over):
+    """What a StackError of a kernel counted with its parts names: the part, its
+    deepest functions, the kernel's largest frame before the part, what to do."""
+    chain, frames = over.need.chain, over.need.frames
+    entry = next(
+        (k for k, name in enumerate(chain) if name.startswith("km_overlay_entry")),
+        len(chain),
+    )
+    part = over.part or "an overlay part"
+    deepest = " -> ".join(name.split(" (")[0] for name in chain[entry + 1 :][-3:])
+    own = max(range(entry), key=lambda k: frames[k], default=None)
+    largest = (
+        f" (its largest, {chain[own].split(' (')[0]}: {frames[own]:,} B)"
+        if own is not None
+        else ""
+    )
+    return (
+        f" Counted with {part}, whose deepest path ends {deepest or 'at its entry'}: "
+        "an upper bound, met only by a run that takes that path. To load it, make "
+        f"the kernel's own frames smaller{largest} or that path shallower."
+    )
 
 
 class KernelSizeError(ProgramError):
@@ -557,6 +599,8 @@ def _core_parts(core):
                     f": a page line toward its own island {core['island']} "
                     "(km::write_pages and km::read_pages take this island's pages)"
                 )
+    if line and isinstance(line["kernel"], int):  # a role word no kernel writes
+        parts.append(f"live line {line['line']} of unknown role {line['kernel']}")
     for kernel, words in (core.get("live") or {}).items():
         if not isinstance(words, dict) or not words.get("where"):
             continue
@@ -634,3 +678,9 @@ class CommandOrderWarning(UserWarning):
     """A command submitted, not exclusive, behind one without its event yet on
     overlapping cores whose handler writes a tensor this one reads: on a core the
     next command's reads start while the one before still writes (hazards.md)."""
+
+
+class CrossingWarning(UserWarning):
+    """A (handler, group, tensors)'s first command on an island run reads or writes a
+    tensor with pages on an island its group does not run on, or runs on an island
+    holding none of them: every call moves them over the link (islands.md)."""

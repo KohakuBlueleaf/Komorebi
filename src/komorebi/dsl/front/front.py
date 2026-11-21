@@ -8,6 +8,7 @@ import inspect
 import numbers
 import operator
 import struct
+import weakref
 from dataclasses import dataclass
 
 from komorebi import abi
@@ -663,7 +664,7 @@ class HandlerMethod:
 
     def places(self):
         """The names of the parameters after self in order, constant ones too."""
-        return list(inspect.signature(self.function).parameters)[1:]
+        return list(signature_parameters(self.function))[1:]
 
     def constants_given(self, values, named=None):
         """The constant parameters' values a call gives at their places (or by
@@ -806,6 +807,31 @@ class UpTo:
         return f"km.{spelling('up_to')}" + (f"({given})" if given else "")
 
 
+# a handler function's parameters, by function: (what they were read from, them);
+# read again when its code, defaults, annotations or __signature__ are replaced
+_SIGNATURES = weakref.WeakKeyDictionary()
+
+
+def signature_parameters(function):
+    """inspect.signature(function).parameters, read once a function (a submit asks
+    them several times a command) and again once one of what makes them changed."""
+    if not inspect.isfunction(function) or hasattr(function, "__wrapped__"):
+        return inspect.signature(function).parameters
+    made = (
+        function.__code__,
+        function.__defaults__,
+        function.__kwdefaults__,
+        function.__annotations__,
+        function.__dict__.get("__signature__"),
+    )
+    kept = _SIGNATURES.get(function)
+    if kept is not None and all(a is b for a, b in zip(kept[0], made, strict=True)):
+        return kept[1]
+    parameters = inspect.signature(function).parameters
+    _SIGNATURES[function] = (made, parameters)
+    return parameters
+
+
 UP_TO = "km_up_to"  # a handler function's attribute: {name: SizedHook} from km.UPTO
 
 
@@ -857,7 +883,7 @@ def sized_parameters(function):
     most (km.UPTO at the make, or the internal hook as a parameter's default)."""
     found = {
         name: parameter.default.most
-        for name, parameter in inspect.signature(function).parameters.items()
+        for name, parameter in signature_parameters(function).items()
         if isinstance(parameter.default, SizedHook)
     }
     found.update(
@@ -870,7 +896,7 @@ def rect_given(function):
     """The most of a rectangle km.UPTO gives a handler with no parameter of that name
     (an argument after its parameters), else None."""
     hooks = getattr(function, UP_TO, {})
-    if "rect" in hooks and "rect" not in inspect.signature(function).parameters:
+    if "rect" in hooks and "rect" not in signature_parameters(function):
         return hooks["rect"].most
     return None
 
@@ -918,7 +944,7 @@ def constant_parameters(function):
     type, their default; None: no default)."""
     found = {}
     given = getattr(function, UP_TO, {})  # km.UPTO: a command word, no constant
-    for name, parameter in inspect.signature(function).parameters.items():
+    for name, parameter in signature_parameters(function).items():
         if name in given:
             continue
         if isinstance(parameter.annotation, ConstantParameter):

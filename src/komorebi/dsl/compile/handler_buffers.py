@@ -119,13 +119,13 @@ def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat, pair=None)
         )
         return (
             f"// the rectangle's rows, {columns} tiles each, {row_step} apart\n"
-            f"const km::Stream {variable}(\n"
+            f"KM_STREAM({variable},\n"
             f"    {direction}, {tensor}, {walk}, {repeat}, "
             f"{pair}, {pattern}\n"
             ");"
         )
     return (
-        f"const km::Stream {variable}(\n"
+        f"KM_STREAM({variable},\n"
         f"    {direction}, {tensor}, {pages.first}, "
         f"{pages.count}, {buffer.name}Block, {repeat}, {pair}, {pattern}\n"
         ");"
