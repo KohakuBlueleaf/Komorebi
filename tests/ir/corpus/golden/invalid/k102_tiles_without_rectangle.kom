@@ -1,0 +1,11 @@
+// refused: a tensor's tiles are named by a range or a rectangle (Types and data)
+module grids
+
+tile [4, 4]
+format f32
+
+program Grids {
+    handler look(x: tensor<f32>) @on(group) {
+        let a = x.tiles
+    }
+}

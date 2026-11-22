@@ -1132,6 +1132,18 @@ impl Checker<'_> {
             {
                 "a state member of scalars is read by index: `c[i]`".to_string()
             }
+            // a member of tiles is given whole only to an operation that takes it
+            (ExprKind::Name(n), Ty::Tile(_) | Ty::Block(..))
+                if place != Read::Operand
+                    && cx.lookup(&n.name).is_none()
+                    && cx.state(&n.name).is_some() =>
+            {
+                "a state member of tiles is read by index: `w[i]`".to_string()
+            }
+            (_, Ty::TileGrid(_)) => {
+                "`t.tiles` names its tiles: `t.tiles(first, n)` or `t.tiles[r0:r1, c0:c1]`"
+                    .to_string()
+            }
             (ExprKind::List(_), _) => "a list is not a value here".to_string(),
             (ExprKind::Str(_), _) => "a string is not a value here".to_string(),
             (ExprKind::Tuple(_), _) => "a tuple is not a value here".to_string(),

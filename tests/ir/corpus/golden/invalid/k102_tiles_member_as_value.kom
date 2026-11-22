@@ -1,0 +1,16 @@
+// refused: a state member of tiles is read by index (Handler bodies)
+module members
+
+tile [4, 4]
+format f32
+
+program Members {
+    state @scope(worker) @lifetime(program) {
+        ts: tile<f32>[2]
+    }
+
+    handler keep(x: tensor<f32>) @on(group) {
+        ts.fill(stream(x.tiles(0, 2), block = 1))
+        let a = ts
+    }
+}
