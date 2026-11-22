@@ -16,7 +16,8 @@ typedef struct {
     rm_item items[RM_MAX_ITEMS];
     uint32_t tile_item[RM_TILES + 1];
     uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];
-    uint32_t ranges[RF_MAX_CORES + 1]; /* COUNT's and SETUP's blocks of each core */
+    /* COUNT's and SETUP's blocks of each core, per area of the camera's region */
+    uint32_t ranges[RF_AREAS][RF_MAX_CORES + 1];
     uint32_t cuts[RF_MAX_CORES + 1];
 } work_t;
 
@@ -25,10 +26,13 @@ typedef struct {
     uint32_t bank_plus_one; /* 1 + the regions' bank */
     uint32_t address[RF_REGIONS];
     uint32_t result[RF_OUT_WORDS];
-    uint32_t ranged; /* frames run with ranges: the costs of the last are in */
-    uint32_t ready;  /* the next frame's ranges are in (set during FILL) */
+    /* per area (frame.h RF_AREAS): frames run with ranges, the costs of the last are
+     * in; the next frame's ranges are in (set during FILL) */
+    uint32_t ranged[RF_AREAS];
+    uint32_t ready[RF_AREAS];
     /* the camera page COUNT, SETUP, SHADE read (a SUN command: the sun region's) */
     uint32_t camera;
+    uint32_t area; /* the area of the camera's region this layer's frame uses */
 } frame_t;
 
 /* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
@@ -128,15 +132,16 @@ static uint32_t elapsed(uint64_t* mark) {
     return ticks;
 }
 
-/* Each core's blocks for COUNT and SETUP, into the camera's region: equal partitions,
- * then equal parts of the last frame's predicted cost (kernels/setup.h kCostKnots). */
+/* Each core's blocks for COUNT and SETUP, into the layer's area: equal partitions, then
+ * equal parts of the last frame's predicted cost (kernels/setup.h kCostKnots). */
 static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
     const uint32_t cores = frame->words[RF_W_CORES], blocks = frame->words[RF_W_BLOCKS];
-    uint32_t* block_ranges = work->ranges;
-    volatile uint32_t* camera = (volatile uint32_t*)regions[RF_R_CAMERA];
+    const uint32_t area = frame->area, at = area * RF_AREA_BYTES;
+    uint32_t* block_ranges = work->ranges[area];
+    volatile uint32_t* camera = (volatile uint32_t*)regions[RF_R_CAMERA] + at / 4;
     uint64_t total = 0;
-    if (frame->ranged) {
-        kmx_invalidate_at(RF_R_CAMERA, RF_COSTS_AT, 128u * cores);
+    if (frame->ranged[area]) {
+        kmx_invalidate_at(RF_R_CAMERA, at + RF_COSTS_AT, 128u * cores);
         for (uint32_t core = 0; core < cores; core++) {
             const uint32_t word = (RF_COSTS_AT + 128u * core) / 4;
             if (camera[word] != block_ranges[core + 1] - block_ranges[core]) {
@@ -207,8 +212,26 @@ static void set_ranges(frame_t* frame, work_t* work, void* const* regions) {
         camera[(RF_RANGES_AT + 64u * core) / 4] = block_ranges[core];
         camera[(RF_RANGES_AT + 64u * core) / 4 + 1] = block_ranges[core + 1];
     }
-    kmx_flush_at(RF_R_CAMERA, RF_RANGES_AT, 64u * cores);
-    frame->ranged++;
+    kmx_flush_at(RF_R_CAMERA, at + RF_RANGES_AT, 64u * cores);
+    frame->ranged[area]++;
+}
+
+/* The camera page COUNT and SETUP read: with ranges the layer's area (but area 0's, a
+ * copy of the frame's camera), else the frame's camera. */
+static uint32_t area_camera(frame_t* frame, void* const* regions, uint32_t ranges) {
+    if (!ranges || frame->area == 0) {
+        return frame->camera;
+    }
+    const uint32_t at = frame->area * RF_AREA_BYTES;
+    const uint32_t from = frame->area >= RF_AREA_SUN ? RF_R_SUN : RF_R_CAMERA;
+    kmx_invalidate_at(from, 0, 64); /* the host's camera, or the sun's */
+    const volatile uint32_t* source = (const volatile uint32_t*)regions[from];
+    volatile uint32_t* page = (volatile uint32_t*)regions[RF_R_CAMERA] + at / 4;
+    for (uint32_t i = 0; i < 16; i++) {
+        page[i] = source[i];
+    }
+    kmx_flush_at(RF_R_CAMERA, at, 64);
+    return frame->address[RF_R_CAMERA] + at;
 }
 
 /* One frame: COUNT to FILL (or as far as RF_W_STEPS says); adds each part's ticks to
@@ -228,17 +251,18 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
             ? RF_RANGES
             : 0
     );
-    if (ranges) { /* the masked layer's frame leaves the next frame's ranges */
-        if (!frame->ready) {
+    if (ranges) { /* each layer's area keeps its own next ranges */
+        if (!frame->ready[frame->area]) {
             set_ranges(frame, work, regions);
         }
-        frame->ready = 0;
+        frame->ready[frame->area] = 0;
     }
+    const uint32_t camera = area_camera(frame, regions, ranges);
     new_command(&command, RF_HANDLER_COUNT, frame);
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_COUNTERS];        /* counters_address */
     command.a2 = frame->words[RF_W_BLOCKS] | ranges; /* blocks_word */
-    command.a3 = frame->camera;                      /* camera_address */
+    command.a3 = camera;                             /* camera_address */
     uint32_t code = run(&command);
     frame->result[RF_O_COUNT] += elapsed(&mark);
     if (code || frame->words[RF_W_STEPS] < 2) {
@@ -423,7 +447,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_LISTS];           /* lists_address */
     command.a2 = frame->words[RF_W_BLOCKS] | ranges; /* blocks_word */
-    command.a3 = frame->camera;                      /* camera_address */
+    command.a3 = camera;                             /* camera_address */
     command.a4 = frame->words[RF_W_SLOTS];           /* slots_address */
     command.a6 = slots | RF_SETUP_PREFIX;            /* list_slots */
     command.a7 = frame->address[RF_R_ITEMS];         /* items_address */
@@ -446,7 +470,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         /* the next frame's ranges while the grid fills: COUNT and SETUP are done */
         if (ranges) {
             set_ranges(frame, work, regions);
-            frame->ready = 1;
+            frame->ready[frame->area] = 1;
         }
         code = wait_for(handle);
     }
@@ -464,10 +488,14 @@ static uint32_t g_set_up __attribute__((section(".data"))) = RF_NOT_SERVING;
 static uint32_t g_served __attribute__((section(".data"))) = 0;
 /* the masked layer's words: the program's, its own in place of the opaque layer's */
 static uint32_t g_masked_words[RF_WORDS] __attribute__((section(".data"))) = {0};
-/* a SUN command's opaque layer's words: the program's, on equal partitions (the camera
- * region's ranges and costs stay the eye's) */
+/* a SUN command's opaque layer's words: the program's (its ranges and costs in the
+ * camera region's sun areas) */
 static uint32_t g_sun_words[RF_WORDS] __attribute__((section(".data"))) = {0};
 static uint32_t g_suns __attribute__((section(".data"))) = 0;
+/* the masked layer's SHADE's profile tensor (0: none) */
+static uint32_t g_masked_shade_profile __attribute__((section(".data"))) = 0;
+/* the result words before the masked layer's frame: its own parts are the difference */
+static uint32_t g_before[RF_OUT_WORDS] __attribute__((section(".data"))) = {0};
 
 /* Fills g_masked_words: 0, or the code to report. */
 static uint32_t masked_words(const uint32_t* words) {
@@ -487,7 +515,18 @@ static uint32_t masked_words(const uint32_t* words) {
     for (uint32_t frame_slot = 0; frame_slot < RF_FRAME_MAX; frame_slot++) {
         g_masked_words[RF_W_FRAME + frame_slot] = words[RF_W_M_FRAME + frame_slot];
     }
-    g_masked_words[RF_W_BALANCE] = 0; /* the ranges region holds one layer's */
+    /* its own profile tensors, when the host gave them */
+    kmx_invalidate_at(RF_R_CAMERA, RF_PROFILES_AT, 64);
+    const volatile uint32_t* profiles = (
+        (const volatile uint32_t*)g_regions[RF_R_CAMERA] + RF_PROFILES_AT / 4
+    );
+    if (profiles[RF_P_FILL]) {
+        g_masked_words[RF_W_PROF] = profiles[RF_P_FILL];
+    }
+    if (profiles[RF_P_PASSES]) {
+        g_masked_words[RF_W_SPROF] = profiles[RF_P_PASSES];
+    }
+    g_masked_shade_profile = profiles[RF_P_SHADE];
     return 0;
 }
 
@@ -496,7 +535,6 @@ static void sun_words(const uint32_t* words) {
     for (uint32_t i = 0; i < RF_WORDS; i++) {
         g_sun_words[i] = words[i];
     }
-    g_sun_words[RF_W_BALANCE] = 0;
 }
 #endif
 
@@ -514,7 +552,10 @@ int kmx_main(int core) {
     frame->bank_plus_one = 1 + frame->words[RF_W_BANK];
     const uint32_t cores = frame->words[RF_W_CORES];
     const uint32_t workers = frame->words[RF_W_WORKERS];
-    frame->ranged = frame->ready = 0;
+    for (uint32_t area = 0; area < RF_AREAS; area++) {
+        frame->ranged[area] = frame->ready[area] = 0;
+    }
+    frame->area = 0;
     const uint32_t need[RF_REGIONS] = {
         frame->words[RF_W_BALANCE] ? RF_CAMERA_BYTES : 4 * 16,
         RF_HEAVY_BYTES,
@@ -601,8 +642,8 @@ static uint32_t shade(
     command.a1 = lists;                          /* lists_address */
     command.a2 = frame->words[RF_W_TEXTURES];    /* textures_address */
     command.a3 = frame->words[RF_W_SHADE_TABLE]; /* table_address */
-    /* profile_address: the opaque layer's command's */
-    command.a4 = opaque ? 0 : frame->words[RF_W_SHADEPROF];
+    /* profile_address: the opaque layer's command's, the masked layer's own if given */
+    command.a4 = opaque ? g_masked_shade_profile : frame->words[RF_W_SHADEPROF];
     command.a6 = opaque; /* opaque_directory_address */
     if (frame->words[RF_W_SURFACE]) {
         command.a5 = frame->camera;              /* camera_address (a8 its bank) */
@@ -668,14 +709,29 @@ static uint32_t serve_frame(const km_command_t* command) {
         const uint32_t items = frame->result[RF_O_ITEMS];
         const uint32_t marks = frame->result[RF_O_MARKS];
         const uint32_t heavy = frame->result[RF_O_HEAVY];
+        for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+            g_before[i] = frame->result[i];
+        }
         frame->words = g_masked_words;
+        frame->area = RF_AREA_MASKED;
         code = frame_once(frame, work, g_regions);
+        frame->area = 0;
         frame->words = words;
+        for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+            g_before[i] = frame->result[i] - g_before[i];
+        }
+        g_before[RF_O_SLOTS] = frame->result[RF_O_SLOTS];
+        g_before[RF_O_ITEMS] = frame->result[RF_O_ITEMS];
+        g_before[RF_O_HEAVY] = frame->result[RF_O_HEAVY];
         frame->result[RF_O_SLOTS] = slots;
         frame->result[RF_O_ITEMS] = items;
         frame->result[RF_O_MARKS] = marks;
         frame->result[RF_O_HEAVY] = heavy;
         masked_ticks = (uint32_t)(kmx_time() - opaque_ended);
+    } else {
+        for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+            g_before[i] = 0;
+        }
     }
     uint32_t shade_ticks = 0, shade_masked_ticks = 0;
     if (code == 0 && words[RF_W_SHADE]) {
@@ -723,6 +779,9 @@ static uint32_t serve_frame(const km_command_t* command) {
     times[RF_T_PUSH] = push_ticks;
     times[RF_T_NUMBER] = g_served;
     times[RF_T_CODE] = code;
+    for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+        times[RF_T_M_PARTS + i] = g_before[i];
+    }
     times[RF_T_FRAME] = (uint32_t)(kmx_time() - started);
     kmx_flush_at(RF_R_TIMES, 4u * row, 4u * RF_TIMES_ROW_WORDS);
     g_served++;
@@ -744,12 +803,15 @@ static uint32_t serve_sun(void) {
     work_t* work = (work_t*)g_regions[RF_R_WORK];
     frame->camera = frame->address[RF_R_SUN];
     frame->words = g_sun_words;
+    frame->area = RF_AREA_SUN;
     uint32_t code = frame_once(frame, work, g_regions);
     const uint64_t opaque_ended = kmx_time();
     if (code == 0 && words[RF_W_M_MESH]) {
         frame->words = g_masked_words;
+        frame->area = RF_AREA_SUN + RF_AREA_MASKED;
         code = frame_once(frame, work, g_regions);
     }
+    frame->area = 0;
     frame->words = words;
     const uint64_t masked_ended = kmx_time();
     if (code == 0 && words[RF_W_M_MESH]) {

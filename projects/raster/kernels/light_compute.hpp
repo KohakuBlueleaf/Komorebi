@@ -629,7 +629,6 @@ namespace shade_pass {
         }
         uint32_t* work = reinterpret_cast<uint32_t*>(write_ptr(kCbLightWork));
         uint32_t* index = work + kLwIndex;  // kLightKeys x 1,024 texel addresses
-        uint32_t* keys = work + kLwRow;     // a row's keys
         const uint32_t* slots = reinterpret_cast<const uint32_t*>(slots_address);
         const size_t vl = __riscv_vsetvl_e32m8(32);
         if (succeeded) {
@@ -756,27 +755,20 @@ namespace shade_pass {
                     // a row's texel addresses (the zero texel where a key is 0)
                     auto scan = [&](uint32_t row) -> bool {
                         for (uint32_t tap = 0; tap < kLightKeys; ++tap) {
-                            window_row(
-                                row_vector(row - row0, kRvValue + tap),
-                                keys + 32 * tap,
+                            if (row_addresses(
+                                pages,
+                                from_window(
+                                    row_vector(row - row0, kRvValue + tap), vl
+                                ),
+                                kNoTags,
+                                index + 1024 * tap + 32 * row,
+                                page_limit,
+                                kZeroTexel,
+                                false,
+                                true,
                                 vl
-                            );
-                        }
-                        asm volatile("" ::: "memory");
-                        for (uint32_t column = 0; column < 32; ++column) {
-                            for (uint32_t tap = 0; tap < kLightKeys; ++tap) {
-                                const uint32_t key = keys[32 * tap + column];
-                                const uint32_t page = (key >> 10) - 1;
-                                uint32_t* to = index + 1024 * tap + 32 * row + column;
-                                if (key < 1024 || page >= page_limit) {
-                                    *to = kZeroTexel;
-                                    continue;
-                                }
-                                const uint32_t slot = pages.slot_of(page);
-                                if (slot == kShadeSlots) {
-                                    return false;
-                                }
-                                *to = slot * kTexPageBytes + 4 * (key & 1023);
+                            ) < 0) {
+                                return false;
                             }
                         }
                         return true;

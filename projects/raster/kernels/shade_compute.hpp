@@ -478,6 +478,161 @@ namespace shade_pass {
         }
     };
 
+    // Dst vector `vector` (its 32 words, a row) as a register.
+    inline vuint32m8_t from_window(uint32_t vector, size_t vl) {
+        return (
+            __riscv_vlse32_v_u32m8(
+                const_cast<const uint32_t*>(window() + word(vector)), 8, vl
+            )
+        );
+    }
+
+    // `out` plus delta(slot, page) on the lanes `pending` of `page`, per distinct page
+    // (`last`: the last page first, then reductions); `fits` false when slots are full
+    template <typename Delta>
+    inline vuint32m8_t add_slots(
+        Pages& pages,
+        vuint32m8_t page,
+        vbool4_t pending,
+        vuint32m8_t out,
+        Delta delta,
+        bool last,
+        bool& fits,
+        size_t vl
+    ) {
+        constexpr uint32_t kNone = 0xFFFFFFFF;  // past any page: none pending
+        if (last && pages.last_page != kNone) {
+            const vbool4_t same = (
+                __riscv_vmseq_vx_u32m8_b4_mu(
+                    pending, __riscv_vmclr_m_b4(vl), page, pages.last_page, vl
+                )
+            );
+            out = (
+                __riscv_vadd_vx_u32m8_mu(
+                    same, out, out, delta(pages.last_slot, pages.last_page), vl
+                )
+            );
+            pending = __riscv_vmandn_mm_b4(pending, same, vl);
+        }
+        const vuint32m1_t none = __riscv_vmv_v_x_u32m1(kNone, 1);
+        for (;;) {
+            uint32_t least = kNone;
+            if (last) {
+                least = (
+                    __riscv_vmv_x_s_u32m1_u32(
+                        __riscv_vredminu_vs_u32m8_u32m1_m(pending, page, none, vl)
+                    )
+                );
+            } else {  // many pages a row (SHADE): the first pending lane's (measured)
+                const long lane = __riscv_vfirst_m_b4(pending, vl);
+                if (lane >= 0) {
+                    least = (
+                        __riscv_vmv_x_s_u32m8_u32(
+                            __riscv_vslidedown_vx_u32m8(page, static_cast<size_t>(lane), vl)
+                        )
+                    );
+                }
+            }
+            if (least == kNone) {
+                return out;
+            }
+            const uint32_t slot = pages.slot_of(least);
+            if (slot == kShadeSlots) {
+                fits = false;
+                return out;
+            }
+            const vbool4_t same = (
+                __riscv_vmseq_vx_u32m8_b4_mu(
+                    pending, __riscv_vmclr_m_b4(vl), page, least, vl
+                )
+            );
+            out = __riscv_vadd_vx_u32m8_mu(same, out, out, delta(slot, least), vl);
+            pending = __riscv_vmandn_mm_b4(pending, same, vl);
+        }
+    }
+
+    // No tag vector (row_addresses).
+    constexpr uint32_t kNoTags = 0xFFFFFFFF;
+
+    // A row's keys as texel addresses into `to` (`none`: no page; `tags`: the mask's
+    // slot too); -1 when the pages do not fit, else the texels with `count`, or 0
+    inline int32_t row_addresses(
+        Pages& pages,
+        vuint32m8_t key,
+        uint32_t tags,
+        uint32_t* to,
+        uint32_t page_limit,
+        uint32_t none,
+        bool count,
+        bool last,
+        size_t vl
+    ) {
+        // a key under 1,024 makes page 2^32 - 1, past any limit
+        const vuint32m8_t page = (
+            __riscv_vsub_vx_u32m8(__riscv_vsrl_vx_u32m8(key, 10, vl), 1, vl)
+        );
+        const vbool4_t valid = __riscv_vmsltu_vx_u32m8_b4(page, page_limit, vl);
+        // 4 x key = (1 + page) x page bytes + 4 x texel: the page's slot adds
+        // (slot - 1 - page) x page bytes
+        bool fits = true;
+        vuint32m8_t out = add_slots(
+            pages,
+            page,
+            valid,
+            __riscv_vsll_vx_u32m8(key, 2, vl),
+            [](uint32_t slot, uint32_t first) {
+                return (slot - 1 - first) * kTexPageBytes;
+            },
+            last,
+            fits,
+            vl
+        );
+        if (fits && tags != kNoTags) {
+            const vuint32m8_t tag = from_window(tags, vl);
+            const vuint32m8_t mask_page = (
+                __riscv_vsub_vx_u32m8(
+                    __riscv_vsrl_vx_u32m8(
+                        __riscv_vand_vx_u32m8(tag, 0x3FFFFFFF, vl), 10, vl
+                    ),
+                    1,
+                    vl
+                )
+            );
+            const vbool4_t masked = (
+                __riscv_vmand_mm_b4(
+                    __riscv_vmand_mm_b4(
+                        __riscv_vmsgeu_vx_u32m8_b4(tag, 3u << 30, vl),
+                        __riscv_vmsltu_vx_u32m8_b4(mask_page, page_limit, vl),
+                        vl
+                    ),
+                    valid,
+                    vl
+                )
+            );
+            out = add_slots(
+                pages,
+                mask_page,
+                masked,
+                out,
+                [](uint32_t slot, uint32_t) {
+                    return (slot + 1) << kMaskSlotShift;
+                },
+                false,
+                fits,
+                vl
+            );
+        }
+        if (!fits) {
+            return -1;
+        }
+        __riscv_vse32_v_u32m8(
+            to,
+            __riscv_vmerge_vxm_u32m8(out, none, __riscv_vmnot_m_b4(valid, vl), vl),
+            vl
+        );
+        return count ? static_cast<int32_t>(__riscv_vcpop_m_b4(valid, vl)) : 0;
+    }
+
     struct Counters {
         uint32_t values[kShadeProfWords] = {};
     };
@@ -561,58 +716,29 @@ namespace shade_pass {
         uint32_t* values = counters.values;
         const uint32_t white = kShadeSlots * kTexPageBytes;
         const size_t vl = __riscv_vsetvl_e32m8(32);
-        uint32_t* keys = pages.used + kShadeSlots;  // a row's keys
-        uint32_t* mask_keys = keys + 32;            // its triangle row (merging)
         const uint32_t* slots = reinterpret_cast<const uint32_t*>(slots_address);
         // a row's texel addresses; false when its pages do not fit
+        uint32_t* keys = pages.used + kShadeSlots;  // a row's keys
         auto scan = [&](uint32_t row) -> bool {
-            __riscv_vse32_v_u32m8(
-                keys,
-                __riscv_vlse32_v_u32m8(
-                    const_cast<const uint32_t*>(window() + word(kVecDepth + row)), 8, vl
-                ),
-                vl
-            );
-            if (merging) {
-                __riscv_vse32_v_u32m8(
-                    mask_keys,
-                    __riscv_vlse32_v_u32m8(
-                        const_cast<const uint32_t*>(window() + word(kVecTri + row)),
-                        8,
-                        vl
-                    ),
-                    vl
-                );
-            }
+            __riscv_vse32_v_u32m8(keys, from_window(kVecDepth + row, vl), vl);
             asm volatile("" ::: "memory");
-            uint32_t* row_index = index + 32 * row;
-            uint32_t row_texels = 0;
-            for (uint32_t column = 0; column < 32; ++column) {
-                const uint32_t key = keys[column];
-                const uint32_t page = (key >> 10) - 1;
-                if (key < 1024 || page >= page_limit) {
-                    row_index[column] = white;
-                    continue;
-                }
-                const uint32_t slot = pages.slot_of(page);
-                if (slot == kShadeSlots) {
-                    return false;
-                }
-                uint32_t address = slot * kTexPageBytes + 4 * (key & 1023);
-                const uint32_t tagged = merging ? mask_keys[column] : 0;
-                const uint32_t mask_key = tagged & 0x3FFFFFFF;
-                const uint32_t mask_page = (mask_key >> 10) - 1;
-                if (tagged >> 30 == 3 && mask_key >= 1024 && mask_page < page_limit) {
-                    const uint32_t mask_slot = pages.slot_of(mask_page);
-                    if (mask_slot == kShadeSlots) {
-                        return false;
-                    }
-                    address |= (mask_slot + 1) << kMaskSlotShift;
-                }
-                row_index[column] = address;
-                ++row_texels;
+            const int32_t row_texels = (
+                row_addresses(
+                    pages,
+                    __riscv_vle32_v_u32m8(keys, vl),
+                    merging ? kVecTri + row : kNoTags,
+                    index + 32 * row,
+                    page_limit,
+                    white,
+                    true,
+                    false,
+                    vl
+                )
+            );
+            if (row_texels < 0) {
+                return false;
             }
-            values[kShadeProfTexels] += row_texels;
+            values[kShadeProfTexels] += static_cast<uint32_t>(row_texels);
             return true;
         };
         auto gather = [&](uint32_t pass_first, uint32_t pass_end) -> bool {

@@ -19,7 +19,7 @@ from projects.raytrace import framegraph
 from reference import lights as light_data
 from reference import native, png, raster
 
-F, SHOW, SH = card_thread.F, card_thread.SHOW, card_thread.SH
+F, SHOW, SH, S = card_thread.F, card_thread.SHOW, card_thread.SH, card_thread.S
 CLUSTER = card_thread.CLUSTER
 TILE = 32
 PUSH_TIMEOUT_S = 2.0  # a frame's wait for the push's sequence words
@@ -152,6 +152,7 @@ def shade_profile(profile):
         key: round(float(totals[SH[name]]) / tiles, 1) for key, name in parts.items()
     }
     report["slowest_core_cycles"] = int(profile[:, SH["kShadeProfTotal"]].max())
+    report["pack"] = spread(profile[:, SH["kShadeProfTotal"]])
     report["cores_reported"] = int((profile[:, SH["kShadeProfTotal"]] != 0).sum())
     report["item_pages_max"] = int(profile[:, SH["kShadeProfItemPages"]].max())
     report["items_in_passes"] = int(profile[:, SH["kShadeProfItemPasses"]].sum())
@@ -190,6 +191,87 @@ def light_profile(profile, lamps=0):
             for key, name in parts.items()
         },
         "slowest_core_cycles": int(profile[:, SH["kLightProfTotal"]].max()),
+        "pack": spread(profile[:, SH["kLightProfTotal"]]),
+    }
+
+
+def spread(totals):
+    """Per core cycles (cores that ran) as slowest, mean, least and the mean core's
+    wait for the slowest (cycles; the stage lasts as long as the slowest core)."""
+    totals = np.asarray(totals, dtype=np.float64)
+    totals = totals[totals > 0]
+    if len(totals) == 0:
+        return None
+    return {
+        "cores": len(totals),
+        "slowest": int(totals.max()),
+        "mean": int(totals.mean()),
+        "least": int(totals.min()),
+        "slowest_over_mean": round(float(totals.max() / totals.mean()), 3),
+        "mean_wait": int(totals.max() - totals.mean()),
+    }
+
+
+def passes_profile(page):
+    """COUNT's and SETUP's profile pages (cores, 1,024 words; setup.h kSProf*): per pass
+    the pack thread's spread and parts summed over the cores, the reader's and writer's
+    waits, and the cycles a block, a kept triangle and an entry."""
+    report = {}
+    for name, handler in (("count", S["kHandlerCount"]), ("setup", S["kHandlerSetup"])):
+        words = page[:, 32 * (handler - S["kHandlerCount"]) :][:, :32]
+        pack = words[:, S["kSProfPack"] : S["kSProfPack"] + 8]
+        reader = words[:, S["kSProfReader"] : S["kSProfReader"] + 5]
+        writer = words[:, S["kSProfWriter"] : S["kSProfWriter"] + 6]
+        blocks = int((reader[:, 3] // S["kMeshPageBytes"]).sum())
+        kept, entries = int(pack[:, 4].sum()), int(pack[:, 6].sum())
+        total = int(pack[:, 3].sum())
+        report[name] = {
+            "pack": spread(pack[:, 3]),
+            "writer": spread(writer[:, 2]),
+            "pack_parts": {
+                part: int(pack[:, column].sum())
+                for column, part in (
+                    (0, "mail_wait"),
+                    (1, "vector"),
+                    (2, "scalar"),
+                    (7, "out_wait"),
+                )
+            },
+            "reader_wait": int(reader[:, 0].sum()),
+            "writer_wait": int(writer[:, 0].sum()),
+            "writer_write": int(writer[:, 1].sum()),
+            "blocks": blocks,
+            "kept": kept,
+            "clipped": int(pack[:, 5].sum()),
+            "entries": entries,
+            "cycles_a_block": round(total / max(blocks, 1), 1),
+            "cycles_a_kept": round(total / max(kept, 1), 1),
+            "writer_cycles_an_entry": round(
+                float(writer[:, 1].sum()) / max(entries, 1), 1
+            ),
+        }
+    return report
+
+
+def fill_profile(page):
+    """FILL's profile pages (cores, 1,024 words; run.PROF): the pack thread's spread,
+    parts summed, and the cycles a (triangle, tile) entry, a row, a tile."""
+    rows = run.profile_rows(page, len(page))
+    entries = int(rows["tris"].sum())
+    return {
+        "pack": spread(rows["total"]),
+        "parts": {
+            name: int(rows[name].sum())
+            for name in ("wait_in", "init", "tri", "rows", "drain", "out", "wait_out")
+        },
+        "tiles": int(rows["tiles"].sum()),
+        "entries": entries,
+        "rows": int(rows["row_count"].sum()),
+        "cycles_an_entry": round(float(rows["total"].sum()) / max(entries, 1), 1),
+        "setup_an_entry": round(float(rows["tri"].sum()) / max(entries, 1), 1),
+        "cycles_a_row": round(
+            float(rows["rows"].sum()) / max(int(rows["row_count"].sum()), 1), 1
+        ),
     }
 
 
@@ -302,6 +384,14 @@ class Loop:
                 session, prepared["masked_blocks"], workers, masked_slots
             )
             self.masked["shade"] = card.tensor(session, prepared["masked_shade_blocks"])
+            # its own profile tensors: FILL's, COUNT's and SETUP's, SHADE's
+            self.masked["prof"] = card.tensor(session, np.zeros((workers, 1024)))
+            self.masked["sprof"] = card.tensor(
+                session, np.zeros((workers, S["kSProfPageBytes"] // 4))
+            )
+            self.masked["shade_profile"] = card.tensor(
+                session, np.zeros((workers, SH["kShadeProfBytes"] // 4))
+            )
             report["masked_triangles"] = prepared["masked_triangles"]
         self.display = card.tensor(
             session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
@@ -319,7 +409,7 @@ class Loop:
             words[F["RF_W_TEXTURES"]] = self.shaded["textures"].address
             words[F["RF_W_SHADE_TABLE"]] = self.shaded["table"].address
             words[F["RF_W_SHADEPROF"]] = self.shade_profile.address
-        sun = None
+        sun = profiles = None
         if self.surface is not None:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
             words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
@@ -331,10 +421,14 @@ class Loop:
                 len(prepared["masked_blocks"]),
                 self.masked["shade"].address,
             )
+            profiles = [  # frame.h RF_P_*
+                self.masked[name].address for name in ("prof", "sprof", "shade_profile")
+            ]
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
         self.running = running = session.load(
-            card_thread.program(scene, words, workers, table, sun), deadline=1.0
+            card_thread.program(scene, words, workers, table, sun, profiles),
+            deadline=1.0,
         )
         report["load_s"] = round(time.perf_counter() - started, 3)
         self.transfer = None
@@ -516,17 +610,42 @@ def loop(args):
                 sum(run["word"] is not None for run in passes_run),
             )
         (profile_pages,) = card.read(session, live.show_profile)
+        layer_pages = {"opaque": live.uploaded}
+        if live.masked is not None:
+            layer_pages["masked"] = live.masked
+        report["stage_profile"], raw_pages = {}, {}
+        for layer, tensors in layer_pages.items():
+            (fill_pages,) = card.read(session, tensors["prof"])
+            (pass_pages,) = card.read(session, tensors["sprof"])
+            raw_pages[f"{layer}_fill"], raw_pages[f"{layer}_passes"] = (
+                fill_pages,
+                pass_pages,
+            )
+            report["stage_profile"][layer] = {
+                **passes_profile(pass_pages.view(np.uint32).reshape(workers, -1)),
+                "fill": fill_profile(fill_pages.view(np.uint32).reshape(workers, -1)),
+            }
+        if live.masked is not None and live.shade_profile is not None:
+            (masked_shade,) = card.read(session, live.masked["shade_profile"])
+            report["shade_profile_masked"] = shade_profile(
+                masked_shade.view(np.uint32).reshape(workers, -1).astype(np.int64)
+            )
+            raw_pages["masked_shade"] = masked_shade
         if live.shade_profile is not None:
             (shade_pages,) = card.read(session, live.shade_profile)
             report["shade_profile"] = shade_profile(
                 shade_pages.reshape(workers, -1).astype(np.int64)
             )
+            raw_pages["opaque_shade"] = shade_pages
         if live.light_profile is not None:
             (light_pages,) = card.read(session, live.light_profile)
             report["light_profile"] = light_profile(
                 light_pages.reshape(workers, -1).astype(np.int64),
                 len(lights["lamp_intensity"]) if "lamps" in terms else 0,
             )
+            raw_pages["light"] = light_pages
+        if args.profile_pages:  # each stage's profile pages of the last frame
+            np.savez(args.profile_pages, **raw_pages)
     profile = profile_pages.reshape(workers, -1).astype(np.int64)
     ticks_ms = 1e3 / TIMER_HZ
     report["host_ms"] = figures(host)
@@ -569,6 +688,26 @@ def loop(args):
         part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
         for part in ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
     }
+    if live.masked is not None:  # each layer's parts (the masked layer's own words)
+        names = ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
+        masked_parts = {
+            part: rows[:, F["RF_T_M_PARTS"] + F[f"RF_O_{part.upper()}"]]
+            for part in names
+        }
+        report["card_layer_parts_ms"] = {
+            "opaque": {
+                part: round(
+                    float(np.median(rows[:, F[f"RF_O_{part.upper()}"]] - values))
+                    * ticks_ms,
+                    4,
+                )
+                for part, values in masked_parts.items()
+            },
+            "masked": {
+                part: round(float(np.median(values)) * ticks_ms, 4)
+                for part, values in masked_parts.items()
+            },
+        }
     report["heavy_tiles"] = rows[:, F["RF_O_HEAVY"]].tolist()[:4]
     report["heavy_tiles_max"] = int(rows[:, F["RF_O_HEAVY"]].max())
     report["items_max"] = int(rows[:, F["RF_O_ITEMS"]].max())
@@ -757,6 +896,9 @@ def main():
         "--list-slots", type=int, default=0, help="0: card_thread's, from the triangles"
     )
     parser.add_argument("--json", default=None)
+    parser.add_argument(
+        "--profile-pages", default=None, help="an .npz of the stages' profile pages"
+    )
     args = parser.parse_args()
     report = loop(args)
     status = report.pop("status")

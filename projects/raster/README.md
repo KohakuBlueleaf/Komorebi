@@ -416,9 +416,9 @@ Three changes took the 10^6 frame from 12,125 to 6,894 us (first) and 10,575 to 
   1,843 to 1,045, SETUP 4,236 to 2,619.
 - COUNT and SETUP give each core a range of the mesh's blocks; with equal ranges some
   hold far more triangles in view than others, and the pass waits for the slowest.
-  COUNT's pack thread adds up a predicted cost per block (6,347 a block, 408 a kept
-  triangle or piece, 22 a tile entry, 19,433 a clipped triangle: a fit to measured
-  passes) and keeps its sums at 31 evenly spaced places of its range; the thread cuts the
+  COUNT's pack thread adds up a predicted cost per block (at first 6,347 a block, 408 a
+  kept triangle or piece, 22 a tile entry, 19,433 a clipped triangle: a fit to measured
+  passes; now SETUP's own fit, "What was sped up" below) and keeps its sums at 31 evenly spaced places of its range; the thread cuts the
   next frame's ranges into equal parts of the total, linear between the places, and
   writes them while the grid runs FILL (COUNT and SETUP are done by then; the cut reads
   about 1,000 words of the camera's region, 30 ns each, and would otherwise cost 40 us
@@ -453,8 +453,8 @@ the triangles whose material is not `masked` and those whose material is, each w
 own mesh, shade, lists (sized from its own triangles), directory and frame tensors
 (`shade.prepare`, `card_thread.layer_tensors`). The thread runs its frame (COUNT to
 FILL) once per mesh, the second time on the masked layer's words (`RF_W_M_*` in
-`thread/frame.h`), with COUNT's and SETUP's ranges on equal partitions there (the
-camera's region holds one layer's ranges). Then two SHADE commands: the opaque layer's
+`thread/frame.h`), with COUNT's and SETUP's ranges and costs in its own area of the
+camera's region (`RF_AREA_MASKED`; at first on equal partitions). Then two SHADE commands: the opaque layer's
 as before, then the masked layer's (a6 the opaque layer's directory). For each masked
 item it reads its five planes and the opaque layer's five of the same tile, drops the
 pixels where the opaque layer is nearer (FILL's rule, larger 1/z; a tie goes to the
@@ -530,8 +530,10 @@ Without `--light` SHADE runs its old path unchanged and gives the textured frame
   camera), which the reader takes from the frame thread's sun region (LIGHT's a1), so
   that the host can rewrite it between frames ("The sun" below).
 - **Shadow and background as pages.** The shadow map (1024 x 1024 float32 1/z) and the
-  octahedral map (512 x 512, one map per channel) are uploaded as pages of 32 x 32
-  values, pages row by row (`light.light_pages`: 1,024 + 3 x 256 pages). Per pixel the
+  octahedral map (its side from the lighting file: 512 x 512 or 2,048 x 2,048, one map per
+  channel) are uploaded as pages of 32 x 32 values, pages row by row
+  (`light.light_pages`: 1,024 + 3 x 256 or 3 x 4,096 pages; LIGHT's table carries the
+  sides and page counts). Per pixel the
   vector unit forms the four texel keys: the point moved one shadow texel along `n`
   into the sun's camera, its 1/z there, the 2 x 2 filter's corner and fractions (a tap
   outside the map gets key 0, a texel of 1/z 0: lit); an empty pixel's keys are the
@@ -571,7 +573,8 @@ brackets):
 LIGHT's pack-thread cycles a tile (the profile's mean over the tiles; each part ends
 with a drain of the vector unit). The keys, the page scan, the wait for pages and the
 gather serve the shadow's four taps and the background's three texels together; the
-scan (a hash lookup per tap per pixel in scalar code) is the largest part:
+scan (a hash lookup per tap per pixel in scalar code; since in the vector unit, "What
+was sped up") is the largest part:
 
 | scene | keys | page scan | wait for pages | gather | shadow filter | lamps | specular (sun) | rest (sky, ambient, sun, tone) | planes in, out, waits | total |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -629,8 +632,8 @@ said, `live.py --scene bistro_exterior_<view> --push`:
 - 200 frames along the camera path (`--frames 200 --light`, 02:46): every result word 0,
   card frame median 32.26 ms, worst 38.26; host median 33.09, worst 39.43.
 
-The exterior's frame is the two layers' passes: the masked layer (trees) runs COUNT and
-SETUP on equal partitions (9.5 ms of the 31.8).
+The exterior's frame was the two layers' passes: the masked layer (trees) ran COUNT and
+SETUP on equal partitions (9.5 ms of the 31.8; "What was sped up" below).
 
 ### The sun (`live.py --sun AZ,EL`, `--sun-path N`)
 
@@ -648,8 +651,8 @@ exterior but for four words of 3e-17 against -0 (the reference's note).
 
 `Loop.set_sun(azimuth, elevation)` writes the region and submits **SUN** to the thread
 (`serve_sun`), which renders the shadow map with the frame's own stages: each layer's
-COUNT to FILL from the sun region's camera on equal block partitions (the camera
-region's ranges and costs stay the eye's), the masked layer's lit SHADE (its merge
+COUNT to FILL from the sun region's camera, each layer's ranges and costs in its own
+area of the camera's region (`RF_AREA_SUN`; the first pass on equal partitions), the masked layer's lit SHADE (its merge
 leaves the merged 1/z in the opaque layer's frame: leaves cast the shadow of their
 leaves), then SHOW in a raw mode (`kShowRaw`: plane 0 word for word, rows from the top)
 into the first 1,024 pages of the light pages tensor, the layout LIGHT fetches. The eye's
@@ -696,10 +699,61 @@ over 24 steps; 03:35): every frame's and every pass's word 0; Sponza SUN pass me
 5.99 ms, worst 6.76 (host, numbers and command, 6.86 / 7.63), card frame median 12.82,
 worst 15.08; exterior SUN pass 18.41 / 20.39 (host 19.34 / 21.59), frame 32.27 / 38.26.
 
-Limits: the pass is the eye's frame cost again (the exterior's masked layer runs on
-equal partitions, as in its frames); the elevation moves the light's sun, not the
+Limits: the pass is the eye's frame cost again; the elevation moves the light's sun, not the
 background's sun disc (the reference's known inconsistency); the lists are sized from
 sampled suns, so a far other sun may need `--list-slots`.
+
+### What was sped up (2026-11-23)
+
+Profile first (`live.py --profile-pages`: the masked layer has its own FILL, COUNT and
+SETUP, SHADE profile tensors, and the times row its own parts, words 32 to 52). Card 1,
+AICLK 1,350 MHz, `live.py --scene <s> --frames 20 --push --light --check-light`, ms,
+medians; before: the commit's kernels (04:54, 04:55; interior 05:32), after: 05:44 to
+05:45. Bistro exterior's frame, 31.84 ms before: SETUP 10.4 (the masked layer's
+slowest core 5.2 times the mean, on equal partitions), SHADE 8.9, FILL 4.5, COUNT 3.3,
+LIGHT 2.3.
+
+1. **The masked layer's ranges by cost.** The camera's region holds four areas
+   (`RF_AREAS`: the eye's two layers, a SUN command's two), each a camera page (the
+   thread copies the camera into areas 1 to 3), ranges and costs; every layer's COUNT
+   and SETUP are dealt by its own last costs. Exterior masked layer 9.49 to 5.87 ms
+   (SETUP 5.37 to 2.45, COUNT 1.35 to 0.66).
+2. **The cost knots.** The old weights' predicted cost correlated 0.24 with COUNT +
+   SETUP per core on the exterior (SETUP's slowest core held 8,576 kept triangles,
+   the mean 2,422). SETUP keeps COUNT's ranges (SUM's prefixes are per core), so one cut
+   serves both; of the weightings tried, SETUP's own fit (`kCostBlock` 4,050, kept 400,
+   entry 40, clipped 9,250) gave the shortest COUNT + SETUP.
+3. **The page scans** (`row_addresses` in `kernels/shade_compute.hpp`). A row's 32 keys
+   in the vector unit: page and validity as vectors, `4 key + (slot - 1 - page) x 4096`
+   added on the lanes of each distinct page, one `slot_of` a distinct page (LIGHT: the
+   last page tried first, the next by a minimum reduction; SHADE: the first pending
+   lane's). The same pages, slots and passes as the scalar scan. LIGHT 145,035 to
+   47,585 cycles a tile (46 a pixel of four taps), lit SHADE 177,959 to 79,275 (77 a
+   pixel of three textures). About 12 vector instructions a key at roughly one element
+   a cycle is the floor of this form (an estimate from the cycles, not measured alone).
+4. **The texture levels in SETUP** (`shade_word`): the loop over k in closed form, equal
+   to it on 10.9 million inputs (every exponent, the edges). Exterior opaque SETUP 4.18
+   to 2.99 ms.
+
+| scene | | opaque frame | masked frame | FILL | SHADE | LIGHT | SHOW | card frame |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Bistro exterior | before | 10.10 | 9.49 | 4.51 | 8.87 (2.57) | 2.33 | 0.86 | 31.84 |
+| Bistro exterior | after | 8.46 | 5.43 | 4.51 | 7.82 (2.21) | 1.55 | 0.86 | 24.36 |
+| Sponza | before | 3.55 | 1.35 | 1.64 | 4.82 (0.87) | 2.10 | 0.78 | 12.88 |
+| Sponza | after | 3.44 | 1.31 | 1.64 | 4.19 (0.77) | 1.49 | 0.78 | 11.54 |
+| Bistro interior | before | 6.76 | 1.19 | 2.20 | 4.97 (0.45) | 2.91 | 0.82 | 16.92 |
+| Bistro interior | after | 6.51 | 1.06 | 2.20 | 4.17 (0.38) | 2.19 | 0.82 | 15.07 |
+
+Exterior parts after (opaque / masked): COUNT 2.48 / 0.81, middle pass 0.36 / 0.63,
+SETUP 2.84 / 1.86, FILL 2.62 / 1.89. Every check as before: check C over 2 / 4 / 8 at
+most 0.053 / 0.022 / 0.019 % (exterior), 0.018 / 0.013 / 0.009 (Sponza), 0.0034 /
+0.0015 / 0.0003 (interior); check B's `a` over 2/255 on 2 and 5 (exterior), 6 and 3
+(Sponza), 59 and 62 (interior) pixels, materials equal; `--shade --check-shade` on
+Sponza 0.0006 % at most. The SUN pass along `--sun-path 10 --frames 200` on the
+exterior (05:37, 05:38): median 18.41 to 13.65 ms, worst 20.40 to 18.03 (the first
+pass, on equal partitions); frames 32.27 / 38.26 to 24.69 / 34.07. With a 2,048 x
+2,048 octahedral map in the lighting file the exterior is `ok`, LIGHT 1.57 ms, 7,978
+pages: the map's side and the page counts come from the file.
 
 ## The interactive loop
 

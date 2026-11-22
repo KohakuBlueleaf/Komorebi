@@ -35,11 +35,12 @@ constexpr uint32_t kRangesAt = 64;
 constexpr uint32_t kCostsAt = 16384;
 // COUNT's costs: the range's blocks, then the cost summed after j x blocks / 31, j 1-31
 constexpr uint32_t kCostKnots = 31;
-// A block's predicted cost: per block, kept triangle or piece, entry, clipped one
-constexpr uint32_t kCostBlock = 6347;
-constexpr uint32_t kCostKept = 408;
-constexpr uint32_t kCostEntry = 22;
-constexpr uint32_t kCostClipped = 19433;
+// A block's predicted cost: per block, kept triangle or piece, entry, clipped one; a
+// fit of SETUP's cycles, whose ranges COUNT shares (README "what was sped up")
+constexpr uint32_t kCostBlock = 4050;
+constexpr uint32_t kCostKept = 400;
+constexpr uint32_t kCostEntry = 40;
+constexpr uint32_t kCostClipped = 9250;
 
 // Buffers, apart from the fill's (raster.h) so that one program can hold both.
 constexpr uint32_t kCbMesh = 4;    // mesh pages in, the camera's page first

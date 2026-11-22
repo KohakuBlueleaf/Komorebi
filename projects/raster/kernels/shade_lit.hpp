@@ -475,50 +475,34 @@ namespace shade_pass {
         const uint32_t white = kShadeSlots * kTexPageBytes;
         const size_t vl = __riscv_vsetvl_e32m8(32);
         uint32_t* index = work + kLwIndex;
-        uint32_t* keys = work + kLwRow;
         const uint32_t* slot_offsets = work + kLwSlot;
         const uint32_t* slot_words = work + kLwSlots;
         const uint32_t* texels = reinterpret_cast<const uint32_t*>(slots_address);
+        uint32_t* keys = work + kLwRow;
         auto scan = [&](uint32_t row) -> bool {
             window_row(kVecDepth + row, keys, vl);
             window_row(kVecRed + row, keys + 32, vl);
             window_row(kVecGreen + row, keys + 64, vl);
-            if (merging) {
-                window_row(kVecTri + row, keys + 96, vl);
-            }
             asm volatile("" ::: "memory");
             uint32_t row_texels = 0;
-            for (uint32_t column = 0; column < 32; ++column) {
-                for (uint32_t texture = 0; texture < 3; ++texture) {
-                    const uint32_t key = keys[32 * texture + column];
-                    const uint32_t page = (key >> 10) - 1;
-                    uint32_t* to = index + 1024 * texture + 32 * row + column;
-                    if (key < 1024 || page >= page_limit) {
-                        *to = white;
-                        continue;
-                    }
-                    const uint32_t slot = pages.slot_of(page);
-                    if (slot == kShadeSlots) {
-                        return false;
-                    }
-                    uint32_t address = slot * kTexPageBytes + 4 * (key & 1023);
-                    const uint32_t tagged = (
-                        merging && texture == 0 ? keys[96 + column] : 0
-                    );
-                    const uint32_t mask_key = tagged & 0x3FFFFFFF;
-                    const uint32_t mask_page = (mask_key >> 10) - 1;
-                    if (
-                        tagged >> 30 == 3 && mask_key >= 1024 && mask_page < page_limit
-                    ) {
-                        const uint32_t mask_slot = pages.slot_of(mask_page);
-                        if (mask_slot == kShadeSlots) {
-                            return false;
-                        }
-                        address |= (mask_slot + 1) << kMaskSlotShift;
-                    }
-                    *to = address;
-                    ++row_texels;
+            for (uint32_t texture = 0; texture < 3; ++texture) {
+                const int32_t texels = (
+                    row_addresses(
+                        pages,
+                        __riscv_vle32_v_u32m8(keys + 32 * texture, vl),
+                        merging && texture == 0 ? kVecTri + row : kNoTags,
+                        index + 1024 * texture + 32 * row,
+                        page_limit,
+                        white,
+                        true,
+                        false,
+                        vl
+                    )
+                );
+                if (texels < 0) {
+                    return false;
                 }
+                row_texels += static_cast<uint32_t>(texels);
             }
             values[kShadeProfTexels] += row_texels;
             return true;

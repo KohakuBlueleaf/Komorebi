@@ -269,20 +269,30 @@ namespace {
     inline uint32_t shade_word(uint32_t area_bits, const uint32_t* shade) {
         const uint32_t material = shade[32];
         uint32_t word = material & (0xFFFF | kShadeWordKept);
+        // The level: the most k < levels with texels_bits > area_bits + (2k - 1) << 23
+        // (int32; 0x7F800000 once its exponent reaches 255), the old loop's count
+        const int32_t area = static_cast<int32_t>(area_bits);
+        // k whose threshold is not 0x7F800000: (area's exponent) + 2k - 1 < 255
+        const int32_t finite = area < 0 ? 0 : (255 - (area >> 23)) >> 1;
         for (uint32_t texture = 0; texture < 3; ++texture) {
-            const uint32_t levels = material >> (16 + 4 * texture) & 0xF;
-            const uint32_t texels_bits = shade[texture == 0 ? 0 : 32 + 32 * texture];
-            uint32_t level = 0;
-            for (uint32_t k = 1; k < levels; ++k) {
-                const uint32_t exponent = (area_bits >> 23) + 2 * k - 1;
-                const uint32_t threshold = (
-                    exponent >= 255 ? 0x7F800000 : area_bits + ((2 * k - 1) << 23)
-                );
-                level += (
-                    static_cast<int32_t>(texels_bits) > static_cast<int32_t>(threshold)
-                );
+            const int32_t top = (
+                static_cast<int32_t>(material >> (16 + 4 * texture) & 0xF) - 1
+            );
+            const int32_t texels = (
+                static_cast<int32_t>(shade[texture == 0 ? 0 : 32 + 32 * texture])
+            );
+            int32_t level = 0;
+            if (top > 0) {
+                if (texels > 0x7F800000) {  // over every threshold
+                    level = top;
+                } else if (area >= 0 && texels > area) {
+                    // (2k - 1) << 23 < texels - area
+                    level = (((texels - area - 1) >> 23) + 1) >> 1;
+                    level = level < finite ? level : finite;
+                    level = level < top ? level : top;
+                }
             }
-            word |= level << (16 + 4 * texture);
+            word |= static_cast<uint32_t>(level) << (16 + 4 * texture);
         }
         return word;
     }

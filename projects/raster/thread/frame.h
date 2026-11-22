@@ -39,12 +39,23 @@
 #define RF_ITEM_WORDS_AT 16512u  /* the items' words (rm_compact), */
 #define RF_CORE_WORDS_AT 32896u  /* the fill cores' words */
 #define RF_ITEMS_REGION_BYTES 36864u
-/* COUNT's and SETUP's blocks from the camera's region (kernels/setup.h, kRanges) */
+/* COUNT's and SETUP's blocks from the camera's region (kernels/setup.h, kRanges): per
+ * layer and camera an area, its camera page, ranges and costs (RF_AREA_*) */
 #define RF_RANGES 0x80000000u
 #define RF_RANGES_AT 64u   /* each core's first and end block, 64 bytes a core */
 #define RF_COSTS_AT 16384u /* each core's COUNT costs, 128 bytes a core */
 #define RF_COST_KNOTS 31u  /* the range's blocks, then its summed costs at 31 places */
-#define RF_CAMERA_BYTES 49152u
+/* in area 0, the masked layer's own profile tensors (the host's; 0: the opaque
+ * layer's): its FILL's, COUNT's and SETUP's, SHADE's */
+#define RF_PROFILES_AT 48128u
+#define RF_P_FILL 0
+#define RF_P_PASSES 1
+#define RF_P_SHADE 2
+#define RF_AREA_BYTES 49152u
+#define RF_AREA_MASKED 1u /* added to the area of a frame's masked layer */
+#define RF_AREA_SUN 2u    /* a SUN command's opaque layer */
+#define RF_AREAS 4u
+#define RF_CAMERA_BYTES (RF_AREAS * RF_AREA_BYTES)
 #define RF_MAX_CORES 248u
 
 /* Words */
@@ -80,7 +91,7 @@
 #define RF_W_SHADE_TABLE (RF_W_TEXTURES + 1)
 #define RF_W_SHADEPROF (RF_W_SHADE_TABLE + 1)
 /* A shaded frame's masked layer (serving; 0: none): its words for those above in its
- * frame (mesh, lists, directory, shade, frame); its COUNT, SETUP equal partitions */
+ * frame (mesh, lists, directory, shade, frame); its ranges in area RF_AREA_MASKED */
 #define RF_W_M_MESH (RF_W_SHADEPROF + 1)
 #define RF_W_M_BLOCKS (RF_W_M_MESH + 1)
 #define RF_W_M_LISTS (RF_W_M_BLOCKS + 1)
@@ -127,8 +138,8 @@
 /* A row of the times region: the result words of the frame (its own, not summed), then
  */
 #define RF_TIMES_ROWS 256u
-#define RF_TIMES_ROW_WORDS 32u
-#define RF_TIMES_BYTES 32768u /* RF_TIMES_ROWS x RF_TIMES_ROW_WORDS words */
+#define RF_TIMES_ROW_WORDS 64u
+#define RF_TIMES_BYTES 65536u /* RF_TIMES_ROWS x RF_TIMES_ROW_WORDS words */
 #define RF_T_SHOW 21          /* SHOW submitted to its event */
 #define RF_T_FRAME 22         /* the FRAME command: from its call to its answer */
 #define RF_T_NUMBER 23        /* FRAME commands served before it */
@@ -139,6 +150,8 @@
 #define RF_T_MASKED 28       /* the frame of the masked layer (0: none) */
 #define RF_T_SHADE_MASKED 29 /* the masked layer's SHADE, part of RF_T_SHADE */
 #define RF_T_LIGHT 30        /* LIGHT submitted to its event (0: not lit) */
+/* the masked layer's own result words (RF_OUT_WORDS: its parts alone; 0: none) */
+#define RF_T_M_PARTS 32
 
 /* A row of the sun times region (RF_TIMES_ROW_WORDS words): the result words of the
  * SUN command's frames (both layers summed), then */
