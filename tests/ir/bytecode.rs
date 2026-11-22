@@ -472,6 +472,24 @@ fn a_module_with_bodies_round_trips() {
     assert!(loaded == module, "loaded, another module");
 }
 
+/// `all_gather` in a handler (a value, with its `publish` list) and over the copies of
+/// a replicated tensor (no value) is written, read back and loaded as built.
+#[test]
+fn a_module_with_all_gather_round_trips() {
+    let path = golden_dir().join("constructs/c02_all_gather.kom");
+    let text = std::fs::read_to_string(&path).expect("a corpus file is readable");
+    let module = built(&text);
+    let printed = print(&module);
+    assert_eq!(printed.matches("AllGather").count(), 2, "{printed}");
+    let bytes = encode(&module);
+    let back = decode(&bytes).expect("read back");
+    assert!(back == module, "the module read back differs");
+    assert_eq!(print(&back), printed);
+    assert!(encode(&back) == bytes, "written again, other bytes");
+    let loaded = komorebi_ir::api::load(&bytes).expect("loads");
+    assert!(loaded == module, "loaded, another module");
+}
+
 #[test]
 fn derived_parts_that_derive_does_not_give_are_refused() {
     let module = built(&lesson("t13_hinted"));

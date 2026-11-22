@@ -259,7 +259,7 @@ impl Checker<'_> {
             _ if UNARY.contains(&what) => Family::Compute,
             "partition" | "stream" | "sink" | "zip" | "reduce" | "gather" | "broadcast"
             | "sync" => Family::Worker,
-            "all_reduce" => {
+            "all_reduce" | "all_gather" => {
                 if cx.kind == Kind::Control {
                     Family::Islands
                 } else {
@@ -269,14 +269,6 @@ impl Checker<'_> {
             "send" | "forward" | "offer" => Family::Dynamic,
             "invoke" | "outcome" | "group" => Family::Control,
             "reduce_to" | "broadcast_from" => Family::Islands,
-            "all_gather" => {
-                self.error(
-                    codes::NOT_BUILT,
-                    "`all_gather` is named in the language and not built yet".into(),
-                    span,
-                );
-                return Ty::Unknown;
-            }
             _ => {
                 self.unknown(n);
                 return Ty::Unknown;
@@ -629,6 +621,28 @@ impl Checker<'_> {
                 };
                 self.note_op(span, OpKind::Gather, &o);
                 match self.operand(cx, o[0], &Ty::Unknown, "the value") {
+                    Ty::Tile(f) => Ty::Block(f, Shape::row(Count::GroupSize)),
+                    _ => Ty::Unknown,
+                }
+            }
+            "all_gather" if cx.kind == Kind::Control => {
+                let Some(o) = self.operands(what, span, args, &[pos("t")]) else {
+                    return Ty::Unknown;
+                };
+                self.note_op(span, OpKind::AllGather, &o);
+                let t = self.operand(cx, o[0], &Ty::Unknown, "the tensor");
+                self.replicated(t, o[0], what);
+                Ty::Void
+            }
+            "all_gather" => {
+                let form = [pos("x"), named_opt("publish")];
+                let Some(o) = self.operands(what, span, args, &form) else {
+                    return Ty::Unknown;
+                };
+                self.note_op(span, OpKind::AllGather, &o);
+                let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
+                self.view_list(cx, o[1]);
+                match x {
                     Ty::Tile(f) => Ty::Block(f, Shape::row(Count::GroupSize)),
                     _ => Ty::Unknown,
                 }

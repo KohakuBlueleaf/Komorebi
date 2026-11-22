@@ -584,6 +584,7 @@ impl Verifier<'_> {
                 inst.op,
                 Op::ReduceGroup { .. }
                     | Op::AllReduce { .. }
+                    | Op::AllGather { .. }
                     | Op::Gather(_)
                     | Op::Broadcast(..)
                     | Op::Sync(_)

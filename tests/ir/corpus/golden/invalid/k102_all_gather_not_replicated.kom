@@ -1,0 +1,13 @@
+// refused: all_gather in a control program over a tensor not marked @replicated (Islands)
+module gathered
+
+tile [32, 32]
+format f32
+
+requires {
+    islands >= 2
+}
+
+control spread(w: tensor<f32>) {
+    all_gather(w)
+}

@@ -2024,6 +2024,239 @@ fn a_collective_over_copies_is_ordered_like_an_invocation() {
     );
 }
 
+/// A replicated tensor of `tiles` tiles of the module's tile, one tile wide, every
+/// copy holding `value(i)` in tile i.
+fn replicated(m: &mut Machine<'_>, tiles: usize, value: impl Fn(usize) -> f64) -> TensorId {
+    let shape = m.module().tile;
+    let (h, w) = (shape.rows as usize, shape.cols as usize);
+    let mut t = Tensor::zeros("w", Format::F32, tiles * h, w, shape);
+    for (i, tile) in t.tiles.iter_mut().enumerate() {
+        *tile = Tile::from_f64(Format::F32, shape, &vec![value(i); h * w]).expect("a tile");
+    }
+    m.replicated(t)
+}
+
+/// Element 0 of each tile of island `i`'s copy of `w`.
+fn copy_firsts(run: &Machine<'_>, w: TensorId, i: usize) -> Vec<f64> {
+    let c = run.copy(w, i).expect("a copy");
+    (0..run.heap.tensors[c.0].tiles.len())
+        .map(|k| tile_f64(run, c, k)[0])
+        .collect()
+}
+
+#[test]
+fn all_gather_gives_every_rank_the_groups_tiles_in_rank_order() {
+    let m = module(&construct("c02_all_gather"));
+    let mut run = Machine::load(&m, 3, &[], on_islands(&[2, 1], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (3, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (9, 1), |_, _| 0.0);
+    assert_eq!(
+        run.invoke(
+            "Gathered.everyone",
+            &[Arg::Tensor(x), Arg::Tensor(y)],
+            (0, 3),
+            &[]
+        ),
+        End::Completed(None)
+    );
+    for r in 0..3 {
+        for k in 0..3 {
+            assert!(
+                all(&tile_f64(&run, y, r * 3 + k), (k + 1) as f64),
+                "rank {r}, tile {k}"
+            );
+        }
+    }
+}
+
+#[test]
+fn all_gather_over_copies_gives_every_copy_what_each_island_wrote() {
+    let m = module(&construct("c02_all_gather"));
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let w = replicated(&mut run, 4, |_| 0.0);
+    assert_eq!(
+        run.invoke(
+            "Gathered.learn",
+            &[Arg::Tensor(x), Arg::Tensor(w)],
+            (0, 4),
+            &[]
+        ),
+        End::Completed(None)
+    );
+    assert_eq!(copy_firsts(&run, w, 0), [1.0, 2.0, 0.0, 0.0]);
+    assert_eq!(copy_firsts(&run, w, 1), [0.0, 0.0, 3.0, 4.0]);
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    for i in 0..2 {
+        for k in 0..4 {
+            let c = run.copy(w, i).expect("a copy");
+            assert!(
+                all(&tile_f64(&run, c, k), (k + 1) as f64),
+                "copy {i}, tile {k}"
+            );
+        }
+    }
+    assert_eq!(
+        run.report.print(),
+        "#0 Gathered.learn group(0, 4): completed\n\
+         #1 control spread all_gather: completed\n\
+         #2 control spread: completed\n"
+    );
+}
+
+#[test]
+fn all_gather_leaves_a_place_no_island_wrote() {
+    let m = module(&construct("c02_all_gather"));
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    // the fifth tile holds 7 on every copy, and no worker writes it
+    let w = replicated(&mut run, 5, |i| if i == 4 { 7.0 } else { 0.0 });
+    assert_eq!(
+        run.invoke(
+            "Gathered.learn",
+            &[Arg::Tensor(x), Arg::Tensor(w)],
+            (0, 4),
+            &[]
+        ),
+        End::Completed(None)
+    );
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    for i in 0..2 {
+        assert_eq!(
+            copy_firsts(&run, w, i),
+            [1.0, 2.0, 3.0, 4.0, 7.0],
+            "copy {i}"
+        );
+        let c = run.copy(w, i).expect("a copy");
+        assert!(all(&tile_f64(&run, c, 4), 7.0));
+    }
+}
+
+const GATHER_AFTER_REDUCE: &str = "module folded
+
+tile [4, 4]
+format f32
+
+requires {
+    islands >= 2
+}
+
+control fold_then_spread(w: tensor<f32> @replicated) {
+    reduce_to(w, to = 1, with = sum)
+    all_gather(w)
+}
+";
+
+#[test]
+fn all_gather_after_reduce_to_spreads_the_copy_written() {
+    let m = module(GATHER_AFTER_REDUCE);
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let w = replicated(&mut run, 2, |_| 0.0);
+    // copy 0 holds 1 and copy 1 holds 2 everywhere, set from the host: no island
+    // wrote them
+    for (i, v) in [(0, 1.0), (1, 2.0)] {
+        let c = run.copy(w, i).expect("a copy");
+        for t in run.heap.tensors[c.0].tiles.iter_mut() {
+            *t = Tile::from_f64(Format::F32, m.tile, &[v; 16]).expect("a tile");
+        }
+    }
+    assert_eq!(
+        run.control("fold_then_spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    // copy 1's fold is 3 everywhere, and every copy equals it
+    for i in 0..2 {
+        for k in 0..2 {
+            let c = run.copy(w, i).expect("a copy");
+            assert!(all(&tile_f64(&run, c, k), 3.0), "copy {i}, tile {k}");
+        }
+    }
+    assert_eq!(
+        run.report.print(),
+        "#0 control fold_then_spread reduce_to: completed\n\
+         #1 control fold_then_spread all_gather: completed\n\
+         #2 control fold_then_spread: completed\n"
+    );
+}
+
+#[test]
+fn a_place_written_on_two_islands_takes_the_lowest_islands_value() {
+    let m = module(&construct("c02_all_gather"));
+    // two islands of one worker each: `learn` invoked once on each island's worker
+    // writes tile 0 (its rank's) of that island's copy, so no two workers of one
+    // island write it
+    let mut run = Machine::load(&m, 2, &[], on_islands(&[1, 1], None)).expect("loads");
+    let x0 = tensor(&mut run, Format::F32, (1, 1), |_, _| 10.0);
+    let x1 = tensor(&mut run, Format::F32, (1, 1), |_, _| 20.0);
+    let w = replicated(&mut run, 4, |_| 0.0);
+    for (x, first) in [(x0, 0), (x1, 1)] {
+        assert_eq!(
+            run.invoke(
+                "Gathered.learn",
+                &[Arg::Tensor(x), Arg::Tensor(w)],
+                (first, 1),
+                &[]
+            ),
+            End::Completed(None)
+        );
+    }
+    assert_eq!(copy_firsts(&run, w, 0), [10.0, 0.0, 0.0, 0.0]);
+    assert_eq!(copy_firsts(&run, w, 1), [20.0, 0.0, 0.0, 0.0]);
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    for i in 0..2 {
+        assert_eq!(copy_firsts(&run, w, i), [10.0, 0.0, 0.0, 0.0], "copy {i}");
+    }
+}
+
+#[test]
+fn all_gather_makes_the_copies_equal_for_a_later_all_gather() {
+    let m = module(&construct("c02_all_gather"));
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let w = replicated(&mut run, 4, |_| 0.0);
+    assert_eq!(
+        run.invoke(
+            "Gathered.learn",
+            &[Arg::Tensor(x), Arg::Tensor(w)],
+            (0, 4),
+            &[]
+        ),
+        End::Completed(None)
+    );
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    let once: Vec<Vec<Vec<f64>>> = (0..2)
+        .map(|i| {
+            let c = run.copy(w, i).expect("a copy");
+            (0..4).map(|k| tile_f64(&run, c, k)).collect()
+        })
+        .collect();
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    let twice: Vec<Vec<Vec<f64>>> = (0..2)
+        .map(|i| {
+            let c = run.copy(w, i).expect("a copy");
+            (0..4).map(|k| tile_f64(&run, c, k)).collect()
+        })
+        .collect();
+    assert_eq!(once, twice);
+    assert_eq!(copy_firsts(&run, w, 0), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(copy_firsts(&run, w, 1), [1.0, 2.0, 3.0, 4.0]);
+}
+
 /// T12 run whole, with its state and its replicated tensor shown on request.
 fn spread_report() -> String {
     let m = module(&lesson("t12_spread"));

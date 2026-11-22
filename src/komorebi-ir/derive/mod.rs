@@ -222,6 +222,7 @@ fn effects(module: &Module, calls: &[BTreeSet<u32>], bodies: &[(BodyRef, &Body)]
                 Op::StateSet(m, _, _) => state(&mut out, *m, StateUse::WriteElement),
                 Op::ReduceGroup { .. }
                 | Op::AllReduce { .. }
+                | Op::AllGather { .. }
                 | Op::Gather(_)
                 | Op::Broadcast(..)
                 | Op::Sync(_)

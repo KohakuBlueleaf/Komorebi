@@ -173,6 +173,7 @@ pub const OP: Table = &[
     (86, "ReduceTo"),
     (87, "BroadcastFrom"),
     (88, "Body"),
+    (89, "AllGather"),
 ];
 
 /// `program::Access`.

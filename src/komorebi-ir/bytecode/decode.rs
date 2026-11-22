@@ -1047,6 +1047,10 @@ impl<'b> Reader<'b> {
                 publish: self.values()?,
             },
             "Gather" => Op::Gather(self.value()?),
+            "AllGather" => Op::AllGather {
+                value: self.value()?,
+                publish: self.values()?,
+            },
             "Broadcast" => Op::Broadcast(self.axis()?, self.value()?),
             "IsSender" => Op::IsSender(self.value()?),
             "Cast" => Op::Cast(self.value()?, self.value()?, self.opt_value()?),

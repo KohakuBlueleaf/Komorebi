@@ -351,6 +351,11 @@ pub fn op_text(op: &Op) -> String {
             values(publish)
         ),
         Gather(x) => format!("Gather {}", v(x)),
+        AllGather { value, publish } => format!(
+            "AllGather {{ value {}, publish {} }}",
+            v(value),
+            values(publish)
+        ),
         Broadcast(a, x) => format!("Broadcast {} {}", axis(*a), v(x)),
         IsSender(x) => format!("IsSender {}", v(x)),
         Cast(b, x, w) => format!("Cast {} {} {}", v(b), v(x), opt(w)),

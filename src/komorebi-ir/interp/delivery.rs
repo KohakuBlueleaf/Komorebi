@@ -106,7 +106,8 @@ pub fn meet(
     let absent = |c: &Collective| match c {
         Collective::Reduce { x, .. }
         | Collective::AllReduce { x, .. }
-        | Collective::Gather { x } => *x == Value::Absent,
+        | Collective::Gather { x }
+        | Collective::AllGather { x } => *x == Value::Absent,
         Collective::Sync => false,
     };
     if arrivals.iter().any(absent) {
@@ -145,15 +146,26 @@ pub fn meet(
                 leader_only(v)
             })
         }
-        Collective::Gather { .. } => {
+        Collective::Gather { .. } | Collective::AllGather { .. } => {
+            let all = matches!(first, Collective::AllGather { .. });
             let mut tiles = Vec::with_capacity(n);
             for c in arrivals {
                 match c {
-                    Collective::Gather { x: Value::Tile(t) } => tiles.push(t),
-                    _ => return Err(Fault::undefined("`gather` of what is not a tile")),
+                    Collective::Gather { x: Value::Tile(t) } if !all => tiles.push(t),
+                    Collective::AllGather { x: Value::Tile(t) } if all => tiles.push(t),
+                    Collective::Gather { .. } | Collective::AllGather { .. } => {
+                        let what = if all { "all_gather" } else { "gather" };
+                        return Err(Fault::undefined(format!("`{what}` of what is not a tile")));
+                    }
+                    _ => return Err(Fault::undefined("two kinds of collective at one meeting")),
                 }
             }
-            Ok(leader_only(Value::Block(Block::row(tiles))))
+            let v = Value::Block(Block::row(tiles));
+            Ok(if all {
+                vec![Some(v); n]
+            } else {
+                leader_only(v)
+            })
         }
         Collective::Sync => Ok(vec![None; n]),
     }

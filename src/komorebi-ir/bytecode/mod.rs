@@ -173,6 +173,10 @@ mod tests {
                 publish: vec![],
             },
             Op::Gather(x(1)),
+            Op::AllGather {
+                value: x(1),
+                publish: vec![x(2)],
+            },
             Op::Broadcast(Axis::Row, x(1)),
             Op::IsSender(x(1)),
             Op::Cast(x(1), x(2), Some(x(3))),

@@ -32,8 +32,9 @@ Version 5 gives each call of a chain its part of the chain's group (R47) after i
 message type writes the bytes of its body (a u32, `0` for none) after its fields; `Send` and `Offer`
 write where their body comes from as an option of `ScalarsFrom` (`Value` and a value, or `Member`
 and a state member), `Send` after its rank; `Forward` writes the type it goes on as (`as`) as an
-option of a message id after its message; the operation `Body` and the type `Body` are new. A reader
-refuses a version 5 program with `K952`, naming both versions.
+option of a message id after its message; the operation `Body` and the type `Body` are new. The operation `AllGather`
+(number 89) is new too: its operand, then its `publish` list. A reader refuses a version 5 program
+with `K952`, naming both versions.
 
 ## How values are written
 
@@ -263,6 +264,7 @@ version.
 | 86 | `ReduceTo` |
 | 87 | `BroadcastFrom` |
 | 88 | `Body` |
+| 89 | `AllGather` |
 
 ### `Access`
 

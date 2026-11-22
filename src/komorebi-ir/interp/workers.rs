@@ -200,6 +200,11 @@ pub enum Collective {
         /// This rank's operand.
         x: Value,
     },
+    /// `all_gather(x)`: every member's value at every member, by rank.
+    AllGather {
+        /// This rank's operand.
+        x: Value,
+    },
     /// `sync(publish = [...])`: a point every member reaches.
     Sync,
 }
@@ -426,6 +431,9 @@ pub struct Context<'a> {
     pub inv: usize,
     /// The islands of the run.
     pub islands: &'a IslandMap,
+    /// The places of replicated tensors' copies written since the copies were last
+    /// equal.
+    pub marks: &'a mut Marks,
 }
 
 /// The islands of a run as the queries see them: the island holding each worker, and
@@ -481,6 +489,8 @@ pub enum OverCopies {
         /// The combiner.
         with: Combiner,
     },
+    /// `all_gather(t)`.
+    AllGather,
 }
 
 impl OverCopies {
@@ -490,7 +500,67 @@ impl OverCopies {
             OverCopies::ReduceTo { .. } => "reduce_to",
             OverCopies::BroadcastFrom { .. } => "broadcast_from",
             OverCopies::AllReduce { .. } => "all_reduce",
+            OverCopies::AllGather => "all_gather",
         }
+    }
+}
+
+/// A place of a tensor's tile, as the record of writes names it: (tile, first byte,
+/// after the last byte).
+pub type CopyPlace = (usize, usize, usize);
+
+/// For each replicated tensor, the islands that wrote each place of its copies since
+/// the copies were last equal: when the tensor was made, and after each `all_reduce`,
+/// `broadcast_from` or `all_gather` over it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Marks {
+    /// The replicated tensor (by its copy 0) of each copy, by the copy's id.
+    copy_of: BTreeMap<usize, usize>,
+    /// The islands that wrote each place, by replicated tensor (its copy 0).
+    written: BTreeMap<usize, BTreeMap<CopyPlace, BTreeSet<usize>>>,
+}
+
+impl Marks {
+    /// Notes the copies of a replicated tensor, copy 0 first.
+    pub fn copies(&mut self, copies: &[TensorId]) {
+        if let Some(first) = copies.first() {
+            for c in copies {
+                self.copy_of.insert(c.0, first.0);
+            }
+        }
+    }
+
+    /// Notes a write of island `island` to `p`, when `p` is in a copy of a replicated
+    /// tensor.
+    pub fn wrote(&mut self, p: &TensorPlace, island: usize) {
+        if let Some(t) = self.copy_of.get(&p.tensor) {
+            self.written
+                .entry(*t)
+                .or_default()
+                .entry((p.tile, p.lo, p.hi))
+                .or_default()
+                .insert(island);
+        }
+    }
+
+    /// Every place of the replicated tensor `t` written by island `island` and by no
+    /// other: what a `reduce_to` into its copy leaves.
+    pub fn all_by(&mut self, t: TensorId, tiles: usize, island: usize) {
+        let places = (0..tiles)
+            .map(|k| ((k, 0, usize::MAX), BTreeSet::from([island])))
+            .collect();
+        self.written.insert(t.0, places);
+    }
+
+    /// The places of the replicated tensor `t` written since its copies were last
+    /// equal, each with the islands that wrote it.
+    pub fn of(&self, t: TensorId) -> Option<&BTreeMap<CopyPlace, BTreeSet<usize>>> {
+        self.written.get(&t.0)
+    }
+
+    /// The copies of `t` are equal again: no place is marked.
+    pub fn clear(&mut self, t: TensorId) {
+        self.written.remove(&t.0);
     }
 }
 
@@ -606,17 +676,28 @@ fn published(
     Ok(out)
 }
 
-/// Accesses of `rank` to places, through the race record: a race is not a program.
+/// Accesses of the worker at `place` to places, through the race record: a race is not
+/// a program. A write to a copy of a replicated tensor is marked with the worker's
+/// island.
 fn touch(
     cx: &mut Context<'_>,
-    rank: usize,
+    place: Place,
     at: (BodyRef, InstId),
     places: Vec<TensorPlace>,
     write: bool,
 ) -> Result<(), Fault> {
+    let island = cx
+        .islands
+        .of
+        .get(place.first + place.rank)
+        .copied()
+        .unwrap_or(0);
     for p in places {
+        if write {
+            cx.marks.wrote(&p, island);
+        }
         cx.races
-            .access(cx.inv, rank, p, write, at)
+            .access(cx.inv, place.rank, p, write, at)
             .map_err(Fault::Undefined)?;
     }
     Ok(())
@@ -643,11 +724,11 @@ fn note_view(cx: &mut Context<'_>, rank: usize, v: &View, opened: bool) {
     }
 }
 
-/// Notes, and checks for races, the tiles the next block of a stream reads, at
-/// `rank`.
+/// Notes, and checks for races, the tiles the next block of a stream reads, by the
+/// worker at `place`.
 fn read_next(
     cx: &mut Context<'_>,
-    rank: usize,
+    place: Place,
     at: (BodyRef, InstId),
     s: &Stream,
 ) -> Result<(), Fault> {
@@ -658,8 +739,8 @@ fn read_next(
         .iter()
         .map(|n| TensorPlace::tile(s.view.tensor, *n))
         .collect();
-    cx.accesses.note(false, rank, s.view.tensor, tiles);
-    touch(cx, rank, at, places, false)
+    cx.accesses.note(false, place.rank, s.view.tensor, tiles);
+    touch(cx, place, at, places, false)
 }
 
 /// An open loop of a frame.
@@ -1606,7 +1687,7 @@ fn step(
         }
         Op::ForStream { stream: s } => {
             let mut st = stream(frame, *s)?.clone();
-            read_next(cx, place.rank, here, &st)?;
+            read_next(cx, place, here, &st)?;
             match ops::next_block(cx.heap, &mut st)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some(block) => {
@@ -1626,7 +1707,7 @@ fn step(
                 .collect();
             let mut z = ops::zip(opened?)?;
             for s in &z.streams {
-                read_next(cx, place.rank, here, s)?;
+                read_next(cx, place, here, s)?;
             }
             match ops::next_blocks(cx.heap, &mut z)? {
                 None => frame.pc = end_of(pc)? + 1,
@@ -1687,7 +1768,7 @@ fn step(
                             opener: o,
                             mut stream,
                         }) if o == opener => {
-                            read_next(cx, place.rank, here, &stream)?;
+                            read_next(cx, place, here, &stream)?;
                             match ops::next_block(cx.heap, &mut stream)? {
                                 Some(block) => {
                                     set(frame, 0, block_value(block, ty(0)))?;
@@ -1699,7 +1780,7 @@ fn step(
                         }
                         Some(Loop::Zip { opener: o, mut zip }) if o == opener => {
                             for s in &zip.streams {
-                                read_next(cx, place.rank, here, s)?;
+                                read_next(cx, place, here, s)?;
                             }
                             match ops::next_blocks(cx.heap, &mut zip)? {
                                 Some(blocks) => {
@@ -1933,7 +2014,7 @@ fn step(
                     .map(|n| TensorPlace::tile(v.tensor, *n))
                     .collect();
                 cx.accesses.note(false, place.rank, v.tensor, one);
-                touch(cx, place.rank, here, places, false)?;
+                touch(cx, place, here, places, false)?;
             }
             Value::Tile(ops::read(cx.heap, v, i)?)
         }
@@ -1951,7 +2032,7 @@ fn step(
         Op::Words(v) => {
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, false);
-            touch(cx, place.rank, here, tile_places(cx, v), false)?;
+            touch(cx, place, here, tile_places(cx, v), false)?;
             Value::Words(ops::words(cx.heap, v)?)
         }
         Op::Word(w, i) => {
@@ -1976,7 +2057,7 @@ fn step(
             };
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, false);
-            touch(cx, place.rank, here, tile_places(cx, v), false)?;
+            touch(cx, place, here, tile_places(cx, v), false)?;
             Value::Records(ops::records(cx.heap, v, &ty, index(frame, *c)?)?)
         }
         Op::RecordAt(x, i) => {
@@ -2007,7 +2088,7 @@ fn step(
             let m = member(worker, frame.at, *src)?.clone();
             note_view(cx, place.rank, &v, true);
             let places = ops::item_places(cx.heap, &v, i).unwrap_or_default();
-            touch(cx, place.rank, here, places, true)?;
+            touch(cx, place, here, places, true)?;
             ops::put(cx.heap, &v, &m, i)?;
             return Ok(Next::Go);
         }
@@ -2046,7 +2127,7 @@ fn step(
                 .into_iter()
                 .map(|n| TensorPlace::tile(sink.view.tensor, n))
                 .collect();
-            touch(cx, place.rank, here, places, true)?;
+            touch(cx, place, here, places, true)?;
             ops::push(cx.heap, sink, &block)?;
             return Ok(Next::Go);
         }
@@ -2054,7 +2135,7 @@ fn step(
             let block = as_block(get(frame, *x)?)?;
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, true);
-            touch(cx, place.rank, here, tile_places(cx, v), true)?;
+            touch(cx, place, here, tile_places(cx, v), true)?;
             ops::store(cx.heap, v, &block)?;
             return Ok(Next::Go);
         }
@@ -2188,6 +2269,13 @@ fn step(
                 OverCopies::AllReduce { with: *with },
             )));
         }
+        Op::AllGather { value, .. } if matches!(frame.at, BodyRef::Control(_)) => {
+            // in a control program: over the copies of a replicated tensor
+            let Value::Tensor(t) = get(frame, *value)? else {
+                return Err(Fault::undefined("an `all_gather` of what is not a tensor"));
+            };
+            return Ok(Next::Ask(Request::Copies(*t, OverCopies::AllGather)));
+        }
         Op::ReduceTo(x, to, with) => {
             let Value::Tensor(t) = get(frame, *x)? else {
                 return Err(Fault::undefined("a `reduce_to` of what is not a tensor"));
@@ -2225,6 +2313,13 @@ fn step(
                 x: operand_of(frame, *x)?,
             };
             return Ok(Next::Meet(c, Vec::new()));
+        }
+        Op::AllGather { value, publish } => {
+            let publish = published(cx, frame, publish)?;
+            let c = Collective::AllGather {
+                x: operand_of(frame, *value)?,
+            };
+            return Ok(Next::Meet(c, publish));
         }
         Op::Sync(publish) => {
             let publish = published(cx, frame, publish)?;

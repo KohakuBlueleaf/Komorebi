@@ -1065,6 +1065,19 @@ impl<'m> Validator<'m> {
                 Type::Tile(f) => exact(&[Type::Block(*f, Count::Const(1), Count::GroupSize)]),
                 _ => Err("`gather` of a value that is not a tile".into()),
             },
+            Op::AllGather { publish, .. } => match a[0] {
+                Type::Tile(f) => {
+                    need(views(1), "an `all_gather` whose operands do not fit")?;
+                    exact(&[Type::Block(*f, Count::Const(1), Count::GroupSize)])
+                }
+                Type::Tensor(_, true) => need(
+                    publish.is_empty() && d.is_empty(),
+                    "an `all_gather` over copies that does not fit",
+                ),
+                _ => Err(
+                    "`all_gather` of a value that is neither a tile nor a replicated tensor".into(),
+                ),
+            },
             Op::Broadcast(..) => {
                 need(int(0), "a sender that is not an integer")?;
                 need(
@@ -1594,6 +1607,10 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         }
         AllReduce { x, publish, .. } => {
             v.push(*x);
+            v.extend(publish.iter().copied());
+        }
+        AllGather { value, publish } => {
+            v.push(*value);
             v.extend(publish.iter().copied());
         }
         Cast(b, x, w) => {

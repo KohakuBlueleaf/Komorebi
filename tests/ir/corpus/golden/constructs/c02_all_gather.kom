@@ -1,0 +1,35 @@
+// all_gather in a handler and over the copies of a replicated tensor (Islands)
+module gathered
+
+tile [4, 4]
+format f32
+
+requires {
+    islands >= 2
+}
+
+program Gathered {
+    // every rank learns every rank's tile, and writes them all into its own row of y
+    handler everyone(x: tensor<f32>, y: tensor<f32>) @on(group) {
+        let mine = partition(x.tiles(0, group.size), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(mine, block = 1) { acc += xb }
+        let all = all_gather(acc)
+        for r in range(group.size) {
+            store y.tiles(worker.rank * group.size + r, 1) <- all[r]
+        }
+    }
+
+    // each worker writes the tile of its own rank into the copy of its own island
+    handler learn(x: tensor<f32>, w: tensor<f32> @replicated) @on(group) {
+        let mine = partition(x.tiles(0, group.size), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(mine, block = 1) { acc += xb }
+        store w.tiles(worker.rank, 1) <- acc
+    }
+}
+
+// every island's copy holds what each island wrote
+control spread(w: tensor<f32> @replicated) {
+    all_gather(w)
+}
