@@ -318,9 +318,36 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    colour `= a / pi x E +` the `lit` kind's Blinn-Phong term once for the sun and
    once per lamp, each times that light's irradiance (with `n.l` and the shadow) over
    pi, only for `lit` materials with a specular colour. `emissive`: `a x
-   emissive_scale`, unlit; `masked`: holes as SHADE. Background: the map's radiance in
-   the view direction (nearest texel, turned like the sun). The frame is `x / (1 + x)`
-   of `exposure x colour`, then the pictures' 8-bit conversion.
+   emissive_scale`, unlit; `masked`: holes as SHADE. Background: the nearest texel of
+   the octahedral map (below) in the pixel's view direction. The frame is
+   `x / (1 + x)` of `exposure x colour`, then the pictures' 8-bit conversion.
+6. **Octahedral map.** `prepare` resamples the turned environment once into a
+   512 x 512 float32 RGB map of world directions (y up), saved in the lighting file
+   as `octahedral`, so the background needs no trigonometry. A direction
+   `d = (x, y, z)` (need not be unit) goes to `u = x / (|x| + |y| + |z|)`,
+   `v = z / (|x| + |y| + |z|)`; when `y < 0` these are folded to
+   `(u, v) = ((1 - |v|) sign u, (1 - |u|) sign v)` (both from the unfolded values,
+   sign 0 counted as +). Its texel is column `floor((u + 1) / 2 x 512)`, row
+   `floor((v + 1) / 2 x 512)`, each clamped to 511. The inverse, used to fill the map
+   at texel centres `u, v = (i + 0.5) / 512 x 2 - 1`: `y = 1 - |u| - |v|`; when
+   `y < 0`, `(u, v)` unfolded by the same rule; the direction is `(u, y, v)`
+   normalized, turned back by the scene's `turn` into the equirectangular map, whose
+   nearest texel is taken. The sun and sky still come from the equirectangular file.
+
+**Terms.** `rasterize_lighted(..., terms=...)` takes a subset of `sky`, `ambient`,
+`sun`, `shadow`, `lamps`, `specular`, `background` (default: all of them, the frame
+above). A term left out contributes nothing: without `shadow` the sun is unshadowed,
+without `background` an empty pixel has the fill's constant background colour
+(0.05, 0.05, 0.08); emissive materials are always drawn. The card's stages are
+checked against these subsets.
+
+**Returned arrays.** `colour` (H, W, 3, linear), `display`, `depth` (the merged 1/z)
+and `tri` (the visible triangle, -1 empty), and `parts`, each per pixel of the taken
+layer: `albedo` (`a`), `normal` (the normal used), `visibility`, `specular`
+(specular colour x texel, 0 where the material has none), `material` (-1 empty),
+`depth` (the merged 1/z), `layer` (0 the other layer, 1 the masked layer, -1
+empty), and the diffuse parts `sky`, `sun` and `points` (`a / pi` x that light's
+irradiance; 0 on emissive pixels).
 
 Everything per pixel is float32. Not part of it: shadows from lamps, bounced light
 (`ambient` stands in for it).

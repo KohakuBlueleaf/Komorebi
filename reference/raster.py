@@ -24,6 +24,8 @@ FLAT, TEXTURED, MASKED, LIT, EMISSIVE = range(5)
 ALBEDO, MASK, NORMAL, SPECULAR = range(4)
 AMBIENT, DIFFUSE = F(0.25), F(0.75)
 OPAQUE_BYTE = 128
+# LIGHTED: the terms of rasterize_lighted's colour (all by default).
+TERMS = ("sky", "ambient", "sun", "shadow", "lamps", "specular", "background")
 # Texel byte to value: albedo as linear colour (the pictures' 2.2 gamma undone), the
 # other textures to [0, 1] and normals to [-1, 1].
 TEXEL_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
@@ -542,14 +544,17 @@ def smooth_setup(scene):
 
 
 def light_layer(scene, materials, prepared, layer, lights, variant):
-    """Linear colour (H, W, 3) of one FILL layer under the lights, its holes, and the
-    parts of the colour (sky, sun, points: (H, W, 3); visibility (H, W))."""
+    """Linear colour (H, W, 3) of one FILL layer under the lights (the terms in
+    variant["terms"]), its holes, and the parts (README "Lighting")."""
     shape = layer["tri"].shape
+    terms = variant["terms"]
     colour = np.zeros(shape + (3,), dtype=np.float32)
     parts = {
-        k: np.zeros(shape + (3,), dtype=np.float32) for k in ("sky", "sun", "points")
+        k: np.zeros(shape + (3,), dtype=np.float32)
+        for k in ("sky", "sun", "points", "albedo", "normal", "specular")
     }
     parts["visibility"] = np.zeros(shape, dtype=np.float32)
+    parts["material"] = np.full(shape, -1, dtype=np.int32)
     hole = np.zeros(shape, dtype=bool)
     ys, xs = np.nonzero(layer["tri"] >= 0)
     t = layer["tri"][ys, xs]
@@ -599,6 +604,8 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         materials["specular"][m],
     )
     specular = np.where(has_specular[:, None], specular, F(0))
+    if "specular" not in terms:
+        specular = np.zeros_like(specular)
     exponent = materials["exponent"][m]
     inv_pi = F(1 / np.pi)
 
@@ -606,17 +613,24 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         half = normalized(to_light + to_eye)
         return power(np.maximum(dot3(normal, half), F(0)), exponent)
 
-    sky = np.maximum(light_data.sky_irradiance(lights["sh"], normal), F(0))
-    sky = sky * vis[:, None]
+    zero = np.zeros_like(albedo)
+    sky = zero
+    if "sky" in terms:
+        sky = np.maximum(light_data.sky_irradiance(lights["sh"], normal), F(0))
+        sky = sky * vis[:, None]
     sun_dir = lights["sun_direction"]
-    shadow = light_data.sun_shadow(lights, position, geometric, variant.get("pcf"))
-    sun_e = (
-        lights["sun_irradiance"]
-        * (np.maximum(dot3(normal, sun_dir[None, :]), F(0)) * shadow)[:, None]
-    )
+    sun_e = zero
+    if "sun" in terms:
+        shadow = np.ones(len(position), dtype=np.float32)
+        if "shadow" in terms:
+            shadow = light_data.sun_shadow(lights, position, geometric, variant["pcf"])
+        sun_e = (
+            lights["sun_irradiance"]
+            * (np.maximum(dot3(normal, sun_dir[None, :]), F(0)) * shadow)[:, None]
+        )
     shine = specular * gloss(sun_dir[None, :])[:, None] * (sun_e * inv_pi)
     points_e = np.zeros_like(albedo)
-    for k in range(len(lights["lamp_intensity"])):
+    for k in range(len(lights["lamp_intensity"]) if "lamps" in terms else 0):
         e, to_light = light_data.point_irradiance(
             lights["lamp_intensity"][k],
             lights["size"],
@@ -629,6 +643,8 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         points_e = points_e + lamp_e
         shine = shine + specular * gloss(to_light)[:, None] * (lamp_e * inv_pi)
     ambient = np.asarray(lights["ambient"], dtype=np.float32)
+    if "ambient" not in terms:
+        ambient = np.zeros(3, dtype=np.float32)
     out = albedo * inv_pi * (((sky + ambient) + sun_e) + points_e) + shine
     emissive = kind == EMISSIVE
     out = np.where(emissive[:, None], albedo * F(lights["emissive_scale"]), out)
@@ -640,6 +656,10 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
     for name, value in lit_parts.items():
         parts[name][ys, xs] = np.where(emissive[:, None], F(0), value)
     parts["visibility"][ys, xs] = vis
+    parts["albedo"][ys, xs] = albedo
+    parts["normal"][ys, xs] = normal
+    parts["specular"][ys, xs] = specular
+    parts["material"][ys, xs] = m
     masked = kind == MASKED
     albedo_alpha = np.where(texture[:, ALBEDO] >= 0, albedo_texel[:, 3], 255)
     alpha = np.where(texture[:, MASK] >= 0, texel(MASK)[:, 3], albedo_alpha)
@@ -649,30 +669,33 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
 
 
 def background(scene, lights):
-    """The environment map's radiance (H, W, 3) in each pixel's view direction (the
-    nearest texel; the map turned like the sun)."""
+    """The environment's radiance (H, W, 3) in each pixel's view direction: the
+    nearest texel of the octahedral map (world directions, y up)."""
     cam = scene["camera"]
     ys, xs = np.mgrid[0:HEIGHT, 0:WIDTH]
     sx = (xs.ravel().astype(np.float32) + F(0.5) - cam[13]) / cam[12]
     sy = (ys.ravel().astype(np.float32) + F(0.5) - cam[14]) / cam[12]
     d = (cam[9:12] + cam[3:6] * sx[:, None]) - cam[6:9] * sy[:, None]
-    d = light_data.turned(d.astype(np.float64), -float(lights["turn"])).astype(F)
-    env = lights["environment"]
-    row, column = light_data.map_texel(d, env.shape[0], env.shape[1])
-    return env[row, column].reshape(HEIGHT, WIDTH, 3)
+    octa = lights["octahedral"]
+    row, column = light_data.octahedral_texel(d, octa.shape[0])
+    return octa[row, column].reshape(HEIGHT, WIDTH, 3)
 
 
-def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True):
-    """SHADE's two FILLs and holes with direct light (the raster reference README,
-    "Lighting"): sky x baked visibility, ambient, the sun with its shadow map and the
-    lamps; "colour" linear, "display" x / (1 + x) of exposure x colour, and the parts.
-    smooth (vertex normals) is a comparison variant; pcf=False: one shadow tap."""
+def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TERMS):
+    """SHADE's two FILLs and holes with direct light (raster reference README,
+    "Lighting"); terms: the subset of TERMS that contributes. "colour" linear,
+    "display" x / (1 + x) of exposure x colour, the parts. smooth (vertex normals):
+    a comparison variant; pcf=False: one shadow tap."""
     kind = materials["kind"][materials["material"]]
     opaque = rasterize(layer_scene(scene, kind != MASKED))
     masked = rasterize(layer_scene(scene, kind == MASKED))
     corner_vis = lights["visibility"][scene["indices"]]
     prepared = shade_setup(scene, {**materials, "light": corner_vis})
     variant = {"smooth": smooth_setup(scene) if smooth else None, "pcf": pcf}
+    variant["terms"] = set(terms)
+    unknown = variant["terms"] - set(TERMS)
+    if unknown:
+        raise ValueError(f"unknown lighting terms {sorted(unknown)}")
     opaque_colour, _, opaque_parts = light_layer(
         scene, materials, prepared, opaque, lights, variant
     )
@@ -683,16 +706,22 @@ def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True):
     tri = np.where(take, masked["tri"], opaque["tri"])
     sky = (tri < 0)[:, :, None]
     colour = np.where(take[:, :, None], masked_colour, opaque_colour)
-    colour = np.where(sky, background(scene, lights), colour)
+    behind = BACKGROUND
+    if "background" in variant["terms"]:
+        behind = background(scene, lights)
+    colour = np.where(sky, behind, colour)
     x = F(lights["exposure"]) * colour
     parts = {}
     for name in opaque_parts:
         pick = take if opaque_parts[name].ndim == 2 else take[:, :, None]
         parts[name] = np.where(pick, masked_parts[name], opaque_parts[name])
+    depth = np.where(take, masked["depth"], opaque["depth"])
+    parts["depth"] = depth
+    parts["layer"] = np.where(tri < 0, -1, take.astype(np.int32)).astype(np.int8)
     return {
         "colour": colour,
         "display": x / (F(1) + x),
-        "depth": np.where(take, masked["depth"], opaque["depth"]),
+        "depth": depth,
         "tri": tri,
         "parts": parts,
     }

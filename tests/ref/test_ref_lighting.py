@@ -78,3 +78,16 @@ def test_authored_lights_replace_the_emissive_groups():
     np.testing.assert_array_equal(position, [[5, 6, 7], [-1, 2, 3]])
     np.testing.assert_array_equal(colour[0], F([1, 0.5, 0.25]))
     np.testing.assert_array_equal(intensity, [7.0, 7.0])
+
+
+def test_octahedral_mapping_inverts():
+    rng = np.random.default_rng(5)
+    d = rng.normal(size=(400, 3))
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    side = 4096
+    row, column = lights.octahedral_texel(d.astype(F), side)
+    u = (column + 0.5) / side * 2 - 1
+    v = (row + 0.5) / side * 2 - 1
+    back = lights.octahedral_direction(u, v)
+    angle = np.arccos(np.clip((back * d).sum(1), -1, 1))
+    assert angle.max() < 4.0 / side

@@ -31,6 +31,7 @@ VIS_CHUNK = raytrace.CHUNK // VIS_RAYS
 # Shadow map: its side (FILL's frame) and the sun camera's distance in scene radii.
 SHADOW_SIDE = scenes.WIDTH
 SUN_DISTANCE = 1000.0
+OCTA_SIDE = 512  # the background's octahedral map, side in texels
 _BAKE = {}
 
 
@@ -98,6 +99,50 @@ def map_texel(d, height, width):
     x = np.floor((a / F(2 * np.pi) + F(0.5)) * F(width)).astype(np.int64) % width
     y = np.floor((F(0.5) - e / F(np.pi)) * F(height)).astype(np.int64)
     return np.clip(y, 0, height - 1), x
+
+
+def octahedral_texel(d, side):
+    """Row and column of the texel of an octahedral map (side x side, y up) nearest
+    to directions d (n, 3) float32: (u, v) = (x, z) / (|x| + |y| + |z|), folded for
+    y < 0 to ((1 - |v|) sign u, (1 - |u|) sign v); column (u + 1) / 2 side, row
+    (v + 1) / 2 side, rounded down (sign 0 is +)."""
+    norm = (np.abs(d[:, 0]) + np.abs(d[:, 1])) + np.abs(d[:, 2])
+    u, v = d[:, 0] / norm, d[:, 2] / norm
+    su = np.where(u < 0, F(-1), F(1))
+    sv = np.where(v < 0, F(-1), F(1))
+    below = d[:, 1] < 0
+    u, v = (
+        np.where(below, (F(1) - np.abs(v)) * su, u),
+        np.where(below, (F(1) - np.abs(u)) * sv, v),
+    )
+    column = np.floor((u + F(1)) * F(0.5) * F(side)).astype(np.int64)
+    row = np.floor((v + F(1)) * F(0.5) * F(side)).astype(np.int64)
+    return np.clip(row, 0, side - 1), np.clip(column, 0, side - 1)
+
+
+def octahedral_direction(u, v):
+    """Unit directions (..., 3) float64 of octahedral coordinates u, v in [-1, 1]:
+    y = 1 - |u| - |v|; for y < 0, (u, v) unfolded to ((1 - |v|) sign u, (1 - |u|)
+    sign v); then (u, y, v) normalized."""
+    u, v = np.asarray(u, np.float64), np.asarray(v, np.float64)
+    y = 1 - np.abs(u) - np.abs(v)
+    su, sv = np.where(u < 0, -1.0, 1.0), np.where(v < 0, -1.0, 1.0)
+    u, v = (
+        np.where(y < 0, (1 - np.abs(v)) * su, u),
+        np.where(y < 0, (1 - np.abs(u)) * sv, v),
+    )
+    d = np.stack([u, y, v], -1)
+    return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+
+def octahedral_map(radiance, turn, side=OCTA_SIDE):
+    """The map's radiance (side, side, 3) float32 resampled to an octahedral map of
+    world directions (texel centres; nearest texel of the map turned by turn)."""
+    c = (np.arange(side) + 0.5) / side * 2 - 1
+    v, u = np.meshgrid(c, c, indexing="ij")
+    d = turned(octahedral_direction(u, v).reshape(-1, 3), -turn).astype(np.float32)
+    row, column = map_texel(d, radiance.shape[0], radiance.shape[1])
+    return radiance[row, column].reshape(side, side, 3).astype(np.float32)
 
 
 def sh_basis(d):
@@ -481,7 +526,7 @@ def prepare(name, data, workers=4, rebake=False):
         sh=env["sh"],
         sun_direction=env["sun_direction"],
         sun_irradiance=sun_irradiance.astype(np.float32),
-        environment=env["environment"],
+        octahedral=octahedral_map(env["environment"], turn),
         turn=np.float32(turn),
         shadow_map=depth,
         shadow_camera=camera,
@@ -500,7 +545,7 @@ LIGHT_KEYS = (
     "sh",
     "sun_direction",
     "sun_irradiance",
-    "environment",
+    "octahedral",
     "turn",
     "shadow_map",
     "shadow_camera",
