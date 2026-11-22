@@ -146,8 +146,8 @@ shadow map and writes `<scene>_lighting.npz`. The maps used:
 
 | name | page | licence |
 |---|---|---|
-| `kloppenheim_05` | https://polyhaven.com/a/kloppenheim_05 (1k HDR) | CC0 |
-| `san_giuseppe_bridge` | https://polyhaven.com/a/san_giuseppe_bridge (1k HDR; the exterior's own map in the package) | CC0 |
+| `kloppenheim_05` | https://polyhaven.com/a/kloppenheim_05 (4k HDR, 4096 x 2048) | CC0 |
+| `san_giuseppe_bridge` | https://polyhaven.com/a/san_giuseppe_bridge (4k HDR, 4096 x 2048; the exterior's own map in the package) | CC0 |
 
 A scene's `lighting` entry holds its numbers:
 
@@ -164,6 +164,7 @@ A scene's `lighting` entry holds its numbers:
 | `exposure` | the factor before `x / (1 + x)` |
 | `shadow_bias` | the shadow test's bias, in shadow texels |
 | `lights` (optional) | authored point lights, each `{"position", "colour"}`; they replace the emissive groups, each of intensity `lamp_scale` (an empty list: none) |
+| `sky_side` (optional) | the side of the background's octahedral map, default 2,048 (4k files and 2,048: a texel about 0.1 degrees against a frame pixel's 0.07; 1k and 512 were blocky) |
 | `sun` (optional) | an authored sun, `{"direction"` it shines along`, "colour"}`; the map is turned so its sun's azimuth matches, and `turn` is not used |
 
 Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,

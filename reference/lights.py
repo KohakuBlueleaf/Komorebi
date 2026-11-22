@@ -31,7 +31,7 @@ VIS_CHUNK = raytrace.CHUNK // VIS_RAYS
 # Shadow map: its side (FILL's frame) and the sun camera's distance in scene radii.
 SHADOW_SIDE = scenes.WIDTH
 SUN_DISTANCE = 1000.0
-OCTA_SIDE = 512  # the background's octahedral map, side in texels
+OCTA_SIDE = 2048  # the background's octahedral map, side in texels (`sky_side`)
 _BAKE = {}
 
 
@@ -528,6 +528,7 @@ def prepare(name, data, workers=4, rebake=False):
     position, colour, intensity, lamps = scene_lamps(entry, mesh, materials)
     counts |= lamps
     counts["sun_share"], counts["turn"] = env["sun_share"], turn
+    counts["sky_side"] = side = int(entry.get("sky_side", OCTA_SIDE))
     out = lighting_path(name, data)
     np.savez(
         out,
@@ -535,7 +536,7 @@ def prepare(name, data, workers=4, rebake=False):
         sh=env["sh"],
         sun_direction=env["sun_direction"],
         sun_irradiance=sun_irradiance.astype(np.float32),
-        octahedral=octahedral_map(env["environment"], 0.0),
+        octahedral=octahedral_map(env["environment"], 0.0, side),
         turn=np.float32(turn),
         shadow_map=depth,
         shadow_camera=camera,

@@ -6,9 +6,9 @@
    "licence": "CC0",
    "files": [
     {
-     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kloppenheim_05_1k.hdr",
-     "sha256": "42bea3f025fd616169560422783d5cebde209867280295537f1d2f37bc1e3208",
-     "bytes": 1466851
+     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/kloppenheim_05_4k.hdr",
+     "sha256": "da7bc90e8bb1dd13e6e3c57d7fba27662bb487a3def5229f371dd99af1459d25",
+     "bytes": 23441531
     }
    ]
   },
@@ -18,9 +18,9 @@
    "licence": "CC0",
    "files": [
     {
-     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/san_giuseppe_bridge_1k.hdr",
-     "sha256": "62e671eeed1e3780cd6697aea39eb6db8ebf5e574c01ab45bc05adff09fce604",
-     "bytes": 1567633
+     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/san_giuseppe_bridge_4k.hdr",
+     "sha256": "7dbe10dbb6e22eaad44dace49d575e12481af2f36ff6cf13695fdc1b993ecf52",
+     "bytes": 23850538
     }
    ]
   }

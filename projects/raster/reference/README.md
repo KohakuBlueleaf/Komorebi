@@ -325,19 +325,23 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    `(x, z) -> (c x + s z, c z - s x)` with `c, s` the float32 cosine and sine of
    `-turn` (y kept). The frame is
    `x / (1 + x)` of `exposure x colour`, then the pictures' 8-bit conversion.
-6. **Octahedral map.** `prepare` resamples the environment once into a 512 x 512
+6. **Octahedral map.** `prepare` resamples the environment once into a side x side
+   (the entry's `sky_side`, default 2,048; a reader takes it from the map's shape)
    float32 RGB map of directions in the environment's own frame (turn 0, y up), saved
    in the lighting file as `octahedral`, so the background needs no trigonometry per
    pixel and a new `turn` changes a number, never the map. A direction
    `d = (x, y, z)` (need not be unit) goes to `u = x / (|x| + |y| + |z|)`,
    `v = z / (|x| + |y| + |z|)`; when `y < 0` these are folded to
    `(u, v) = ((1 - |v|) sign u, (1 - |u|) sign v)` (both from the unfolded values,
-   sign 0 counted as +). Its texel is column `floor((u + 1) / 2 x 512)`, row
-   `floor((v + 1) / 2 x 512)`, each clamped to 511. The inverse, used to fill the map
-   at texel centres `u, v = (i + 0.5) / 512 x 2 - 1`: `y = 1 - |u| - |v|`; when
+   sign 0 counted as +). Its texel is column `floor((u + 1) / 2 x side)`, row
+   `floor((v + 1) / 2 x side)`, each clamped to `side - 1`. The inverse, used to fill
+   the map at texel centres `u, v = (i + 0.5) / side x 2 - 1`: `y = 1 - |u| - |v|`; when
    `y < 0`, `(u, v)` unfolded by the same rule; the direction is `(u, y, v)`
    normalized, whose nearest texel of the equirectangular map is taken. The sun and
-   sky still come from the equirectangular file. (Before the movable sun the map
+   sky still come from the equirectangular file. The map is 2,048 and the files 4k
+   (4096 x 2048) because a frame's pixel at 75 degrees over 1,024 pixels is 0.07
+   degrees, a 512 texel about 0.4 and a 1k file's 0.35: the sky was blocky; a 2,048
+   texel is about 0.1 and a 4k file's 0.09. (Before the movable sun the map
    was resampled turned and looked up unturned. On the Bistro exterior's own view the
    change moved 15,536 of its 24,108 background pixels, by 7.2 of 255 on average and
    95 at most, from nearest-texel resampling on a differently turned grid; against a
@@ -391,3 +395,6 @@ Everything per pixel is float32. Not part of it: shadows from lamps, bounced lig
 (`ambient` stands in for it).
 Visibility per vertex is coarse on large triangles: Sponza's courtyard floor is a few
 triangles whose 23 vertices lie under the arcades, so it gets no sky light.
+A shadow texel is 4.5 units on Sponza; on a wall the sun grazes (n.s 0.12 to 0.24) it
+stretches to about 19 to 37 units, so shadow edges there are steps. A turn of the sun
+by 0.01 degrees moves about 3 % of Sponza's surface pixels by more than 8 of 255.
