@@ -1,5 +1,5 @@
 """Public demo scenes, fetched from their sources and converted to the scene layout:
-`python -m reference.public list | fetch <scene> ... | materials <scene> ...`. The
+`python -m reference.public list | fetch | materials | lighting <scene> ...`. The
 table (`public_scenes.json`) is data; files go to `$KR_DATA/public/`, never into the
 repository. Each view is a scene of its own named `<scene>_<view>` (same triangles, its
 own camera). `materials` writes `<scene>_materials.npz` beside the scene file for the
@@ -47,12 +47,18 @@ NUMBER = re.compile(r"[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?")
 
 def table():
     """{scene name: entry} of `public_scenes.json`, plus the entries of the JSON file
-    named by $KR_SCENES_EXTRA (same layout) when it is set."""
+    named by $KR_SCENES_EXTRA (same layout) when it is set; not `environments`."""
     entries = json.loads(TABLE.read_text())
     extra = os.environ.get("KR_SCENES_EXTRA")
     if extra:
         entries |= json.loads(Path(extra).read_text())
+    entries.pop("environments", None)
     return entries
+
+
+def environments():
+    """{map name: entry} of the table's `environments` (the lighting's HDR maps)."""
+    return json.loads(TABLE.read_text())["environments"]
 
 
 def views():
@@ -118,6 +124,16 @@ def fetch(name, data, key="files"):
             f["url"], folder / f.get("file", f["url"].rsplit("/", 1)[1]), f["sha256"]
         )
         for f in table()[name].get(key, [])
+    ]
+
+
+def fetch_environment(name, data):
+    """Downloads an environment map of the table (checked) into downloads/ and
+    returns its local path in a list."""
+    folder = public_dir(data) / "downloads"
+    return [
+        download(f["url"], folder / f["url"].rsplit("/", 1)[1], f["sha256"])
+        for f in environments()[name]["files"]
     ]
 
 
@@ -590,12 +606,19 @@ def triangles(view):
 def main():
     """Lists, fetches and converts the public scenes."""
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("command", choices=("list", "fetch", "materials"))
+    parser.add_argument("command", choices=("list", "fetch", "materials", "lighting"))
     parser.add_argument("scenes", nargs="*")
     parser.add_argument("--data", type=Path, default=None)
-    parser.add_argument("--workers", type=int, default=4, help="texture decoders")
+    parser.add_argument("--workers", type=int, default=4, help="processes")
+    parser.add_argument("--rebake", action="store_true", help="trace visibility again")
     args = parser.parse_args()
     data = args.data or default_data()
+    if args.command == "lighting":
+        lights = importlib.import_module("reference.lights")
+        for name in args.scenes or [n for n, e in table().items() if "lighting" in e]:
+            out, counts = lights.prepare(name, data, args.workers, args.rebake)
+            print(f"{name}: {out} {counts}")
+        return
     if args.command == "list":
         for name, entry in table().items():
             print(f"{name}: {', '.join(entry['views'])} - {entry['attribution']}")

@@ -129,10 +129,52 @@ maps already. The same image used in two roles is stored once per role.
 The converted sizes: Sponza 26 materials, 37 textures, 190 MB of texels; Bistro
 interior 67 and 88, 373 MB; Bistro exterior 133 and 208, 1,007 MB.
 
+## Lighting
+
+Sponza and the Bistro interior also have the data of `rasterize_lighted`
+(`projects/raster/reference/README.md`, "Lighting"):
+
+```sh
+python -m reference.public lighting sponza      # <scene>_lighting.npz (every scene with `lighting` if none named)
+```
+
+It downloads the scene's environment map (the table's `environments`: one HDR map per
+entry, its page, licence and SHA-256; the file is saved in `downloads/` like the scene
+files and never committed), bakes the sky visibility per vertex (`<scene>_visibility.npz`,
+reused unless `--rebake`; `--workers` processes), finds the lamps, renders the sun's
+shadow map and writes `<scene>_lighting.npz`. The map used:
+
+| name | page | licence |
+|---|---|---|
+| `kloppenheim_05` | https://polyhaven.com/a/kloppenheim_05 (1k HDR) | CC0 |
+
+A scene's `lighting` entry holds its numbers:
+
+| key | meaning |
+|---|---|
+| `environment` | the map's name in `environments` |
+| `turn` | degrees the map (sun, sky and background) is turned about the up axis |
+| `sun_to_sky` | the sun's irradiance facing it over the sky's on a horizontal surface |
+| `ambient` | constant irradiance (RGB) added everywhere, standing in for bounced light |
+| `lamp_scale` | a lamp's intensity per unit of emitting area |
+| `merge_distance` | lamps whose centroids are nearer than this are one |
+| `radius`, `size` | a lamp's reach `r` and the `s` of its falloff |
+| `emissive_scale` | the factor of an emissive material's colour |
+| `exposure` | the factor before `x / (1 + x)` |
+| `shadow_bias` | the shadow test's bias, in shadow texels |
+
+Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,
+0.33, 0.30 (the courtyard's sky visibility per vertex is low, so bounced light is most
+of the shade), `shadow_bias` 3 (with the 2 x 2 filter; 1 left acne on the fabrics),
+no lamps;
+Bistro interior `ambient` 0.01, `lamp_scale` 8, `merge_distance` 30, `radius` 600,
+`size` 10; both `exposure` 1 and `emissive_scale` 1.
+
 ## Limits
 
-Not represented: transparency (glass is opaque), the scenes' own lights (one point light
-per scene; emissive materials are drawn unlit and light nothing) and San Miguel's
+Not represented: transparency (glass is opaque), the scenes' own lights outside
+`rasterize_lighted` (one point light per scene; emissive materials are drawn unlit and
+light nothing) and San Miguel's
 textures (only their mean colour). Without the materials file, as in the ray tracer,
 textures are represented by their mean colour and foliage cut out of quads is drawn as
 whole opaque quads.

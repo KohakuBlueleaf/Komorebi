@@ -1,4 +1,18 @@
 {
+ "environments": {
+  "kloppenheim_05": {
+   "title": "Kloppenheim 05",
+   "page": "https://polyhaven.com/a/kloppenheim_05",
+   "licence": "CC0",
+   "files": [
+    {
+     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kloppenheim_05_1k.hdr",
+     "sha256": "42bea3f025fd616169560422783d5cebde209867280295537f1d2f37bc1e3208",
+     "bytes": 1466851
+    }
+   ]
+  }
+ },
  "conference": {
   "title": "Conference Room",
   "page": "https://casual-effects.com/data/",
@@ -67,6 +81,7 @@
    }
   ],
   "materials": {},
+  "lighting": {"environment": "kloppenheim_05", "turn": 0.0, "sun_to_sky": 5.0, "ambient": [0.35, 0.33, 0.3], "lamp_scale": 1.0, "merge_distance": 50.0, "radius": 1000.0, "size": 10.0, "emissive_scale": 1.0, "exposure": 1.0, "shadow_bias": 3.0},
   "light": [200.0, 800.0, 100.0],
   "views": {
    "overview": {"eye": [-900.0, 600.0, 0.0], "target": [1000.0, 250.0, 0.0], "fov": 75},
@@ -175,6 +190,7 @@
    }
   ],
   "materials": {"archives": {"BuildingTextures": "BuildingTextures.zip", "OtherTextures": "OtherTextures.zip", "PropTextures": "PropTextures.zip"}},
+  "lighting": {"environment": "kloppenheim_05", "turn": 0.0, "sun_to_sky": 5.0, "ambient": [0.01, 0.01, 0.01], "lamp_scale": 8.0, "merge_distance": 30.0, "radius": 600.0, "size": 10.0, "emissive_scale": 1.0, "exposure": 1.0, "shadow_bias": 1.0},
   "light": [600.0, 330.0, -460.0],
   "views": {
    "overview": {"eye": [450.0, 260.0, -750.0], "target": [750.0, 150.0, -150.0], "fov": 75},

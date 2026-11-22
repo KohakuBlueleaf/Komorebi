@@ -9,6 +9,7 @@ masked layer's pixel is taken where it is nearer and not a hole."""
 
 import numpy as np
 
+from reference import lights as light_data
 from reference.scenes import HEIGHT, WIDTH
 
 TILE = 32
@@ -511,4 +512,187 @@ def rasterize_shaded(scene, materials):
         "tile_counts": opaque["tile_counts"] + masked["tile_counts"],
         "opaque": opaque,
         "masked": masked,
+    }
+
+
+def world_points(cam, px, py, w):
+    """Scene positions (n, 3) of pixel centres px, py at 1/z w."""
+    z = F(1) / w
+    xc = ((px - cam[13]) / cam[12]) * z
+    yc = ((cam[14] - py) / cam[12]) * z
+    return np.stack(
+        [
+            ((cam[k] + cam[3 + k] * xc) + cam[6 + k] * yc) + cam[9 + k] * z
+            for k in range(3)
+        ],
+        axis=-1,
+    )
+
+
+def smooth_setup(scene):
+    """Per triangle the planes (T, 3, 3) of its corners' area-weighted vertex normals
+    times 1/z, of its first kept piece (as `shade_setup`): the smooth-normal variant."""
+    normals = light_data.vertex_normals(scene["positions"], scene["indices"])
+    records = setup(scene, normals[scene["indices"]])
+    count = len(scene["indices"])
+    first = np.full(count, -1, dtype=np.int64)
+    first[records["tri"][::-1]] = np.arange(len(records["tri"]))[::-1]
+    pick = np.maximum(first, 0)
+    return np.where((first >= 0)[:, None, None], records["extra_planes"][pick], F(0))
+
+
+def light_layer(scene, materials, prepared, layer, lights, variant):
+    """Linear colour (H, W, 3) of one FILL layer under the lights, its holes, and the
+    parts of the colour (sky, sun, points: (H, W, 3); visibility (H, W))."""
+    shape = layer["tri"].shape
+    colour = np.zeros(shape + (3,), dtype=np.float32)
+    parts = {
+        k: np.zeros(shape + (3,), dtype=np.float32) for k in ("sky", "sun", "points")
+    }
+    parts["visibility"] = np.zeros(shape, dtype=np.float32)
+    hole = np.zeros(shape, dtype=bool)
+    ys, xs = np.nonzero(layer["tri"] >= 0)
+    t = layer["tri"][ys, xs]
+    m = materials["material"][t]
+    kind = materials["kind"][m]
+    px, py, w, u, v, vis = pixel_values(layer, prepared, ys, xs)
+    texture = materials["textures"][m]
+    level = prepared["level"][t]
+    base = materials["base_colour"][m]
+
+    def texel(slot):
+        if len(materials["mip"]) == 0:
+            return np.zeros((len(u), 4), dtype=np.uint8)
+        tex = np.maximum(texture[:, slot], 0)
+        return fetch(materials, tex, level[:, slot], u, v)
+
+    albedo_texel = texel(ALBEDO)
+    albedo = np.where(
+        (texture[:, ALBEDO] >= 0)[:, None],
+        TEXEL_LINEAR[albedo_texel[:, :3]] * base,
+        base,
+    )
+    cam = scene["camera"]
+    position = world_points(cam, px, py, w)
+    to_eye = normalized(cam[None, 0:3] - position)
+    frame = prepared["frame"][t]
+    geometric = frame[:, 2]
+    if variant.get("smooth") is not None:
+        smooth = normalized(
+            np.stack(
+                [at(variant["smooth"][t][:, :, k], px, py) / w for k in range(3)], -1
+            )
+        )
+        smooth = np.where((dot3(smooth, to_eye) < 0)[:, None], -smooth, smooth)
+        frame = np.stack([frame[:, 0], frame[:, 1], smooth], axis=1)
+    mapped = (texture[:, NORMAL] >= 0) & prepared["frame_ok"][t]
+    n_texel = TEXEL_SIGNED[texel(NORMAL)[:, :3]]
+    bent = normalized(
+        (frame[:, 0] * n_texel[:, 0:1] + frame[:, 1] * n_texel[:, 1:2])
+        + frame[:, 2] * n_texel[:, 2:3]
+    )
+    normal = np.where(mapped[:, None], bent, frame[:, 2])
+    has_specular = (kind == LIT) & (materials["specular"][m].max(axis=1) > 0)
+    specular = np.where(
+        (texture[:, SPECULAR] >= 0)[:, None],
+        materials["specular"][m] * TEXEL_UNIT[texel(SPECULAR)[:, :3]],
+        materials["specular"][m],
+    )
+    specular = np.where(has_specular[:, None], specular, F(0))
+    exponent = materials["exponent"][m]
+    inv_pi = F(1 / np.pi)
+
+    def gloss(to_light):
+        half = normalized(to_light + to_eye)
+        return power(np.maximum(dot3(normal, half), F(0)), exponent)
+
+    sky = np.maximum(light_data.sky_irradiance(lights["sh"], normal), F(0))
+    sky = sky * vis[:, None]
+    sun_dir = lights["sun_direction"]
+    shadow = light_data.sun_shadow(lights, position, geometric, variant.get("pcf"))
+    sun_e = (
+        lights["sun_irradiance"]
+        * (np.maximum(dot3(normal, sun_dir[None, :]), F(0)) * shadow)[:, None]
+    )
+    shine = specular * gloss(sun_dir[None, :])[:, None] * (sun_e * inv_pi)
+    points_e = np.zeros_like(albedo)
+    for k in range(len(lights["lamp_intensity"])):
+        e, to_light = light_data.point_irradiance(
+            lights["lamp_intensity"][k],
+            lights["size"],
+            lights["radius"],
+            lights["lamp_position"][k],
+            position,
+            normal,
+        )
+        lamp_e = lights["lamp_colour"][k] * e[:, None]
+        points_e = points_e + lamp_e
+        shine = shine + specular * gloss(to_light)[:, None] * (lamp_e * inv_pi)
+    ambient = np.asarray(lights["ambient"], dtype=np.float32)
+    out = albedo * inv_pi * (((sky + ambient) + sun_e) + points_e) + shine
+    emissive = kind == EMISSIVE
+    out = np.where(emissive[:, None], albedo * F(lights["emissive_scale"]), out)
+    lit_parts = {
+        "sky": albedo * inv_pi * sky,
+        "sun": albedo * inv_pi * sun_e,
+        "points": albedo * inv_pi * points_e,
+    }
+    for name, value in lit_parts.items():
+        parts[name][ys, xs] = np.where(emissive[:, None], F(0), value)
+    parts["visibility"][ys, xs] = vis
+    masked = kind == MASKED
+    albedo_alpha = np.where(texture[:, ALBEDO] >= 0, albedo_texel[:, 3], 255)
+    alpha = np.where(texture[:, MASK] >= 0, texel(MASK)[:, 3], albedo_alpha)
+    hole[ys, xs] = masked & (alpha < OPAQUE_BYTE)
+    colour[ys, xs] = out
+    return colour, hole, parts
+
+
+def background(scene, lights):
+    """The environment map's radiance (H, W, 3) in each pixel's view direction (the
+    nearest texel; the map turned like the sun)."""
+    cam = scene["camera"]
+    ys, xs = np.mgrid[0:HEIGHT, 0:WIDTH]
+    sx = (xs.ravel().astype(np.float32) + F(0.5) - cam[13]) / cam[12]
+    sy = (ys.ravel().astype(np.float32) + F(0.5) - cam[14]) / cam[12]
+    d = (cam[9:12] + cam[3:6] * sx[:, None]) - cam[6:9] * sy[:, None]
+    d = light_data.turned(d.astype(np.float64), -float(lights["turn"])).astype(F)
+    env = lights["environment"]
+    row, column = light_data.map_texel(d, env.shape[0], env.shape[1])
+    return env[row, column].reshape(HEIGHT, WIDTH, 3)
+
+
+def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True):
+    """SHADE's two FILLs and holes with direct light (the raster reference README,
+    "Lighting"): sky x baked visibility, ambient, the sun with its shadow map and the
+    lamps; "colour" linear, "display" x / (1 + x) of exposure x colour, and the parts.
+    smooth (vertex normals) is a comparison variant; pcf=False: one shadow tap."""
+    kind = materials["kind"][materials["material"]]
+    opaque = rasterize(layer_scene(scene, kind != MASKED))
+    masked = rasterize(layer_scene(scene, kind == MASKED))
+    corner_vis = lights["visibility"][scene["indices"]]
+    prepared = shade_setup(scene, {**materials, "light": corner_vis})
+    variant = {"smooth": smooth_setup(scene) if smooth else None, "pcf": pcf}
+    opaque_colour, _, opaque_parts = light_layer(
+        scene, materials, prepared, opaque, lights, variant
+    )
+    masked_colour, hole, masked_parts = light_layer(
+        scene, materials, prepared, masked, lights, variant
+    )
+    take = nearer_layer(masked, opaque) & ~hole
+    tri = np.where(take, masked["tri"], opaque["tri"])
+    sky = (tri < 0)[:, :, None]
+    colour = np.where(take[:, :, None], masked_colour, opaque_colour)
+    colour = np.where(sky, background(scene, lights), colour)
+    x = F(lights["exposure"]) * colour
+    parts = {}
+    for name in opaque_parts:
+        pick = take if opaque_parts[name].ndim == 2 else take[:, :, None]
+        parts[name] = np.where(pick, masked_parts[name], opaque_parts[name])
+    return {
+        "colour": colour,
+        "display": x / (F(1) + x),
+        "depth": np.where(take, masked["depth"], opaque["depth"]),
+        "tri": tri,
+        "parts": parts,
     }

@@ -251,3 +251,71 @@ writes each view's vertex colours beside its shaded frame; `stats` the numbers a
 pass on the cores is sized by: the kinds, materials and winners per 32 x 32 tile, the
 kinds each of 120 cores meets with the fill's partition of the tiles, the texture pages
 (32 x 32 texels of one level) a tile reads, and the hit rate of a page cache per core.
+
+## Lighting
+
+`rasterize_lighted(scene, materials, lights)` in `reference/raster.py` is SHADE with
+direct light in place of the fixed per-vertex shade and the `lit` kind's hand-placed
+light: a sun, a sky and point lights at the scene's lamps. It is defined in numpy
+only: the C++ and CUDA versions do not have it. Every rule is per-pixel arithmetic, a
+lookup in a table or a texel fetch, so a per-tile kernel can follow it; no ray is
+traced per pixel. The lights and their precomputed data are in `reference/lights.py`,
+the per-scene numbers in the `lighting` entry of `reference/public_scenes.json`
+([SCENES.md](../../../reference/SCENES.md)).
+
+```bash
+python -m reference.public lighting sponza      # map, visibility bake, lamps, shadow map
+```
+
+writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept in
+`<scene>_visibility.npz` beside the materials file and reused unless `--rebake`.
+
+1. **Environment.** One HDR environment map per scene (Poly Haven, CC0, the
+   `environments` table), turned about the up axis (y) by the scene's `turn`. The
+   sun is the brightest small region: the luminance-weighted centre of the excess
+   over its surroundings inside 4 degrees of the brightest texel; its colour is that
+   excess (luminance 1). The sky is the map with that cone replaced by the mean of
+   the ring from 4 to 8 degrees, projected to 9 spherical-harmonic coefficients per
+   colour; its irradiance on a normal is the quadratic form of Ramamoorthi and
+   Hanrahan (2001), clamped at 0. The sun's irradiance facing it is `sun_to_sky`
+   times the sky's irradiance on a horizontal surface (its luminance), in the sun's
+   colour. `lights.environment` recomputes these from the file.
+2. **Sky visibility**, baked per vertex: the share of 64 cosine-weighted rays (fixed
+   directions per vertex from the hash of `vertex x 64 + ray`) from the vertex, moved
+   the scene's `eps` along its area-weighted normal, that leave the scene without a
+   hit, traced with the reference ray tracer (`raytrace.trace`, any hit). It takes
+   the place of the light term at the corners, so the `light/z` plane interpolates it.
+3. **Sun shadow.** The 1/z at 1024 x 1024 from a camera 1000 scene radii away along
+   the sun's direction, aimed at the centre of the scene's box, its frame covering the
+   box, with SHADE's two FILLs and holes: a texel takes the masked layer's 1/z where
+   it is nearer and not a hole, else the other layer's, so plants and chains cast the
+   shadow of their leaves, not of their quads. A pixel's point, moved along its
+   triangle's normal (turned toward the eye) by one shadow texel's world size, is
+   shadowed at a texel when its 1/z in that camera is below the texel's by more than
+   the bias (`shadow_bias` texels at the camera's distance); texels outside the map
+   are lit. The sun's share is the 2 x 2 percentage-closer filter: the comparisons at
+   the four nearest texels, weighted bilinearly. One tap (the nearest texel,
+   `pcf=False`) left sawtooth edges where the sun grazes a surface.
+4. **Point lights.** Emissive triangles connected through shared vertices form
+   groups; groups whose centroids are nearer than `merge_distance` are merged. A lamp
+   is a point light at its area-weighted centroid, its colour the area-weighted
+   emission colour (base colour x the emission texture's 1 x 1 level, scaled to a
+   largest channel of 1), its intensity
+   `lamp_scale` x its area. Irradiance at distance `d` on normal `n` toward `l`:
+   `I max(0, n.l) / (d^2 + s^2) (1 - (d/r)^4)^2` for `d < r`, 0 from `r` on
+   (`radius`, `size`). No shadows from point lights.
+5. **A pixel.** `a` = albedo x base colour as SHADE has it (`flat`: the base colour).
+   The normal is the normal map's in the triangle's frame where the material has one
+   and the frame is valid, else the triangle's normal turned toward the eye.
+   `E = sky(n) x visibility + ambient + sun x max(0, n.s) x shadow + the lamps`;
+   colour `= a / pi x E +` the `lit` kind's Blinn-Phong term once for the sun and
+   once per lamp, each times that light's irradiance (with `n.l` and the shadow) over
+   pi, only for `lit` materials with a specular colour. `emissive`: `a x
+   emissive_scale`, unlit; `masked`: holes as SHADE. Background: the map's radiance in
+   the view direction (nearest texel, turned like the sun). The frame is `x / (1 + x)`
+   of `exposure x colour`, then the pictures' 8-bit conversion.
+
+Everything per pixel is float32. Not part of it: shadows from lamps, bounced light
+(`ambient` stands in for it).
+Visibility per vertex is coarse on large triangles: Sponza's courtyard floor is a few
+triangles whose 23 vertices lie under the arcades, so it gets no sky light.
