@@ -294,7 +294,8 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    box, with SHADE's two FILLs and holes: a texel takes the masked layer's 1/z where
    it is nearer and not a hole, else the other layer's, so plants and chains cast the
    shadow of their leaves, not of their quads. A pixel's point, moved along its
-   triangle's normal (turned toward the eye) by one shadow texel's world size, is
+   lighting normal `n` (step 5: the normal map's where there is one, else the
+   triangle's turned toward the eye) by one shadow texel's world size, is
    shadowed at a texel when its 1/z in that camera is below the texel's by more than
    the bias (`shadow_bias` texels at the camera's distance); texels outside the map
    are lit. The sun's share is the 2 x 2 percentage-closer filter: the comparisons at

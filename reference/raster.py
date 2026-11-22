@@ -581,7 +581,6 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
     position = world_points(cam, px, py, w)
     to_eye = normalized(cam[None, 0:3] - position)
     frame = prepared["frame"][t]
-    geometric = frame[:, 2]
     if variant.get("smooth") is not None:
         smooth = normalized(
             np.stack(
@@ -623,7 +622,7 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
     if "sun" in terms:
         shadow = np.ones(len(position), dtype=np.float32)
         if "shadow" in terms:
-            shadow = light_data.sun_shadow(lights, position, geometric, variant["pcf"])
+            shadow = light_data.sun_shadow(lights, position, normal, variant["pcf"])
         sun_e = (
             lights["sun_irradiance"]
             * (np.maximum(dot3(normal, sun_dir[None, :]), F(0)) * shadow)[:, None]
