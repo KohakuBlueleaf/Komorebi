@@ -13,7 +13,10 @@ namespace {
     // end_row less ends before first_row (README.md); in place, tiles from the last.
     template <typename Arrived>
     bool slots_from_prefixes(
-        const km::Reader& reader, const km_command_t& command, Arrived arrived
+        const km::Reader& reader,
+        const km_command_t& command,
+        Arrived arrived,
+        uint32_t& shade_address
     ) {
         const uint32_t items_address = command.a7, bank = command.a8;
         const uint32_t space = get_write_ptr(kCbHist);
@@ -42,6 +45,7 @@ namespace {
         const uint32_t prefix_pages_address = (
             base_words[(kHprefixAddrAt - kBaseAt) / 4]
         );
+        shade_address = base_words[(kShadeAddrAt - kBaseAt) / 4];
         if (heavy_tiles > kHprefixPageBytes / 128) {
             return false;
         }
@@ -118,7 +122,7 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
     const uint32_t list_slots = command.a6, items_address = command.a7;
     const uint32_t bank = command.a8, profile_address = command.a9;
     const uint32_t started = km::wall();
-    uint32_t wait = 0, read = 0, bytes = 0;
+    uint32_t wait = 0, read = 0, bytes = 0, shade_address = 0;
     auto reserve = [&](uint32_t cb) {
         const uint32_t asked = km::wall();
         const bool reserved = reader.reserve(cb, 1);
@@ -152,7 +156,7 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
         }
         if (
             (list_slots & kSetupPrefix) != 0 &&
-            !slots_from_prefixes(reader, command, arrived)
+            !slots_from_prefixes(reader, command, arrived, shade_address)
         ) {
             return;
         }
@@ -181,6 +185,9 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
     const InterleavedAddrGen<true> mesh = {
         .bank_base_address = mesh_address, .page_size = kMeshBytes
     };
+    const InterleavedAddrGen<true> shade = {
+        .bank_base_address = shade_address, .page_size = kShadeBlockBytes
+    };
     for (uint32_t step = first_block; step <= end_block; ++step) {
         if (!reserve(kCbMesh)) {
             return;
@@ -193,6 +200,13 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
         );
         const uint32_t page_bytes = step == first_block ? 4 * kCamWords : kMeshBytes;
         noc_async_read(source, get_write_ptr(kCbMesh), page_bytes);
+        if (step != first_block && shade_address != 0) {
+            noc_async_read(
+                get_noc_addr(step - 1, shade),
+                get_write_ptr(kCbMesh) + kMeshBytes,
+                kShadeBlockBytes
+            );
+        }
         if (!arrived()) {
             return;
         }
@@ -204,6 +218,7 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
             volatile tt_l1_ptr uint32_t* camera = km::l1(get_write_ptr(kCbMesh));
             camera[kCamWords] = first_block;
             camera[kCamWords + 1] = end_block;
+            camera[kCamWords + 2] = shade_address != 0;
             invalidate_l1_cache();
         }
         cb_push_back(kCbMesh, 1);

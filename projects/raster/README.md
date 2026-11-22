@@ -430,6 +430,30 @@ Three changes took the 10^6 frame from 12,125 to 6,894 us (first) and 10,575 to 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.
 
+### SHADE (`live.py --shade`)
+
+On a frame loaded shaded the thread runs SHADE between FILL and SHOW: each fill core
+colours its tiles in place from the materials and the textures in 4 KB pages
+(`kernels/shade.h`, `shade.py`). Each piece of a triangle the near plane cuts is
+shaded with its own u/z, v/z and light/z planes, while the reference uses the first
+kept piece's planes for all of them; both are the same plane in exact arithmetic, and
+on Sponza's frame 0 (33,339 pixels on later pieces, clipped corners up to 9.2e5 px off
+screen) the two float64 (u, v) agree to 0.0000 texel at the 99th percentile, while
+float32 rounding moves the own piece's by 0.64 texel median (2.16 at the 99th
+percentile) and the first piece's by 0.80 (1.03). So `--check-shade` counts those
+pixels apart and takes its share (ok under 1 %) over the others.
+
+A texture level is stored in blocks of 32 x 32 texels, a 4 KB page each. For a tile
+SHADE finds the pages its pixels fetch, reads them into 128 page slots in L1 and
+fetches the texels there; a tile needing more pages is shaded in several passes of
+rows. Masked and lit materials are shaded as textured (no holes, no lighting yet).
+Measured on one card at 1,350 MHz, 20 frames with `--push` (ms; pages read a frame):
+
+| scene | FILL | SHADE | SHOW | card frame | host frame | not shaded, host | pages |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sponza | 1.59 | 4.04 | 0.79 | 8.87 | 9.61 | 5.47 | 20,544 |
+| Bistro interior | 2.11 | 4.68 | 0.83 | 12.41 | 13.12 | 8.11 | 10,565 |
+
 ## The interactive loop
 
 `live.py` loads the scene and the frame program once, with the thread built to serve

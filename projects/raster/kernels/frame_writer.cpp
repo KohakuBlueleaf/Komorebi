@@ -1,5 +1,5 @@
-// The frame program's writer: the passes' (handlers from 11), the fill's and SHOW
-// (show_writer.hpp, in the fill's namespace), chosen by handler.
+// The frame program's writer: the passes' (handlers from 11), the fill's, SHOW and
+// SHADE (show_writer.hpp, shade_writer.hpp, in the fill's namespace), by handler.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -11,6 +11,7 @@
 namespace fill_k {
 #include "writer.cpp"
 #include "show_writer.hpp"
+#include "shade_writer.hpp"
 }  // namespace fill_k
 
 namespace pass_k {
@@ -22,6 +23,9 @@ void kernel_main() {
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) == fill_k::kHandlerShow) {
             return fill_k::show_writer_command(writer, command);
+        }
+        if (km::handler(command) == fill_k::kHandlerShade) {
+            return fill_k::shade_writer_command(writer, command);
         }
         if (km::handler(command) >= pass_k::kHandlerLanes) {
             return pass_k::setup_writer_command(writer, command);

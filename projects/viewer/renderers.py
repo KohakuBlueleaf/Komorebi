@@ -1,7 +1,7 @@
-"""The two interactive loops behind one interface: `open(scene)`, `frame(camera)` ->
-(image, ms) with the image (1024, 1024, 4) uint8, `close()`. Raster is the
-rasterizer's `--push` loop, Raytrace the ray tracer's `--show` loop; each opens its own
-card session, and the thread that calls them owns it."""
+"""The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
+(1024, 1024, 4) uint8, ms), `close()`. Raster: the rasterizer's `--push` loop;
+RasterTextured: `--push --shade` (scenes with materials); Raytrace: the ray tracer's
+`--show` loop. Each opens its own card session, owned by the thread calling them."""
 
 import argparse
 import contextlib
@@ -12,6 +12,7 @@ import komorebi as km
 from projects.raster import card as raster_card
 from projects.raster import live as raster_live
 from projects.raster import run as raster_run
+from projects.raster import shade as raster_shade
 from projects.raytrace import card as raytrace_card
 from projects.raytrace import frame as raytrace_frame
 from projects.raytrace import live as raytrace_live
@@ -35,6 +36,11 @@ class Renderer:
     name = ""
     time_label = ""  # what frame's ms are, as the page labels them
 
+    @staticmethod
+    def offered(scene_name):
+        """True when the renderer runs on the scene."""
+        return True
+
     def __init__(self):
         self.stack = None
         self.scene = None
@@ -53,15 +59,20 @@ class Raster(Renderer):
     name = "raster"
     time_label = "frame ms (host)"
 
+    def materials(self, scene_name):
+        """The materials the loop is loaded with (None: not shaded)."""
+        return None
+
     def open(self, scene_name):
         self.close()
         scene, _ = raster_run.load(scene_name)
+        materials = self.materials(scene_name)
         slots = LIST_SLOTS_TIMES * (2 * len(scene["indices"]) + 65536)
         self.stack = contextlib.ExitStack()
         try:
             session = self.stack.enter_context(km.Session(log=raster_card.log))
             self.live = raster_live.Loop(
-                session, scene, True, slots, raster_live.show_table(), {}
+                session, scene, True, slots, raster_live.show_table(), {}, materials
             )
             self.stack.callback(self.live.stop)
         except BaseException:
@@ -81,6 +92,19 @@ class Raster(Renderer):
         if event.result != 0:
             raise FrameRefused(event.result)
         return self.image, (ended - began) * 1e3
+
+
+class RasterTextured(Raster):
+    """projects/raster/live.py's `--push --shade` path: textures by SHADE."""
+
+    name = "raster-textured"
+
+    @staticmethod
+    def offered(scene_name):
+        return raster_shade.has_materials(scene_name)
+
+    def materials(self, scene_name):
+        return raster_shade.load(scene_name)
 
 
 class Raytrace(Renderer):
@@ -125,4 +149,12 @@ class Raytrace(Renderer):
         return self.image, event.microseconds / 1e3
 
 
-RENDERERS = {"raster": Raster, "raytrace": Raytrace}
+RENDERERS = {renderer.name: renderer for renderer in (Raster, RasterTextured, Raytrace)}
+
+
+def offers(scenes):
+    """{renderer name: the scenes of `scenes` it is offered on}."""
+    return {
+        name: [scene for scene in scenes if renderer.offered(scene)]
+        for name, renderer in RENDERERS.items()
+    }

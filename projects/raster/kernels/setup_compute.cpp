@@ -264,6 +264,25 @@ namespace {
         words[31] = 0;
     }
 
+    // A shaded record's word (setup.h): material | level << 16, level = #k < levels
+    // with texels > area 2^(2k - 1) (reference mip_level), floats compared as integers.
+    inline uint32_t shade_word(
+        uint32_t area_bits, uint32_t texels_bits, uint32_t material
+    ) {
+        const uint32_t levels = material >> 16 & 0xF;
+        uint32_t level = 0;
+        for (uint32_t k = 1; k < levels; ++k) {
+            const uint32_t exponent = (area_bits >> 23) + 2 * k - 1;
+            const uint32_t threshold = (
+                exponent >= 255 ? 0x7F800000 : area_bits + ((2 * k - 1) << 23)
+            );
+            level += (
+                static_cast<int32_t>(texels_bits) > static_cast<int32_t>(threshold)
+            );
+        }
+        return (material & 0xFFFF) | level << 16;
+    }
+
     uint32_t* cb_ptr(uint32_t cb) {
         return reinterpret_cast<uint32_t*>(get_local_cb_interface(cb).fifo_wr_ptr << 4);
     }
@@ -352,6 +371,7 @@ namespace {
         uint32_t handler;
         Out out;
         bool succeeded = true;
+        bool weighted = false;  // SETUP on a shaded frame (setup.h kShadeAddrAt)
         uint32_t kept_count = 0, clipped = 0;  // the profile's counts
         uint32_t block_cost = 0;  // COUNT: the block's predicted cost (setup.h kCostBlock)
         // COUNT with ranges: the costs summed after j x blocks / kCostKnots blocks
@@ -406,7 +426,11 @@ namespace {
         // Clips a crossing triangle and sends its pieces (one or two) through the
         // vector unit; their records go out as the triangle's. `records`: free space.
         void pieces(
-            const Corner* corners, float near, uint32_t* records, uint32_t triangle
+            const Corner* corners,
+            float near,
+            uint32_t* records,
+            uint32_t triangle,
+            const uint32_t* shade_words
         ) {
             Corner poly[6];  // at most 4; room for 6 so the check below comes first
             const uint32_t polygon_size = clip(corners, near, poly);
@@ -439,9 +463,12 @@ namespace {
             setup_pass::order(
                 setup_pass::word(setup_pass::kSlotColour + 8) + 2 * (piece_count - 1)
             );
-            setup_pass::triangles(handler == kHandlerSetup);
+            setup_pass::triangles(handler == kHandlerSetup, weighted);
             ckernel::tensix_sync();
             setup_pass::records_out(records);
+            const volatile uint32_t* areas = (
+                setup_pass::window() + setup_pass::word(setup_pass::kSlotArea)
+            );
             for (uint32_t j = 0; j < piece_count && succeeded; ++j) {
                 uint32_t* words = records + 32 * j;
                 const Box box = box_of(words);
@@ -449,6 +476,11 @@ namespace {
                     continue;
                 }
                 finish(words, box, triangle);
+                if (weighted) {
+                    words[kRecShadeWord] = (
+                        shade_word(areas[2 * j], shade_words[0], shade_words[32])
+                    );
+                }
                 ++kept_count;
                 record(words, box, triangle);
             }
@@ -488,6 +520,22 @@ namespace {
                     );
                 }
             }
+            // a shaded frame: each kept record's material and level, before any
+            // clipping reuses the window (the texel areas and materials after the mesh)
+            const uint32_t* shade_words = mesh + kMeshBytes / 4;
+            if (handler == kHandlerSetup && weighted) {
+                const volatile uint32_t* areas = (
+                    setup_pass::window() + setup_pass::word(setup_pass::kSlotArea)
+                );
+                for (uint32_t left = kept_lanes; left != 0; left &= left - 1) {
+                    const uint32_t lane = __builtin_ctz(left);
+                    work[32 * lane + kRecShadeWord] = (
+                        shade_word(
+                            areas[2 * lane], shade_words[lane], shade_words[32 + lane]
+                        )
+                    );
+                }
+            }
             const uint32_t near = (
                 setup_pass::window()[setup_pass::word(setup_pass::kSlotCamera + 15)]
             );
@@ -522,7 +570,8 @@ namespace {
                         corners + 3 * lane,
                         value(near),
                         work + 1024,
-                        first_triangle + lane
+                        first_triangle + lane,
+                        shade_words + lane
                     );
                     continue;
                 }
@@ -638,13 +687,14 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
                 setup_pass::window()[lane_numbers + 2 * lane] = float_bits(lane);
             }
             setup_pass::order(lane_numbers + 62);
+            pass.weighted = handler == kHandlerSetup && mesh_words[kCamWords + 2] != 0;
             ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, 1);
             continue;
         }
         const uint32_t vector_started = km::wall();
         setup_pass::block_in(mesh_words);
         setup_pass::camera_space();
-        setup_pass::triangles(handler != kHandlerCount);
+        setup_pass::triangles(handler != kHandlerCount, pass.weighted);
         const uint32_t first_triangle = 32 * (first_block + page - 1);
         if (handler != kHandlerLanes) {
             setup_pass::finish_lanes(

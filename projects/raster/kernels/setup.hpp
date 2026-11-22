@@ -399,9 +399,9 @@ namespace setup_pass {
         }
     }
 
-    // Everything of a block whose corners' camera space is in place: screen, area,
-    // box, the camera distances, and with `planes` the edges and planes.
-    inline void triangles(bool planes) {
+    // A block with its corners' camera space: screen, area, box, distances, `planes`
+    // edges and planes; `weighted` (shaded) first multiplies corner values by 1/z.
+    inline void triangles(bool planes, bool weighted = false) {
         screen();
         area_and_order();
         box(0, 0x44800000, 0x447FC000);  // 1024, 1023
@@ -418,6 +418,16 @@ namespace setup_pass {
         recip(L0, L1, L2, L3, L4, L5);
         store(L1, kSlotInverseArea);
         plane(kSlotScreen + 2, 3, 12);
+        if (weighted) {
+            for (uint32_t corner = 0; corner < 3; ++corner) {
+                load(L1, kSlotScreen + 3 * corner + 2);
+                for (uint32_t channel = 0; channel < 3; ++channel) {
+                    load(L0, kSlotColour + 3 * corner + channel);
+                    mul(L0, L1, L0);
+                    store(L0, kSlotColour + 3 * corner + channel);
+                }
+            }
+        }
         for (uint32_t channel = 0; channel < 3; ++channel) {
             plane(kSlotColour + channel, 3, 15 + 3 * channel);
         }

@@ -14,6 +14,7 @@
 #define RF_HANDLER_SHOW 4u        /* kernels/show.h */
 #define RF_SHOW_TABLE_BYTES 1024u /* SHOW's block: kShowTableWords words */
 #define RF_DISPLAY_PAGES 1024u    /* the display's pages: a page a tile */
+#define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -28,6 +29,7 @@
 #define RF_SETUP_PREFIX 0x80000000u /* SETUP's slots from SUM's and HSUM's prefixes */
 #define RF_BASE_AT 8192u            /* in the items region: the base words */
 #define RF_HPREFIX_ADDR_AT 16384u   /* then the address of HSUM's pages */
+#define RF_SHADE_ADDR_AT 16388u     /* then the shade tensor's (0: not shaded) */
 #define RF_HPREFIX_BYTES 32768u     /* an HSUM page, one per counting core */
 #define RF_SUMS_BYTES 40960u /* SUM's totals (entries, rows per tile), then HSUM's */
 #define RF_SUMS_HEAVY_AT 8192u
@@ -69,7 +71,13 @@
 #define RF_W_BALANCE (RF_W_HPREFIX + 1)  /* 1: COUNT's and SETUP's ranges by cost */
 #define RF_W_DISPLAY (RF_W_BALANCE + 1)  /* SHOW's display tensor (serving) */
 #define RF_W_SHOWPROF (RF_W_DISPLAY + 1) /* SHOW's profile tensor, 0: none */
-#define RF_WORDS (RF_W_SHOWPROF + 1)
+/* A shaded frame (serving): SETUP's shade tensor (0: not shaded), SHADE's textures,
+ * table and profile tensor (0: none) */
+#define RF_W_SHADE (RF_W_SHOWPROF + 1)
+#define RF_W_TEXTURES (RF_W_SHADE + 1)
+#define RF_W_SHADE_TABLE (RF_W_TEXTURES + 1)
+#define RF_W_SHADEPROF (RF_W_SHADE_TABLE + 1)
+#define RF_WORDS (RF_W_SHADEPROF + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */
@@ -100,6 +108,7 @@
 #define RF_T_NUMBER 23        /* FRAME commands served before it */
 #define RF_T_CODE 24          /* its answer */
 #define RF_T_PUSH 25          /* the PUSH submitted to its event (0: none) */
+#define RF_T_SHADE 26         /* SHADE submitted to its event (0: not shaded) */
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0

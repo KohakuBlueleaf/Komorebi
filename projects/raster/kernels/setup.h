@@ -62,11 +62,18 @@ constexpr uint32_t kSetupPrefix = 0x80000000;
 constexpr uint32_t kBaseAt = 8192;
 constexpr uint32_t kBaseSlotBits = 23;
 constexpr uint32_t kHprefixAddrAt = 16384;
+// Shaded SETUP: then the shade tensor (0: none), per mesh block 32 texel areas (level
+// 0) and 32 words material | levels << 16, after the block; corners carry u, v, light.
+constexpr uint32_t kShadeAddrAt = 16388;
+static_assert(kShadeAddrAt == kHprefixAddrAt + 4);
+constexpr uint32_t kShadeBlockBytes = 256;
+constexpr uint32_t kRecShadeWord = 30;  // material | level << 16 (shade.h kRecShade)
 constexpr uint32_t kHprefixPageBytes = 32768;  // 128 bytes per heavy tile, 256 of them
 constexpr uint32_t kSumsHeavyAt = 8192;  // in SUM's totals: HSUM's, 128 bytes per tile
 // Then PLACE's words: frame words, per item and per fill core (README.md); each part on
 // 64 bytes, as a DRAM read must start (one at 16 mod 64 returned the line's start).
 constexpr uint32_t kFrameWordsAt = 16448;
+static_assert(kShadeAddrAt + 4 <= kFrameWordsAt);
 constexpr uint32_t kItemWordsAt = 16512;
 constexpr uint32_t kItemWords = 2;
 constexpr uint32_t kCoreWordsAt = 32896;
@@ -102,7 +109,9 @@ constexpr uint32_t kTiles = 1024;
 constexpr uint32_t kTilesX = 32;
 constexpr uint32_t kBlockSlots = 18;   // x, y, z of corners 0 to 2, then their colours
 constexpr uint32_t kMeshBytes = 2304;  // kBlockSlots vectors of 32 words
-constexpr uint32_t kRecBytes = 4096;   // 32 records of 32 words
+constexpr uint32_t kMeshPageBytes = 2560;  // a mesh page: the mesh's block, the shade's
+static_assert(kMeshPageBytes == kMeshBytes + kShadeBlockBytes);
+constexpr uint32_t kRecBytes = 4096;  // 32 records of 32 words
 static_assert(kMeshBytes == kBlockSlots * 32 * 4);
 constexpr uint32_t kCamWords = 16;  // the scene's camera (reference/scenes.py)
 

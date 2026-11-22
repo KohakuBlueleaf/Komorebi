@@ -36,12 +36,18 @@ for i, name in enumerate(["COUNTERS", "HIST", "SLOTS", "HPREFIX"]):
 F["RF_W_BALANCE"] = F["RF_W_HPREFIX"] + 1
 F["RF_W_DISPLAY"] = F["RF_W_BALANCE"] + 1
 F["RF_W_SHOWPROF"] = F["RF_W_DISPLAY"] + 1
-F["RF_WORDS"] = F["RF_W_SHOWPROF"] + 1
+for i, name in enumerate(["SHADE", "TEXTURES", "SHADE_TABLE", "SHADEPROF"]):
+    F[f"RF_W_{name}"] = F["RF_W_SHOWPROF"] + 1 + i
+F["RF_WORDS"] = F["RF_W_SHADEPROF"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
 SHOW = {
     name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHOW_H.read_text())
+}
+SHADE_H = KERNELS / "shade.h"
+SH = {
+    name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHADE_H.read_text())
 }
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
@@ -78,6 +84,9 @@ def same_numbers():
         "RF_HANDLER_SHOW": SHOW["kHandlerShow"],
         "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
         "RF_DISPLAY_PAGES": lists.TILES,
+        "RF_HANDLER_SHADE": SH["kHandlerShade"],
+        "RF_SHADE_ADDR_AT": S["kShadeAddrAt"],
+        "kRecShade": (SH["kRecShade"], S["kRecShadeWord"]),
         # PLACE's list and directory words against the fill's
         "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
         "kLayDirFrame": (S["kLayDirFrame"], K["kDirFrame"]),
@@ -126,6 +135,27 @@ def regions(scene, workers, show_table=None):
     }
 
 
+def shade_buffers():
+    """SHADE's buffers (kernels/shade.h): planes, table, asks, answers, the page slots
+    and the white texel's page, the pack thread's space."""
+    return [
+        km.Buffer(
+            SH["kCbShadePlanes"], "uint32", K["kOutPageBytes"], SH["kShadePlanePages"]
+        ),
+        km.Buffer(SH["kCbShadeTable"], "uint32", SH["kShadeTableBytes"], 1),
+        km.Buffer(
+            SH["kCbShadeAsk"], "uint32", SH["kShadeAskBytes"], SH["kShadeAskPages"]
+        ),
+        km.Buffer(
+            SH["kCbShadeDone"], "uint32", SH["kShadeDoneBytes"], SH["kShadeDonePages"]
+        ),
+        km.Buffer(
+            SH["kCbShadeSlots"], "uint32", SH["kTexPageBytes"], SH["kShadeSlots"] + 1
+        ),
+        km.Buffer(SH["kCbShadeWork"], "uint32", SH["kShadeWorkBytes"], 1),
+    ]
+
+
 def program(scene, words, workers, show_table=None):
     """The frame program: the passes' and the fill's kernels behind one entry each
     (kernels/frame_*.cpp), both programs' buffers and SHOW's, with the frame thread on
@@ -143,6 +173,7 @@ def program(scene, words, workers, show_table=None):
             km.Buffer(
                 SHOW["kCbShow"], "uint32", SHOW["kShowPageBytes"], SHOW["kShowPages"]
             ),
+            *shade_buffers(),
         ],
         compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
         compute=fill_program.compute,
@@ -152,6 +183,7 @@ def program(scene, words, workers, show_table=None):
             **fill_program.handlers,
             **passes_program.handlers,
             "show": SHOW["kHandlerShow"],
+            "shade": SH["kHandlerShade"],
         },
     )
     frame_program.thread(

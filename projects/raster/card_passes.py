@@ -33,7 +33,7 @@ def program():
             "writer": KERNELS / "setup_writer.cpp",
         },
         buffers=[
-            km.Buffer(S["kCbMesh"], "uint32", S["kMeshBytes"], S["kMeshPages"]),
+            km.Buffer(S["kCbMesh"], "uint32", S["kMeshPageBytes"], S["kMeshPages"]),
             km.Buffer(S["kCbRec"], "uint32", S["kRecBytes"], S["kRecPages"]),
             km.Buffer(S["kCbSlots"], "uint32", S["kSlotsBytes"], 1),
             km.Buffer(S["kCbWork"], "uint32", S["kWorkBytes"], 1),

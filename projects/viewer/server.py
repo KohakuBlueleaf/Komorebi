@@ -26,6 +26,7 @@ from projects.viewer import renderers
 
 HERE = Path(__file__).resolve().parent
 SCENES = ("tiny", "sponza_overview", "bistro_interior_overview")
+OFFERS = renderers.offers(SCENES)  # {renderer: the scenes it is offered on}
 KEEP_ALIVE_S = 1.0  # a frame a second when no pose comes
 JPEG_QUALITY = 85
 BOUNDARY = "frame"
@@ -167,6 +168,7 @@ class Viewer:
                 "frame": self.frame_number,
                 "renderers": list(renderers.RENDERERS),
                 "scenes": list(SCENES),
+                "offers": OFFERS,
                 "diagonal": self.diagonal,
                 "scene_serial": self.scene_serial,
                 "first_pose": self.first_pose,
@@ -347,6 +349,8 @@ def handler_class(viewer, token, page):
                     renderer, scene = body["renderer"], body["scene"]
                     if renderer not in renderers.RENDERERS or scene not in SCENES:
                         raise ValueError(f"no renderer {renderer} or scene {scene}")
+                    if scene not in OFFERS[renderer]:
+                        raise ValueError(f"{renderer} is not offered on {scene}")
                     viewer.select(renderer, scene)
                     self.reply_json(200, {"selected": [renderer, scene]})
                 else:
@@ -393,6 +397,8 @@ def main():
     parser.add_argument("--scene", choices=list(SCENES), default="tiny")
     args = parser.parse_args()
     page = (HERE / "page.html").read_bytes()
+    if not renderers.RENDERERS[args.renderer].offered(args.scene):
+        parser.error(f"{args.renderer} is not offered on {args.scene}")
     viewer = Viewer(args.renderer, args.scene)
     server = ThreadingHTTPServer(
         (args.host, args.port), handler_class(viewer, args.token, page)

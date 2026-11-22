@@ -71,8 +71,9 @@ async function refresh() {
   try {
     const response = await fetch("/state" + q, {cache: "no-store"});
     const state = await response.json();
-    fill(rendererSelect, state.renderers, state.selected[0]);
+    offers = state.offers;
     fill(sceneSelect, state.scenes, state.selected[1]);
+    fill(rendererSelect, offered(sceneSelect.value), state.selected[0]);
     diagonal = state.diagonal || 1;
     if (state.scene_serial !== sceneSerial && state.first_pose) {
       sceneSerial = state.scene_serial;
@@ -93,8 +94,15 @@ async function refresh() {
 refresh();
 setInterval(refresh, 500);
 
+// The renderers offered on a scene (raster-textured: scenes with materials).
+let offers = {};
+function offered(scene) {
+  return Object.keys(offers).filter((name) => offers[name].includes(scene));
+}
 function select() {
-  post("/select", {renderer: rendererSelect.value, scene: sceneSelect.value});
+  const names = offered(sceneSelect.value);
+  const renderer = names.includes(rendererSelect.value) ? rendererSelect.value : names[0];
+  post("/select", {renderer: renderer, scene: sceneSelect.value});
 }
 rendererSelect.addEventListener("change", select);
 sceneSelect.addEventListener("change", select);

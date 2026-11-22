@@ -1,5 +1,5 @@
-// The frame program's reader: the passes' (handlers from 11), the fill's and SHOW
-// (show_reader.hpp, in the fill's namespace), chosen by handler.
+// The frame program's reader: the passes' (handlers from 11), the fill's, SHOW and
+// SHADE (show_reader.hpp, shade_reader.hpp, in the fill's namespace), by handler.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -11,6 +11,7 @@
 namespace fill_k {
 #include "reader.cpp"
 #include "show_reader.hpp"
+#include "shade_reader.hpp"
 }  // namespace fill_k
 
 namespace pass_k {
@@ -22,6 +23,8 @@ void kernel_main() {
     reader.run([&](const km_command_t& command) {
         if (km::handler(command) == fill_k::kHandlerShow) {
             fill_k::show_reader_command(reader, command);
+        } else if (km::handler(command) == fill_k::kHandlerShade) {
+            fill_k::shade_reader_command(reader, command);
         } else if (km::handler(command) >= pass_k::kHandlerLanes) {
             pass_k::setup_reader_command(reader, command);
         } else {

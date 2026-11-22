@@ -1,7 +1,7 @@
-"""The viewer checked without a browser: each renderer and scene selected, 20 poses
-posted, the frames of /stream decoded (1024 x 1024, the first and last differing),
-and 403 without the token. Prints one JSON line; exits 1 unless `ok`.
-python -m projects.viewer.check --url URL --token TOKEN"""
+"""The viewer checked without a browser: each renderer on each scene it is offered on
+selected (400 on the others), 20 poses posted, the frames of /stream decoded (1024 x
+1024, first and last differing), 403 without the token. One JSON line; exits 1 unless
+`ok`. python -m projects.viewer.check --url URL --token TOKEN"""
 
 import argparse
 import io
@@ -186,13 +186,27 @@ def main():
     page_status, page = get(f"{base}/?token={token}")
     report["page"] = page_status == 200 and b"/stream" in page
     state = json.loads(get(f"{base}/state?token={token}")[1])
+    offers = state["offers"]
+    report["offers"] = offers
+    report["refused"] = {  # a renderer selected on a scene it is not offered on: 400
+        f"{renderer}/{scene}": status_of(
+            lambda renderer=renderer, scene=scene: post(
+                f"{base}/select", {"renderer": renderer, "scene": scene}, token
+            )
+        )
+        for renderer in state["renderers"]
+        for scene in state["scenes"]
+        if scene not in offers[renderer]
+    }
     report["cases"] = [
         run_case(base, token, renderer, scene)
         for renderer in state["renderers"]
-        for scene in state["scenes"]
+        for scene in offers[renderer]
     ]
     report["ok"] = bool(
         all(code == 403 for code in report["forbidden"].values())
+        and all(code == 400 for code in report["refused"].values())
+        and offers.get("raster-textured")
         and report["page"]
         and all(case["ok"] for case in report["cases"])
     )

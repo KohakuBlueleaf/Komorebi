@@ -13,7 +13,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 | file | what it is |
 |---|---|
 | `server.py` | the web server (Python's `http.server` only) and the render loop, on the main thread, that owns the card's session |
-| `renderers.py` | `Raster` and `Raytrace`: `open(scene)`, `frame(camera_words) -> (image, card_ms)`, `close()`, on the `Loop` class of each project's `live.py` |
+| `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file) and `Raytrace`: `open(scene)`, `frame(camera_words) -> (image, card_ms)`, `close()`, on the `Loop` class of each project's `live.py` |
 | `page.html` | the page: the stream, the numbers, the selects and the controls; no external files |
 | `check.py` | the check without a browser |
 
@@ -30,7 +30,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 
 ```
 python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
-    [--renderer raster|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview]
+    [--renderer raster|raster-textured|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview]
 ```
 
 The server binds only the address `--host` gives. Open

@@ -378,6 +378,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         rows[i] = (uint16_t)(work->items[i].first_row | work->items[i].end_row << 8);
     }
     items[RF_HPREFIX_ADDR_AT / 4] = frame->words[RF_W_HPREFIX];
+    items[RF_SHADE_ADDR_AT / 4] = frame->words[RF_W_SHADE];
     uint32_t* frame_words = items + RF_FRAME_WORDS_AT / 4;
     frame_words[0] = frame->words[RF_W_FRAME_PAGES];
     for (uint32_t frame_slot = 0; frame_slot < RF_FRAME_MAX; frame_slot++) {
@@ -538,6 +539,19 @@ static uint32_t show(frame_t* frame) {
     return run(&command);
 }
 
+/* SHADE: the frame's colour from the materials and textures, in place
+ * (kernels/shade.h). 0, or the code to report. */
+static uint32_t shade(frame_t* frame) {
+    km_command_t command;
+    new_command(&command, RF_HANDLER_SHADE, frame);
+    command.a0 = frame->words[RF_W_DIR];         /* directory_address */
+    command.a1 = frame->words[RF_W_LISTS];       /* lists_address */
+    command.a2 = frame->words[RF_W_TEXTURES];    /* textures_address */
+    command.a3 = frame->words[RF_W_SHADE_TABLE]; /* table_address */
+    command.a4 = frame->words[RF_W_SHADEPROF];   /* profile_address */
+    return run(&command);
+}
+
 _Static_assert(KM_TRANSFER_NONCE == 7u, "a transfer's nonce is its a7");
 
 /* The display's PUSH from the words the host wrote into the push region, its nonce word
@@ -562,8 +576,8 @@ static uint32_t push(uint32_t key) {
     return run(&command);
 }
 
-/* FRAME: one frame from the camera at the start of its region, then SHOW, then (a1)
- * the display's PUSH; its parts' ticks go to a row of the times region. */
+/* FRAME: one frame from the camera at the start of its region, SHADE when shaded, SHOW,
+ * then (a1) the display's PUSH; its parts' ticks go to a row of the times region. */
 static uint32_t serve_frame(const km_command_t* command) {
     frame_t* frame = &g_frame;
     const uint64_t started = kmx_time();
@@ -572,6 +586,12 @@ static uint32_t serve_frame(const km_command_t* command) {
         frame->result[i] = 0;
     }
     uint32_t code = frame_once(frame, (work_t*)g_regions[RF_R_WORK], g_regions);
+    uint32_t shade_ticks = 0;
+    if (code == 0 && frame->words[RF_W_SHADE]) {
+        const uint64_t shade_started = kmx_time();
+        code = shade(frame);
+        shade_ticks = (uint32_t)(kmx_time() - shade_started);
+    }
     uint32_t show_ticks = 0;
     if (code == 0) {
         const uint64_t show_started = kmx_time();
@@ -591,6 +611,7 @@ static uint32_t serve_frame(const km_command_t* command) {
         times[i] = frame->result[i];
     }
     times[RF_T_SHOW] = show_ticks;
+    times[RF_T_SHADE] = shade_ticks;
     times[RF_T_PUSH] = push_ticks;
     times[RF_T_NUMBER] = g_served;
     times[RF_T_CODE] = code;

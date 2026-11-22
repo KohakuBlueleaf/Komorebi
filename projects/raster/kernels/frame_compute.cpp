@@ -1,5 +1,5 @@
-// The frame program's compute kernel: the passes' and the fill's file, each in a
-// namespace without its entry, chosen by handler; uint32 buffers both, one start-up.
+// The frame program's compute kernel: the passes', the fill's and SHADE's file, each
+// in a namespace without its entry, chosen by handler; uint32 buffers, one start-up.
 #include <stdint.h>
 
 #include "api/compute/cb_api.h"
@@ -31,11 +31,17 @@ namespace pass_k {
 #include "setup_compute.cpp"
 }  // namespace pass_k
 
+namespace shade_k {
+#include "shade_compute.hpp"
+}  // namespace shade_k
+
 void kernel_main() {
     km::Compute compute;
     compute_kernel_hw_startup(fill_k::kCbIn, fill_k::kCbOut);
     compute.run([&](const km_command_t& command) {
-        if (km::handler(command) >= pass_k::kHandlerLanes) {
+        if (km::handler(command) == shade_k::kHandlerShade) {
+            shade_k::shade_compute_command(command);
+        } else if (km::handler(command) >= pass_k::kHandlerLanes) {
             pass_k::setup_compute_command(compute, command);
         } else {
             fill_k::fill_compute_command(command);
