@@ -28,7 +28,7 @@ P["RP_DIRS_BYTES"] = _BLOCKS * P["RP_DIR_BYTES"]
 P["RP_COST_REGION_BYTES"] = _BLOCKS * P["RP_COST_BYTES"]
 P["RP_LOG_BYTES"] = P["RP_FRAMES_MAX"] * P["RP_LOG_WORDS"] * 4
 CLUSTER = 1
-MODES = {"host": 0, "equal": 1, "counts": 2, "trace": 3, "frame": 4}
+MODES = {"host": 0, "equal": 1, "counts": 2, "trace": 3, "frame": 4, "pull": 5}
 TRACES = ("primary", "shadow", "bounce", "shadow2")
 CODES = {0: "ok", 1: "bad arguments", 2: "ring", 3: "command", 4: "plan"}
 WORK_BYTES = 2 << 20  # plan.c work_t: cycles and hits per trace, prediction, prefix
@@ -46,6 +46,7 @@ def same_numbers():
         "RP_COST_HEAD": K["kCostHead"],
         "RP_COST_MAX": K["kCostMax"],
         "RP_COST_BYTES": K["kCostBytes"],
+        "RP_PULLED": K["kModePulled"],
     }
     return {name: (P[name], value) for name, value in pairs.items() if P[name] != value}
 
@@ -74,9 +75,20 @@ def table(entries, directory, profile_tensors, workers):
 
 
 def program(
-    base, table_words, mode, frames, workers, packet_count, capacity, command_count
+    base,
+    table_words,
+    mode,
+    frames,
+    workers,
+    packet_count,
+    capacity,
+    command_count,
+    per=0,
+    pulled=(),
 ):
-    """The program base with the planning thread on work cluster 1."""
+    """The program base with the planning thread on work cluster 1; mode "pull": the
+    traces named in `pulled` pulled in ranges of `per` packets, every core served by an
+    X280 core of the cluster (ports)."""
     words = [0] * P["RP_WORDS"]
     words[P["RP_W_MODE"]] = MODES[mode]
     words[P["RP_W_FRAMES"]] = frames
@@ -85,6 +97,8 @@ def program(
     words[P["RP_W_PACKETS"]] = packet_count
     words[P["RP_W_CAP"]] = capacity
     words[P["RP_W_COMMANDS"]] = command_count
+    words[P["RP_W_PER"]] = per
+    words[P["RP_W_PULLED"]] = sum(1 << TRACES.index(name) for name in pulled)
     base.thread(
         cluster=CLUSTER,
         sources=[THREAD / "plan.c"],
@@ -99,6 +113,8 @@ def program(
         words=words,
         deadline=20.0,
     )
+    if mode == "pull":
+        base.ports()
     return base
 
 
@@ -148,14 +164,15 @@ def run(session, program_to_load, frames, meter, log, deadline_s=5.0):
     return frame_logs, status, loaded.state(), meter.samples
 
 
-def entries_of(records, steps, per_step, treelets):
+def entries_of(records, steps, per_step, treelets, pulled=()):
     """Table entries from frame.commands' (handler, words) list (LOAD first): a trace's
-    chunk commands become one entry of kind 1 + its index; the rest stay as they are."""
+    chunk commands become one entry of kind 1 + its index (without treelets, a trace in
+    `pulled` alone); the rest stay as they are."""
     entries = [(P["RP_KIND_FIRST"], *records[0])]
     position = 1
     for step, chunk_count in zip(steps, per_step):
         name, handler = step[0], step[1]
-        if handler == "kHandlerTrace" and treelets:
+        if handler == "kHandlerTrace" and (treelets or name in pulled):
             handler_word, words = records[position]
             words = list(words)
             words[0] = words[4] = 0

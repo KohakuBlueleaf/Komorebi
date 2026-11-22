@@ -380,8 +380,16 @@ def planned(
     and step, the profile tensors of the last frame, the host's seconds, power
     samples."""
     tree_pages, sizes, workers, packet_count, packets_per_command = shape
-    capacity = min(packets_per_command, planner.P["RP_COST_MAX"])
-    entries = planner.entries_of(records, steps, per_step, treelets)
+    capacity = min(
+        packets_per_command or planner.P["RP_COST_MAX"], planner.P["RP_COST_MAX"]
+    )
+    pulled = tuple(arguments.pull_traces) if arguments.plan == "pull" else ()
+    per = arguments.pull_packets if pulled else 0
+    if pulled and not 0 < per <= (packets_per_command or packet_count):
+        raise ValueError(
+            f"--pull-packets {per}: a range holds 1 to {packets_per_command} packets"
+        )
+    entries = planner.entries_of(records, steps, per_step, treelets, pulled)
     table_words = planner.table(
         entries,
         directory,
@@ -401,6 +409,8 @@ def planned(
         packet_count,
         capacity,
         len(entries),
+        per,
+        pulled,
     )
     card.log(
         f"frame: {packet_count} packets, {len(entries)} table commands, "
@@ -411,6 +421,8 @@ def planned(
         session, program, arguments.reps, meter, card.log
     )
     report["plan"] = {"mode": arguments.plan, "cap": capacity, "thread": status}
+    if pulled:
+        report["plan"].update(pull_packets=per, pulled=list(pulled))
     kinds = [entry[0] & 0xFF for entry in entries]
     frame_step_times, last_chunks = [], None
     for index, frame_log in enumerate(frames):
@@ -454,13 +466,13 @@ def planned(
     report["run"] = card.check_run(ran, workers)
     report["run"].update(done=int(done), commands=1)
     report["host"] = {"commands": 0, "command_bytes": 0, "wall_s": status["host_s"]}
-    kind_of = iter(kind for kind in kinds[1:] if kind)
     profiles_read = []
-    for step, step_profiles in zip(steps, profiles):
+    for step, step_profiles, count in zip(steps, profiles, per_step):
+        planned_trace = step[1] == "kHandlerTrace" and (treelets or step[0] in pulled)
         profiles_read.append(
-            step_profiles[: last_chunks[next(kind_of) - 1]]
-            if step[1] == "kHandlerTrace"
-            else step_profiles
+            step_profiles[: last_chunks[planner.TRACES.index(step[0])]]
+            if planned_trace
+            else step_profiles[:count]
         )
     frame_step_times = (
         np.stack(frame_step_times) if frame_step_times else np.zeros((1, len(steps)))
@@ -664,9 +676,20 @@ def main():
     parser.add_argument(
         "--plan", choices=planner.MODES, default=None, help="X280 thread cuts traces"
     )
+    parser.add_argument(
+        "--pull-packets", type=int, default=16, help="--plan pull: packets a pull"
+    )
+    parser.add_argument(
+        "--pull-traces",
+        nargs="+",
+        choices=planner.TRACES,
+        default=["bounce"],
+        help="--plan pull: the traces pulled",
+    )
     arguments = parser.parse_args()
-    if (arguments.sort or arguments.plan) and not arguments.treelets:
-        parser.error("--sort and --plan need --treelets")
+    planned_cut = arguments.plan and arguments.plan != "pull"
+    if (arguments.sort or planned_cut) and not arguments.treelets:
+        parser.error("--sort and --plan (but pull) need --treelets")
     if arguments.plan and planner.same_numbers():
         parser.error(f"plan.h differs from raytrace.h: {planner.same_numbers()}")
     prepared = prepare(arguments)

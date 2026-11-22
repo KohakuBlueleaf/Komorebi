@@ -12,10 +12,11 @@
 #define RP_COST_HEAD 16u
 #define RP_COST_MAX 192u
 #define RP_COST_BYTES 1600u /* 4 x (head + 2 x max): first, count; cycles; hits */
+#define RP_PULLED 2u        /* a3 bit of a pulled trace (kModePulled) */
 
 /* Sizes */
 #define RP_TRACES 4u      /* primary, shadow, bounce, second shadow */
-#define RP_CHUNKS 8u      /* chunk commands a trace may take */
+#define RP_CHUNKS 16u     /* chunk commands a trace may take */
 #define RP_CORES_MAX 128u /* cores of the group */
 #define RP_PACKETS_MAX 32768u
 #define RP_COMMANDS_MAX 32u /* commands of a frame in the table */
@@ -28,6 +29,9 @@
 #define RP_MODE_COUNTS 2u /* equal rays: the previous trace's hits */
 #define RP_MODE_TRACE 3u  /* equal cost: the previous trace's cycles */
 #define RP_MODE_FRAME 4u  /* the previous frame's cycles (cold frame: below) */
+/* RP_W_PULLED's traces one command each, the cores pulling ranges of RP_W_PER
+   packets; the others as RP_MODE_HOST */
+#define RP_MODE_PULL 5u
 
 /* Words */
 #define RP_W_MODE 0u
@@ -37,7 +41,9 @@
 #define RP_W_PACKETS 4u
 #define RP_W_CAP 5u      /* packets a core may take in one command */
 #define RP_W_COMMANDS 6u /* commands of a frame in the table */
-#define RP_WORDS 7u
+#define RP_W_PER 7u      /* RP_MODE_PULL: packets a pull hands a core */
+#define RP_W_PULLED 8u   /* RP_MODE_PULL: the pulled traces, bit t for trace t */
+#define RP_WORDS 9u
 
 /* Regions */
 #define RP_R_TABLE 0u

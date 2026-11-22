@@ -1,5 +1,5 @@
-/* The frame on the work cluster: each command submitted and waited for; before each
- * trace four X280 cores cut its packets into chunk commands of equal predicted cost. */
+/* The frame on the work cluster: each command submitted and waited for; a trace is cut
+ * into chunk commands of equal predicted cost, or pulled (RP_MODE_PULL). */
 #include <stdint.h>
 
 #include "kmx.h"
@@ -15,7 +15,7 @@ typedef struct {
 typedef struct {
     const uint32_t* words;
     const uint32_t* table;
-    uint32_t workers, packets, capacity, mode, bank_plus_one;
+    uint32_t workers, packets, capacity, mode, bank_plus_one, per, pulled;
     uint32_t directories_address, costs_address; /* bank addresses */
     uint8_t* directories;
     const uint8_t* costs;
@@ -407,7 +407,7 @@ static uint32_t plan(
     /* the frame mode without a source cuts as the host: equal packets lose (WHY-SLOW)
      */
     if (
-        context->mode == RP_MODE_HOST ||
+        context->mode == RP_MODE_HOST || context->mode == RP_MODE_PULL ||
         (context->mode == RP_MODE_FRAME && step->source == RP_TRACES)
     ) {
         const uint32_t chunks = host_cut(context);
@@ -453,6 +453,34 @@ static uint32_t run(plan_t* context, const km_command_t* command, uint32_t* tick
     return event.kind == KM_EVENT_DONE ? 0u : RP_COMMAND;
 }
 
+/* Submits the pulled `command` with kmx_pull_run (ranges of `per` packets) and serves
+ * it until its event: 0, or the code to report. */
+static uint32_t run_pulled(
+    plan_t* context, const km_command_t* command, uint32_t* ticks
+) {
+    kmx_pull pull; /* field by field: an initializer may call memset */
+    pull.units = context->packets;
+    pull.per = context->per;
+    pull.mode = KMX_PULL_COUNT;
+    pull.log = 0;
+    pull.pick = 0;
+    pull.arg = 0;
+    pull.pick_word = 0;
+    const uint64_t until = kmx_time() + WAIT_TICKS;
+    kmx_event event;
+    int status = kmx_pull_run(command, &pull, &event);
+    while (status == KMX_FULL && kmx_time() < until && !kmx_stop_requested()) {
+        status = kmx_pull_run(command, &pull, &event);
+    }
+    if (status != KMX_OK) {
+        return RP_RING;
+    }
+    *ticks = event.ticks;
+    context->output[2] = event.kind;
+    context->output[3] = event.auxiliary;
+    return event.kind == KM_EVENT_DONE ? 0u : RP_COMMAND;
+}
+
 /* Fills `command` field by field (a struct assignment may call memset, which does not
  * link) */
 static void fill_command(km_command_t* command, const uint32_t* record) {
@@ -487,6 +515,30 @@ static uint32_t frame_once(plan_t* context, uint32_t frame) {
         km_command_t command;
         fill_command(&command, record);
         uint32_t chunks = 1;
+        const int pulled = (
+            kind != 0 && context->mode == RP_MODE_PULL &&
+            ((context->pulled >> (kind - 1)) & 1u)
+        );
+        if (pulled) {
+            /* one command, no plan: the cores pull the trace's packets */
+            const uint32_t trace = kind - 1;
+            log[RP_L_PLAN + trace] = 0;
+            log[RP_L_CHUNKS + trace] = 1;
+            context->used[trace] = 0; /* no cost blocks */
+            command.a3 |= RP_PULLED;
+            command.a4 = context->table[RP_T_PROF + trace * RP_CHUNKS];
+            uint32_t ticks = 0;
+            const uint32_t code = run_pulled(context, &command, &ticks);
+            if (submitted < RP_LOG_WORDS - RP_L_COMMAND) {
+                log[RP_L_COMMAND + submitted] = ticks;
+            }
+            submitted++;
+            if (code) {
+                context->output[1] = command_index;
+                return code;
+            }
+            continue;
+        }
         if (kind != 0) {
             const uint32_t trace = kind - 1;
             const uint64_t plan_started = kmx_time();
@@ -576,9 +628,12 @@ int kmx_main(int xcore) {
     context.packets = context.words[RP_W_PACKETS];
     context.capacity = context.words[RP_W_CAP];
     context.bank_plus_one = 1 + context.words[RP_W_BANK];
+    context.per = context.words[RP_W_PER];
+    context.pulled = context.words[RP_W_PULLED];
     const uint32_t frames = context.words[RP_W_FRAMES];
     if (
-        context.mode > RP_MODE_FRAME || context.workers == 0 ||
+        context.mode > RP_MODE_PULL ||
+        (context.mode == RP_MODE_PULL && context.per == 0) || context.workers == 0 ||
         context.workers > RP_CORES_MAX || context.packets == 0 ||
         context.packets > RP_PACKETS_MAX || context.capacity == 0 ||
         context.capacity > RP_COST_MAX ||

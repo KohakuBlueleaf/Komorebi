@@ -1,10 +1,11 @@
 // Ray tracing reader: LOAD copies the tree image into the tree buffer; the other
-// handlers send a header page (first page, count), then stream this core's pages.
+// handlers stream this core's pages, or each pulled range's, after a header page.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
 #include "timed.hpp"
 #include "dir_noc.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "komorebi/device/movement/km_chain.hpp"
 #include "komorebi/device/tensors/km_ask.hpp"
@@ -104,15 +105,17 @@ namespace {
         }
     };
 
-    // A command's treelet schedule per batch: rounds (entry `round` of every list) or
-    // once; packets binned by treelet, a treelet read into a slot unless present.
+    // A command's treelet schedule per batch: packets binned by treelet, a treelet read
+    // into a slot unless present. The slots are the caller's.
     class Schedule {
     public:
         Schedule(
             km::Reader& reader,
             const km_command_t& command,
             uint32_t packets,
-            volatile tt_l1_ptr uint32_t* directory
+            volatile tt_l1_ptr uint32_t* directory,
+            Slots& slots,
+            bool keep
         ) :
             reader_(reader),
             command_(command),
@@ -122,10 +125,13 @@ namespace {
             slot_limit_(command.a8),
             policy_word_(command.a9),
             packets_(packets),
-            directory_(directory) {
+            directory_(directory),
+            slots_(slots),
+            keep_(keep) {
         }
 
-        // Buffers and empty slots; false when the lists' scratch does not fit.
+        // Buffers and empty slots (kept: the treelets the range before left in them,
+        // all of its work pages done); false when the lists' scratch does not fit.
         bool init() {
             const uint32_t* top = reinterpret_cast<const uint32_t*>(g_tree);
             treelet_count_ = top[kTreeTreelets];
@@ -151,8 +157,11 @@ namespace {
             slots_.bytes = slot_bytes_;
             slots_.count = slot_limit_ < kMaxSlots ? slot_limit_ : kMaxSlots;
             for (uint32_t slot = 0; slot < slots_.count; ++slot) {
-                slots_.treelet[slot] = 0xFFFFFFFF;
-                slots_.last[slot] = slots_.used[slot] = 0;
+                if (!keep_) {
+                    slots_.treelet[slot] = 0xFFFFFFFF;
+                    slots_.used[slot] = 0;
+                }
+                slots_.last[slot] = 0;  // this schedule's work pages count from 0
             }
             for (uint32_t treelet = 0; treelet < treelets; ++treelet) {
                 counts[treelet] = 0;
@@ -367,7 +376,8 @@ namespace {
         uint32_t* counts_ = nullptr;
         uint16_t* present_ = nullptr;
         uint16_t* order_ = nullptr;
-        Slots slots_;
+        Slots& slots_;
+        const bool keep_;
         uint32_t items_ = 0;
     };
 
@@ -820,6 +830,7 @@ namespace {
 
 void kernel_main() {
     km::Reader reader;
+    km::X280Port port(reader);  // a pulled trace's ranges (served when it is pulled)
     const auto step = [&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
         if (handler == kHandlerLoad) {
@@ -903,24 +914,124 @@ void kernel_main() {
         const uint32_t started = km::wall();
         const uint32_t directory_space = get_write_ptr(kCbDirReader);
         volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
+        // Pulled: no directory entry; ranges from the X280 core, each as a chunk.
+        const bool pulled = (
+            (handler == kHandlerTrace || handler == kHandlerTreelets) &&
+            (command.a3 & kModePulled) != 0
+        );
         if (
-            !read_directory<Directories>(reader, command, handler, directory_space) ||
-            !timed::reads_done(reader, km::kStReader)
+            !pulled &&
+            (
+                !read_directory<Directories>(
+                    reader, command, handler, directory_space
+                ) ||
+                !timed::reads_done(reader, km::kStReader)
+            )
         ) {
             return;
         }
         for (uint32_t counter = 0; counter < kRdCounters; ++counter) {
             directory[kRdWords + counter] = 0;
         }
+        // The header page to compute: a range's first packet and count.
+        const auto send_header = [&](uint32_t first, uint32_t count) {
+            if (!reader.reserve(kCbIn, 1)) {
+                return false;
+            }
+            volatile tt_l1_ptr uint32_t* header = km::l1(get_write_ptr(kCbIn));
+            header[kDirFirst] = first;
+            header[kDirCount] = count;
+            cb_push_back(kCbIn, 1);
+            return true;
+        };
+        // A range's (or the entry's) pages to compute, then with treelets its batches.
+        // The slots are emptied at the command's first range and kept for the next.
+        Slots slots;
+        bool slots_filled = false;
+        const auto run_range = [&](
+            uint32_t first_packet, uint32_t packets, bool whole
+        ) {
+            uint32_t wait = 0, read = 0;
+            const uint32_t input_address = command.a1;
+            const uint32_t page_bytes = in_page_bytes(handler);
+            const uint32_t page_packets = packets_per_page(handler);
+            const uint32_t pages = handler == kHandlerRecip ? 0 : packets;
+            for (uint32_t page = 0; page < pages; ++page) {
+                const uint32_t read_started = km::wall();
+                if (!read_page(
+                    reader,
+                    input_address,
+                    page_bytes,
+                    page_packets,
+                    first_packet + page,
+                    wait
+                )) {
+                    return false;
+                }
+                read += km::wall() - read_started;
+            }
+            read -= wait;
+            directory[kRdWords + 0] += wait;
+            directory[kRdWords + 1] += read;
+            directory[kRdWords + 3] += pages;
+            if (handler != kHandlerTreelets) {
+                return true;
+            }
+            // Per batch: the top walks' end, the schedule, the batch's end page. At
+            // most packets + 1 batches: each one admits a packet (compute sees to it).
+            Schedule schedule(reader, command, packets, directory, slots, slots_filled);
+            slots_filled = true;
+            for (uint32_t batch = 0; batch <= packets; ++batch) {
+                const uint32_t signal_started = km::wall();
+                const uint32_t code = reader.poll(
+                    [] {
+                        return cb_pages_available_at_front(kCbSignal, 1);
+                    },
+                    reader.args().wait_limit
+                );
+                if (code != km::kGaveNone) {
+                    reader.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
+                    return false;
+                }
+                cb_wait_front(kCbSignal, 1);
+                cb_pop_front(kCbSignal, 1);
+                directory[kRdWords + kRdSignal] += km::wall() - signal_started;
+                if ((batch == 0 && !schedule.init()) || !schedule.batch()) {
+                    return false;
+                }
+                const bool more = schedule.more() && batch < packets;
+                if (!more && whole) {
+                    directory[kRdWords + 2] = km::wall() - started;
+                }
+                if (!schedule.finish(more ? kWorkNext : kWorkEnd)) {
+                    return false;
+                }
+                if (!more) {
+                    return true;
+                }
+            }
+            return true;
+        };
+        if (pulled) {
+            uint32_t first = 0;
+            for (;;) {
+                const uint32_t count = port.next(first);
+                if (count == 0) {
+                    // the counters before the end header: the writer reads them next
+                    directory[kRdWords + 2] = km::wall() - started;
+                    send_header(first, 0);
+                    return;
+                }
+                if (!send_header(first, count) || !run_range(first, count, false)) {
+                    return;
+                }
+            }
+        }
         const uint32_t first_packet = directory[kDirFirst];
         const uint32_t packets = directory[kDirCount];
-        if (!reader.reserve(kCbIn, 1)) {
+        if (!send_header(first_packet, packets)) {
             return;
         }
-        volatile tt_l1_ptr uint32_t* header = km::l1(get_write_ptr(kCbIn));
-        header[kDirFirst] = first_packet;
-        header[kDirCount] = packets;
-        cb_push_back(kCbIn, 1);
         uint32_t wait = 0, read = 0;
         if (is_stage(handler)) {
             // The constant page, then each packet's page of every input stream.
@@ -954,58 +1065,7 @@ void kernel_main() {
             directory[kRdWords + 2] = km::wall() - started;
             return;
         }
-        const uint32_t input_address = command.a1;
-        const uint32_t page_bytes = in_page_bytes(handler);
-        const uint32_t page_packets = packets_per_page(handler);
-        const uint32_t pages = handler == kHandlerRecip ? 0 : packets;
-        for (uint32_t page = 0; page < pages; ++page) {
-            const uint32_t read_started = km::wall();
-            if (!read_page(
-                reader,
-                input_address,
-                page_bytes,
-                page_packets,
-                first_packet + page,
-                wait
-            )) {
-                return;
-            }
-            read += km::wall() - read_started;
-        }
-        read -= wait;
-        directory[kRdWords + 0] = wait;
-        directory[kRdWords + 1] = read;
-        directory[kRdWords + 3] = pages;
-        if (handler == kHandlerTreelets) {
-            // Per batch: the top walks' end, the schedule, the batch's end page. At
-            // most packets + 1 batches: each one admits a packet (compute sees to it).
-            Schedule schedule(reader, command, packets, directory);
-            for (uint32_t batch = 0; batch <= packets; ++batch) {
-                const uint32_t signal_started = km::wall();
-                const uint32_t code = reader.poll(
-                    [] {
-                        return cb_pages_available_at_front(kCbSignal, 1);
-                    },
-                    reader.args().wait_limit
-                );
-                if (code != km::kGaveNone) {
-                    reader.gave_up(km::kStReader, code, km::kWhereData, 0, 0);
-                    return;
-                }
-                cb_wait_front(kCbSignal, 1);
-                cb_pop_front(kCbSignal, 1);
-                directory[kRdWords + kRdSignal] += km::wall() - signal_started;
-                if ((batch == 0 && !schedule.init()) || !schedule.batch()) {
-                    return;
-                }
-                const bool more = schedule.more() && batch < packets;
-                if (!more) {
-                    directory[kRdWords + 2] = km::wall() - started;
-                }
-                if (!schedule.finish(more ? kWorkNext : kWorkEnd) || !more) {
-                    return;
-                }
-            }
+        if (!run_range(first_packet, packets, true) || handler == kHandlerTreelets) {
             return;
         }
         directory[kRdWords + 2] = km::wall() - started;

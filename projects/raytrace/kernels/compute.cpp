@@ -832,6 +832,41 @@ namespace {
         return true;
     }
 
+    // A TREELETS chunk (or pulled range) of `packets`: its batches, then the hit pages.
+    // Inlined: its own frame would not fit the pack thread's stack.
+    __attribute__((always_inline)) inline bool treelet_chunk(
+        uint32_t packets, bool any, uint32_t list_entries, walk::Profile& profile
+    ) {
+        uint32_t done = 0, end = kWorkNext;
+        bool ok = true;
+        for (uint32_t batch = 0; ok && end == kWorkNext && batch <= packets; ++batch) {
+            const uint32_t top_started = wall();
+            ok = top_walks(packets, any, list_entries, batch == 0, profile);
+            const uint32_t top_ended = wall();
+            profile.phase1 += top_ended - top_started;
+            end = ok ? treelet_visits(packets, any, done, profile) : 0;
+            ok = end != 0;
+            profile.phase2 += wall() - top_ended;
+        }
+        const uint32_t results_started = wall();
+        ok = ok && end == kWorkEnd && results_out(packets, any, profile);
+        profile.phase3 += wall() - results_started;
+        return ok;
+    }
+
+    // A pulled range's page to the writer: its first packet and count (0: the end).
+    bool range_out(uint32_t first_packet, uint32_t packets, walk::Profile& profile) {
+        const uint32_t destination = reserve_out(profile);
+        if (destination == 0) {
+            return false;
+        }
+        volatile uint32_t* page = reinterpret_cast<volatile uint32_t*>(destination);
+        page[kRangeFirst] = first_packet;
+        page[kRangeCount] = packets;
+        push_out(destination, 2);
+        return true;
+    }
+
     // The profile page: the pack thread's counters at words 0 to kProfileWords - 1;
     // with `block` (TREELETS) the cost block of its `costs` packets, even of none.
     void write_profile(
@@ -890,46 +925,63 @@ namespace {
 
     void treelet_states();
 
-    // The reader's header page (first page, count) and every page after it to pack,
-    // then (treelets) the work pages up to the end page. On a give-up pack gets kAbort.
-    void unpack_pages(uint32_t handler) {
+    // The reader's header page and the pages after it to pack, then the work pages;
+    // pulled: the same for each range's header, until a header of count 0.
+    void unpack_pages(uint32_t handler, bool pulled) {
         constexpr uint32_t kPack = ckernel::ThreadId::PackThreadId;
-        if (!timed::front(kCbIn, 1)) {
-            ckernel::mailbox_write(kPack, timed::kAbort);
-            return;
-        }
-        const volatile uint32_t* header = (
-            reinterpret_cast<const volatile uint32_t*>(
-                get_tile_l1_byte_address(kCbIn, 0)
-            )
-        );
-        asm volatile("fence" ::: "memory");
-        const uint32_t first_packet = header[kDirFirst], packets = header[kDirCount];
-        ckernel::mailbox_write(kPack, first_packet);
-        ckernel::mailbox_write(kPack, packets);
-        cb_pop_front(kCbIn, 1);
-        const Stage stage = stage_of(handler);
-        const uint32_t pages = (
-            handler == kHandlerRecip
-                ? 0
-                : is_stage(handler)
-                    ? 1 + packets * stage.inputs
-                    : packets
-        );
-        for (uint32_t page = 0; page < pages; ++page) {
+        constexpr uint32_t kMath = ckernel::ThreadId::MathThreadId;
+        for (;;) {
             if (!timed::front(kCbIn, 1)) {
                 ckernel::mailbox_write(kPack, timed::kAbort);
                 return;
             }
-            const bool handed = hand(get_tile_l1_byte_address(kCbIn, 0));
+            const volatile uint32_t*
+                header = (
+                    reinterpret_cast<const volatile uint32_t*>(
+                        get_tile_l1_byte_address(kCbIn, 0)
+                    )
+                );
+            asm volatile("fence" ::: "memory");
+            const uint32_t first_packet = header[kDirFirst];
+            const uint32_t packets = header[kDirCount];
+            ckernel::mailbox_write(kPack, first_packet);
+            ckernel::mailbox_write(kPack, packets);
             cb_pop_front(kCbIn, 1);
-            if (!handed) {
+            if (pulled && packets == 0) {
+                if (handler == kHandlerTreelets) {
+                    ckernel::mailbox_write(kMath, timed::kAbort);
+                }
                 return;
             }
-        }
-        if (handler == kHandlerTreelets) {
-            copy_init(kCbState);
-            treelet_states();
+            const Stage stage = stage_of(handler);
+            const uint32_t pages = (
+                handler == kHandlerRecip
+                    ? 0
+                    : is_stage(handler)
+                        ? 1 + packets * stage.inputs
+                        : packets
+            );
+            for (uint32_t page = 0; page < pages; ++page) {
+                if (!timed::front(kCbIn, 1)) {
+                    ckernel::mailbox_write(kPack, timed::kAbort);
+                    return;
+                }
+                const bool handed = hand(get_tile_l1_byte_address(kCbIn, 0));
+                cb_pop_front(kCbIn, 1);
+                if (!handed) {
+                    return;
+                }
+            }
+            if (handler == kHandlerTreelets) {
+                if (pulled) {
+                    ckernel::mailbox_write(kMath, 1);
+                }
+                copy_init(kCbState);
+                treelet_states();
+            }
+            if (!pulled) {
+                return;
+            }
         }
     }
 
@@ -1042,11 +1094,26 @@ void kernel_main() {
         ) {
             return;
         }
+        const bool pulled_command = (
+            (handler == kHandlerTrace || handler == kHandlerTreelets) &&
+            (command.a3 & kModePulled) != 0
+        );
 #ifdef TRISC_UNPACK
-        unpack_pages(handler);
+        unpack_pages(handler, pulled_command);
 #endif
 #ifdef TRISC_MATH
-        if (handler == kHandlerTreelets) {
+        if (handler == kHandlerTreelets && pulled_command) {
+            // A range's states after each 1 from unpack; kAbort ends the command.
+            for (uint32_t range = 0; range < (1u << 20); ++range) {
+                uint32_t word = 0;
+                if (
+                    !timed::mail(ckernel::ThreadId::UnpackThreadId, word) || word != 1
+                ) {
+                    break;
+                }
+                math_states();
+            }
+        } else if (handler == kHandlerTreelets) {
             math_states();
         }
 #endif
@@ -1064,33 +1131,32 @@ void kernel_main() {
             handler == kHandlerTrace || handler == kHandlerTreelets ||
             handler == kHandlerProbe
         );
+        const bool pulled = pulled_command;
+        const bool any = (command.a3 & kModeAny) != 0;
         if (trees && g_tree == nullptr) {
             profile.error |= kErrorTree;
-        } else if (handler == kHandlerTrace) {
-            const uint32_t mode = command.a3;
-            trace_list(packets, mode == kModeAny, profile);
-        } else if (handler == kHandlerTreelets) {
-            // Batches until the reader's end page says no packet is left deferred.
-            const uint32_t mode = command.a3;
+        } else if (pulled) {
+            // Each range as a chunk, its range page to the writer first; then the end.
             const uint32_t list_entries = command.a6;
-            const bool any = mode == kModeAny;
-            uint32_t done = 0, end = kWorkNext;
             bool ok = true;
-            for (
-                uint32_t batch = 0; ok && end == kWorkNext && batch <= packets; ++batch
-            ) {
-                const uint32_t top_started = wall();
-                ok = top_walks(packets, any, list_entries, batch == 0, profile);
-                const uint32_t top_ended = wall();
-                profile.phase1 += top_ended - top_started;
-                end = ok ? treelet_visits(packets, any, done, profile) : 0;
-                ok = end != 0;
-                profile.phase2 += wall() - top_ended;
+            while (ok && packets != 0) {
+                ok = (
+                    range_out(first_packet, packets, profile) &&
+                    (
+                        handler == kHandlerTrace
+                            ? trace_list(packets, any, profile)
+                            : treelet_chunk(packets, any, list_entries, profile)
+                    ) &&
+                    mail(first_packet, profile) && mail(packets, profile)
+                );
             }
-            const uint32_t results_started = wall();
-            ok = ok && end == kWorkEnd && results_out(packets, any, profile);
-            profile.phase3 = wall() - results_started;
+            ok = ok && range_out(first_packet, 0, profile);
             (void)ok;
+        } else if (handler == kHandlerTrace) {
+            trace_list(packets, any, profile);
+        } else if (handler == kHandlerTreelets) {
+            const uint32_t list_entries = command.a6;
+            treelet_chunk(packets, any, list_entries, profile);
         } else if (handler == kHandlerProbe) {
             const uint32_t form = command.a3;
             const uint32_t passes = command.a5;
@@ -1107,7 +1173,9 @@ void kernel_main() {
         }
         finish();
         profile.total = wall() - started;
-        write_profile(profile, first_packet, packets, handler == kHandlerTreelets);
+        write_profile(
+            profile, first_packet, packets, handler == kHandlerTreelets && !pulled
+        );
 #endif
     };
     compute.run([&](const km_command_t& command) {

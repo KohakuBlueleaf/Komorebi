@@ -20,7 +20,7 @@ namespace {
     uint32_t output_page_bytes(const km_command_t& command, uint32_t handler) {
         const uint32_t mode = command.a3;
         if (handler == kHandlerTrace || handler == kHandlerTreelets) {
-            return mode == kModeAny ? kHitAnyBytes : kHitBytes;
+            return (mode & kModeAny) != 0 ? kHitAnyBytes : kHitBytes;
         }
         if (handler == kHandlerProbe) {
             return kHitAnyBytes;
@@ -89,15 +89,59 @@ void kernel_main() {
         const uint32_t started = km::wall();
         const uint32_t directory_space = get_write_ptr(kCbDirWriter);
         volatile tt_l1_ptr uint32_t* directory = km::l1(directory_space);
+        // Pulled: no directory entry; compute's range pages say where the hits go.
+        const bool pulled = (
+            (handler == kHandlerTrace || handler == kHandlerTreelets) &&
+            (command.a3 & kModePulled) != 0
+        );
         if (
-            !read_directory<Directories>(writer, command, handler, directory_space) ||
-            !timed::reads_done(writer, km::kStWriter)
+            !pulled &&
+            (
+                !read_directory<Directories>(
+                    writer, command, handler, directory_space
+                ) ||
+                !timed::reads_done(writer, km::kStWriter)
+            )
         ) {
             return true;
         }
-        const uint32_t first = directory[kDirFirst], count = directory[kDirCount];
-        uint32_t wait = 0, write = 0;
-        if (is_stage(handler)) {
+        const uint32_t first = pulled ? 0 : directory[kDirFirst];
+        uint32_t count = pulled ? 0 : directory[kDirCount];
+        uint32_t wait = 0, write = 0, ranges = 0;
+        if (pulled) {
+            const uint32_t bytes = output_page_bytes(command, handler);
+            for (;;) {
+                const uint32_t range_started = km::wall();
+                if (!writer.wait_front(kCbOut, 1)) {
+                    return true;
+                }
+                wait += km::wall() - range_started;
+                invalidate_l1_cache();
+                volatile tt_l1_ptr uint32_t* range = km::l1(get_read_ptr(kCbOut));
+                const uint32_t range_first = range[kRangeFirst];
+                const uint32_t range_count = range[kRangeCount];
+                cb_pop_front(kCbOut, 1);
+                if (range_count == 0) {
+                    break;
+                }
+                ranges++;
+                count += range_count;
+                for (uint32_t packet = 0; packet < range_count; ++packet) {
+                    const uint32_t page_started = km::wall();
+                    if (!write_page(
+                        writer,
+                        output_address,
+                        bytes,
+                        kPagePackets,
+                        range_first + packet,
+                        wait
+                    )) {
+                        return true;
+                    }
+                    write += km::wall() - page_started;
+                }
+            }
+        } else if (is_stage(handler)) {
             // Each packet's page of every output stream, in stream order.
             const Stage stage = stage_of(handler);
             for (uint32_t packet = 0; packet < count; ++packet) {
@@ -154,6 +198,9 @@ void kernel_main() {
         profile[kProfWriter + 1] = write;
         profile[kProfWriter + 2] = km::wall() - started;
         profile[kProfWriter + 3] = count;
+        if (pulled) {
+            profile[kProfRanges] = ranges;
+        }
         if (!km::write_pages(
             writer,
             command,
@@ -167,7 +214,7 @@ void kernel_main() {
         const uint32_t bank = (
             handler == kHandlerTreelets ? policy_word >> kBankShift : 0
         );
-        if (bank != 0 && directory[kDirCost] != 0) {
+        if (!pulled && bank != 0 && directory[kDirCost] != 0) {
             noc_async_write(
                 get_read_ptr(kCbOut) + 4 * kProfCost,
                 get_noc_addr_from_bank_id<true>(bank - 1, directory[kDirCost]),

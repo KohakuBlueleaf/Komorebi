@@ -59,6 +59,13 @@ constexpr uint32_t kHandlerShow = 13;
 
 constexpr uint32_t kModeNearest = 0;
 constexpr uint32_t kModeAny = 1;
+// TRACE or TREELETS with this bit in a3: pulled. The reader takes ranges of packets
+// from its X280 core; compute hands the writer a range page before each range's hits.
+constexpr uint32_t kModePulled = 2;
+constexpr uint32_t kRangeFirst = 0;
+constexpr uint32_t kRangeCount = 1;
+// Profile word of a pulled command: the ranges the core took (the writer's count).
+constexpr uint32_t kProfRanges = 52;
 
 // Buffers: input pages (packets or check inputs), the tree, directory scratch of the
 // reader and the writer, output pages.
@@ -363,4 +370,5 @@ static_assert(
 static_assert(
     kProfWriter + 4 <= kProfCost && 4 * kProfCost + kCostBytes <= kOutPageBytes
 );
+static_assert(kProfWriter + 4 <= kProfRanges && kProfRanges < kProfCost);
 static_assert(kCostBytes % 64 == 0 && (4 * kProfCost) % 64 == 0);
