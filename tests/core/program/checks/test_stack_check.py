@@ -105,6 +105,38 @@ def test_what_the_count_cannot_follow_is_refused_by_name(line, why):
         stack.deepest(stack.scan(listing, FUNCS), 0x1000)
 
 
+# A frame of vector registers (the pack thread's): 288 B, then 8 x vlenb from the CSR.
+VECTOR_FRAME = """
+00001000 <_start>:
+    1000:	csrr	t0,vlenb
+    1004:	addi	sp,sp,-288
+    1008:	slli	t1,t0,0x3
+    100c:	sw	s0,280(sp)
+    1010:	sub	sp,sp,t1
+    1014:	ret
+"""
+
+
+def test_a_frame_of_vector_registers_is_288_b_and_8_times_vlenb():
+    found = stack.scan(VECTOR_FRAME, {0x1000: (24, "_start")})
+    need = stack.deepest(found, 0x1000)
+    assert need.frames == [288 + 8 * stack.VLENB]
+
+
+def test_sp_by_a_register_still_unknown_is_refused():
+    listing = VECTOR_FRAME.replace("csrr\tt0,vlenb", "lw\tt0,0(a0)")
+    listing = listing.replace("slli\tt1,t0,0x3", "mv\tt1,a1")
+    with pytest.raises(ProgramError, match="sub sp by a register"):
+        stack.deepest(stack.scan(listing, {0x1000: (24, "_start")}), 0x1000)
+
+
+def test_slli_of_an_unknown_register_gives_no_constant():
+    # t0 never given a constant; t1's constant before the slli is lost at it.
+    listing = VECTOR_FRAME.replace("csrr\tt0,vlenb", "li\tt1,64")
+    with pytest.raises(ProgramError, match="sub sp by a register"):
+        stack.deepest(stack.scan(listing, {0x1000: (24, "_start")}), 0x1000)
+
+
 def test_an_indirect_call_reaches_each_function_whose_address_is_taken():
     taken = "    1110:\taddi\ta5,a5,768 # 1300 <copy>"
     listing = LISTING.replace("    1110:\tjal\t1200 <reset>", taken)

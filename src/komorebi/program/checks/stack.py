@@ -47,6 +47,9 @@ THREADS = {
     "trisc1": "TRISC1",
     "trisc2": "TRISC2",
 }
+# The vector registers' bytes (CSR vlenb) of Blackhole's pack thread (TRISC2), read from
+# the CSR on a card on 2026-11-22: a frame of vector registers is a multiple of it.
+VLENB = 16
 _SP_LOADS = ("lw", "mv", "addi")
 _STORES = ("sw", "sh", "sb")  # sp restored from a register or memory: no frame
 
@@ -190,6 +193,8 @@ def scan(listing, funcs):
                 continue
         function = out[current]
         words = [w.strip() for w in found.group(3).split("#")[0].split(",")]
+        shift = _immediate(words[2]) if op == "slli" and len(words) == 3 else None
+        made = False  # a register given a constant by csrr vlenb or slli
         if op == "lui" and words[0] == "sp":
             function.sets_sp = (_immediate(words[1]) or 0) << 12
         elif op == "addi" and words[:2] == ["sp", "sp"]:
@@ -208,6 +213,10 @@ def scan(listing, funcs):
                 value = (value - (1 << 20) if value >> 19 else value) << 12
             if value is not None:
                 constants[words[0]] = value
+        elif op == "csrr" and words[1:] == ["vlenb"]:
+            constants[words[0]], made = VLENB, True
+        elif shift is not None and words[1] in constants:
+            constants[words[0]], made = constants[words[1]] << shift, True
         elif op in ("add", "sub") and words[:2] == ["sp", "sp"]:
             step = constants.get(words[2])
             if step is None:
@@ -249,7 +258,7 @@ def scan(listing, funcs):
         if op[0] in "bj" or op == "ret":  # the block ends: a held address escapes
             for at in holds.values():
                 _take(out, function, at)
-        kept = op in ("li", "lui", *_STORES) or op[0] in "bj"
+        kept = made or op in ("li", "lui", *_STORES) or op[0] in "bj"
         if not kept and words and words[:2] != [words[0], words[0]]:
             constants.pop(words[0], None)  # a register written otherwise
     return out
