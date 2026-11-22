@@ -1,0 +1,11 @@
+# The relaxation on 4 workers: a row of 8 tiles holding 1 to 8, until the largest change
+# of a round is under 0.4 (400 thousandths), at most 20 rounds.
+# Look for: the rounds made (the control program's result), and the tensors after them.
+options workers 4
+tensor a f32 4 32 fill tile+1
+tensor b f32 4 32
+tensor worst f32 4 4
+control settle a b worst 400:u32 20:u32
+read a
+read b
+read worst

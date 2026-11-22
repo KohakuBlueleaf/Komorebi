@@ -1,0 +1,49 @@
+#0 Relax.round group(0, 4): completed
+#1 Relax.bound group(0, 4): completed 3500:u32
+#2 Relax.round group(0, 4): completed
+#3 Relax.bound group(0, 4): completed 1500:u32
+#4 Relax.round group(0, 4): completed
+#5 Relax.bound group(0, 4): completed 1500:u32
+#6 Relax.round group(0, 4): completed
+#7 Relax.bound group(0, 4): completed 1000:u32
+#8 Relax.round group(0, 4): completed
+#9 Relax.bound group(0, 4): completed 1000:u32
+#10 Relax.round group(0, 4): completed
+#11 Relax.bound group(0, 4): completed 750:u32
+#12 Relax.round group(0, 4): completed
+#13 Relax.bound group(0, 4): completed 750:u32
+#14 Relax.round group(0, 4): completed
+#15 Relax.bound group(0, 4): completed 593:u32
+#16 Relax.round group(0, 4): completed
+#17 Relax.bound group(0, 4): completed 593:u32
+#18 Relax.round group(0, 4): completed
+#19 Relax.bound group(0, 4): completed 484:u32
+#20 Relax.round group(0, 4): completed
+#21 Relax.bound group(0, 4): completed 484:u32
+#22 Relax.round group(0, 4): completed
+#23 Relax.bound group(0, 4): completed 402:u32
+#24 Relax.round group(0, 4): completed
+#25 Relax.bound group(0, 4): completed 402:u32
+#26 Relax.round group(0, 4): completed
+#27 Relax.bound group(0, 4): completed 337:u32
+#28 control settle: completed 14:u32
+tensor a f32 [4, 32]
+  tile 0: 4.8378906*16
+  tile 1: 4.1621094*16
+  tile 2: 3.6953125*16
+  tile 3: 3.7109375*16
+  tile 4: 4.1777344*16
+  tile 5: 4.8222656*16
+  tile 6: 5.2890625*16
+  tile 7: 5.3046875*16
+tensor b f32 [4, 32]
+  tile 0: 5.1757813*16
+  tile 1: 4.5*16
+  tile 2: 3.8242188*16
+  tile 3: 3.5664063*16
+  tile 4: 3.8554688*16
+  tile 5: 4.5*16
+  tile 6: 5.1445313*16
+  tile 7: 5.4335938*16
+tensor worst f32 [4, 4]
+  tile 0: 0.33789063*16

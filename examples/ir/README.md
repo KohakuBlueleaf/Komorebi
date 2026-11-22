@@ -34,6 +34,22 @@ the repository's Rust toolchain:
 cargo run -q --bin komo -- run examples/ir/lessons/t01_scale.kom examples/ir/lessons/t01_scale_group3.run
 ```
 
+## Applications
+
+`applications/` holds whole programs written by hand in the IR, each with a run script and the
+report it prints, run by the same test.
+
+| Application | Does | Uses |
+|---|---|---|
+| `ffn.kom` | A feed-forward block, `y = down(silu(gate(x)) * up(x))`: the group shares the input row, the leader writes each tile of the result | functions on tiles, three streams walked together, `reduce`, a chain of two handlers, a parameter given by an expression |
+| `trace.kom` | Rays walk a table of nodes as messages, and each goes on as a hit to the worker that owns the node holding it | records, a `store` of scalars, a message's body, `forward` as another type, items written from state |
+| `relax.kom` | A relaxation repeated until the largest change of a round is under a bound | a chain, a result read from a tile's words, a control program that decides from values |
+| `census.kom` | A sum over data spread on several islands | a replicated tensor, `all_gather`, a control program |
+
+```
+cargo run -q --bin komo -- run examples/ir/applications/ffn.kom examples/ir/applications/ffn.run
+```
+
 ## Modules the DSL frontend writes
 
 Each `.kom` file directly in this folder is the Komorebi IR module the DSL frontend writes for a

@@ -1,0 +1,9 @@
+# Eight rays on a group of 2: four from each worker, looking for 0, 7, 14, 21 and 5, 12, 19, 26.
+# Look for: results, one item of four words a ray (its id, the node that holds it, its hops, its value).
+options workers 2
+tensor table u32 4 4
+tensor results u32 8 4
+invoke Trace.plant table on 0 2
+invoke Trace.walk table results 4:u32 on 0 2
+read table
+read results

@@ -1,0 +1,9 @@
+# The sum on two islands of two workers: x is a row of 8 tiles holding 1 to 8.
+# Look for: part, the same four parts (3, 7, 11, 15) on both copies after the gather; y, 36 in every worker's tile.
+options workers 4 islands 2,2
+tensor x f32 4 32 fill tile+1
+tensor part f32 4 16 replicated
+tensor y f32 4 16
+control census x part y 8:u32
+read part
+read y

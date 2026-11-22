@@ -1,0 +1,7 @@
+#0 Trace.plant group(0, 2): completed
+#1 Trace.walk group(0, 2): completed
+tensor table u32 [4, 4]
+  tile 0: 0, 10, 1, 0, 10, 20, 2, 1, 20, 30, 3, 2, 30, 40, 4, 3
+tensor results u32 [8, 4]
+  tile 0: 0*4, 1, 0*2, 7, 2, 1*2, 14, 3, 2*2, 21
+  tile 1: 4, 0*2, 5*2, 1*2, 12, 6, 1*2, 19, 7, 2*2, 26

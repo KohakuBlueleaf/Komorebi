@@ -1,0 +1,12 @@
+# The feed-forward block on a group of 3: x is one row of 4 tiles, every weight element 0.5.
+# Look for: y, one row of 4 tiles; every tile the same, since x's tiles differ only by a constant.
+options workers 4
+tensor x f32 4 16 fill tile+1
+tensor gate f32 16 32 fill 0.5
+tensor up f32 16 32 fill 0.5
+tensor hidden f32 4 32
+tensor w f32 32 16 fill 0.5
+tensor y f32 4 16
+invoke Ffn.block x gate up hidden w y on 0 3
+read hidden
+read y

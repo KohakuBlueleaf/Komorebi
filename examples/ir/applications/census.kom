@@ -1,0 +1,51 @@
+// A sum over data spread on several islands. Each worker adds up its part and writes it
+// into its own island's copy of a replicated tensor; a control program gathers the
+// copies, and then every worker, on any island, reads every worker's part near itself.
+module census
+
+tile [4, 4]
+format f32
+
+requires {
+    islands >= 2
+}
+
+program Census {
+    // each worker's part of x, added up, into the tile of its rank in its island's copy
+    handler count(
+        x: tensor<f32>,
+        part: tensor<f32> @replicated,
+        tiles: u32,
+    ) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(
+            partition(x.tiles(0, tiles), worker.rank, group.size),
+            block = 1,
+        ) {
+            acc += xb
+        }
+        store part.tiles(worker.rank, 1) <- acc
+    }
+
+    // every worker adds up all the parts from its own island's copy
+    handler total(part: tensor<f32> @replicated, y: tensor<f32>) @on(group) {
+        var acc: tile<f32> = zeros
+        for pb in stream(part.tiles(0, group.size), block = 1) {
+            acc += pb
+        }
+        store y.tiles(worker.rank, 1) <- acc
+    }
+}
+
+control census(
+    x: tensor<f32>,
+    part: tensor<f32> @replicated,
+    y: tensor<f32>,
+    tiles: u32,
+) {
+    let counted = invoke(Census.count(x, part, tiles), on = group(0, 4))
+    await counted
+    all_gather(part)
+    let summed = invoke(Census.total(part, y), on = group(0, 4))
+    await summed
+}

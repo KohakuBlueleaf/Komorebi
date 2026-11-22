@@ -1,0 +1,19 @@
+#0 Census.count group(0, 4): completed
+#1 control census all_gather: completed
+#2 Census.total group(0, 4): completed
+#3 control census: completed
+tensor part copy 0 f32 [4, 16]
+  tile 0: 3.0*16
+  tile 1: 7.0*16
+  tile 2: 11.0*16
+  tile 3: 15.0*16
+tensor part copy 1 f32 [4, 16]
+  tile 0: 3.0*16
+  tile 1: 7.0*16
+  tile 2: 11.0*16
+  tile 3: 15.0*16
+tensor y f32 [4, 16]
+  tile 0: 36.0*16
+  tile 1: 36.0*16
+  tile 2: 36.0*16
+  tile 3: 36.0*16

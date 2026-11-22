@@ -1,0 +1,82 @@
+// A feed-forward block: y = down(silu(gate(x)) * up(x)). Each matrix is a tensor of
+// tiles; the group shares the input row, and the leader writes each tile of the result.
+module ffn
+
+tile [4, 4]
+format f32
+
+param K: u32 = 4 @bind(build)  // tiles in the input row and in the output row
+param H: u32 = 2 * K @bind(build)  // tiles in the hidden row
+
+func product(x: tile<f32>, w: tile<f32>) -> tile<f32> {
+    return matmul(x, w)
+}
+
+func gated(g: tile<f32>, u: tile<f32>) -> tile<f32> {
+    return silu(g) * u
+}
+
+combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return a + b
+}
+
+program Ffn {
+    // hidden[j] = silu(x . gate[:, j]) * (x . up[:, j]), for each tile j of the hidden row
+    handler gate_up(
+        x: tensor<f32>,
+        gate: tensor<f32>,
+        up: tensor<f32>,
+        hidden: tensor<f32>,
+    ) @on(group) {
+        let xs = partition(x.tiles(0, K), worker.rank, group.size)
+        for j in range(H) {
+            let gs = partition(gate.tiles[0:K, j:j + 1], worker.rank, group.size)
+            let us = partition(up.tiles[0:K, j:j + 1], worker.rank, group.size)
+            var g: tile<f32> = zeros
+            var u: tile<f32> = zeros
+            for xb, gb, ub in zip(
+                stream(xs, block = 1),
+                stream(gs, block = 1),
+                stream(us, block = 1),
+            ) {
+                g += product(xb, gb)
+                u += product(xb, ub)
+            }
+            let gw = reduce(g, with = add)
+            let uw = reduce(u, with = add)
+            if worker.is_leader {
+                store hidden.tiles(j, 1) <- gated(gw, uw)
+            }
+        }
+    }
+
+    // y[j] = hidden . down[:, j], for each tile j of the output row
+    handler down(hidden: tensor<f32>, w: tensor<f32>, y: tensor<f32>) @on(group) {
+        let hs = partition(hidden.tiles(0, H), worker.rank, group.size)
+        for j in range(K) {
+            let ws = partition(w.tiles[0:H, j:j + 1], worker.rank, group.size)
+            var acc: tile<f32> = zeros
+            for hb, wb in zip(stream(hs, block = 1), stream(ws, block = 1)) {
+                acc += product(hb, wb)
+            }
+            let whole = reduce(acc, with = add)
+            if worker.is_leader {
+                store y.tiles(j, 1) <- whole
+            }
+        }
+    }
+
+    // the block as one invocation: its calls in the written order, so the second reads
+    // what the first wrote
+    chain block(
+        x: tensor<f32>,
+        gate: tensor<f32>,
+        up: tensor<f32>,
+        hidden: tensor<f32>,
+        w: tensor<f32>,
+        y: tensor<f32>,
+    ) @on(group) {
+        call gate_up(x, gate, up, hidden)
+        call down(hidden, w, y)
+    }
+}

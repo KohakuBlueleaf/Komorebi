@@ -1,0 +1,97 @@
+// A relaxation driven from values: each round every tile becomes the mean of itself and
+// the next tile, and a control program repeats the round until the largest change is
+// under a bound or a limit of rounds is reached.
+module relax
+
+tile [4, 4]
+format f32
+
+param TILES: u32 = 8 @bind(build)
+
+func mean(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return (a + b) * 0.5
+}
+
+func change(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return abs(a - b)
+}
+
+combine largest(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return maximum(a, b)
+}
+
+program Relax {
+    // to[i] = mean(from[i], from[i + 1]), the row of tiles taken as a ring
+    handler step(from: tensor<f32>, to: tensor<f32>) @on(group) {
+        let mine = partition(from.tiles(0, TILES), worker.rank, group.size)
+        let out = sink(
+            partition(to.tiles(0, TILES), worker.rank, group.size),
+            block = 1,
+        )
+        var i: u32 = 0
+        for xb in stream(mine, block = 1) {
+            let at = worker.rank * (TILES / group.size) + i
+            let next = from.tiles((at + 1) % TILES, 1)
+            out.push(mean(xb, next[0]))
+            i += 1
+        }
+    }
+
+    // worst = the largest change of any element, kept in one tile
+    handler differ(from: tensor<f32>, to: tensor<f32>, worst: tensor<f32>) @on(group) {
+        var acc: tile<f32> = zeros
+        for a, b in zip(
+            stream(partition(from.tiles(0, TILES), worker.rank, group.size), block = 1),
+            stream(partition(to.tiles(0, TILES), worker.rank, group.size), block = 1),
+        ) {
+            acc = largest(acc, change(a, b))
+        }
+        let whole = reduce(acc, with = largest)
+        if worker.is_leader {
+            store worst.tiles(0, 1) <- whole
+        }
+    }
+
+    // the largest element of that tile, in thousandths, as the result
+    handler bound(worst: tensor<f32>) -> u32 @on(group) {
+        if worker.is_leader {
+            let w = worst.tiles(0, 1).words()
+            var most: f32 = 0.0
+            for k in range(16) {
+                most = max(most, w[k])
+            }
+            return u32(most * 1000.0)
+        }
+    }
+
+    chain round(from: tensor<f32>, to: tensor<f32>, worst: tensor<f32>) @on(group) {
+        call step(from, to)
+        call differ(from, to, worst)
+    }
+}
+
+// rounds until the largest change is under `under` thousandths, at most `limit` rounds;
+// the result is the number of rounds made
+control settle(
+    a: tensor<f32>,
+    b: tensor<f32>,
+    worst: tensor<f32>,
+    under: u32,
+    limit: u32,
+) -> u32 {
+    var rounds: u32 = 0
+    var most: u32 = 0xffffffff
+    while rounds < limit && most >= under {
+        let r = invoke(Relax.round(a, b, worst), on = group(0, 4))
+        let m = invoke(Relax.bound(worst), on = group(0, 4), after = [r])
+        most = await m
+        rounds += 1
+        if rounds < limit && most >= under {
+            let s = invoke(Relax.round(b, a, worst), on = group(0, 4), after = [m])
+            let n = invoke(Relax.bound(worst), on = group(0, 4), after = [s])
+            most = await n
+            rounds += 1
+        }
+    }
+    return rounds
+}

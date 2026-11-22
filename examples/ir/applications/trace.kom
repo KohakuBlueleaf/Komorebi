@@ -1,0 +1,83 @@
+// Rays walk a table of nodes as messages. Each ray carries what it looks for in its
+// body, goes from worker to worker until a node holds it, and then goes on as a hit to
+// the worker that owns the node, which writes one item of the result.
+module trace
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+record Node { lo: u32, hi: u32, child: u32, owner: u32 }
+
+program Trace {
+    message Ray @body(16) { id: u32, node: u32, hops: u32 }
+    message Hit @body(16) { id: u32, node: u32, hops: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        tree: u32[16] @filled(element)
+        origin: u32[4] @filled(element)
+        found: u32[4] @filled(element)
+        hits: u32[1] @export
+    }
+
+    // the leader writes the table: node n holds the values from 10 n to 10 n + 9
+    handler plant(table: tensor<u32>) @on(group) {
+        if worker.is_leader {
+            for n in range(4) {
+                tree[n * 4] = n * 10
+                tree[n * 4 + 1] = n * 10 + 10
+                tree[n * 4 + 2] = n + 1
+                tree[n * 4 + 3] = n
+            }
+            store table.tiles(0, 1) <- tree
+        }
+    }
+
+    run walk(table: tensor<u32>, results: tensor<u32>, count: u32) @dynamic {
+        seed {
+            hits.zero()
+            for i in range(count) {
+                origin[0] = i * 7 + worker.rank * 5
+                origin[1] = worker.rank
+                origin[2] = i
+                origin[3] = 0
+                send(
+                    Ray { id: worker.rank * count + i, node: 0, hops: 0 },
+                    to = worker.rank,
+                    body = origin,
+                )
+            }
+        }
+        on Ray(m) {
+            let nodes = table.tiles(0, 1).records(Node, count = 4)
+            let node = nodes[m.node % 4]
+            let w = m.body.words()
+            if w[0] >= node.lo && w[0] < node.hi {
+                forward(m, as = Hit, to = node.owner % group.size)
+            } else {
+                if m.hops == 8 {
+                    consume m
+                } else {
+                    forward(
+                        m,
+                        with = { node: node.child, hops: m.hops + 1 },
+                        to = (worker.rank + 1) % group.size,
+                    )
+                }
+            }
+        }
+        on Hit(h) {
+            let w = h.body.words()
+            found[0] = h.id
+            found[1] = h.node
+            found[2] = h.hops
+            found[3] = w[0]
+            results.items(size = 16).put(found, at = h.id)
+            hits.bump(0)
+            consume h
+        }
+    }
+}
