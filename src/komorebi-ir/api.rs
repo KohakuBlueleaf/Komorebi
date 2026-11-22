@@ -138,7 +138,7 @@ fn front(source: &str) -> Result<(Checked, program::Module), Vec<Diagnostic>> {
         }
     };
     derive::derive(&mut module);
-    let findings = verify::verify(&module);
+    let findings = verify::verify_text(&module, source);
     if findings.is_empty() {
         return Ok((checked, module));
     }

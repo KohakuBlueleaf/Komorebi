@@ -115,6 +115,9 @@ error).
 
 An end is `completed` (with the leader's result, if the handler has one), `failed REASON`, or
 `invalid: WHAT`. The interpreter also writes where a failure happened (`at rank 0, p0.h0 i5`).
+An invocation that does not start because one of its `after` did not complete ends
+`failed dependency (#N Program.handler)`, `#N` and the name those of the line of the one that did
+not complete.
 A tile's elements are written in order, with a run of one value written once with its count. A
 float is the shortest text that reads back to its value.
 

@@ -57,6 +57,11 @@ pub(crate) enum FuncKind {
     Extern,
 }
 
+/// The names of declared parameters, in order.
+fn param_names(params: &List<ParamDecl>) -> Vec<String> {
+    params.values().map(|p| p.name.name.clone()).collect()
+}
+
 /// A function's signature.
 #[derive(Clone, Debug)]
 pub(crate) struct FuncSig {
@@ -64,6 +69,8 @@ pub(crate) struct FuncSig {
     pub kind: FuncKind,
     /// The parameters' types.
     pub params: Vec<Ty>,
+    /// The parameters' names, in order.
+    pub names: Vec<String>,
     /// The result's type.
     pub ret: Ty,
 }
@@ -80,6 +87,8 @@ pub(crate) struct MemberInfo {
 pub(crate) struct Invocable {
     /// The parameters' types.
     pub params: Vec<Ty>,
+    /// The parameters' names, in order.
+    pub names: Vec<String>,
     /// The result's type, when it has one.
     pub ret: Option<Ty>,
     /// True for a handler (only a handler can be a chain's call).
@@ -307,8 +316,16 @@ impl Checker<'_> {
                     let params = self.func_params(&env, &f.params, kind);
                     let ret = self.ty(&env, &f.ret, Place::FuncResult);
                     self.on_blocks(&f.name.name, kind, &params, &ret, f.span);
-                    env.funcs
-                        .insert(f.name.name.clone(), FuncSig { kind, params, ret });
+                    let names = param_names(&f.params);
+                    env.funcs.insert(
+                        f.name.name.clone(),
+                        FuncSig {
+                            kind,
+                            params,
+                            names,
+                            ret,
+                        },
+                    );
                 }
                 Item::Extern(f) => {
                     names.declare(self, &f.name);
@@ -317,8 +334,16 @@ impl Checker<'_> {
                     let ret = self.ty(&env, &f.ret, Place::FuncResult);
                     let kind = FuncKind::Extern;
                     self.on_blocks(&f.name.name, kind, &params, &ret, f.span);
-                    env.funcs
-                        .insert(f.name.name.clone(), FuncSig { kind, params, ret });
+                    let names = param_names(&f.params);
+                    env.funcs.insert(
+                        f.name.name.clone(),
+                        FuncSig {
+                            kind,
+                            params,
+                            names,
+                            ret,
+                        },
+                    );
                 }
                 Item::Program(p) => {
                     names.declare(self, &p.name);
@@ -385,6 +410,7 @@ impl Checker<'_> {
                     let ret = h.ret.as_ref().map(|t| self.ty(env, t, Place::Result));
                     let entry = Invocable {
                         params,
+                        names: param_names(&h.params),
                         ret,
                         is_handler: true,
                     };
@@ -395,6 +421,7 @@ impl Checker<'_> {
                     let params = self.params(env, &r.params);
                     let entry = Invocable {
                         params,
+                        names: param_names(&r.params),
                         ret: None,
                         is_handler: false,
                     };
@@ -405,6 +432,7 @@ impl Checker<'_> {
                     let params = self.params(env, &c.params);
                     let entry = Invocable {
                         params,
+                        names: param_names(&c.params),
                         ret: None,
                         is_handler: false,
                     };

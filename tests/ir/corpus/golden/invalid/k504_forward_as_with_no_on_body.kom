@@ -1,0 +1,23 @@
+// refused: a message forwarded as a type the run has no on body for; no body would receive it (Dynamic runs)
+module rays
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program Rays {
+    message Ray { id: u32 }
+    message Hit { id: u32 }
+
+    run trace(count: u32) @dynamic {
+        seed {
+            send(Ray { id: count }, to = worker.rank)
+        }
+        on Ray(m) {
+            forward(m, as = Hit, to = worker.rank)
+        }
+    }
+}

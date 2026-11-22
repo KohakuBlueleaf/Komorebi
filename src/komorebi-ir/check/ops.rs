@@ -232,9 +232,13 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
             self.note_func(cx, n);
-            let lifted = self.positional_call(cx, what, span, args, &sig.params);
+            // the operands in the order of the parameters, by position or by name
+            let Some(args) = self.call_operands(what, span, args, &sig.names) else {
+                return Ty::Unknown;
+            };
+            let lifted = self.positional_call(cx, what, span, &args, &sig.params);
             if let Some(&f) = cx.env.ix.funcs.get(what) {
-                let parts: Vec<Option<&Expr>> = args.values().map(|a| Some(&a.value)).collect();
+                let parts: Vec<Option<&Expr>> = args.iter().map(|a| Some(*a)).collect();
                 self.note_op(span, OpKind::CallFunc(FuncId(f)), &parts);
             }
             // a function on tiles run on each tile of blocks of one shape (R45)
@@ -439,8 +443,14 @@ impl Checker<'_> {
                 }
             }
             "stream" | "sink" => {
-                let Some(o) = self.operands(what, span, args, &[pos("view"), named("block")])
-                else {
+                // a `stream` given no block takes blocks of one tile: `block = 1`; a
+                // `sink` states its block always
+                let block = if what == "sink" {
+                    named("block")
+                } else {
+                    named_opt("block")
+                };
+                let Some(o) = self.operands(what, span, args, &[pos("view"), block]) else {
                     return Ty::Unknown;
                 };
                 let kind = if what == "sink" {
@@ -506,7 +516,7 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
-                let mut block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
+                let mut block = o[1].map_or(Count::Known(1), |b| count_of(cx, b));
                 // a constant expression: its value (a fault of its own is its code's;
                 // another value is `K209`'s)
                 if let (Some(b), Count::Unknown, true) =
@@ -764,6 +774,9 @@ impl Checker<'_> {
                         format!("`{what}` takes a message, not {m}"),
                         o[0].map(|e| e.span).unwrap_or(span),
                     );
+                }
+                if let Ty::Message(name) = &m {
+                    self.received(cx, name, span);
                 }
                 self.operand(cx, o[1], &Ty::AnyInt, "the rank");
                 if what == "send" {
@@ -1130,7 +1143,10 @@ impl Checker<'_> {
         let target = match o[4] {
             None => message.clone(),
             Some(t) => match self.forward_as(cx, t, message.as_deref(), o[1], span) {
-                Some(name) => Some(name),
+                Some(name) => {
+                    self.received(cx, &name, span);
+                    Some(name)
+                }
                 None => return Ty::Unknown,
             },
         };
@@ -1178,6 +1194,18 @@ impl Checker<'_> {
         self.operand(cx, o[2], &Ty::AnyInt, "the rank");
         self.view_list(cx, o[3]);
         Ty::Void
+    }
+
+    /// A message sent, offered or forwarded as a type the run has no `on` body for
+    /// (`K504`).
+    fn received(&mut self, cx: &Cx, message: &str, span: Span) {
+        if cx.received.as_ref().is_some_and(|r| !r.contains(message)) {
+            self.error(
+                codes::NO_ON_BODY,
+                format!("the run has no `on` body for `{message}`: no body receives it"),
+                span,
+            );
+        }
     }
 
     /// The type `as = T` of a `forward` of a message of type `from` names: a message
@@ -1403,16 +1431,20 @@ impl Checker<'_> {
             if let Some(&place) = cx.env.ix.programs.get(&program.name) {
                 self.note_name(program.span, Name::Program(place));
             }
+            let what = format!("{}.{}", program.name, name.name);
+            // the operands in the order of the parameters, by position or by name
+            let Some(args) = self.call_operands(&what, call.span, args, &target.names) else {
+                return Ty::Unknown;
+            };
             if let Some(place) = cx.env.ix.invocable_of(&program.name, &name.name) {
                 if let Some(entry) = entry_of(&place) {
                     let mut parts = vec![o[1], o[2], o[3]];
-                    parts.extend(args.values().map(|a| Some(&a.value)));
+                    parts.extend(args.iter().map(|a| Some(*a)));
                     self.note_op(span, OpKind::Invoke(entry), &parts);
                 }
                 self.note_name(name.span, place);
             }
-            let what = format!("{}.{}", program.name, name.name);
-            self.positional_call(cx, &what, call.span, args, &target.params);
+            self.positional_call(cx, &what, call.span, &args, &target.params);
             ret = target.ret;
             self.note_type(call, &ret.clone().unwrap_or(Ty::Void));
         }

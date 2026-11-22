@@ -6,7 +6,7 @@
 //! Verify reads the structure and writes nothing; `api` turns its findings into
 //! diagnostics.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::program::body::{Body, InstId, Op, ValueId};
 use crate::program::derive::{Access, Effects, StateUse};
@@ -44,9 +44,20 @@ pub struct Finding {
 
 /// The rules `module` (lowered and derived) breaks, in the order of the module.
 pub fn verify(module: &Module) -> Vec<Finding> {
+    verify_in(module, None)
+}
+
+/// The rules `module` breaks, as `verify` gives them, its findings naming what they
+/// are about as `source`, the text it was read from, writes it.
+pub fn verify_text(module: &Module, source: &str) -> Vec<Finding> {
+    verify_in(module, Some(source))
+}
+
+fn verify_in(module: &Module, source: Option<&str>) -> Vec<Finding> {
     let v = Verifier {
         module,
         spans: module.notes.spans.iter().copied().collect(),
+        source,
     };
     let mut out = Vec::new();
     v.fallbacks(&mut out);
@@ -80,6 +91,8 @@ pub fn verify(module: &Module) -> Vec<Finding> {
 struct Verifier<'m> {
     module: &'m Module,
     spans: HashMap<Anchor, SourceSpan>,
+    /// The text the module was read from, when it is known.
+    source: Option<&'m str>,
 }
 
 impl Verifier<'_> {
@@ -106,6 +119,19 @@ impl Verifier<'_> {
             .get(&Anchor::Inst(r, at))
             .copied()
             .unwrap_or(SourceSpan { start: 0, end: 0 })
+    }
+
+    /// What the instruction `at` of body `r` is made from, as the text writes it; with
+    /// no text, its place.
+    fn written(&self, r: BodyRef, at: InstId) -> String {
+        let span = self.span(r, at);
+        let text = self
+            .source
+            .and_then(|s| s.get(span.start as usize..span.end as usize));
+        match text {
+            Some(t) if !t.is_empty() => format!("`{t}`"),
+            _ => format!("the view at source bytes {} to {}", span.start, span.end),
+        }
     }
 
     /// The name the source gives parameter `k` of `owner`.
@@ -276,14 +302,17 @@ impl Verifier<'_> {
                         } else {
                             ""
                         };
+                        let body = BodyRef::Handler(pid, call.handler);
                         out.push(Finding {
                             code: PAST_UNPROVEN,
                             message: format!(
-                                "the build cannot show that every tile call {} (`{}`) reads of \
-                                 `{}` through `past` was written by an earlier call{why}",
+                                "the build cannot show, worker by worker, that every tile call \
+                                 {} (`{}`) reads of `{}` through `past`, in {}, was written by \
+                                 an earlier call{why}",
                                 c + 1,
                                 reader.name,
-                                self.param_name(owner, *y)
+                                self.param_name(owner, *y),
+                                self.written(body, read.view)
                             ),
                             at: self.call_span(pid, cid, c as u32),
                         });
@@ -354,8 +383,11 @@ impl Verifier<'_> {
         // the constructs open around each instruction: an `if` (by its instruction, and
         // whether in its `else`), or another construct
         let mut open: Vec<Option<(usize, bool)>> = Vec::new();
+        let markers = decided(body).markers;
         for (i, inst) in body.insts.iter().enumerate() {
             match &inst.op {
+                // the structure of a condition decided from the left opens no branch
+                _ if markers.contains(&i) => {}
                 Op::If { .. } => open.push(Some((i, false))),
                 Op::Else => {
                     if let Some(Some((k, _))) = open.pop() {
@@ -546,6 +578,7 @@ impl Verifier<'_> {
     /// collective inside a branch whose condition depends on the rank.
     fn ranks(&self, r: BodyRef, body: &Body, out: &mut Vec<Finding>) {
         let values = Values::of(body);
+        let markers = decided(body).markers;
         let mut frames: Vec<Frame> = Vec::new();
         let mut leader_only: HashMap<ValueId, InstId> = HashMap::new();
         for (i, inst) in body.insts.iter().enumerate() {
@@ -615,6 +648,8 @@ impl Verifier<'_> {
                 });
             }
             match &inst.op {
+                // the structure of a condition decided from the left opens no branch
+                _ if markers.contains(&i) => {}
                 Op::If { cond } => frames.push(Frame::Branch(*cond, false)),
                 Op::Else => {
                     if let Some(Frame::Branch(c, _)) = frames.pop() {
@@ -698,6 +733,82 @@ struct Values<'b> {
     body: &'b Body,
     def: HashMap<ValueId, usize>,
     args: Vec<Option<u64>>,
+    /// The conditions decided from the left (`decided`): each one's value, by its two
+    /// operands.
+    logic: HashMap<ValueId, (ValueId, ValueId)>,
+}
+
+/// The conditions `a && b` and `a || b` of a body, decided from the left, as Lower
+/// writes them (`Set t a`, `If { cond: a }`, an `Else` first for `||`, the ops of `b`,
+/// `Set t b`, `End`, `Get t`), recognised by that structure: the instructions of the
+/// structure (`If`, `Else`, `End`), which open no branch of the text, and the value
+/// `Get t` gives, by its two operands. The rules read such a value as the operation on
+/// its two operands, as on one value; the operands may be such values in turn.
+#[derive(Default)]
+struct Decided {
+    markers: HashSet<usize>,
+    logic: HashMap<ValueId, (ValueId, ValueId)>,
+}
+
+fn decided(body: &Body) -> Decided {
+    let insts = &body.insts;
+    let n = insts.len();
+    let mut end_of = vec![None; n];
+    let mut else_of = vec![None; n];
+    let mut open: Vec<usize> = Vec::new();
+    for (i, inst) in insts.iter().enumerate() {
+        match inst.op {
+            Op::If { .. }
+            | Op::While
+            | Op::ForRange { .. }
+            | Op::ForStream { .. }
+            | Op::ForZip { .. }
+            | Op::ForArrive { .. } => open.push(i),
+            Op::Else => {
+                if let Some(&o) = open.last() {
+                    else_of[o] = Some(i);
+                }
+            }
+            Op::End => {
+                if let Some(o) = open.pop() {
+                    end_of[o] = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Decided::default();
+    for (i, inst) in insts.iter().enumerate() {
+        let Op::If { cond: a } = inst.op else {
+            continue;
+        };
+        let Some(e) = end_of[i] else {
+            continue;
+        };
+        // `&&`: no `Else`; `||`: an `Else` at once, the `then` part empty
+        let marks = match else_of[i] {
+            None => vec![i, e],
+            Some(k) if k == i + 1 => vec![i, k, e],
+            Some(_) => continue,
+        };
+        let (Some(first), Some(last), Some(get)) = (
+            i.checked_sub(1).and_then(|k| insts.get(k)),
+            insts.get(e - 1),
+            insts.get(e + 1),
+        ) else {
+            continue;
+        };
+        let (Op::Set(t, x), Op::Set(u, b), Op::Get(w), Some(g)) =
+            (&first.op, &last.op, &get.op, get.defs.first())
+        else {
+            continue;
+        };
+        if *x == a && t == u && t == w && e > marks[marks.len() - 2] + 1 {
+            out.markers.extend(marks);
+            out.logic.insert(*g, (a, *b));
+        }
+    }
+    out
 }
 
 /// The tiles a view names, where the text fixes them: the range `lo..hi` of a
@@ -721,6 +832,7 @@ impl<'b> Values<'b> {
             body,
             def,
             args: Vec::new(),
+            logic: decided(body).logic,
         }
     }
 
@@ -759,6 +871,10 @@ impl<'b> Values<'b> {
     /// Whether a value depends on the rank, as far as the body shows: a value of the
     /// worker's identity, or an operation on one.
     fn on_rank(&self, v: ValueId) -> bool {
+        // a condition decided from the left: as the operation on its two operands
+        if let Some(&(a, b)) = self.logic.get(&v) {
+            return self.on_rank(a) || self.on_rank(b);
+        }
         match self.op(v) {
             Some(Op::Rank | Op::IsLeader | Op::WorkerId | Op::Row | Op::Col) => true,
             Some(

@@ -130,6 +130,45 @@ fn bits_and_shifts() {
 }
 
 #[test]
+fn a_shift_takes_an_amount_of_another_integer_type() {
+    let s = |op, a, n| ops::scalar_binary(op, a, n);
+    // the result has the shifted value's type
+    assert_eq!(
+        s(Bin::Shl, int(Format::U8, 200), u32s(1)),
+        Ok(int(Format::U8, 144))
+    );
+    assert_eq!(
+        s(Bin::Shr, int(Format::U8, 200), int(Format::I64, 1)),
+        Ok(int(Format::U8, 100))
+    );
+    assert_eq!(
+        s(Bin::Shl, int(Format::I32, -7), int(Format::U8, 1)),
+        Ok(int(Format::I32, -14))
+    );
+    assert_eq!(
+        s(Bin::Shr, int(Format::I64, -100), u32s(1)),
+        Ok(int(Format::I64, -50))
+    );
+    // a negative amount stays `out_of_range`
+    assert_eq!(s(Bin::Shl, u32s(1), int(Format::I8, -1)), Err(OUT));
+    // by the width or more: 0, or all ones for a negative value shifted right
+    assert_eq!(
+        s(Bin::Shl, int(Format::U8, 1), u32s(8)),
+        Ok(int(Format::U8, 0))
+    );
+    assert_eq!(
+        s(Bin::Shr, int(Format::I16, -8), int(Format::U64, 16)),
+        Ok(int(Format::I16, -1))
+    );
+    assert_eq!(
+        s(Bin::Shr, int(Format::I16, 8), int(Format::U8, 200)),
+        Ok(int(Format::I16, 0))
+    );
+    // another operation on two integer types stays refused
+    assert!(s(Bin::Add, int(Format::U8, 1), u32s(1)).is_err());
+}
+
+#[test]
 fn min_and_max() {
     assert_eq!(
         ops::scalar_binary(Bin::Min, u32s(7), u32s(4096)),

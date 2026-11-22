@@ -57,7 +57,7 @@ programs:
         calls: []
 controls:
   c0 refine  params [tensor<bf16>, u32]  ret u32
-    locals: l0 u32, l1 u32
+    locals: l0 u32, l1 u32, l2 bool
     i0  v0: tensor<bf16> = Arg 0
     i1  v1: u32 = Arg 1
     i2  v2: u32 = Const u32 0
@@ -67,28 +67,32 @@ controls:
     i6  While
     i7  v4: u32 = Get l0
     i8  v5: bool = Compare Lt v4 v1
-    i9  v6: u32 = Get l1
-    i10 v7: u32 = Const u32 64
-    i11 v8: bool = Compare Gt v6 v7
-    i12 v9: bool = LogicAnd v5 v8
-    i13 WhileTest { cond v9 }
-    i14 v10: u32 = Const u32 0
-    i15 v11: u32 = Const u32 60
-    i16 v12: group = MakeGroup v10 v11
-    i17 v13: handle<none> = Invoke { entry p0.h0, args [v0], on v12, after [], after_end [] }
-    i18 v14: u32 = Const u32 0
-    i19 v15: u32 = Const u32 60
-    i20 v16: group = MakeGroup v14 v15
-    i21 v17: handle<u32> = Invoke { entry p0.h1, args [v0], on v16, after [v13], after_end [] }
-    i22 v18: u32 = Await v17
-    i23 Set l1 v18
-    i24 v19: u32 = Get l0
-    i25 v20: u32 = Const u32 1
-    i26 v21: u32 = Binary Add v19 v20
-    i27 Set l0 v21
-    i28 End
-    i29 v22: u32 = Get l0
-    i30 Return v22
+    i9  Set l2 v5
+    i10 If { cond v5 }
+    i11 v6: u32 = Get l1
+    i12 v7: u32 = Const u32 64
+    i13 v8: bool = Compare Gt v6 v7
+    i14 Set l2 v8
+    i15 End
+    i16 v9: bool = Get l2
+    i17 WhileTest { cond v9 }
+    i18 v10: u32 = Const u32 0
+    i19 v11: u32 = Const u32 60
+    i20 v12: group = MakeGroup v10 v11
+    i21 v13: handle<none> = Invoke { entry p0.h0, args [v0], on v12, after [], after_end [] }
+    i22 v14: u32 = Const u32 0
+    i23 v15: u32 = Const u32 60
+    i24 v16: group = MakeGroup v14 v15
+    i25 v17: handle<u32> = Invoke { entry p0.h1, args [v0], on v16, after [v13], after_end [] }
+    i26 v18: u32 = Await v17
+    i27 Set l1 v18
+    i28 v19: u32 = Get l0
+    i29 v20: u32 = Const u32 1
+    i30 v21: u32 = Binary Add v19 v20
+    i31 Set l0 v21
+    i32 End
+    i33 v22: u32 = Get l0
+    i34 Return v22
 notes:
   hints: []
   spans:
@@ -145,28 +149,32 @@ notes:
     c0 i6  702..915
     c0 i7  708..713
     c0 i8  708..721
-    c0 i9  725..730
-    c0 i10  733..735
-    c0 i11  725..735
-    c0 i12  708..735
-    c0 i13  708..735
-    c0 i14  788..789
-    c0 i15  791..793
-    c0 i16  782..794
-    c0 i17  754..795
-    c0 i18  846..847
-    c0 i19  849..851
-    c0 i20  840..852
-    c0 i21  812..866
-    c0 i22  883..890
-    c0 i23  875..890
-    c0 i24  899..904
-    c0 i25  908..909
-    c0 i26  899..909
-    c0 i27  899..909
-    c0 i28  702..915
-    c0 i29  927..932
-    c0 i30  920..932
+    c0 i9  708..735
+    c0 i10  708..735
+    c0 i11  725..730
+    c0 i12  733..735
+    c0 i13  725..735
+    c0 i14  708..735
+    c0 i15  708..735
+    c0 i16  708..735
+    c0 i17  708..735
+    c0 i18  788..789
+    c0 i19  791..793
+    c0 i20  782..794
+    c0 i21  754..795
+    c0 i22  846..847
+    c0 i23  849..851
+    c0 i24  840..852
+    c0 i25  812..866
+    c0 i26  883..890
+    c0 i27  875..890
+    c0 i28  899..904
+    c0 i29  908..909
+    c0 i30  899..909
+    c0 i31  899..909
+    c0 i32  702..915
+    c0 i33  927..932
+    c0 i34  920..932
   names:
     p0.h0 v6 "part"
     p0.h0 v8 "out"

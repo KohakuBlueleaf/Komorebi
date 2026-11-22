@@ -95,15 +95,18 @@ impl Checker<'_> {
                         let ProgramItem::State(state) = part else {
                             continue;
                         };
-                        let Some(s) = shape_of(&lines, &state.attrs) else {
-                            continue;
-                        };
                         // a member of scalars has no shape
                         let tiles = state
                             .members
                             .nodes()
                             .filter(|m| matches!(m.ty.kind, TypeKind::Tile { .. }));
                         for m in tiles {
+                            // the member's own `@tile`, else its block's
+                            let attrs: Vec<Attr> =
+                                m.attrs.iter().chain(&state.attrs).cloned().collect();
+                            let Some(s) = shape_of(&lines, &attrs) else {
+                                continue;
+                            };
                             if let Some(Name::State { program, member }) =
                                 env.ix.member(&p.name.name, &m.name.name)
                             {

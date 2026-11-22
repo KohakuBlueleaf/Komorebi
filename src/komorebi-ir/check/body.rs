@@ -119,6 +119,8 @@ pub(super) struct Cx<'e> {
     pub(super) peers: Option<Peers>,
     /// The tile shape of the body (its declaration's `@tile`, else the default).
     pub(super) tile: Option<(u64, u64)>,
+    /// In a run's body: the message types the run has an `on` body for.
+    pub(super) received: Option<HashSet<String>>,
 }
 
 /// The provided combinations of a reduce.
@@ -352,6 +354,22 @@ fn effect_name(e: &Expr) -> String {
     }
 }
 
+/// The operands of a call the checker accepted, in the order of the callee's
+/// parameters `names`: as written when given by position, by their names when given
+/// by name.
+pub(crate) fn in_parameter_order<'a>(args: &'a List<Arg>, names: &[String]) -> Vec<&'a Arg> {
+    if !args.values().any(|a| a.name.is_some()) {
+        return args.values().collect();
+    }
+    names
+        .iter()
+        .filter_map(|n| {
+            args.values()
+                .find(|a| a.name.as_ref().is_some_and(|x| x.name == *n))
+        })
+        .collect()
+}
+
 pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
     match &expr.kind {
         ExprKind::Name(name) => Some(name),
@@ -566,6 +584,7 @@ impl Checker<'_> {
             writes: HashSet::new(),
             peers: None,
             tile: env.tile,
+            received: None,
         }
     }
 
@@ -743,6 +762,19 @@ impl Checker<'_> {
             .iter()
             .find(|a| is_named(a, "peers"))
             .map(|a| peers_of(a, &env.ix));
+        // the message types the run receives: one `on` body each
+        let mut received = HashSet::new();
+        for part in r.body.nodes() {
+            if let RunPart::On(on) = part {
+                if !received.insert(on.message.name.clone()) {
+                    self.error(
+                        codes::NAME_TWICE,
+                        format!("the run has an `on` body for `{}` already", on.message.name),
+                        on.message.span,
+                    );
+                }
+            }
+        }
         for part in r.body.nodes() {
             let (kind, block, on) = match part {
                 RunPart::Seed(block) => (Kind::Seed, block, None),
@@ -750,6 +782,7 @@ impl Checker<'_> {
             };
             let mut cx = self.cx(env, kind, Some(program.to_string()));
             cx.peers = peers.clone();
+            cx.received = Some(received.clone());
             cx.tile = super::shapes::shape_of(&env.tiles, &r.attrs);
             self.bind_params(&mut cx, &r.params, params);
             if let Some(on) = on {
@@ -817,34 +850,101 @@ impl Checker<'_> {
         if let Some(place) = cx.env.ix.invocable_of(program, &call.handler.name) {
             self.note_name(call.handler.span, place);
         }
-        self.positional_call(
-            cx,
-            &call.handler.name,
-            call.span,
-            &call.args,
-            &target.params,
-        );
+        if target.ret.is_some() {
+            self.error(
+                codes::WRONG_TYPE,
+                format!(
+                    "a chain has no result, and `{}` gives one",
+                    call.handler.name
+                ),
+                call.span,
+            );
+            return;
+        }
+        let what = &call.handler.name;
+        let Some(args) = self.call_operands(what, call.span, &call.args, &target.names) else {
+            return;
+        };
+        self.positional_call(cx, what, call.span, &args, &target.params);
     }
 
-    /// A call whose operands are all by position, checked against the parameters' types.
-    /// In a function on blocks (R45) a function on tiles takes blocks of one shape, run
-    /// on each tile: that shape is given back.
+    /// The operands of a call of a function, a chain's `call` or what `invoke` names,
+    /// in the order of the callee's parameters `names`: all by position, or all by
+    /// name, each name a parameter (`K101`), each parameter given (`K103`) and given
+    /// once (`K112`); some by position and some by name is `K111`. `None` after a
+    /// diagnostic.
+    pub(super) fn call_operands<'a>(
+        &mut self,
+        what: &str,
+        span: Span,
+        args: &'a List<Arg>,
+        names: &[String],
+    ) -> Option<Vec<&'a Expr>> {
+        let first = args.values().next().map(|a| a.name.is_some());
+        if let Some(arg) = args.values().find(|a| Some(a.name.is_some()) != first) {
+            self.error(
+                codes::OPERAND_FORM,
+                "the operands of a call are all by position or all by name".into(),
+                arg.span,
+            );
+            return None;
+        }
+        if first != Some(true) {
+            return Some(args.values().map(|a| &a.value).collect());
+        }
+        let mut given: Vec<Option<&Expr>> = vec![None; names.len()];
+        for arg in args.values() {
+            let Some(name) = &arg.name else {
+                continue;
+            };
+            match names.iter().position(|n| *n == name.name) {
+                None => {
+                    self.error(
+                        codes::UNKNOWN_NAME,
+                        format!("`{}` is not a parameter of `{what}`", name.name),
+                        name.span,
+                    );
+                    return None;
+                }
+                Some(k) if given[k].is_some() => {
+                    self.error(
+                        codes::NAME_TWICE,
+                        format!("the parameter `{}` is given twice", name.name),
+                        arg.span,
+                    );
+                    return None;
+                }
+                Some(k) => given[k] = Some(&arg.value),
+            }
+        }
+        let missing: Vec<&str> = names
+            .iter()
+            .zip(&given)
+            .filter(|(_, g)| g.is_none())
+            .map(|(n, _)| n.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                codes::MISSING_OPERAND,
+                format!("`{what}` is not given `{}`", missing.join("`, `")),
+                span,
+            );
+            return None;
+        }
+        Some(given.into_iter().flatten().collect())
+    }
+
+    /// A call's operands, in the order of the callee's parameters (`call_operands`),
+    /// checked against the parameters' types. In a function on blocks (R45) a function
+    /// on tiles takes blocks of one shape, run on each tile: that shape is given back.
     pub(super) fn positional_call(
         &mut self,
         cx: &mut Cx,
         what: &str,
         span: Span,
-        args: &List<Arg>,
+        args: &[&Expr],
         params: &[Ty],
     ) -> Option<Shape> {
-        if let Some(arg) = args.values().find(|a| a.name.is_some()) {
-            self.error(
-                codes::OPERAND_FORM,
-                format!("the operands of `{what}` are given by position"),
-                arg.span,
-            );
-            return None;
-        }
         if args.len() < params.len() {
             self.error(
                 codes::MISSING_OPERAND,
@@ -872,8 +972,8 @@ impl Checker<'_> {
         let on_tiles = !params.iter().any(|t| matches!(t, Ty::Block(..)));
         let mut lifted: Option<Shape> = None;
         let mut tile_given = false;
-        for (arg, want) in args.values().zip(params) {
-            let ty = self.expr(cx, &arg.value);
+        for (arg, want) in args.iter().zip(params) {
+            let ty = self.expr(cx, arg);
             tile_given |= matches!((want, &ty), (Ty::Tile(_), Ty::Tile(_)));
             match (want, &ty) {
                 // a function on tiles in a function on blocks, or in a handler on its
@@ -881,7 +981,7 @@ impl Checker<'_> {
                 (Ty::Tile(_), Ty::Block(_, shape))
                     if on_tiles
                         && (self.on_blocks
-                            || shape.rows == Count::Known(1) && block_var(cx, &arg.value)) =>
+                            || shape.rows == Count::Known(1) && block_var(cx, arg)) =>
                 {
                     match lifted {
                         Some(first) if !first.agrees(*shape) => self.error(
@@ -890,7 +990,7 @@ impl Checker<'_> {
                                 "`{what}` is given blocks of two shapes, {first} and {shape}: \
                                  a function on tiles runs on each tile of blocks of one shape"
                             ),
-                            arg.value.span,
+                            arg.span,
                         ),
                         _ => lifted = Some(*shape),
                     }
@@ -898,7 +998,7 @@ impl Checker<'_> {
                 (Ty::Tile(_), Ty::Block(..)) => self.error(
                     codes::BLOCK_TO_TILE,
                     format!("a block of several tiles is given to `{what}`, declared on one tile"),
-                    arg.value.span,
+                    arg.span,
                 ),
                 (Ty::Block(_, n), Ty::Block(_, m)) => {
                     if !n.agrees(*m) {
@@ -909,12 +1009,12 @@ impl Checker<'_> {
                                 shape_text(m),
                                 shape_text(n)
                             ),
-                            arg.value.span,
+                            arg.span,
                         );
                     }
                 }
                 _ => {
-                    self.fit(&arg.value, &ty, want, &format!("an operand of `{what}`"));
+                    self.fit(arg, &ty, want, &format!("an operand of `{what}`"));
                 }
             }
         }

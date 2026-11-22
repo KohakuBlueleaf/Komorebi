@@ -96,19 +96,33 @@ fn int_bin(op: Bin, format: Format, a: u64, b: u64) -> Result<u64, Fault> {
         Bin::And => a & b,
         Bin::Or => a | b,
         Bin::Xor => a ^ b,
-        Bin::Shl | Bin::Shr if y < 0 => return out_of_range(),
-        Bin::Shl if y >= i128::from(bits) => 0,
-        Bin::Shl => (a << (y as u32)) & m,
-        Bin::Shr if y >= i128::from(bits) => {
+        Bin::Shl | Bin::Shr => return int_shift(op, format, a, y),
+        Bin::Min => wrap(x.min(y)),
+        Bin::Max => wrap(x.max(y)),
+    })
+}
+
+/// `a << n` or `a >> n` on an integer of `format`, given as its bits, by the amount
+/// `n` (of any integer type, given as its value): by the width or more every bit is
+/// shifted out (all ones for a negative value shifted right); a negative amount is
+/// `out_of_range`.
+fn int_shift(op: Bin, format: Format, a: u64, n: i128) -> Result<u64, Fault> {
+    let bits = format.bits().unwrap_or(64);
+    let m = mask(bits);
+    let x = int_value(format, a);
+    Ok(match op {
+        _ if n < 0 => return out_of_range(),
+        Bin::Shl if n >= i128::from(bits) => 0,
+        Bin::Shl => (a << (n as u32)) & m,
+        Bin::Shr if n >= i128::from(bits) => {
             if x < 0 {
                 m
             } else {
                 0
             }
         }
-        Bin::Shr => wrap(x >> (y as u32)),
-        Bin::Min => wrap(x.min(y)),
-        Bin::Max => wrap(x.max(y)),
+        Bin::Shr => ((x >> (n as u32)) as u64) & m,
+        _ => return Err(Fault::undefined(format!("{op:?} as a shift"))),
     })
 }
 
@@ -136,13 +150,18 @@ fn f64_bin(op: Bin, a: f64, b: f64) -> Result<f64, Fault> {
     })
 }
 
-/// `a op b` on two scalars. Two integers must be of one format; two floats of
+/// `a op b` on two scalars. Two integers must be of one format (a shift's amount may
+/// be of another); two floats of
 /// formats held alike give the left one's format, an `f32`-held float with an `f64`
 /// gives an `f64`.
 pub fn scalar_binary(op: Bin, a: Scalar, b: Scalar) -> Result<Scalar, Fault> {
     match (a, b) {
         (Scalar::Int(fa, x), Scalar::Int(fb, y)) if fa == fb => {
             Ok(Scalar::Int(fa, int_bin(op, fa, x, y)?))
+        }
+        // a shift by an amount of another integer type: the shifted value's type
+        (Scalar::Int(fa, x), Scalar::Int(fb, y)) if matches!(op, Bin::Shl | Bin::Shr) => {
+            Ok(Scalar::Int(fa, int_shift(op, fa, x, int_value(fb, y))?))
         }
         (Scalar::F32(f, x), Scalar::F32(_, y)) => Ok(Scalar::F32(f, f32_bin(op, x, y)?)),
         (Scalar::F32(..) | Scalar::F64(_), Scalar::F32(..) | Scalar::F64(_)) => {

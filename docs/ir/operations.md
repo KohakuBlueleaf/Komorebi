@@ -38,6 +38,14 @@ Each operation has one form, the one the lessons write; another spelling is refu
 name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left
 out; every other operand must be given (`K103`).
 
+**Operands of a call.** The operands of a call of a `func` or an `extern func`, of a chain's
+`call h(...)`, and of the handler, chain or run named inside `invoke(P.h(...))` are given either
+all by position, in the order of the callee's parameters, or all by name, `f(k = 2.0, a = x)`, in
+any order: each name a parameter of the callee (another `K101`), each parameter given (`K103`) and
+given once (`K112`). Some by position and some by name in one call is refused (`K111`: "the
+operands of a call are all by position or all by name"). The program structure holds the operands
+in the order of the callee's parameters. The language's own operations keep their forms below.
+
 A number written in the text has the type its place needs: the other operand's, a parameter's, a
 field's, the declared type of a `let`, a `var` or a result. Beside a tile it has the tile's format, or
 `f32` beside a `bf16` or a block-float tile. Where the place gives none, a whole number is `u32` and
@@ -96,12 +104,12 @@ name (`K010`).
 | `for a, b in zip(s1, s2) { }` | two streams by position | | the two streams block by block | T4 |
 | `for b, w in br.arrive() { }` | a broadcast | | each block, a tile of the format the casts send, and its word | T6 |
 | `return e`, `return` | a value, *optional* | the declared result | ends the body | T2 |
-| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers of one type (`K119`), but the amount of a shift may be of any integer type; a number written in the text takes the other operand's type | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder; by zero, the run fails (`divide_by_zero`), and a constant zero is refused (`K114`); a shift by a negative amount likewise (`out_of_range`, `K115`) | Handler bodies, Order, state and failure |
+| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers of one type (`K119`), but the amount of a shift may be of any integer type; a number written in the text takes the other operand's type | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder; by zero, the run fails (`divide_by_zero`), and a constant zero is refused (`K114`); a shift by a negative amount likewise (`out_of_range`, `K115`). `a << n` and `a >> n` have `a`'s type whatever the integer type of `n`; by the width of `a`'s type or more, every bit is shifted out: 0, or all ones for a negative signed value shifted right | Handler bodies, Order, state and failure |
 | `-a` | one by position | a number, a tile, or a reduction's values | the same, negated; the one unary operator | Grammar |
 | `min(a, b)`, `max(a, b)` | two by position | numbers of one type (`K119`) | a number of that type | T2 |
 | `u8(x)` ... `i64(x)`, `f16(x)`, `f32(x)`, `f64(x)` | one by position | a scalar | `x` converted to the type named: integer to integer wraps in the new width; integer to float is its value; float to integer drops the fraction, and a value the type cannot hold is the failure `out_of_range`. A number written in the text as `x` has the type named as its place, and one that type cannot hold is refused (`K115`): `u32(-1)` is refused, all ones is written `0xffffffff` | Numbers |
 | Comparisons `== != < > <= >=` | two values | scalars of one type (`K119`; a number written in the text takes the other operand's type), or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
-| `c && d`, `c \|\| d` | two conditions | `bool` | `bool`; there is no negation operator: write `c == false` | T11 |
+| `c && d`, `c \|\| d` | two conditions | `bool` | `bool`, decided from the left: `d` is evaluated only when `c` does not decide (of `c && d` only when `c` is true, of `c \|\| d` only when `c` is false), so `n != 0 && 10 / n == 1` with n = 0 is false and `o.failed && o.reason == capacity` reads no reason of a completed invocation; in a `while` test as anywhere. There is no negation operator: write `c == false` | T11 |
 
 ## Compute on tiles
 
@@ -176,12 +184,13 @@ is its own statement ([backends](backends.md)).
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
+| `stream(view)`, `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position; `block` by name, *optional*: left out, it is 1, blocks of one tile (`stream(view)` is `stream(view, block = 1)`; `komo fmt` keeps the text as written). A `sink`'s `block` is always given | a view; a constant expression or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
 | `zip(s1, s2, ...)` | two or more by position | streams of the same number of blocks (`K115` where the compile knows each stream's tiles and block) | a block of each, together | T4 |
 | `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
 | `store view <- value` | a view, a value | a view; a tile, or a block of one row; or scalars: one scalar, a state member of scalars named whole, or the words of a tile, into a view of one tile (`K102` where the text shows more), of a format with stated bytes (`K208`), of the format's scalar type (`K102`), no more than the tile's rows times columns (`K115` where the text shows the count; at the run `out_of_range`) | writes it, visible at completion; a block's tiles in the view's order; scalars, the mirror of `.words()`: the tile's first k scalars, in the order `.words()` reads them, are the k values given, every other scalar of the tile is 0, and the whole tile is written | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
+| `call h(args)` in a chain | its operands all by position or all by name (Operands of a call) | a handler of the chain's program that gives no result: a chain has no result, and a call of a handler that gives one is refused (`K102`) | runs `h` | T10 |
 
 A tensor is reached only through a view (`K107`).
 
@@ -195,6 +204,12 @@ A tensor is reached only through a view (`K107`).
 | `s[i]` | an index | a member; an index inside it (`K115`) | one element, read | T3, T7 |
 | `s` | none | a member of one element (declared with no count), read by its name | its element 0, read: `s[0]` | T13 |
 | `s.bump(i)` | one by position | a member of integers | the value it read; it then adds one to the element | T3 |
+
+A member's attributes: each of `@scope`, `@lifetime`, `@export`, `@filled`, `@tile` may stand on
+the `state` block, where it holds for every member, and on a member, where it adds to the block's;
+where both name the same attribute, the member's holds. Every member ends with a scope and a
+lifetime, from its block or its own (`K007`, at the member); their arguments are checked wherever
+they stand (`K004`).
 
 ## Identity
 
@@ -245,7 +260,8 @@ In a control program only (`K703`).
 
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
-| `invoke(P.h(args), on = group(first, count), after = [a], after_end = [a])` | the call by position; `on` by name; `after`, `after_end` by name, *optional* | a handler of a program and its arguments; a group; handles | a handle | T11, T16 |
+| `invoke(P.h(args), on = group(first, count), after = [a], after_end = [a])` | the call by position, its operands all by position or all by name (Operands of a call); `on` by name; `after`, `after_end` by name, *optional* | a handler, chain or run of a program and its arguments; a group; handles | a handle. An invocation after one that did not complete does not start; the report's line is `failed dependency (#N P.h)`, N that one's line | T11, T16 |
+| `param P: T = v @bind(invoke)` | | an integer or a float type | each invocation may give P a value of its own type (another type is invalid); the declared value is the largest allowed, for a float as for an integer: above it, the invocation fails `over_bound` | Module |
 | `group(first, count)`, `group(count)` | by position; `first` *optional*: left out, the runtime chooses it | integers | a group of workers | T11, Control programs |
 | `await h` | a handle | | the invocation's result; fails the control program if it failed | T11 |
 | `outcome(h)` | one by position | a handle | an outcome: `.failed` (`bool`), `.reason`, `.value` | T16 |
@@ -274,7 +290,7 @@ may address one tensor; each sees the same elements, cut into its own tiles.
 |---|---|
 | A module has one or more `tile [R, C]` lines. The first is the module's default shape. The same shape twice is refused | `K112` |
 | `@tile(R, C)` names a shape of the module: two whole numbers written in the text (another argument form `K004`), one of the module's `tile` lines (`K101`) | Program compile |
-| `@tile` stands on a `func`, a `combine`, an `extern func`, a handler, a run or a `state` block; anywhere else (a control program, a chain, a chain's call, a state member, a parameter, a message) it is refused. A declaration of that list without `@tile` has the default shape | `K006` |
+| `@tile` stands on a `func`, a `combine`, an `extern func`, a handler, a run, a `state` block or a state member (the member's holds over its block's); anywhere else (a control program, a chain, a chain's call, a parameter, a message) it is refused. A declaration of that list without `@tile` has the default shape | `K006` |
 | The shape of a declaration is that of every tile its body computes on, of every block of its streams and sinks, of every tile of every view it makes (`t.tiles(first, n)` counts the tensor's tiles of that shape, row of tiles after row of tiles), of the tile `.words()`, `.records()` and `.items()` lay their bytes by, and, for a `state` block, of its members of tiles | |
 | A call of a `func` or an `extern func` from a body of another shape is refused | `K102` |
 | A `combine` named by `reduce` or `all_reduce` in a handler body of another shape is refused | `K102` |

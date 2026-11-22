@@ -1,0 +1,25 @@
+// refused: two on bodies for one message type in one run (Dynamic runs)
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            send(Visit { id: count }, to = worker.rank)
+        }
+        on Visit(m) {
+            consume m
+        }
+        on Visit(n) {
+            consume n
+        }
+    }
+}

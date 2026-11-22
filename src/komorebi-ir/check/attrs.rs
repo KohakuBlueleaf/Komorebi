@@ -584,26 +584,39 @@ impl Checker<'_> {
             ProgramItem::Message(m) => self.message_attrs(&m.attrs),
             ProgramItem::Record(_) => {}
             ProgramItem::State(s) => {
-                self.attrs_in(&s.attrs, &["scope", "lifetime", "tile"], "a state block");
+                // each attribute on the block holds for every member; a member's own
+                // adds to it, and where both name one, the member's holds
+                const STATE: [&str; 5] = ["scope", "lifetime", "export", "filled", "tile"];
+                const ARGS: [&str; 4] = ["scope", "lifetime", "export", "filled"];
+                self.attrs_in(&s.attrs, &STATE, "a state block");
                 self.tile_args(&s.attrs, lines);
-                self.attr_args(&s.attrs, &["scope", "lifetime"], ix);
-                let missing: Vec<&str> = ["scope", "lifetime"]
-                    .into_iter()
-                    .filter(|name| !s.attrs.iter().any(|a| is_named(a, name)))
-                    .collect();
-                if !missing.is_empty() {
-                    self.error(
-                        codes::ATTRIBUTE_MISSING,
-                        format!(
-                            "a state has no `@{}`; nothing is supplied silently",
-                            missing.join("` and no `@")
-                        ),
-                        s.span,
-                    );
-                }
+                self.attr_args(&s.attrs, &ARGS, ix);
                 for member in s.members.nodes() {
-                    self.attrs_in(&member.attrs, &["export", "filled"], "a state member");
-                    self.attr_args(&member.attrs, &["export", "filled"], ix);
+                    self.attrs_in(&member.attrs, &STATE, "a state member");
+                    self.tile_args(&member.attrs, lines);
+                    self.attr_args(&member.attrs, &ARGS, ix);
+                    // every member ends with a scope and a lifetime, its block's or its own
+                    let missing: Vec<&str> = ["scope", "lifetime"]
+                        .into_iter()
+                        .filter(|name| {
+                            !s.attrs
+                                .iter()
+                                .chain(&member.attrs)
+                                .any(|a| is_named(a, name))
+                        })
+                        .collect();
+                    if !missing.is_empty() {
+                        self.error(
+                            codes::ATTRIBUTE_MISSING,
+                            format!(
+                                "the state member `{}` has no `@{}`, from its block or its own; \
+                                 nothing is supplied silently",
+                                member.name.name,
+                                missing.join("` and no `@")
+                            ),
+                            member.span,
+                        );
+                    }
                 }
             }
             ProgramItem::Handler(h) => {

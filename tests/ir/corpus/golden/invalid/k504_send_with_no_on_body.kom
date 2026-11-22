@@ -1,0 +1,23 @@
+// refused: a message sent as a type the run has no on body for; no body would receive it (Dynamic runs)
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32 }
+    message Done { id: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            send(Done { id: count }, to = worker.rank)
+        }
+        on Visit(m) {
+            consume m
+        }
+    }
+}

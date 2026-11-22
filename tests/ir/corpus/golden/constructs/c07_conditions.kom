@@ -1,0 +1,51 @@
+// conditions decided from the left on the leader: a value reduce gives only the leader, used under them (a reading the build uses: how the reference interpreter runs a program)
+module conditions
+
+tile [32, 32]
+format f32
+
+program P {
+    handler both(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = sum)
+        if worker.is_leader && n > 0 {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    handler either(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = sum)
+        if worker.is_leader || n > 100 {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    handler three(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = sum)
+        if worker.is_leader && n > 0 && n < 9 {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    handler nested(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = sum)
+        if n < 9 && (n == 0 || worker.is_leader) {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+}

@@ -1,0 +1,17 @@
+// refused: every state member ends with a scope, from its block or its own; seen has neither (Programs, state, handlers)
+module gain
+
+tile [32, 32]
+format u32
+
+program Gain {
+    state @lifetime(program) {
+        calls: u32[4] @scope(worker) @export
+        seen: u32[4] @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+        seen.zero()
+    }
+}

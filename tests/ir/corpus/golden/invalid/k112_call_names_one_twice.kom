@@ -1,0 +1,18 @@
+// refused: by name, each parameter of the callee is given once; the chain's call gives x twice (Chains)
+module named
+
+tile [32, 32]
+format f32
+
+program P {
+    handler run(x: tensor<f32>, y: tensor<f32>, k: f32) @on(group) {
+        let out = sink(y.tiles(0, 1), block = 1)
+        for xb in stream(x.tiles(0, 1)) {
+            out.push(xb * k)
+        }
+    }
+
+    chain twice(x: tensor<f32>, y: tensor<f32>, k: f32) @on(group) {
+        call run(x = x, y = y, x = x, k = k)
+    }
+}

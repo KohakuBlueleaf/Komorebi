@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
 use crate::types::{self as t, Failure, Format, MessageId, ParamId, RecordId, Type};
+pub(crate) use body::in_parameter_order;
 pub use decls::Decls;
 pub(crate) use env::body_bytes;
 use index::Index;
@@ -450,7 +451,8 @@ mod tests {
 
     const OFFER: &str = "module m\n\ntile [32, 32]\nformat u32\n\nrequires {\n    dynamic\n}\n\n\
         program P {\n    message T { s: u32 }\n\n    run r() @dynamic @peers(pairs = [(0, 5), (5, 0)]) {\n        \
-        seed {\n            let went = offer(T { s: 0 }, to = RANK)\n        }\n    }\n}\n";
+        seed {\n            let went = offer(T { s: 0 }, to = RANK)\n        }\n        \
+        on T(t) {\n            consume t\n        }\n    }\n}\n";
 
     #[test]
     fn an_offer_to_a_pair() {

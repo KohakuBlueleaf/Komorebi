@@ -141,6 +141,9 @@ pub struct Ended {
     pub group: Option<(usize, usize)>,
     /// How it ended.
     pub end: End,
+    /// For an invocation that did not start because one of its `after` did not
+    /// complete: the number of that one's line.
+    pub dependency: Option<usize>,
 }
 
 /// A run's report: each invocation's end, in the order they ended, and what the host
@@ -247,7 +250,12 @@ impl Report {
                 End::Completed(None) => "completed".to_string(),
                 End::Completed(Some(v)) => format!("completed {}", scalar_text(v)),
                 End::Failed { reason, at } => {
-                    format!("failed {}{}", reason.name(), place_text(*at))
+                    // the dependency that failed, by its line's number and its name
+                    let dependency = e
+                        .dependency
+                        .and_then(|n| self.ended.get(n))
+                        .map_or(String::new(), |d| format!(" (#{} {})", d.number, d.entry));
+                    format!("failed {}{dependency}{}", reason.name(), place_text(*at))
                 }
                 End::Invalid { what, at } => {
                     format!("invalid: {what}{}", place_text(*at))
@@ -958,16 +966,28 @@ impl<'m> Machine<'m> {
             let Some((_, v)) = invoke_params.iter().find(|(n, _)| *n == p.name) else {
                 continue;
             };
-            let (Some(given), Ok(Scalar::Int(_, top))) = (v.as_i128(), constant(declared)) else {
-                return Err(invalid(format!(
-                    "a value of {} that is not an integer",
-                    p.name
-                )));
+            // the declared value is the largest allowed, of an integer as of a float
+            let over = match (constant(declared), v.as_i128(), v.as_f64()) {
+                (Ok(Scalar::Int(_, top)), Some(given), _) => {
+                    given < 0 || given as u128 > u128::from(top)
+                }
+                (Ok(top @ (Scalar::F32(..) | Scalar::F64(_))), _, Some(given)) => {
+                    given > top.as_f64().unwrap_or(f64::INFINITY)
+                }
+                (Ok(Scalar::F32(..) | Scalar::F64(_)), _, None) => {
+                    return Err(invalid(format!("a value of {} of another type", p.name)));
+                }
+                _ => {
+                    return Err(invalid(format!(
+                        "a value of {} that is not an integer",
+                        p.name
+                    )));
+                }
             };
             if v.format() != Some(p.ty.format()) {
                 return Err(invalid(format!("a value of {} of another type", p.name)));
             }
-            if given < 0 || given as u128 > u128::from(top) {
+            if over {
                 return Err(End::Failed {
                     reason: Failure::OverBound,
                     at: None,
@@ -1143,6 +1163,7 @@ impl<'m> Machine<'m> {
                         made_after: done.clone(),
                         end: None,
                         inv: None,
+                        line: None,
                     });
                     Some(Value::Handle(n))
                 }
@@ -1451,12 +1472,14 @@ impl<'m> Machine<'m> {
             if inv.end.is_some() {
                 continue;
             }
-            let failed_before = inv.after.iter().any(|a| {
+            // the first of its `after` that did not complete: its report line
+            let failed_before = inv.after.iter().find(|a| {
                 !matches!(
-                    issued.get(*a).and_then(|x| x.end.as_ref()),
+                    issued.get(**a).and_then(|x| x.end.as_ref()),
                     Some(End::Completed(_))
                 )
             });
+            let dependency = failed_before.and_then(|a| issued.get(*a).and_then(|x| x.line));
             let (entry, args, group) = (inv.entry, inv.args.clone(), inv.group);
             // after what the program saw end before it made this one, and its edges
             let mut before = base.clone();
@@ -1465,7 +1488,7 @@ impl<'m> Machine<'m> {
             }
             before.extend(inv.made_after.iter().copied());
             let begun = self.races.count();
-            let end = if failed_before {
+            let end = if failed_before.is_some() {
                 End::Failed {
                     reason: Failure::Dependency,
                     at: None,
@@ -1478,9 +1501,14 @@ impl<'m> Machine<'m> {
             let ran = (self.races.count() > begun).then(|| self.races.count() - 1);
             let name = self.entry_name(entry);
             let end = self.record(name, Some(group), end);
+            let line = self.report.ended.len() - 1;
+            if let Some(last) = self.report.ended.last_mut() {
+                last.dependency = dependency;
+            }
             if let Some(inv) = issued.get_mut(i) {
                 inv.end = Some(end.clone());
                 inv.inv = ran;
+                inv.line = Some(line);
             }
             if matches!(end, End::Invalid { .. }) {
                 return Err(end);
@@ -1503,6 +1531,7 @@ impl<'m> Machine<'m> {
             entry,
             group,
             end: end.clone(),
+            dependency: None,
         });
         end
     }
@@ -1726,6 +1755,8 @@ struct Issued {
     end: Option<End>,
     /// Its number in the race record, once it has run.
     inv: Option<usize>,
+    /// The number of its line in the report, once it has ended.
+    line: Option<usize>,
 }
 
 /// The end a fault gives, at rank 0 of a control program.

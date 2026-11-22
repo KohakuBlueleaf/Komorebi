@@ -806,6 +806,15 @@ impl<'m> Validator<'m> {
                     {
                         c == e && matches!(r, Some(Type::Block(_, Count::Const(1), g)) if g == c)
                     }
+                    // a shift by an amount of any integer type: the result has the
+                    // shifted value's type
+                    (Type::Scalar(s), Type::Scalar(t))
+                        if matches!(op, BinOp::Shl | BinOp::Shr)
+                            && !s.is_float()
+                            && !t.is_float() =>
+                    {
+                        r == Some(x)
+                    }
                     (Type::Scalar(s), Type::Scalar(t)) if !s.is_float() || !t.is_float() => {
                         s == t && r == Some(x)
                     }

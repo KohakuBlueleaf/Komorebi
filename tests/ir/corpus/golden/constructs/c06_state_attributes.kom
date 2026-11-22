@@ -1,0 +1,30 @@
+// a state block's attributes hold for every member, and a member's own add to them (Programs, state, handlers)
+module marks
+
+tile [32, 32]
+format u32
+
+program Marks {
+    state @scope(worker) @lifetime(program) @export {
+        total: u32[2]
+        seen: u32[3] @filled(element)
+    }
+
+    state @lifetime(program) {
+        kept: u32[2] @scope(worker)
+        last: u32[1] @scope(worker) @export @filled(element)
+    }
+
+    handler start() @on(group) {
+        total.zero()
+        kept.zero()
+    }
+
+    handler mark(n: u32) @on(group) {
+        total[0] += n
+        total[1] = worker.rank
+        seen[1] = worker.rank + n
+        kept[0] += 1
+        last[0] = kept[0] + total[0]
+    }
+}

@@ -66,10 +66,17 @@ fn lower_here(checked: &Checked) -> Result<pg::Module, Vec<Unlowered>> {
 /// A record or message type: the program it is declared in, its name, its fields.
 type Declared = (Option<ProgramId>, String, Vec<(String, ScalarType)>);
 
+/// The names of declared parameters, in order.
+fn param_names(params: &ast::List<ast::ParamDecl>) -> Vec<String> {
+    params.values().map(|p| p.name.name.clone()).collect()
+}
+
 /// A function's, handler's or chain's signature, for calls and invocations.
 #[derive(Clone)]
 struct Signature {
     params: Vec<Type>,
+    /// The parameters' names, in order.
+    names: Vec<String>,
     ret: Option<Type>,
 }
 
@@ -421,6 +428,7 @@ impl<'c> Cx<'c> {
                 Item::Func(f) | Item::Combine(f) => {
                     let sig = Signature {
                         params: self.params(&f.params, None)?,
+                        names: param_names(&f.params),
                         ret: Some(self.ty(&f.ret, &[], None)?),
                     };
                     self.funcs
@@ -430,6 +438,7 @@ impl<'c> Cx<'c> {
                 Item::Extern(f) => {
                     let sig = Signature {
                         params: self.params(&f.params, None)?,
+                        names: param_names(&f.params),
                         ret: Some(self.ty(&f.ret, &[], None)?),
                     };
                     self.funcs
@@ -445,6 +454,7 @@ impl<'c> Cx<'c> {
                             ProgramItem::Handler(x) => {
                                 let sig = Signature {
                                     params: self.params(&x.params, pid)?,
+                                    names: param_names(&x.params),
                                     ret: self.ret(&x.ret)?.map(Type::Scalar),
                                 };
                                 names
@@ -455,6 +465,7 @@ impl<'c> Cx<'c> {
                             ProgramItem::Run(x) => {
                                 let sig = Signature {
                                     params: self.params(&x.params, pid)?,
+                                    names: param_names(&x.params),
                                     ret: None,
                                 };
                                 names.runs.insert(x.name.name.clone(), (RunId(r), sig));
@@ -463,6 +474,7 @@ impl<'c> Cx<'c> {
                             ProgramItem::Chain(x) => {
                                 let sig = Signature {
                                     params: self.params(&x.params, pid)?,
+                                    names: param_names(&x.params),
                                     ret: None,
                                 };
                                 names.chains.insert(x.name.name.clone(), (ChainId(k), sig));
@@ -940,7 +952,14 @@ impl<'c> Cx<'c> {
                         lifetime: Lifetime::Program,
                         export: named("export"),
                         by_element: filled,
-                        tile: self.tile_of(&state.attrs),
+                        // the member's own `@tile`, else its block's
+                        tile: self.tile_of(
+                            &m.attrs
+                                .iter()
+                                .chain(&state.attrs)
+                                .cloned()
+                                .collect::<Vec<Attr>>(),
+                        ),
                     });
                     Ok(())
                 }),
@@ -1056,7 +1075,11 @@ impl<'c> Cx<'c> {
                 return refuse(call.handler.span, "no handler of that name");
             };
             let mut args = Vec::new();
-            for (k, arg) in call.args.values().enumerate() {
+            // the operands in the order of the handler's parameters
+            for (k, arg) in crate::check::in_parameter_order(&call.args, &sig.names)
+                .into_iter()
+                .enumerate()
+            {
                 let want = match sig.params.get(k) {
                     Some(Type::Scalar(s)) => Some(*s),
                     _ => None,

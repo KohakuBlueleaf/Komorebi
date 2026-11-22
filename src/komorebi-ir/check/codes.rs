@@ -93,6 +93,8 @@ pub const MESSAGE_ONCE: &str = "K501";
 pub const OFFER_NOT_PEER: &str = "K502";
 /// `send`, `forward`, `consume` or `offer` outside a dynamic run.
 pub const SEND_OUTSIDE_RUN: &str = "K503";
+/// A message sent, offered or forwarded as a type the run has no `on` body for.
+pub const NO_ON_BODY: &str = "K504";
 /// A `past` the build cannot prove (waits for the derived effects).
 pub const PAST_UNPROVEN: &str = "K601";
 /// `past` outside a chain's call.

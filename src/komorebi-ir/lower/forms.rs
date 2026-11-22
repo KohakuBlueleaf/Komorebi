@@ -294,14 +294,12 @@ impl B<'_, '_> {
                 let y = self.part(&p, 1)?;
                 (Op::Compare(c, x, y), Type::Bool)
             }
-            OpKind::LogicAnd => (
-                Op::LogicAnd(self.part(&p, 0)?, self.part(&p, 1)?),
-                Type::Bool,
-            ),
-            OpKind::LogicOr => (
-                Op::LogicOr(self.part(&p, 0)?, self.part(&p, 1)?),
-                Type::Bool,
-            ),
+            // decided from the left: the right operand only when the left does not
+            OpKind::LogicAnd | OpKind::LogicOr => {
+                let (a, b) = (p.need(0)?, p.need(1)?);
+                let and = r.kind == OpKind::LogicAnd;
+                return self.decide_from_left(and, a, b, span).map(Some);
+            }
             OpKind::Unary(u) => {
                 let x = self.part(&p, 0)?;
                 (Op::Unary(u, x), or(self.ty(x)))
@@ -513,8 +511,14 @@ impl B<'_, '_> {
             }
             OpKind::Stream | OpKind::Sink => {
                 let x = self.part(&p, 0)?;
-                let count = self.count_part(&p, 1)?;
-                let n = self.part(&p, 1)?;
+                // a `stream` given no block: blocks of one tile, the number 1
+                let (count, n) = match p.get(1) {
+                    Some(_) => (self.count_part(&p, 1)?, self.part(&p, 1)?),
+                    None => {
+                        let one = super::body::int_const(1, Some(ScalarType::U32));
+                        (Count::ONE, self.constant(one, span))
+                    }
+                };
                 // `block = [r, c]` (R45): the rows a part of their own, in the type only
                 let rows = match p.get(2) {
                     Some(_) => self.count_part(&p, 2)?,

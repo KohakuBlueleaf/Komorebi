@@ -1,0 +1,17 @@
+// refused: a chain has no result, so its call names a handler that gives none (Chains)
+module counted
+
+tile [32, 32]
+format u32
+
+program Counted {
+    handler count(n: u32) -> u32 @on(group) {
+        if worker.is_leader {
+            return n
+        }
+    }
+
+    chain twice(n: u32) @on(group) {
+        call count(n)
+    }
+}

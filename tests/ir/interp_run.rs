@@ -736,7 +736,10 @@ fn an_after_on_a_failed_invocation_fails_by_dependency() {
         lines[0].starts_with("#0 W.take group(0, 2): failed view_end at rank 0"),
         "{printed}"
     );
-    assert_eq!(lines[1], "#1 W.take group(0, 2): failed dependency");
+    assert_eq!(
+        lines[1],
+        "#1 W.take group(0, 2): failed dependency (#0 W.take)"
+    );
     assert!(
         lines[2].starts_with("#2 control strict: failed dependency at rank 0, c0 i"),
         "{printed}"
@@ -3511,4 +3514,337 @@ control spread(w: tensor<f32> @replicated) {
             "copy {island}"
         );
     }
+}
+
+#[test]
+fn a_stream_with_no_block_gives_one_tile_at_a_time() {
+    // `stream(view)` is `stream(view, block = 1)`: a `for` sees each tile, and `fill`
+    // takes one tile a step
+    let m = module(
+        "module one_by_one
+
+tile [32, 32]
+format f32
+
+program One {
+    state @scope(worker) @lifetime(program) {
+        kept: tile<f32>[2]
+    }
+
+    handler copy(x: tensor<f32>, y: tensor<f32>, tiles: u32) -> u32 @on(group) @exclusive {
+        let out = sink(y.tiles(0, tiles), block = 1)
+        var seen: u32 = 0
+        for t in stream(x.tiles(0, tiles)) {
+            out.push(t * 2.0)
+            seen += 1
+        }
+        return seen
+    }
+
+    handler keep(x: tensor<f32>, y: tensor<f32>) @on(group) @exclusive {
+        kept.fill(stream(x.tiles(0, 2)))
+        store y.tiles(0, 1) <- kept[1]
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (3, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (3, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(3))];
+    assert_eq!(
+        run.invoke("One.copy", &args, (0, 1), &[]),
+        End::Completed(Some(u32s(3)))
+    );
+    for i in 0..3 {
+        assert!(all(&tile_f64(&run, y, i), 2.0 * (i + 1) as f64), "tile {i}");
+    }
+    let args = [Arg::Tensor(x), Arg::Tensor(y)];
+    assert_eq!(
+        run.invoke("One.keep", &args, (0, 1), &[]),
+        End::Completed(None)
+    );
+    assert!(all(&tile_f64(&run, y, 0), 2.0));
+}
+
+#[test]
+fn a_float_parameter_takes_its_value_at_the_invocation() {
+    let m = module(
+        "module float_bound
+
+tile [32, 32]
+format f32
+
+param I: f32 = 2.0 @bind(invoke)
+
+func less(a: tile<f32>) -> tile<f32> {
+    return a - I
+}
+
+program P {
+    handler h(x: tensor<f32>) @on(group) {
+        let out = sink(x.tiles(0, 1), block = 1)
+        for xb in stream(x.tiles(0, 1), block = 1) {
+            out.push(less(xb))
+        }
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (1, 1), |_, _| 10.0);
+    let args = [Arg::Tensor(x)];
+    let f32s = |v: f32| Scalar::F32(Format::F32, v);
+    // its own type, at most the declared value
+    assert_eq!(
+        run.invoke("P.h", &args, (0, 1), &[("I", f32s(1.0))]),
+        End::Completed(None)
+    );
+    assert!(all(&tile_f64(&run, x, 0), 9.0));
+    // not given: the declared value
+    assert_eq!(run.invoke("P.h", &args, (0, 1), &[]), End::Completed(None));
+    assert!(all(&tile_f64(&run, x, 0), 7.0));
+    // one above the declared value
+    assert_eq!(
+        run.invoke("P.h", &args, (0, 1), &[("I", f32s(3.0))]),
+        End::Failed {
+            reason: Failure::OverBound,
+            at: None,
+        }
+    );
+    assert!(all(&tile_f64(&run, x, 0), 7.0));
+}
+
+const NAMED: &str = "module named
+
+tile [32, 32]
+format f32
+
+func axpb(a: tile<f32>, k: f32, b: f32) -> tile<f32> {
+    return a * k + b
+}
+
+program P {
+    handler by_name(x: tensor<f32>, y: tensor<f32>, k: f32, b: f32) @on(group) {
+        let out = sink(y.tiles(0, 1), block = 1)
+        for xb in stream(x.tiles(0, 1)) {
+            out.push(axpb(b = b, a = xb, k = k))
+        }
+    }
+
+    handler by_position(x: tensor<f32>, y: tensor<f32>, k: f32, b: f32) @on(group) {
+        let out = sink(y.tiles(0, 1), block = 1)
+        for xb in stream(x.tiles(0, 1)) {
+            out.push(axpb(xb, k, b))
+        }
+    }
+
+    chain named(x: tensor<f32>, y: tensor<f32>, k: f32, b: f32) @on(group) {
+        call by_position(k = k, y = y, b = b, x = x)
+    }
+
+    chain placed(x: tensor<f32>, y: tensor<f32>, k: f32, b: f32) @on(group) {
+        call by_position(x, y, k, b)
+    }
+}
+
+control named_invoke(x: tensor<f32>, y: tensor<f32>) {
+    let a = invoke(P.by_position(y = y, b = 1.0, x = x, k = 3.0), on = group(0, 1))
+    await a
+}
+
+control placed_invoke(x: tensor<f32>, y: tensor<f32>) {
+    let a = invoke(P.by_position(x, y, 3.0, 1.0), on = group(0, 1))
+    await a
+}
+";
+
+#[test]
+fn operands_by_name_reach_their_parameters() {
+    let m = module(NAMED);
+    let f32s = |v: f32| Arg::Scalar(Scalar::F32(Format::F32, v));
+    // each call by name, in another order than declared, gives what it gives by
+    // position: 2 * 3 + 1
+    let mut ys = Vec::new();
+    for (entry, control) in [
+        ("P.by_name", None),
+        ("P.by_position", None),
+        ("P.named", None),
+        ("P.placed", None),
+        ("", Some("named_invoke")),
+        ("", Some("placed_invoke")),
+    ] {
+        let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+        let x = tensor(&mut run, Format::F32, (1, 1), |_, k| 2.0 + k as f64);
+        let y = tensor(&mut run, Format::F32, (1, 1), |_, _| 0.0);
+        let end = match control {
+            Some(c) => run.control(c, &[Arg::Tensor(x), Arg::Tensor(y)]),
+            None => {
+                let args = [Arg::Tensor(x), Arg::Tensor(y), f32s(3.0), f32s(1.0)];
+                run.invoke(entry, &args, (0, 1), &[])
+            }
+        };
+        assert_eq!(end, End::Completed(None), "{entry}{control:?}");
+        let got = tile_f64(&run, y, 0);
+        assert_eq!(got[0], 7.0, "{entry}{control:?}");
+        assert_eq!(got[1], 10.0, "{entry}{control:?}");
+        ys.push(got);
+    }
+    assert!(ys.windows(2).all(|w| w[0] == w[1]));
+}
+
+/// C6 run: `start`, then `mark(5)`, on two workers; the report.
+fn marks_run() -> (Module, String) {
+    let m = module(&construct("c06_state_attributes"));
+    let printed = {
+        let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+        run.invoke("Marks.start", &[], (0, 2), &[]);
+        run.invoke("Marks.mark", &[Arg::Scalar(u32s(5))], (0, 2), &[]);
+        run.show_state("Marks.total").expect("exported");
+        run.show_state("Marks.seen").expect("exported");
+        run.show_state("Marks.last").expect("exported");
+        assert_eq!(
+            run.show_state("Marks.kept"),
+            Err("Marks.kept is not exported".into())
+        );
+        run.report.print()
+    };
+    (m, printed)
+}
+
+#[test]
+fn a_blocks_export_holds_for_every_member() {
+    // `@export` on the block: both its members are shown
+    let (_, printed) = marks_run();
+    assert!(
+        printed.contains(
+            "state Marks.total\n\
+             \x20 worker 0: 5:u32, 0:u32\n\
+             \x20 worker 1: 5:u32, 1:u32\n"
+        ),
+        "{printed}"
+    );
+    assert!(printed.contains("state Marks.seen\n"), "{printed}");
+}
+
+#[test]
+fn a_members_filled_adds_to_its_blocks_attributes() {
+    // `seen` is exported by its block and filled element by element by its own
+    // attribute: `_` where nothing was written; `last` states its scope, its export and
+    // its filling, its block its lifetime
+    let (m, printed) = marks_run();
+    assert!(
+        printed.contains(
+            "state Marks.seen\n\
+             \x20 worker 0: _, 5:u32, _\n\
+             \x20 worker 1: _, 6:u32, _\n"
+        ),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "state Marks.last\n\
+             \x20 worker 0: 6:u32\n\
+             \x20 worker 1: 6:u32\n"
+        ),
+        "{printed}"
+    );
+    let state = &m.programs[0].state;
+    let seen = state.iter().find(|s| s.name == "seen").expect("seen");
+    assert!(seen.export && seen.by_element);
+    let kept = state.iter().find(|s| s.name == "kept").expect("kept");
+    assert!(!kept.export && !kept.by_element);
+}
+
+const LEFT: &str = "module left
+
+tile [32, 32]
+format f32
+
+program P {
+    handler work(x: tensor<f32>, n: u32) -> u32 @on(group) {
+        var acc: tile<f32> = zeros
+        for xb in stream(x.tiles(0, n)) {
+            acc += xb
+        }
+        if worker.is_leader {
+            return n
+        }
+    }
+}
+
+control and(n: u32) -> u32 {
+    if n != 0 && 10 / n == 1 {
+        return 1
+    }
+    return 0
+}
+
+control or(n: u32) -> u32 {
+    if n == 0 || 10 / n == 1 {
+        return 1
+    }
+    return 0
+}
+
+control count_down(n: u32) -> u32 {
+    var i: u32 = n
+    var steps: u32 = 0
+    while i != 0 && 100 / i > 3 {
+        i -= 1
+        steps += 1
+    }
+    return steps
+}
+
+control careful(x: tensor<f32>) -> u32 {
+    let a = invoke(P.work(x, 2), on = group(0, 2))
+    let o = outcome(a)
+    if o.failed && o.reason == capacity {
+        return 0
+    }
+    return o.value
+}
+";
+
+/// A control program of `LEFT` run on `n`.
+fn left_run(control: &str, n: u64) -> End {
+    let m = module(LEFT);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    run.control(control, &[Arg::Scalar(u32s(n))])
+}
+
+#[test]
+fn and_does_not_evaluate_its_right_when_its_left_is_false() {
+    // n = 0: `10 / n` is not evaluated, so no `divide_by_zero`
+    assert_eq!(left_run("and", 0), End::Completed(Some(u32s(0))));
+    assert_eq!(left_run("and", 10), End::Completed(Some(u32s(1))));
+    assert_eq!(left_run("and", 3), End::Completed(Some(u32s(0))));
+}
+
+#[test]
+fn or_does_not_evaluate_its_right_when_its_left_is_true() {
+    assert_eq!(left_run("or", 0), End::Completed(Some(u32s(1))));
+    assert_eq!(left_run("or", 10), End::Completed(Some(u32s(1))));
+    assert_eq!(left_run("or", 3), End::Completed(Some(u32s(0))));
+}
+
+#[test]
+fn a_while_test_decides_from_the_left() {
+    // each test is taken again, and at i = 0 its right is not evaluated
+    assert_eq!(left_run("count_down", 10), End::Completed(Some(u32s(10))));
+    assert_eq!(left_run("count_down", 0), End::Completed(Some(u32s(0))));
+    // 100 / 40 is 2: the right decides, at the first test
+    assert_eq!(left_run("count_down", 40), End::Completed(Some(u32s(0))));
+}
+
+#[test]
+fn the_reason_of_a_completed_invocation_is_not_read_behind_failed() {
+    let m = module(LEFT);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (2, 1), |_, _| 1.0);
+    assert_eq!(
+        run.control("careful", &[Arg::Tensor(x)]),
+        End::Completed(Some(u32s(2)))
+    );
 }

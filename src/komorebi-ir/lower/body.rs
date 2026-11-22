@@ -182,6 +182,39 @@ impl B<'_, '_> {
         self.emit(Op::Const(c), ty, span)
     }
 
+    /// `a && b` and `a || b`, deciding from the left: the right operand is evaluated
+    /// only when the left does not decide (`b` of `a && b` only when `a` is true, of
+    /// `a || b` only when `a` is false). Lowered as an `if` is, into a temporary held
+    /// as a `var` is:
+    ///
+    /// ```text
+    /// a && b    <ops of a>  Set t a  If { cond: a }  <ops of b>  Set t b  End  Get t
+    /// a || b    <ops of a>  Set t a  If { cond: a }  Else  <ops of b>  Set t b  End  Get t
+    /// ```
+    pub(super) fn decide_from_left(
+        &mut self,
+        and: bool,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        span: Span,
+    ) -> Res<ValueId> {
+        let t = LocalId(self.locals.len() as u32);
+        self.locals.push(Type::Bool);
+        let a = self.expr(lhs)?;
+        self.emit0(Op::Set(t, a), span);
+        self.emit0(Op::If { cond: a }, span);
+        if !and {
+            self.emit0(Op::Else, span);
+        }
+        self.scopes.push(HashMap::new());
+        let b = self.expr(rhs);
+        self.scopes.pop();
+        let b = b?;
+        self.emit0(Op::Set(t, b), span);
+        self.emit0(Op::End, span);
+        Ok(self.emit(Op::Get(t), Type::Bool, span))
+    }
+
     // ---- names ----
 
     fn bind(&mut self, name: &str, slot: Slot) {
