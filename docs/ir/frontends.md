@@ -1,5 +1,8 @@
 # A frontend's text and its origin
 
+The frontend this page describes was written before the IR was finished. It is kept under
+`experiments/ir/reference/` as reference material and is not part of the build.
+
 !!! note "Being built"
     The Komorebi IR and its command `komo` are being built. This page says how a frontend (a
     language that produces IR modules, such as Komorebi's Python classes) hands its modules to the

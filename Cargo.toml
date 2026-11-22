@@ -15,10 +15,6 @@ name = "komo"
 path = "src/komorebi-ir/bin/komo.rs"
 
 [[test]]
-name = "tensix"
-path = "tests/ir/tensix.rs"
-
-[[test]]
 name = "roundtrip"
 path = "tests/ir/roundtrip.rs"
 
@@ -59,28 +55,8 @@ name = "backend"
 path = "tests/ir/backend.rs"
 
 [[test]]
-name = "parity"
-path = "tests/ir/parity.rs"
-
-[[test]]
 name = "origin"
 path = "tests/ir/origin.rs"
-
-[[test]]
-name = "frontend"
-path = "tests/ir/frontend.rs"
-
-[[test]]
-name = "tensix_tile"
-path = "tests/ir/tensix_tile.rs"
-
-[[test]]
-name = "tensix_rows"
-path = "tests/ir/tensix_rows.rs"
-
-[[test]]
-name = "tensix_chunks"
-path = "tests/ir/tensix_chunks.rs"
 
 [[test]]
 name = "editors"

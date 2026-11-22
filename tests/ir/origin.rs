@@ -57,14 +57,14 @@ fn handler() -> (ProgramId, HandlerId) {
     (ProgramId(0), HandlerId(0))
 }
 
-/// The class form's module (tests/ir/tensix/): the lesson with two lines of comment
+/// The class form's module (tests/ir/origin/): the lesson with two lines of comment
 /// first, so each range of `t1_given` two lines further.
-const CLASS_FORM: &str = include_str!("tensix/t1_class.kom");
+const CLASS_FORM: &str = include_str!("origin/t1_class.kom");
 
-/// The class form's place table (tests/ir/tensix/t1_places.txt): `handler P H`,
+/// The class form's place table (tests/ir/origin/t1_places.txt): `handler P H`,
 /// `param P H K` and `inst P H I`, each then its first and last lines.
 fn table() -> Vec<(Anchor, u32, u32, u32)> {
-    let text = include_str!("tensix/t1_places.txt");
+    let text = include_str!("origin/t1_places.txt");
     let rows = text
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'));

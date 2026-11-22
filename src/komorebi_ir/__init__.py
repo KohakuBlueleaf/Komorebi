@@ -237,108 +237,6 @@ def emit(
     )
 
 
-class LoadTensor(NamedTuple):
-    """A tensor a load is given for a tensor parameter: its pages, its layout as the
-    kernels' compile arguments take it (tensors of one layout share a kind), the
-    bytes of a page in DRAM when a thread may fetch and store it, and its shape in
-    tiles ``(rows, columns)``, which a handler that streams a rectangle of it needs."""
-
-    pages: int
-    layout: list[int]
-    dram_page: int | None = None
-    shape: tuple[int, int] | None = None
-
-
-class LoadedKernel(NamedTuple):
-    """A kernel as a load hands it to the runtime: its compile arguments are words,
-    each tensor's layout in its place."""
-
-    source: str
-    processor: str
-    defines: list[tuple[str, str]]
-    args: list[int]
-    options: list[tuple[str, bool | str]]
-
-
-class LoadBuffer(NamedTuple):
-    """A buffer as a load makes it: its format by the loader's name (``bfloat16``),
-    ``unpack`` as in ``Buffer``."""
-
-    index: int
-    dtype: str
-    page_bytes: int
-    pages: int
-    pair: int | None
-    unpack: str | None
-
-
-class Islands(NamedTuple):
-    """A machine's islands as a graph: the workers each holds, in order (island 0 the
-    first ``sizes[0]``), and the connections between them, by number, each both ways;
-    None: every pair of islands connected (an empty list of several: not connected)."""
-
-    sizes: list[int]
-    links: list[tuple[int, int]] | None = None
-
-
-class Machine(NamedTuple):
-    """The machine a load is on: its workers, a worker's memory in bytes, its islands
-    and the load's named options (``depth``, ``max_live``)."""
-
-    workers: int
-    worker_memory: int
-    islands: Islands
-    options: list[tuple[str, int]]
-
-
-class Loaded(NamedTuple):
-    """What a load on Tensix makes from its tensors: the thread header (its name and
-    text), the kernels, the buffers, the program's header as the machine sizes it
-    (each reduce's arrival from its islands), in place of the compile's, and the
-    files the output names ``at_load`` ``(name, text)``."""
-
-    thread_name: str
-    thread: str
-    kernels: list[LoadedKernel]
-    buffers: list[LoadBuffer]
-    header_name: str
-    header: str
-    files: list[tuple[str, str]]
-
-
-def load(
-    program: str | bytes,
-    tensors: dict[str, LoadTensor],
-    chip: str | None = None,
-    machine: Machine | None = None,
-) -> Loaded:
-    """A load of a module on Tensix given a tensor for each tensor parameter, by name;
-    ``chip`` (``blackhole``, ``wormhole_b0``) checked when named; on ``machine`` (None:
-    one island holding every worker). Nothing is written or run."""
-    rows = [
-        (name, (t.pages, list(t.layout), t.dram_page, t.shape))
-        for name, t in tensors.items()
-    ]
-    given = None
-    if machine is not None:
-        links = machine.islands.links
-        links = None if links is None else [tuple(link) for link in links]
-        islands = (list(machine.islands.sizes), links)
-        given = (machine.workers, machine.worker_memory, islands, list(machine.options))
-    name, text, kernels, buffers, header_name, header, files = _rs.load(
-        program, rows, chip, given
-    )
-    return Loaded(
-        name,
-        text,
-        [LoadedKernel(s, p, list(d), list(a), list(o)) for s, p, d, a, o in kernels],
-        [LoadBuffer(*b) for b in buffers],
-        header_name,
-        header,
-        [(file, data) for file, data in files],
-    )
-
-
 __all__ = [
     "Buffer",
     "ChainCall",
@@ -347,13 +245,7 @@ __all__ = [
     "EntryPoint",
     "Hashes",
     "IrError",
-    "Islands",
     "Kernel",
-    "LoadBuffer",
-    "LoadTensor",
-    "Loaded",
-    "LoadedKernel",
-    "Machine",
     "Origin",
     "Place",
     "Requirement",
@@ -365,7 +257,6 @@ __all__ = [
     "format",
     "hashes",
     "layout",
-    "load",
     "requirements",
     "run",
 ]

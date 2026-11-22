@@ -1,5 +1,8 @@
 # Backends
 
+The backends this page describes were written before the IR was finished. They are kept under
+`experiments/ir/reference/` as reference material and are not part of the build.
+
 !!! note "Being built"
     The Komorebi IR and its command `komo` are work in progress: the language still changes
     and nothing here is a released interface.

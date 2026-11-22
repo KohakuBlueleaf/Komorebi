@@ -16,9 +16,7 @@
 //! whose text must carry a script's names and lines does. Its cache key covers exactly
 //! those parts, so two files with one key give one output.
 
-pub mod cpu;
 pub mod emit;
-pub mod tensix;
 
 use std::collections::BTreeSet;
 

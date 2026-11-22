@@ -2,7 +2,6 @@
 //! (`crate::deep`), whatever thread calls it.
 
 pub mod emit;
-pub mod load;
 pub mod origin;
 pub mod script;
 
