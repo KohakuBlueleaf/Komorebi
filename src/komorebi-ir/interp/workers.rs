@@ -1927,9 +1927,12 @@ fn step(
             index(frame, *s)?,
         )?),
         Op::Stream(v, n) => {
-            // the rows of `block = [r, c]` (R45), in the stream's type
+            // the rows of `block = [r, c]` (R45), in the stream's type: a number, or a
+            // module parameter's value; one that has none at the run is `out_of_range`
             let rows = match def_ty(0) {
-                Some(Type::Stream(_, Count::Const(r), _)) => *r as usize,
+                Some(Type::Stream(_, r, _)) => {
+                    count(*r, cx.params).map_err(|_| Fault::Failure(Failure::OutOfRange))?
+                }
                 _ => 1,
             };
             Value::Stream(ops::stream_blocks(

@@ -1,0 +1,14 @@
+// refused: a sink of blocks of two tiles takes no single tile (Handler bodies)
+module pushes
+
+tile [32, 32]
+format f32
+
+program Pushes {
+    handler run(a: tensor<f32>, out: tensor<f32>) @on(group) {
+        let results = sink(out.tiles(0, 6), block = 2)
+        for x in stream(a.tiles(0, 6), block = 1) {
+            results.push(x)
+        }
+    }
+}

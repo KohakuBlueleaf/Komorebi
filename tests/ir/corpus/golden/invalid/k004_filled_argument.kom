@@ -1,0 +1,15 @@
+// refused: @filled takes the one word element (Grammar)
+module marked
+
+tile [32, 32]
+format u32
+
+program Marked {
+    state @scope(worker) @lifetime(program) {
+        calls: u32[4] @filled(tile) @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+    }
+}

@@ -3,6 +3,8 @@
 
 /// An undotted attribute that is not one of the language's own.
 pub const UNKNOWN_ATTRIBUTE: &str = "K003";
+/// An argument of one of the language's own attributes that the attribute does not take.
+pub const ATTRIBUTE_ARGUMENT: &str = "K004";
 /// `while` outside a control body.
 pub const WHILE_OUTSIDE_CONTROL: &str = "K005";
 /// A known attribute where it has no meaning.

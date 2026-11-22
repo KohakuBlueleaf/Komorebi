@@ -1398,6 +1398,7 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::Push, &[Some(base), o[0]]);
+                let before = self.diagnostics.len();
                 let t = self.operand(cx, o[0], &Ty::Unknown, "the block");
                 if let Ty::Reduced(..) = t {
                     self.expect_fit(&t, &Ty::Tile(None), span, "the block pushed");
@@ -1407,6 +1408,34 @@ impl Checker<'_> {
                         format!("`push` writes a tile, not {t}"),
                         span,
                     );
+                } else if let (Ty::Sink(_, want), true) = (&ty, self.diagnostics.len() == before) {
+                    // a sink takes blocks of its own shape; a shape the text does not
+                    // show is the run's to check, and an operand already refused says
+                    // nothing more here
+                    let got = match &t {
+                        Ty::Tile(_) => Some(Shape::TILE),
+                        Ty::Block(_, s) => Some(*s),
+                        _ => None,
+                    };
+                    let known =
+                        |s: Shape| matches!((s.rows, s.cols), (Count::Known(_), Count::Known(_)));
+                    if let Some(got) = got.filter(|g| known(*g) && known(*want) && g != want) {
+                        let show = |s: Shape| match (s.rows, s.cols) {
+                            (Count::Known(1), Count::Known(c)) => format!("{c}"),
+                            (Count::Known(r), Count::Known(c)) => format!("[{r}, {c}]"),
+                            _ => String::new(),
+                        };
+                        self.error(
+                            codes::WRONG_TYPE,
+                            format!(
+                                "a sink of `block = {}` takes blocks of that shape, and this \
+                                 is a block of {}",
+                                show(*want),
+                                show(got)
+                            ),
+                            span,
+                        );
+                    }
                 }
                 // K206 (a stream writing where it reads) is Verify's, on the derived effects
                 Ty::Void

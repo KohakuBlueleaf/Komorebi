@@ -1,0 +1,15 @@
+// refused: @scope takes the one word worker (Grammar)
+module marked
+
+tile [32, 32]
+format u32
+
+program Marked {
+    state @scope(group) @lifetime(program) {
+        calls: u32[4] @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+    }
+}

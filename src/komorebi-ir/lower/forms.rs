@@ -301,7 +301,13 @@ impl B<'_, '_> {
             }
             OpKind::Transpose => {
                 let x = self.part(&p, 0)?;
-                (Op::Transpose(x), or(self.ty(x)))
+                // `.T` of a block of r rows of c tiles is a block of c rows of r tiles;
+                // of a tile, a tile of the same format
+                let ty = match self.ty(x) {
+                    Type::Block(f, r, c) => Type::Block(f, c, r),
+                    t => or(t),
+                };
+                (Op::Transpose(x), ty)
             }
             OpKind::Zeros => (Op::Zeros, need_known("`zeros`")?),
             OpKind::CallFunc(f) => {

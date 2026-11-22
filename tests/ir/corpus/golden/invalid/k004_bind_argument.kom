@@ -1,0 +1,20 @@
+// refused: @bind takes one of the words build, load, invoke (Module)
+module count
+
+tile [32, 32]
+format u32
+
+param LIMIT: u32 = 4096 @bind(run)
+
+program Count {
+    handler blocks(x: tensor<u32>, tiles: u32) -> u32 @on(group) {
+        var walked: u32 = 0
+        for xb in stream(
+            partition(x.tiles(0, min(tiles, LIMIT)), worker.rank, group.size),
+            block = 1,
+        ) {
+            walked += 1
+        }
+        return walked
+    }
+}

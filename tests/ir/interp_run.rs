@@ -8,7 +8,7 @@ use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Til
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::{BodyRef, Module};
-use komorebi_ir::types::{HandlerId, ProgramId, RunId};
+use komorebi_ir::types::{Count, HandlerId, ParamId, ProgramId, RunId, Type};
 use komorebi_ir::types::{IslandGraph, IslandRefusal};
 
 fn lesson(name: &str) -> String {
@@ -173,6 +173,48 @@ fn t3_state_stays_between_invocations_and_empty_state_fails() {
     else {
         panic!("{end:?}");
     };
+}
+
+/// A handler that counts the blocks of a stream of `x`'s tiles `[0:2, 0:2]` in blocks
+/// of `[2, 2]`, with `R` bound at load beside it.
+const ROWS: &str = "module rows
+
+tile [32, 32]
+format f32
+
+param R: u32 = 2 @bind(load)
+
+program Rows {
+    handler blocks(x: tensor<f32>) -> u32 @on(group) {
+        var walked: u32 = 0
+        for xb in stream(x.tiles[0:2, 0:2], block = [2, 2]) {
+            walked += 1
+        }
+        return walked
+    }
+}
+";
+
+#[test]
+fn a_streams_rows_bound_at_load_are_the_parameters_value() {
+    // program compile refuses rows bound at load in the text (K102), so the stream's
+    // type is given the parameter `R` by hand in the program structure
+    let mut m = module(ROWS);
+    let mut turned = 0;
+    for ty in &mut m.programs[0].handlers[0].body.values {
+        if let Type::Stream(_, rows, _) = ty {
+            *rows = Count::Param(ParamId(0));
+            turned += 1;
+        }
+    }
+    assert_eq!(turned, 1);
+    let mut run = Machine::load(&m, 1, &[("R", u32s(2))], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (2, 2), |i, _| i as f64);
+    // one block of 2 rows by 2 tiles; rows taken as 1 would give two blocks
+    assert_eq!(
+        run.invoke("Rows.blocks", &[Arg::Tensor(x)], (0, 1), &[]),
+        End::Completed(Some(u32s(1)))
+    );
 }
 
 #[test]

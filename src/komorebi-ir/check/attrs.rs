@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 
 use crate::syntax::ast::{
-    Attr, Block, ExprKind, GroupShape, Item, List, Module, ParamDecl, ParamValue, ProgramItem,
-    Requirement, Span, Stmt, TypeKind,
+    Attr, Block, Expr, ExprKind, GroupShape, IndexItem, Item, List, Module, ParamDecl, ParamValue,
+    ProgramItem, Requirement, Span, Stmt, TypeKind,
 };
 
 use super::codes;
@@ -101,7 +101,98 @@ fn unquote(text: &str) -> String {
         .to_string()
 }
 
+/// The one word each of `@scope`, `@lifetime` and `@filled` takes, and the words
+/// `@bind` takes.
+fn words_taken(name: &str) -> &'static [&'static str] {
+    match name {
+        "scope" => &["worker"],
+        "lifetime" => &["program"],
+        "filled" => &["element"],
+        "bind" => &["build", "load", "invoke"],
+        _ => &[],
+    }
+}
+
+/// True when `value` is the bare word `word`.
+fn is_word(value: &Expr, word: &str) -> bool {
+    matches!(&value.kind, ExprKind::Name(n) if n.name == word && !n.quoted)
+}
+
+/// True when `value` is `grid[R, C]`, each of R and C a whole number written in the
+/// text or the name of a module parameter.
+fn is_grid(value: &Expr, params: &HashSet<String>) -> bool {
+    let ExprKind::Index { base, index } = &value.kind else {
+        return false;
+    };
+    let side = |item: &IndexItem| match item {
+        IndexItem::At(e) => match &e.kind {
+            ExprKind::Int(_) => true,
+            ExprKind::Name(n) => !n.quoted && params.contains(&n.name),
+            _ => false,
+        },
+        IndexItem::Slice { .. } => false,
+    };
+    is_word(base, "grid") && index.len() == 2 && index.values().all(side)
+}
+
+/// True when an operand of `attr` is a name between backticks: `K101` reports it
+/// already, by its own name.
+fn has_quoted(attr: &Attr) -> bool {
+    attr.args.iter().flat_map(|args| args.values()).any(|arg| {
+        let label = arg.name.as_ref().is_some_and(|n| n.quoted);
+        let word = match &arg.value.kind {
+            ExprKind::Name(n) => n.quoted,
+            ExprKind::Index { base, .. } => {
+                matches!(&base.kind, ExprKind::Name(n) if n.quoted)
+            }
+            _ => false,
+        };
+        label || word
+    })
+}
+
 impl Checker<'_> {
+    /// Checks the arguments of the attributes in `checked` among `attrs` (`K004`):
+    /// `@scope(worker)`, `@lifetime(program)`, `@filled(element)`, `@bind` with one of
+    /// `build`, `load`, `invoke`, `@on(group)` or `@on(grid[R, C])` (R and C whole
+    /// numbers in the text or module parameters, `params`), and no list at all after
+    /// `@exclusive` and `@export`.
+    fn attr_args(&mut self, attrs: &[Attr], checked: &[&str], params: &HashSet<String>) {
+        for attr in attrs.iter().filter(|a| !a.is_hint()) {
+            let name = attr.path[0].name.as_str();
+            if !checked.contains(&name) || has_quoted(attr) {
+                continue;
+            }
+            let fits = match name {
+                "exclusive" | "export" => attr.args.is_none(),
+                _ => match attr.args.as_ref() {
+                    Some(args) if args.len() == 1 => {
+                        let arg = args.values().next().expect("one operand");
+                        arg.name.is_none()
+                            && match name {
+                                "on" => is_word(&arg.value, "group") || is_grid(&arg.value, params),
+                                _ => words_taken(name).iter().any(|w| is_word(&arg.value, w)),
+                            }
+                    }
+                    _ => false,
+                },
+            };
+            if !fits {
+                let takes = match name {
+                    "exclusive" | "export" => "no argument list".to_string(),
+                    "on" => "one argument, `group` or `grid[R, C]`".to_string(),
+                    "bind" => "one argument, one of `build`, `load`, `invoke`".to_string(),
+                    _ => format!("one argument, `{}`", words_taken(name).join("`, `")),
+                };
+                self.error(
+                    codes::ATTRIBUTE_ARGUMENT,
+                    format!("`@{name}` takes {takes}"),
+                    attr.span,
+                );
+            }
+        }
+    }
+
     /// Checks the attributes in one place: each undotted one known (`K003`) and allowed
     /// there (`K006`).
     fn attrs_in(&mut self, attrs: &[Attr], allowed: &[&str], place: &str) {
@@ -212,6 +303,14 @@ impl Checker<'_> {
         let mut has_grid = false;
         let mut impls: HashSet<String> = HashSet::new();
         let mut tiles = 0;
+        let params: HashSet<String> = module
+            .items
+            .nodes()
+            .filter_map(|item| match item {
+                Item::Param(p) => Some(p.name.name.clone()),
+                _ => None,
+            })
+            .collect();
         for item in module.items.nodes() {
             match item {
                 Item::Requires(r) => {
@@ -249,6 +348,15 @@ impl Checker<'_> {
                 Item::Tile(_) | Item::Format(_) | Item::Requires(_) => {}
                 Item::Param(p) => {
                     self.attrs_in(&p.attrs, &["bind"], "a module parameter");
+                    self.attr_args(&p.attrs, &["bind"], &params);
+                    // before the declaration is described, which has no `bool` parameter
+                    if matches!(p.ty.kind, TypeKind::Bool) {
+                        self.error(
+                            codes::BOOL_PLACE,
+                            "`bool` is not a type of a parameter".into(),
+                            p.ty.span,
+                        );
+                    }
                     self.require_attr(&p.attrs, "bind", "a parameter", p.span);
                     if matches!(p.value, ParamValue::Fit(_)) {
                         let bind = word_args(&p.attrs, "bind");
@@ -324,7 +432,7 @@ impl Checker<'_> {
                 }
                 Item::Program(p) => {
                     for part in p.body.nodes() {
-                        self.program_item_rules(part, has_dynamic, has_grid);
+                        self.program_item_rules(part, has_dynamic, has_grid, &params);
                     }
                 }
                 Item::Control(c) => {
@@ -336,12 +444,19 @@ impl Checker<'_> {
         }
     }
 
-    fn program_item_rules(&mut self, part: &ProgramItem, has_dynamic: bool, has_grid: bool) {
+    fn program_item_rules(
+        &mut self,
+        part: &ProgramItem,
+        has_dynamic: bool,
+        has_grid: bool,
+        params: &HashSet<String>,
+    ) {
         match part {
             ProgramItem::Message(m) => self.message_attrs(&m.attrs),
             ProgramItem::Record(_) => {}
             ProgramItem::State(s) => {
                 self.attrs_in(&s.attrs, &["scope", "lifetime"], "a state block");
+                self.attr_args(&s.attrs, &["scope", "lifetime"], params);
                 let missing: Vec<&str> = ["scope", "lifetime"]
                     .into_iter()
                     .filter(|name| !s.attrs.iter().any(|a| is_named(a, name)))
@@ -358,10 +473,12 @@ impl Checker<'_> {
                 }
                 for member in s.members.nodes() {
                     self.attrs_in(&member.attrs, &["export", "filled"], "a state member");
+                    self.attr_args(&member.attrs, &["export", "filled"], params);
                 }
             }
             ProgramItem::Handler(h) => {
                 self.attrs_in(&h.attrs, &["on", "exclusive"], "a handler");
+                self.attr_args(&h.attrs, &["on", "exclusive"], params);
                 self.require_attr(&h.attrs, "on", "a handler", h.span);
                 self.param_attrs(&h.params);
                 self.block_attrs(&h.body);
@@ -399,6 +516,7 @@ impl Checker<'_> {
             }
             ProgramItem::Chain(c) => {
                 self.attrs_in(&c.attrs, &["on"], "a chain");
+                self.attr_args(&c.attrs, &["on"], params);
                 self.require_attr(&c.attrs, "on", "a chain", c.span);
                 for call in c.calls.nodes() {
                     self.attrs_in(&call.attrs, &["on"], "a chain's call");
