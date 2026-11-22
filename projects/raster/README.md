@@ -430,6 +430,39 @@ Three changes took the 10^6 frame from 12,125 to 6,894 us (first) and 10,575 to 
 Per frame the host still loads the program (the camera goes with the load: 0.5 to 0.8
 s) and reads the image back (20 MB, 10 to 18 s); both are outside the frame times above.
 
+## The interactive loop
+
+`live.py` loads the scene and the frame program once, with the thread built to serve
+(`RF_SERVE`): `kmx_main` sets up and returns, and each `FRAME` command to the thread runs one
+frame from the camera the host wrote into the thread's `camera` region (16 words), then `SHOW`,
+then answers. `SHOW` is one command to the fill's cores: each packs its tiles' colour into one
+page a tile of the `display` tensor (32 x 32 pixels of `R, G, B, 255`, by `reference/png.py`'s
+rule, in scalar code on the writer; a band writes its rows). With `--push` the thread also
+issues the display's push into the host channel before it answers, so the host reads nothing.
+
+```bash
+python -m projects.raster.live --scene sponza_overview --frames 200 --push --pictures DIR
+```
+
+Card 0, 2026-11-22, AICLK 1,350 MHz, 200 frames a scene, the cameras stepping forward along
+the view; frames 0, 100 and 199 equal the reference rasterizer's 8-bit image of that camera
+(0 pixels differ) in every run:
+
+| scene | path | card frame ms | host ms a frame, median (5th, 95th) | frames a second |
+|---|---|---|---|---|
+| tiny | read | 1.807 | 3.147 (3.011, 3.287) | 317.8 |
+| tiny | push | 2.094 | 2.723 (2.588, 2.869) | 367.2 |
+| 10^6 | read | 7.315 | 8.606 (8.510, 8.727) | 116.2 |
+| 10^6 | push | 7.603 | 8.234 (8.132, 8.351) | 121.5 |
+| Sponza | read | 4.437 | 5.731 (5.547, 6.081) | 174.5 |
+| Sponza | push | 4.723 | 5.350 (5.181, 5.686) | 186.9 |
+| Bistro interior | read | 7.184 | 8.515 (8.424, 8.636) | 117.4 |
+| Bistro interior | push | 7.471 | 8.129 (8.028, 8.255) | 123.0 |
+
+`SHOW` is 0.80 to 1.14 ms of a card frame (107 to 114 thousand cycles a tile) and the push
+0.287 ms. The lists are sized at the load: a camera that puts more triangles in view than
+they hold ends its frame with the result word 6 (`--list-slots` makes them larger).
+
 ## Results
 
 The whole frame runs on the card: the table of the previous section (settled frame,

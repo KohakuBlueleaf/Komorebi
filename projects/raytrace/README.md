@@ -12,6 +12,13 @@ vector extension is not the obstacle (the option `enable_trisc2_rvv` is `"if_pre
 
 ## Where it stands
 
+The numbers of this section and of the tables below it are on the reference's median tree. A tree
+built by the surface-area heuristic halves the card's frame on Sponza, traces whose cores pull
+their packets take the idle time out of it, and `live.py` runs the frame as an interactive loop:
+[A tree built by the surface-area heuristic](#a-tree-built-by-the-surface-area-heuristic),
+[A trace whose cores pull their packets](#a-trace-whose-cores-pull-their-packets) and
+[The interactive loop](#the-interactive-loop).
+
 The whole frame runs on the card, exact against numpy (ties and a few Bistro misses
 apart: [What is exact](#what-is-exact)), with the scene's tree in L1 or read from DRAM
 as treelets. Against the V100 running the reference's frame, the card's frame takes
@@ -496,6 +503,83 @@ Reading it: every pass is below half of the V100's rate.
   and origin.
 - Not counted above: the host steps (ray generation, shading) and the readback of the
   hit pages; reading back is slow ([host API](../../docs/reference/host.md#session)).
+
+### A tree built by the surface-area heuristic
+
+Every table above was measured on the reference's first tree: a median split on the longest
+axis, one triangle a leaf. `reference/bvh.py` also builds the same kind of tree by the
+surface-area heuristic (`build(scene, split="sah")`: 16 bins an axis, the cut of least count
+times box area, one triangle a leaf, the same file format), and `KR_TREE_SPLIT=sah` makes the
+drivers build it. No kernel changes: a bounce ray then visits fewer than half the nodes.
+
+Card 1 and one V100, 2026-11-22, AICLK 1,350 MHz, `--treelets 128 --sort --reps 4`, the
+commands of this page; frame ms, median tree then surface-area tree:
+
+| scene | card | V100 | C++ 96 threads | V100 / card |
+|---|---|---|---|---|
+| Sponza, close (`--chain`) | 319.96, 162.52 | 101.86, 29.60 | 232.25, 76.43 | 0.32, 0.18 |
+| Sponza, overview | 348.09, 200.85 | 95.45, 26.54 | 204.12, 68.43 | 0.27, 0.13 |
+| Bistro interior, close (`--chain`) | 512.46, 362.59 | 211.53, 98.25 | 350.34, 155.39 | 0.41, 0.27 |
+| Bistro interior, overview | 523.50, 394.49 | 153.91, 75.15 | 280.23, 125.36 | 0.29, 0.19 |
+
+The V100 gains more than the card: it walks each ray alone, and the card's packets still pay
+each node for about 5 live lanes of 32 in the bounce trace. Sponza's images have 0 pixels
+differing (85 to 244 ties); Bistro keeps its known miss on three of the four runs. The tree is deeper (32 and 36 levels
+against 19 and 20) and cuts into more, uneven treelets (349 and 1,327 at 128 KiB against 256
+and 1,024), so a trace is 7 and 11 chunk commands, not 4, and treelets of 512 KiB or more
+no longer fit two slots of L1.
+
+### A trace whose cores pull their packets
+
+With chunk commands each chunk lasts as long as its slowest core: on the surface-area tree
+that is 58.6 ms of Sponza overview's 200.9 ms frame and 151.0 ms of Bistro interior
+overview's 394.5 ms (each trace's command time less the mean core's busy time).
+`--plan pull` runs a trace as ONE command under the planner thread's `kmx_pull_run`: a core
+takes the next range of `--pull-packets` packets when it is free and runs it as it runs a
+chunk; the hits go to the packets' own places. `--pull-traces` names the traces pulled.
+
+Card 1, 2026-11-22, surface-area tree, `--treelets 128 --sort --reps 4`, the median of
+frames 2 to 4 on the thread's clock; ms of primary, shadow, bounce, second shadow, then the
+frame:
+
+| scene | `--plan host` (chunk commands) | all four traces pulled |
+|---|---|---|
+| Sponza, overview (32 packets a pull) | 24.12, 15.97, 112.61, 37.94; 213.12 | 16.63, 11.05, 85.29, 29.99; 161.91 |
+| Bistro interior, overview (16 packets a pull) | 44.02, 27.65, 252.07, 74.20; 421.96 | 23.01, 13.93, 164.36, 56.03; 276.75 |
+
+The slowest core then ends within 3 to 14 % of the mean core on most traces (1.4 to 2.3
+times under chunk commands). A small pull costs treelet reads: every range starts with empty
+treelet slots, so at 8 packets a pull a core of Sponza's bounce reads 3,289 treelets
+against 1,379 and the trace is slower than the chunk commands (117.54 ms against 112.61).
+Keeping the slots from one range to the next changed nothing: 1 % of the visits found their
+treelet. The frame as one chain (`--chain`) removes the same loss another way and takes
+158 and 290 ms on these two scenes; the two cannot be combined, since a pull is served by
+the thread and a chain is one command.
+
+### The interactive loop
+
+`live.py` loads the scene, the program and the frame's chain once; for each camera it writes
+the constants page into the same tensor and submits the same chain command. With `--show`
+the chain's last record packs each tile's colour into one page of 8-bit pixels (the
+`display` tensor: 1,024 pages of 4,096 bytes, `R, G, B, 255`), which the host reads through
+the host channel and puts into an image by one reshape.
+
+```bash
+python -m projects.raytrace.live --scene sponza_overview --treelets 128 --sort --frames 30 --show --check
+```
+
+Card 0, 2026-11-22, surface-area tree, AICLK 1,350 MHz; the cameras step forward along the
+view; frames 0, the middle one and the last checked against numpy's image of that camera:
+
+| scene | card frame ms | host ms a frame, median (5th, 95th) | frames a second | checked frames |
+|---|---|---|---|---|
+| tiny (100 frames) | 18.32 | 19.8 (14.5, 36.5) | 50.5 | 0 pixels differing |
+| Sponza, overview (30) | 158.57 | 160.1 (158.4, 161.9) | 6.25 | 0 pixels differing, 85 to 106 ties |
+| Bistro interior, overview (30) | 290.28 | 292.1 (290.2, 293.6) | 3.42 | one pixel a frame of the known kind of miss |
+
+Of the host's 1.5 ms a frame, the constants write is 0.23, the read of the display 0.77 and
+its reshape 0.33. Without `--show` the host reads the float colour, whose 24 KiB pages do not
+fit the run's 16 KiB transfer chunks and so take 452 ms a frame on the scenes with treelets.
 
 ## What bounds it, and what was tried
 
