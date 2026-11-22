@@ -1,0 +1,11 @@
+// refused: an operation that gives no value, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(y: tensor<bf16>) @on(group) {
+        let a = sync(publish = [y.tiles(0, 1)])
+    }
+}

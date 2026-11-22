@@ -1,0 +1,11 @@
+// refused: a sink of a view that states no format (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(v: view) @on(group) {
+        let o = sink(v, block = 1)
+    }
+}

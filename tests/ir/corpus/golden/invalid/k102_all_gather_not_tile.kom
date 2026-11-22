@@ -1,0 +1,11 @@
+// refused: all_gather of what is not a tile: a reduction's values (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(r: tile<bf16>) @on(group) {
+        let every = all_gather(reduce_sum(r, axis = row))
+    }
+}

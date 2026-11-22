@@ -1,0 +1,11 @@
+// refused: a list as a statement (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h() @on(group) {
+        [1, 2]
+    }
+}

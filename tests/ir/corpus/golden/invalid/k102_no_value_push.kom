@@ -1,0 +1,12 @@
+// refused: an operation that gives no value, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(y: tensor<bf16>, t: tile<bf16>) @on(group) {
+        let o = sink(y.tiles(0, 1), block = 1)
+        let a = o.push(t)
+    }
+}

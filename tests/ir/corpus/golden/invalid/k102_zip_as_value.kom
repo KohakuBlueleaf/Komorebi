@@ -1,0 +1,11 @@
+// refused: what a for walks, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(x: tensor<bf16>, y: tensor<bf16>) @on(group) {
+        let a = zip(stream(x.tiles(0, 1), block = 1), stream(y.tiles(0, 1), block = 1))
+    }
+}

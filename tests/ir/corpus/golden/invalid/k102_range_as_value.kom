@@ -1,0 +1,11 @@
+// refused: what a for walks, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(n: u32) @on(group) {
+        let a = range(n)
+    }
+}

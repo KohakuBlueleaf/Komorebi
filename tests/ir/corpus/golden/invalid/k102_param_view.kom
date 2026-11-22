@@ -1,0 +1,12 @@
+// refused: a module parameter is a scalar, not a view (Module)
+module m
+
+tile [32, 32]
+format bf16
+
+param T: view = fit @bind(load)
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+    }
+}

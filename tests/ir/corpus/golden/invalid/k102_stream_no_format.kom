@@ -1,0 +1,12 @@
+// refused: a stream of a view that states no format (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(v: view) @on(group) {
+        for b in stream(v, block = 1) {
+        }
+    }
+}

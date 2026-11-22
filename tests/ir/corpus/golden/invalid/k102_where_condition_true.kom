@@ -1,0 +1,9 @@
+// refused: the condition of where is one comparison of tiles, not true (Compute functions)
+module m
+
+tile [32, 32]
+format bf16
+
+func f(r: tile<bf16>) -> tile<bf16> {
+    return where(true, r, r)
+}

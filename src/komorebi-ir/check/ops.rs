@@ -10,7 +10,7 @@ use crate::types::{Axis, Format, ScalarType};
 
 use super::body::{
     as_int, as_name, constant_name, count_of, named, named_opt, pos, Cx, Family, Kind, Operand,
-    PROVIDED, UNARY,
+    Read, PROVIDED, UNARY,
 };
 use super::codes;
 use super::consts::{self, Fault, Num};
@@ -332,6 +332,14 @@ impl Checker<'_> {
                             format!("`where` takes a comparison first, not {ty}"),
                             c.span,
                         );
+                    } else if ty != Ty::Unknown
+                        && !(ty == Ty::Mask && matches!(&c.kind, ExprKind::Binary { .. }))
+                    {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            "the condition of `where` is one comparison of tiles: `a > b`".into(),
+                            c.span,
+                        );
                     }
                 }
                 let x = self.tile_operand(cx, o[1]);
@@ -390,9 +398,17 @@ impl Checker<'_> {
                 };
                 self.note_op(span, OpKind::Reduce(op, axis), &o[..1]);
                 match a {
-                    Ty::Tile(f) => Ty::Reduced(f, axis, Shape::TILE),
+                    Ty::Tile(f) if self.is_tile(o[0], &a) => Ty::Reduced(f, axis, Shape::TILE),
                     Ty::Block(f, shape) => Ty::Reduced(f, axis, shape),
-                    _ => Ty::Unknown,
+                    Ty::Unknown => Ty::Unknown,
+                    _ => {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            "a reduction takes a tile".into(),
+                            o[0].map_or(span, |e| e.span),
+                        );
+                        Ty::Unknown
+                    }
                 }
             }
             _ if UNARY.contains(&what) => {
@@ -475,6 +491,21 @@ impl Checker<'_> {
                     Ty::View { format, .. } => format,
                     _ => None,
                 };
+                if let (Ty::View { format: None, .. }, Some(x)) = (&v, o[0]) {
+                    let does = if what == "sink" {
+                        "a sink writes"
+                    } else {
+                        "a stream reads"
+                    };
+                    self.error(
+                        codes::WRONG_TYPE,
+                        format!(
+                            "{does} a view of a tensor's tiles, and this view states no format"
+                        ),
+                        x.span,
+                    );
+                    return Ty::Unknown;
+                }
                 let mut block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
                 // a constant expression: its value (a fault of its own is its code's;
                 // another value is `K209`'s)
@@ -613,6 +644,9 @@ impl Checker<'_> {
                     self.note_op(span, OpKind::ReduceGroup(c), &[o[0], o[2], o[3], o[4]]);
                 }
                 let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
+                if let Some(e) = o[0] {
+                    self.not_a_value(cx, e, &x, Read::Operand);
+                }
                 self.combination(cx, o[1]);
                 self.operand(cx, o[2], &Ty::SubGroups, "`within`");
                 self.operand(cx, o[3], &Ty::Leaders, "`among`");
@@ -630,6 +664,8 @@ impl Checker<'_> {
                 let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
                 if cx.kind == Kind::Control {
                     self.replicated(x.clone(), o[0], what);
+                } else if let Some(e) = o[0] {
+                    self.not_a_value(cx, e, &x, Read::Operand);
                 }
                 self.combination(cx, o[1]);
                 self.view_list(cx, o[2]);
@@ -644,10 +680,8 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::Gather, &o);
-                match self.operand(cx, o[0], &Ty::Unknown, "the value") {
-                    Ty::Tile(f) => Ty::Block(f, Shape::row(Count::GroupSize)),
-                    _ => Ty::Unknown,
-                }
+                let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
+                self.gathered(o[0], &x, what)
             }
             "all_gather" if cx.kind == Kind::Control => {
                 let Some(o) = self.operands(what, span, args, &[pos("t")]) else {
@@ -666,10 +700,7 @@ impl Checker<'_> {
                 self.note_op(span, OpKind::AllGather, &o);
                 let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
                 self.view_list(cx, o[1]);
-                match x {
-                    Ty::Tile(f) => Ty::Block(f, Shape::row(Count::GroupSize)),
-                    _ => Ty::Unknown,
-                }
+                self.gathered(o[0], &x, what)
             }
             "broadcast" => {
                 let form = [named("along"), named_opt("sender")];
@@ -868,6 +899,58 @@ impl Checker<'_> {
             return Ty::Unknown;
         }
         ty
+    }
+
+    /// `gather(x)` and `all_gather(x)` in a handler: a block of the group's tiles, x a
+    /// tile (`K102`).
+    fn gathered(&mut self, e: Option<&Expr>, x: &Ty, what: &str) -> Ty {
+        match x {
+            Ty::Tile(f) if self.is_tile(e, x) => Ty::Block(*f, Shape::row(Count::GroupSize)),
+            Ty::Unknown => Ty::Unknown,
+            _ => {
+                if let Some(e) = e {
+                    self.error(codes::WRONG_TYPE, format!("`{what}` takes a tile"), e.span);
+                }
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// True when `e`, typed a tile of no format, is computed from numbers only
+    /// (`exp(1.0)`, `rsqrt(2.0) * 3.0`): its value is a number, not a tile.
+    pub(super) fn numbers_only(&self, e: &Expr) -> bool {
+        let key = (e.span.start, e.span.end);
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) => true,
+            ExprKind::Paren(x) | ExprKind::Neg(x) => self.numbers_only(x),
+            ExprKind::Binary { lhs, rhs, .. }
+                if matches!(self.types.get(&key), Some(Ty::Tile(None))) =>
+            {
+                self.numbers_only(lhs) && self.numbers_only(rhs)
+            }
+            ExprKind::Call { args, .. } => {
+                let operands: Vec<&Expr> = match self.ops.get(&key).map(|r| &r.kind) {
+                    Some(OpKind::Unary(_) | OpKind::Binary(_)) => {
+                        args.values().map(|a| &a.value).collect()
+                    }
+                    // `where(c, x, y)`: the values x and y
+                    Some(OpKind::Select) => args.values().skip(1).map(|a| &a.value).collect(),
+                    _ => return false,
+                };
+                !operands.is_empty() && operands.iter().all(|x| self.numbers_only(x))
+            }
+            _ => matches!(self.types.get(&key), Some(Ty::Scalar(_) | Ty::Number(_))),
+        }
+    }
+
+    /// True when `e`, of type `ty`, is a tile: of a format or of none, and not computed
+    /// from numbers only.
+    pub(super) fn is_tile(&self, e: Option<&Expr>, ty: &Ty) -> bool {
+        match ty {
+            Ty::Tile(Some(_)) => true,
+            Ty::Tile(None) => !e.is_some_and(|e| self.numbers_only(e)),
+            _ => false,
+        }
     }
 
     /// `K208`: `items`, `records` and `words` only on a tensor whose format has stated
@@ -1532,6 +1615,14 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::Words, &[Some(base)]);
+                if format.is_none() {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        "the words of a view that states no format".into(),
+                        span,
+                    );
+                    return Ty::Unknown;
+                }
                 if tiles.more_than_one() {
                     self.error(
                         codes::WORDS_MANY_TILES,
@@ -1550,6 +1641,14 @@ impl Checker<'_> {
                 else {
                     return Ty::Unknown;
                 };
+                if format.is_none() {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        "the records of a view that states no format".into(),
+                        span,
+                    );
+                    return Ty::Unknown;
+                }
                 if tiles.more_than_one() {
                     self.error(
                         codes::WORDS_MANY_TILES,
@@ -1695,6 +1794,14 @@ impl Checker<'_> {
                 let Some(_) = self.operands(what, span, args, &[]) else {
                     return Ty::Unknown;
                 };
+                if !self.is_tile(Some(base), &ty) {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        format!("`.{what}()` spreads a tile's or a reduction's values"),
+                        span,
+                    );
+                    return Ty::Unknown;
+                }
                 self.note_op(span, spread(what), &[Some(base)]);
                 Ty::Tile(*f)
             }

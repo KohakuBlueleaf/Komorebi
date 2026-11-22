@@ -1,0 +1,13 @@
+// refused: a whole number of a requirement that 64 bits do not hold (Module)
+module m
+
+tile [32, 32]
+
+requires {
+    local_state >= bytes(99999999999999999999)
+}
+
+program P {
+    handler h(n: u32) @on(group) {
+    }
+}

@@ -1,0 +1,19 @@
+// refused: an operation that gives no value, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+requires {
+    local_state >= tiles(1)
+}
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        ts: tile<bf16>[1]
+    }
+
+    handler h(x: tensor<bf16>) @on(group) {
+        let a = ts.fill(stream(x.tiles(0, 1), block = 1))
+    }
+}

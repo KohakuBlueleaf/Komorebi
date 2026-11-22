@@ -1,0 +1,11 @@
+// refused: gather of what is not a tile: a tensor (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+        let every = gather(x)
+    }
+}

@@ -1,0 +1,23 @@
+// refused: an operation that gives no value, bound by let (Dynamic runs)
+module m
+
+tile [32, 32]
+format bf16
+
+requires {
+    dynamic
+}
+
+program P {
+    message M { a: u32 }
+
+    run r() @dynamic {
+        seed {
+            send(M { a: 1 }, to = 0)
+        }
+        on M(m) {
+            let a = forward(m, to = 0)
+            consume m
+        }
+    }
+}

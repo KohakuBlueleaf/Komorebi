@@ -1,0 +1,15 @@
+// refused: a state member of scalars named whole as a value (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        c: u32[2]
+    }
+
+    handler h() @on(group) {
+        let a = c
+    }
+}

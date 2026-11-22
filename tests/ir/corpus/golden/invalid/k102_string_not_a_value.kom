@@ -1,0 +1,11 @@
+// refused: a string as a value (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h() @on(group) {
+        let a = "hi"
+    }
+}

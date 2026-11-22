@@ -1,0 +1,12 @@
+// refused: a module parameter is a scalar, not a tile given a value (Module)
+module m
+
+tile [32, 32]
+format bf16
+
+param T: tile<bf16> = 3 @bind(build)
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+    }
+}

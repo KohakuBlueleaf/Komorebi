@@ -1,0 +1,13 @@
+// refused: a stream of a part of a view that states no format (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(v: view) @on(group) {
+        let p = partition(v, worker.rank, group.size)
+        for b in stream(p, block = 1) {
+        }
+    }
+}

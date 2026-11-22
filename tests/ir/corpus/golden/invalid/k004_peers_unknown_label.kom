@@ -1,0 +1,21 @@
+// refused: @peers takes offsets = [d, ...] or pairs = [(s, r), ...] (Dynamic runs)
+module m
+
+tile [32, 32]
+format bf16
+
+requires {
+    dynamic
+}
+
+program P {
+    message M { a: u32 }
+
+    run r() @dynamic @peers(foo = [1]) {
+        seed {
+        }
+        on M(m) {
+            consume m
+        }
+    }
+}

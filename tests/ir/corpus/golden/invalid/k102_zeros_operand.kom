@@ -1,0 +1,11 @@
+// refused: zeros where its place states no type: an operand of + (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(r: tile<bf16>) @on(group) {
+        let a = zeros + r
+    }
+}

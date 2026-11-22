@@ -1,0 +1,13 @@
+// refused: the records of a view that states no format (Types and data)
+module m
+
+tile [32, 32]
+format u32
+
+record R { a: u32 }
+
+program P {
+    handler h(v: view) @on(group) {
+        let w = v.records(R, count = 1)
+    }
+}
