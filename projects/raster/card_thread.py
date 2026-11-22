@@ -34,9 +34,15 @@ F["RF_W_SPROF"] = F["RF_W_REPEAT"] + 1
 for i, name in enumerate(["COUNTERS", "HIST", "SLOTS", "HPREFIX"]):
     F[f"RF_W_{name}"] = F["RF_W_SPROF"] + 1 + i
 F["RF_W_BALANCE"] = F["RF_W_HPREFIX"] + 1
-F["RF_WORDS"] = F["RF_W_BALANCE"] + 1
+F["RF_W_DISPLAY"] = F["RF_W_BALANCE"] + 1
+F["RF_W_SHOWPROF"] = F["RF_W_DISPLAY"] + 1
+F["RF_WORDS"] = F["RF_W_SHOWPROF"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
+SHOW_H = KERNELS / "show.h"
+SHOW = {
+    name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHOW_H.read_text())
+}
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
 
@@ -69,6 +75,9 @@ def same_numbers():
         "RF_COSTS_AT": S["kCostsAt"],
         "RF_COST_KNOTS": S["kCostKnots"],
         "RF_MAX_CORES": S["kMaxFillCores"],
+        "RF_HANDLER_SHOW": SHOW["kHandlerShow"],
+        "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
+        "RF_DISPLAY_PAGES": lists.TILES,
         # PLACE's list and directory words against the fill's
         "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
         "kLayDirFrame": (S["kLayDirFrame"], K["kDirFrame"]),
@@ -97,8 +106,9 @@ def camera_region(scene):
     return region
 
 
-def regions(scene, workers):
-    """The thread's regions in frame.h's order: the camera's page, then sizes."""
+def regions(scene, workers, show_table=None):
+    """The thread's regions in frame.h's order: the camera's page, then sizes; SHOW's
+    block holds `show_table` (live.py), else nothing."""
     work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
     return {
         "camera": camera_region(scene),
@@ -106,13 +116,20 @@ def regions(scene, workers):
         "items": F["RF_ITEMS_REGION_BYTES"],
         "work": work,
         "sums": F["RF_SUMS_BYTES"],
+        "times": F["RF_TIMES_BYTES"],
+        "show": (
+            F["RF_SHOW_TABLE_BYTES"]
+            if show_table is None
+            else np.asarray(show_table, dtype=np.uint32)
+        ),
+        "push": F["RF_PUSH_BYTES"],
     }
 
 
-def program(scene, words, workers):
+def program(scene, words, workers, show_table=None):
     """The frame program: the passes' and the fill's kernels behind one entry each
-    (kernels/frame_*.cpp), both programs' buffers, with the frame thread on work
-    cluster 1."""
+    (kernels/frame_*.cpp), both programs' buffers and SHOW's, with the frame thread on
+    work cluster 1. With `show_table` (live.py) the thread serves FRAME commands."""
     fill_program, passes_program = card.program(), card_passes.program()
     frame_program = km.Program(
         "raster_frame",
@@ -120,20 +137,35 @@ def program(scene, words, workers):
             role: KERNELS / f"frame_{role}.cpp"
             for role in ("reader", "compute", "writer")
         },
-        buffers=[*fill_program.buffers, *passes_program.buffers],
+        buffers=[
+            *fill_program.buffers,
+            *passes_program.buffers,
+            km.Buffer(
+                SHOW["kCbShow"], "uint32", SHOW["kShowPageBytes"], SHOW["kShowPages"]
+            ),
+        ],
         compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
         compute=fill_program.compute,
         defines=card.spread_parts()[2],
         depth=1,
-        handlers={**fill_program.handlers, **passes_program.handlers},
+        handlers={
+            **fill_program.handlers,
+            **passes_program.handlers,
+            "show": SHOW["kHandlerShow"],
+        },
     )
     frame_program.thread(
         cluster=CLUSTER,
         sources=[THREAD / "frame.c", THREAD / "middle.c"],
         includes=[THREAD],
-        regions=regions(scene, workers),
+        regions=regions(scene, workers, show_table),
         words=words,
         deadline=10.0,
+        **(
+            {"handlers": {"frame": 1}, "defines": {"RF_SERVE": "1"}}
+            if show_table is not None
+            else {}
+        ),
     )
     return frame_program
 

@@ -9,8 +9,11 @@
 #define RF_HANDLER_PLACE 15u
 #define RF_HANDLER_SUM 16u
 #define RF_HANDLER_HSUM 17u
-#define RF_HANDLER_FILL 1u   /* kernels/raster.h */
-#define RF_PAGES_PER_ITEM 5u /* the frame's pages per tile: the fill's planes */
+#define RF_HANDLER_FILL 1u        /* kernels/raster.h */
+#define RF_PAGES_PER_ITEM 5u      /* the frame's pages per tile: the fill's planes */
+#define RF_HANDLER_SHOW 4u        /* kernels/show.h */
+#define RF_SHOW_TABLE_BYTES 1024u /* SHOW's block: kShowTableWords words */
+#define RF_DISPLAY_PAGES 1024u    /* the display's pages: a page a tile */
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -54,16 +57,19 @@
 #define RF_W_FRAMES 10     /* frame tensors */
 #define RF_W_FRAME 11      /* their addresses, RF_FRAME_MAX words */
 #define RF_W_PROF (RF_W_FRAME + RF_FRAME_MAX) /* the fill's profile tensor */
-#define RF_W_REPEAT (RF_W_PROF + 1)           /* frames in a row (0: one) */
+/* frames in a row; 0: none, the thread serves FRAME commands (built with RF_SERVE) */
+#define RF_W_REPEAT (RF_W_PROF + 1)
 /* the passes' profile tensor (profile_address), 0: none */
 #define RF_W_SPROF (RF_W_REPEAT + 1)
 /* Tensors only the cores read and write, a page per worker: */
-#define RF_W_COUNTERS (RF_W_SPROF + 1)  /* COUNT's counters */
-#define RF_W_HIST (RF_W_COUNTERS + 1)   /* HIST's histograms (RF_HIST_BYTES pages) */
-#define RF_W_SLOTS (RF_W_HIST + 1)      /* SUM's entries before each core per tile */
-#define RF_W_HPREFIX (RF_W_SLOTS + 1)   /* HSUM's counts before each core */
-#define RF_W_BALANCE (RF_W_HPREFIX + 1) /* 1: COUNT's and SETUP's ranges by cost */
-#define RF_WORDS (RF_W_BALANCE + 1)
+#define RF_W_COUNTERS (RF_W_SPROF + 1)   /* COUNT's counters */
+#define RF_W_HIST (RF_W_COUNTERS + 1)    /* HIST's histograms (RF_HIST_BYTES pages) */
+#define RF_W_SLOTS (RF_W_HIST + 1)       /* SUM's entries before each core per tile */
+#define RF_W_HPREFIX (RF_W_SLOTS + 1)    /* HSUM's counts before each core */
+#define RF_W_BALANCE (RF_W_HPREFIX + 1)  /* 1: COUNT's and SETUP's ranges by cost */
+#define RF_W_DISPLAY (RF_W_BALANCE + 1)  /* SHOW's display tensor (serving) */
+#define RF_W_SHOWPROF (RF_W_DISPLAY + 1) /* SHOW's profile tensor, 0: none */
+#define RF_WORDS (RF_W_SHOWPROF + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */
@@ -71,7 +77,29 @@
 #define RF_R_ITEMS 2  /* SETUP's items page, base words, PLACE's words */
 #define RF_R_WORK 3   /* the thread's own memory */
 #define RF_R_SUMS 4   /* SUM's and HSUM's totals over the cores */
-#define RF_REGIONS 5u
+#define RF_R_TIMES 5  /* serving: a row per FRAME command, the last RF_TIMES_ROWS */
+#define RF_R_SHOW 6   /* SHOW's block: reference/png.py's thresholds */
+#define RF_R_PUSH 7   /* the display's PUSH to the host channel, written by the host */
+#define RF_REGIONS 8u
+
+/* The PUSH's words in its region (session.channel_transfer's entry): the header, the
+ * group, a0 to a9; its nonce word (a7) is XORed with FRAME's a0. */
+#define RF_PUSH_HEADER 0
+#define RF_PUSH_GROUP 1
+#define RF_PUSH_ARGS 2
+#define RF_PUSH_BYTES 64u
+/* FRAME's words: a0 the PUSH's key, a1 1 to push the display after SHOW */
+
+/* A row of the times region: the result words of the frame (its own, not summed), then
+ */
+#define RF_TIMES_ROWS 256u
+#define RF_TIMES_ROW_WORDS 32u
+#define RF_TIMES_BYTES 32768u /* RF_TIMES_ROWS x RF_TIMES_ROW_WORDS words */
+#define RF_T_SHOW 21          /* SHOW submitted to its event */
+#define RF_T_FRAME 22         /* the FRAME command: from its call to its answer */
+#define RF_T_NUMBER 23        /* FRAME commands served before it */
+#define RF_T_CODE 24          /* its answer */
+#define RF_T_PUSH 25          /* the PUSH submitted to its event (0: none) */
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0
@@ -105,3 +133,4 @@
 #define RF_NO_LAYOUT 5u   /* the middle pass could not lay the lists out */
 #define RF_LISTS_SMALL 6u /* the lists tensor has fewer slots than the frame needs */
 #define RF_PARALLEL 7u    /* a part on the four cores did not finish (late, stopped) */
+#define RF_NOT_SERVING 8u /* a FRAME command to a thread not set up to serve */

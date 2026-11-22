@@ -1,5 +1,5 @@
-// The frame program's reader: the passes' (handlers from 11) and the fill's, each
-// file included in a namespace of its own without its entry, chosen by handler.
+// The frame program's reader: the passes' (handlers from 11), the fill's and SHOW
+// (show_reader.hpp, in the fill's namespace), chosen by handler.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -10,6 +10,7 @@
 
 namespace fill_k {
 #include "reader.cpp"
+#include "show_reader.hpp"
 }  // namespace fill_k
 
 namespace pass_k {
@@ -19,7 +20,9 @@ namespace pass_k {
 void kernel_main() {
     km::Reader reader;
     reader.run([&](const km_command_t& command) {
-        if (km::handler(command) >= pass_k::kHandlerLanes) {
+        if (km::handler(command) == fill_k::kHandlerShow) {
+            fill_k::show_reader_command(reader, command);
+        } else if (km::handler(command) >= pass_k::kHandlerLanes) {
             pass_k::setup_reader_command(reader, command);
         } else {
             fill_k::fill_reader_command(reader, command);

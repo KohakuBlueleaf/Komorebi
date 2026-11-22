@@ -1,5 +1,8 @@
 /* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the middle pass (middle.c),
  * PLACE, SETUP, FILL, each submitted and waited for (words, regions: frame.h). */
+
+/* Built with RF_SERVE, kmx_main sets up and the thread serves FRAME commands: a frame
+ * and SHOW each, from the camera the host wrote before the command. */
 #include <stdint.h>
 
 #include "frame.h"
@@ -447,53 +450,161 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     return code;
 }
 
+/* The thread's state, kept from kmx_main for the FRAME commands (in .data: the image
+ * links no .bss). */
+static frame_t g_frame __attribute__((section(".data"))) = {0};
+static void* g_regions[RF_REGIONS] __attribute__((section(".data"))) = {0};
+#ifdef RF_SERVE
+static uint32_t g_set_up __attribute__((section(".data"))) = RF_NOT_SERVING;
+static uint32_t g_served __attribute__((section(".data"))) = 0;
+#endif
+
 int kmx_main(int core) {
     (void)core;
     const kmx_args* arguments = kmx_args_get();
-    frame_t frame;
+    frame_t* frame = &g_frame;
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
-        frame.result[i] = 0;
+        frame->result[i] = 0;
     }
     if (arguments->nwords < RF_WORDS || arguments->nregions < RF_REGIONS) {
-        return finish(RF_BAD_ARGS, &frame);
+        return finish(RF_BAD_ARGS, frame);
     }
-    frame.words = arguments->words;
-    frame.bank_plus_one = 1 + frame.words[RF_W_BANK];
-    const uint32_t cores = frame.words[RF_W_CORES], workers = frame.words[RF_W_WORKERS];
-    frame.ranged = frame.ready = 0;
+    frame->words = arguments->words;
+    frame->bank_plus_one = 1 + frame->words[RF_W_BANK];
+    const uint32_t cores = frame->words[RF_W_CORES];
+    const uint32_t workers = frame->words[RF_W_WORKERS];
+    frame->ranged = frame->ready = 0;
     const uint32_t need[RF_REGIONS] = {
-        frame.words[RF_W_BALANCE] ? RF_CAMERA_BYTES : 4 * 16,
+        frame->words[RF_W_BALANCE] ? RF_CAMERA_BYTES : 4 * 16,
         RF_HEAVY_BYTES,
         RF_ITEMS_REGION_BYTES,
         sizeof(work_t),
         RF_SUMS_BYTES,
+        RF_TIMES_BYTES,
+        RF_SHOW_TABLE_BYTES,
+        RF_PUSH_BYTES,
     };
-    void* regions[RF_REGIONS];
+    void** regions = g_regions;
     for (int i = 0; i < (int)RF_REGIONS; i++) {
         uint64_t bytes;
         regions[i] = kmx_region(i, &bytes);
         if (regions[i] == 0 || bytes < need[i] || arguments->region[i].offset >> 32) {
-            return finish(RF_BAD_ARGS, &frame);
+            return finish(RF_BAD_ARGS, frame);
         }
-        frame.address[i] = (uint32_t)arguments->region[i].offset;
+        frame->address[i] = (uint32_t)arguments->region[i].offset;
     }
     if (
         cores == 0 || cores > workers || workers > RM_MAX_CORES ||
-        frame.words[RF_W_FRAMES] > RF_FRAME_MAX
+        frame->words[RF_W_FRAMES] > RF_FRAME_MAX
     ) {
-        return finish(RF_BAD_ARGS, &frame);
+        return finish(RF_BAD_ARGS, frame);
     }
     work_t* work = (work_t*)regions[RF_R_WORK];
     /* lines an earlier image left dirty would be written over what the cores write */
     kmx_flush(RF_R_SUMS);
     kmx_flush(RF_R_CAMERA);
-    const uint32_t frames = frame.words[RF_W_REPEAT] ? frame.words[RF_W_REPEAT] : 1;
-    for (uint32_t repeat = 0; repeat < frames; repeat++) {
-        const uint32_t code = frame_once(&frame, work, regions);
-        if (code) {
-            return finish(code, &frame);
-        }
-        frame.result[RF_O_FRAMES] = repeat + 1;
+    /* SHOW's thresholds as the host wrote them at the load, not an earlier image's */
+    kmx_invalidate(RF_R_SHOW);
+    const uint32_t frames = frame->words[RF_W_REPEAT];
+#ifdef RF_SERVE
+    if (frames == 0) {
+        g_set_up = frame->words[RF_W_DISPLAY] ? 0u : RF_BAD_ARGS;
+        return finish(g_set_up, frame);
     }
-    return finish(0, &frame);
+#endif
+    for (uint32_t repeat = 0; repeat < (frames ? frames : 1); repeat++) {
+        const uint32_t code = frame_once(frame, work, regions);
+        if (code) {
+            return finish(code, frame);
+        }
+        frame->result[RF_O_FRAMES] = repeat + 1;
+    }
+    return finish(0, frame);
 }
+
+#ifdef RF_SERVE
+/* SHOW: the frame's colour into the display, a page a tile (kernels/show.h). 0, or
+ * the code to report. */
+static uint32_t show(frame_t* frame) {
+    km_command_t command;
+    new_command(&command, RF_HANDLER_SHOW, frame);
+    command.a0 = frame->words[RF_W_DIR];      /* directory_address */
+    command.a1 = frame->words[RF_W_DISPLAY];  /* display_address */
+    command.a2 = frame->words[RF_W_SHOWPROF]; /* profile_address */
+    command.a3 = RF_DISPLAY_PAGES;            /* display_pages */
+    if (kmx_block(&command, RF_R_SHOW, 0, RF_SHOW_TABLE_BYTES) != KMX_OK) {
+        return RF_BAD_ARGS;
+    }
+    return run(&command);
+}
+
+_Static_assert(KM_TRANSFER_NONCE == 7u, "a transfer's nonce is its a7");
+
+/* The display's PUSH from the words the host wrote into the push region, its nonce word
+ * XORed with `key` (projects/nn's TRANSFER entry). 0, or the code to report. */
+static uint32_t push(uint32_t key) {
+    kmx_invalidate_at(RF_R_PUSH, 0, RF_PUSH_BYTES);
+    const volatile uint32_t* words = (const volatile uint32_t*)g_regions[RF_R_PUSH];
+    const uint32_t header = words[RF_PUSH_HEADER], group = words[RF_PUSH_GROUP];
+    km_command_t command;
+    kmx_command(&command, header >> 24, header & 0xFFu, group & 0xFFFFu, group >> 16);
+    command.hdr |= header & 0xFF00u;
+    command.a0 = words[RF_PUSH_ARGS + 0];
+    command.a1 = words[RF_PUSH_ARGS + 1];
+    command.a2 = words[RF_PUSH_ARGS + 2];
+    command.a3 = words[RF_PUSH_ARGS + 3];
+    command.a4 = words[RF_PUSH_ARGS + 4];
+    command.a5 = words[RF_PUSH_ARGS + 5];
+    command.a6 = words[RF_PUSH_ARGS + 6];
+    command.a7 = words[RF_PUSH_ARGS + 7] ^ key; /* KM_TRANSFER_NONCE */
+    command.a8 = words[RF_PUSH_ARGS + 8];
+    command.a9 = words[RF_PUSH_ARGS + 9];
+    return run(&command);
+}
+
+/* FRAME: one frame from the camera at the start of its region, then SHOW, then (a1)
+ * the display's PUSH; its parts' ticks go to a row of the times region. */
+static uint32_t serve_frame(const km_command_t* command) {
+    frame_t* frame = &g_frame;
+    const uint64_t started = kmx_time();
+    kmx_invalidate_at(RF_R_CAMERA, 0, 64);
+    for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+        frame->result[i] = 0;
+    }
+    uint32_t code = frame_once(frame, (work_t*)g_regions[RF_R_WORK], g_regions);
+    uint32_t show_ticks = 0;
+    if (code == 0) {
+        const uint64_t show_started = kmx_time();
+        code = show(frame);
+        show_ticks = (uint32_t)(kmx_time() - show_started);
+    }
+    uint32_t push_ticks = 0;
+    if (code == 0 && command->a1) {
+        const uint64_t push_started = kmx_time();
+        code = push(command->a0);
+        push_ticks = (uint32_t)(kmx_time() - push_started);
+    }
+    frame->result[RF_O_FRAMES] = 1;
+    const uint32_t row = (g_served % RF_TIMES_ROWS) * RF_TIMES_ROW_WORDS;
+    volatile uint32_t* times = (volatile uint32_t*)g_regions[RF_R_TIMES] + row;
+    for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+        times[i] = frame->result[i];
+    }
+    times[RF_T_SHOW] = show_ticks;
+    times[RF_T_PUSH] = push_ticks;
+    times[RF_T_NUMBER] = g_served;
+    times[RF_T_CODE] = code;
+    times[RF_T_FRAME] = (uint32_t)(kmx_time() - started);
+    kmx_flush_at(RF_R_TIMES, 4u * row, 4u * RF_TIMES_ROW_WORDS);
+    g_served++;
+    return code;
+}
+
+uint32_t kmx_program(const km_command_t* command) {
+    switch (kmx_handler(command)) {
+        case kHandlerFrame:
+            return g_set_up ? g_set_up : serve_frame(command);
+    }
+    return 0;
+}
+#endif
