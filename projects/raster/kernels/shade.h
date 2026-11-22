@@ -5,13 +5,15 @@
 #include <stdint.h>
 
 // SHADE: a0 directory, a1 lists (FILL's), a2 texture pages, a3 table, a4 profile (0:
-// none) addresses. FILL's planes in, the colour planes written back.
+// none), a6 the opaque layer's directory (0: none; else a0, a1 the masked layer's).
 constexpr uint32_t kHandlerShade = 5;
+// With a6, a pixel nearer than the opaque layer's (a tie to it) with alpha byte >=
+// kAlphaOpaque takes the masked colour, else the opaque one, in the opaque frame.
 
 // Buffers: the reader's planes, the table, the pack thread's page requests, the
 // reader's answers, the page slots (plain memory), the pack thread's own space.
 constexpr uint32_t kCbShadePlanes = 14;
-constexpr uint32_t kShadePlanePages = 10;  // two items of five planes
+constexpr uint32_t kShadePlanePages = 10;  // two items of five planes, one of ten (a6)
 constexpr uint32_t kCbShadeTable = 15;
 constexpr uint32_t kShadeTableBytes = 16384;
 constexpr uint32_t kCbShadeAsk = 20;
@@ -31,20 +33,23 @@ constexpr uint32_t kShadeColourPages = 3;  // red, green, blue out (kCbOut)
 constexpr uint32_t kShadeOutPages = 5;
 
 // Table words: counts; TEXEL_LINEAR; a material: kind | (1 + albedo's level 0 entry, 0:
-// none) << 8, base rgb; then an entry: first page, width | height << 16.
+// none) << 8, base rgb, 1 + mask's (sizes the albedo's); an entry: page, w | h << 16.
 constexpr uint32_t kTabMaterials = 0;
 constexpr uint32_t kTabEntries = 1;
 constexpr uint32_t kTabPages = 2;
 constexpr uint32_t kTabGamma = 16;
 constexpr uint32_t kTabMaterial = 272;
-constexpr uint32_t kMaterialWords = 4;
+constexpr uint32_t kMaterialWords = 5;
+constexpr uint32_t kMaterialMask = 4;
 constexpr uint32_t kEntryWords = 2;
-// kinds (reference/raster.py): masked and lit are shaded as textured in this step
+// kinds (reference/raster.py): lit is shaded as textured in this step; masked as
+// textured, its holes by the masked layer's SHADE (a6)
 constexpr uint32_t kKindFlat = 0;
 constexpr uint32_t kKindTextured = 1;
 constexpr uint32_t kKindMasked = 2;
 constexpr uint32_t kKindLit = 3;
 constexpr uint32_t kKindEmissive = 4;
+constexpr uint32_t kAlphaOpaque = 128;  // a masked texel under it is a hole
 
 // Record word (SETUP writes it on a shaded frame): material | albedo level << 16.
 constexpr uint32_t kRecShade = 30;

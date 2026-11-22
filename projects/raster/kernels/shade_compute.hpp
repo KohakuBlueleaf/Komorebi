@@ -1,5 +1,5 @@
 // SHADE's compute (shade.h): unpack waits on buffers for pack; pack colours each
-// item: u, v, light, texel keys, pages read, texels gathered (RVV), colour.
+// item: u, v, light, texel keys, pages read, texels gathered (RVV), colour, (a6) merge.
 #include "shade.h"
 
 namespace shade_pass {
@@ -12,6 +12,7 @@ namespace shade_pass {
     using fill_k::kHdrRow1;
     using fill_k::kHdrTile;
     using fill_k::kMarkEnd;
+    using fill_k::kOutPageBytes;
     using fill_k::kPlanes;
     using fill_k::kPlaneWords;
     using fill_k::kRecTri;
@@ -101,12 +102,27 @@ namespace shade_pass {
     constexpr uint32_t kVecS = 160, kVecT = 192, kVecRecord = 224, kVecAlbedo = 160;
     constexpr uint32_t kConstTri = 0, kConstW = 1, kConstWLast = 2, kConstH = 3;
     constexpr uint32_t kConstHLast = 4, kConstAcross = 5, kConstFirst = 6;
-    constexpr uint32_t kConstBase = 7;  // red, green, blue
+    constexpr uint32_t kConstBase = 7;   // red, green, blue
+    constexpr uint32_t kConstMask = 10;  // the mask's first page less the albedo's
+    constexpr uint32_t kRecordNumbers = 11;
     constexpr uint32_t kMagicBits = 0x4B400000;
     constexpr uint32_t kMinusTwo = 0xC0000000;  // a pixel's triangle once coloured
+    constexpr uint32_t kMinusOne = 0xBF800000;  // FILL's triangle of an empty pixel
+    // A texel address with the mask's slot: (1 + slot) at this bit (0: the albedo's
+    // texel has the alpha byte); the texel's place in its page the albedo's.
+    constexpr uint32_t kMaskSlotShift = 20;
+    static_assert(kShadeSlots * kTexPageBytes < 1u << kMaskSlotShift);
+    static_assert(kVecTri == 32 * (kPlanes - 1));
 
-    // How a record's pixels are coloured.
-    enum Mode : uint32_t { kFlat, kLight, kLightTexture, kEmissive, kEmissiveTexture };
+    // How a record's pixels are coloured; kLightTextureMask also keys its mask's texel.
+    enum Mode : uint32_t {
+        kFlat,
+        kLight,
+        kLightTexture,
+        kEmissive,
+        kEmissiveTexture,
+        kLightTextureMask
+    };
 
     constexpr uint32_t dst_address(uint32_t vector) {
         return 4 * (vector >> 1) + 2 * (vector & 1);
@@ -220,25 +236,29 @@ namespace shade_pass {
         store(L0, kVecDepth + r);
     }
 
-    // A record's numbers to its vectors (every lane): its triangle, the level's width,
-    // width - 1, height, height - 1, blocks a row, 1 + its first page, base colour.
+    // A record's numbers to its vectors (every lane): triangle, width, width - 1,
+    // height, height - 1, blocks a row, 1 + first page, base rgb, mask's pages on.
     inline void record_numbers(const uint32_t* numbers) {
         TTI_SFPENCC(3, 0, 0, 10);
-        for (uint32_t i = 0; i < kConstBase + 3; ++i) {
+        for (uint32_t i = 0; i < kRecordNumbers; ++i) {
             immediate(L0, numbers[i]);
             store(L0, kVecRecord + i);
         }
     }
 
-    // Row r, the record's pixels: texel key (1 + page) << 10 | texel to the depth row,
-    // the colour the albedo multiplies later; their triangle becomes -2.
+    // Row r, the record's pixels: key (1 + page) << 10 | texel to the depth row, the
+    // colour the albedo multiplies; triangle -2 (a mask: -2's bits | mask's key).
     inline void record_row(uint32_t r, Mode mode) {
         load(L0, kVecTri + r);
         load(L1, kVecRecord + kConstTri);
         sub(L0, L1, L0);
         TTI_SFPNOP;
         TT_SFPSETCC(0, L0, 0, kEq0);
-        if (mode == kLightTexture || mode == kEmissiveTexture) {
+        const bool textured = (
+            mode == kLightTexture || mode == kEmissiveTexture ||
+            mode == kLightTextureMask
+        );
+        if (textured) {
             // x = min(floor(s width), width - 1), its block and column in the block
             load(L0, kVecS + r);
             load(L1, kVecRecord + kConstW);
@@ -267,6 +287,10 @@ namespace shade_pass {
             load(L1, kVecRecord + kConstFirst);
             TT_SFPMAD(L6, L0, L1, L6, 0);
             add(L6, L4, L6);
+            if (mode == kLightTextureMask) {  // the mask's 1 + page: the same block
+                load(L0, kVecRecord + kConstMask);
+                add(L6, L0, L7);
+            }
             add(L6, MAGIC, L6);
             add(L2, MAGIC, L2);
             TTI_SFPNOP;
@@ -275,8 +299,19 @@ namespace shade_pass {
             TT_SFPSHFT(10, 0, L6, kShiftImmediate);
             TT_SFPOR(0, L2, L6, 0);
             store(L6, kVecDepth + r);
+            if (mode == kLightTextureMask) {  // its key, tagged, to the triangle row
+                add(L7, MAGIC, L7);
+                TTI_SFPNOP;
+                TT_SFPAND(0, MASK, L7, 0);
+                TT_SFPSHFT(10, 0, L7, kShiftImmediate);
+                TT_SFPOR(0, L2, L7, 0);
+                TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
+                TTI_SFPNOP;
+                TT_SFPOR(0, L0, L7, 0);
+                store(L7, kVecTri + r);
+            }
         }
-        if (mode == kLight || mode == kLightTexture) {
+        if (mode == kLight || mode == kLightTexture || mode == kLightTextureMask) {
             load(L0, kVecBlue + r);
             for (uint32_t channel = 0; channel < 3; ++channel) {
                 load(L1, kVecRecord + kConstBase + channel);
@@ -289,8 +324,10 @@ namespace shade_pass {
                 store(L1, kVecRed + 32 * channel + r);
             }
         }
-        TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
-        store(L0, kVecTri + r);
+        if (mode != kLightTextureMask) {
+            TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
+            store(L0, kVecTri + r);
+        }
         TTI_SFPENCC(3, 0, 0, 10);
     }
 
@@ -437,7 +474,7 @@ namespace shade_pass {
     };
 
     // Rows [first, end): texel offsets from the keys, in passes whose pages fit the
-    // slots; each pass's pages asked for and read, texels gathered to the albedo rows.
+    // slots, texels to albedo rows; merging also mask's, depth row 1 where it takes.
     inline bool texels(
         uint32_t first,
         uint32_t end,
@@ -446,6 +483,7 @@ namespace shade_pass {
         const uint32_t* gamma,
         uint32_t slots_address,
         uint32_t page_limit,
+        bool merging,
         Counters& counters
     ) {
         uint32_t* values = counters.values;
@@ -461,6 +499,7 @@ namespace shade_pass {
             pages.clear();
             const uint32_t pass_first = row;
             uint32_t* keys = pages.used + kShadeSlots;  // a row's keys
+            uint32_t* mask_keys = keys + 32;            // its triangle row (merging)
             for (; row < end; ++row) {
                 __riscv_vse32_v_u32m8(
                     keys,
@@ -471,6 +510,17 @@ namespace shade_pass {
                     ),
                     vl
                 );
+                if (merging) {
+                    __riscv_vse32_v_u32m8(
+                        mask_keys,
+                        __riscv_vlse32_v_u32m8(
+                            const_cast<const uint32_t*>(window() + word(kVecTri + row)),
+                            8,
+                            vl
+                        ),
+                        vl
+                    );
+                }
                 asm volatile("" ::: "memory");
                 uint32_t* row_index = index + 32 * row;
                 bool full = false;
@@ -487,7 +537,21 @@ namespace shade_pass {
                         full = true;
                         break;
                     }
-                    row_index[column] = slot * kTexPageBytes + 4 * (key & 1023);
+                    uint32_t address = slot * kTexPageBytes + 4 * (key & 1023);
+                    const uint32_t tagged = merging ? mask_keys[column] : 0;
+                    const uint32_t mask_key = tagged & 0x3FFFFFFF;
+                    const uint32_t mask_page = (mask_key >> 10) - 1;
+                    if (
+                        tagged >> 30 == 3 && mask_key >= 1024 && mask_page < page_limit
+                    ) {
+                        const uint32_t mask_slot = pages.slot_of(mask_page);
+                        if (mask_slot == kShadeSlots) {
+                            full = true;
+                            break;
+                        }
+                        address |= (mask_slot + 1) << kMaskSlotShift;
+                    }
+                    row_index[column] = address;
                     ++row_texels;
                 }
                 if (full) {  // this row starts the next pass
@@ -514,11 +578,59 @@ namespace shade_pass {
             values[kShadeProfPasses]++;
             const uint32_t* slots = reinterpret_cast<const uint32_t*>(slots_address);
             for (uint32_t r = pass_first; r < row; ++r) {
-                const vuint32m8_t texel = (
-                    __riscv_vluxei32_v_u32m8(
-                        slots, __riscv_vle32_v_u32m8(index + 32 * r, vl), vl
-                    )
+                const vuint32m8_t address = __riscv_vle32_v_u32m8(index + 32 * r, vl);
+                const vuint32m8_t albedo_address = (
+                    merging
+                        ? __riscv_vand_vx_u32m8(address, (1u << kMaskSlotShift) - 1, vl)
+                        : address
                 );
+                const vuint32m8_t texel = (
+                    __riscv_vluxei32_v_u32m8(slots, albedo_address, vl)
+                );
+                if (merging) {
+                    // the alpha byte: the mask's texel at the same place, else the
+                    // albedo's
+                    const vuint32m8_t mask_slot = (
+                        __riscv_vsrl_vx_u32m8(address, kMaskSlotShift, vl)
+                    );
+                    const vuint32m8_t mask_address = (
+                        __riscv_vmerge_vvm_u32m8(
+                            albedo_address,
+                            __riscv_vor_vv_u32m8(
+                                __riscv_vsll_vx_u32m8(
+                                    __riscv_vsub_vx_u32m8(mask_slot, 1, vl), 12, vl
+                                ),
+                                __riscv_vand_vx_u32m8(address, kTexPageBytes - 1, vl),
+                                vl
+                            ),
+                            __riscv_vmsne_vx_u32m8_b4(mask_slot, 0, vl),
+                            vl
+                        )
+                    );
+                    const vuint32m8_t alpha_texel = (
+                        __riscv_vluxei32_v_u32m8(slots, mask_address, vl)
+                    );
+                    const vuint32m8_t triangle = (
+                        __riscv_vlse32_v_u32m8(
+                            const_cast<const uint32_t*>(window() + word(kVecTri + r)), 8, vl
+                        )
+                    );
+                    const vbool4_t take = (
+                        __riscv_vmand_mm_b4(
+                            __riscv_vmsgeu_vx_u32m8_b4(alpha_texel, kAlphaOpaque << 24, vl),
+                            __riscv_vmsne_vx_u32m8_b4(triangle, kMinusOne, vl),
+                            vl
+                        )
+                    );
+                    __riscv_vsse32_v_u32m8(
+                        const_cast<uint32_t*>(window() + word(kVecDepth + r)),
+                        8,
+                        __riscv_vmerge_vxm_u32m8(
+                            __riscv_vmv_v_x_u32m8(0, vl), 1, take, vl
+                        ),
+                        vl
+                    );
+                }
                 for (uint32_t channel = 0; channel < 3; ++channel) {
                     const vuint32m8_t byte = (
                         __riscv_vand_vx_u32m8(
@@ -559,6 +671,9 @@ void shade_compute_command(const km_command_t& command) {
     Counters counters;
     uint32_t* values = counters.values;
     const uint32_t started = km::wall();
+    // the masked layer's command: its planes, then the opaque layer's, an item each
+    const bool merging = command.a6 != 0;
+    const uint32_t item_pages = merging ? 2 * kPlanes : kPlanes;
     setup();
     bool succeeded = true;
     const uint32_t table_address = front(kCbShadeTable, 1);
@@ -609,7 +724,7 @@ void shade_compute_command(const km_command_t& command) {
             break;
         }
         uint32_t mark = km::wall();
-        const uint32_t planes = front(kCbShadePlanes, kPlanes);
+        const uint32_t planes = front(kCbShadePlanes, item_pages);
         if (planes == 0) {
             succeeded = false;
             break;
@@ -617,24 +732,50 @@ void shade_compute_command(const km_command_t& command) {
         uint32_t now = km::wall();
         values[kShadeProfWaitIn] += now - mark;
         mark = now;
-        // the item's rows of the five planes into Dst (two rows: 64 words)
+        // the item's rows of the five planes into Dst (two rows: 64 words); merging,
+        // triangle -1 unless nearer than the opaque (1/z as unsigned bits, tie to it)
+        const uint32_t* plane_words = reinterpret_cast<const uint32_t*>(planes);
+        // the opaque layer's five pages after them in the ring (shade_reader.hpp)
+        uint32_t opaque_planes = planes + kPlanes * kOutPageBytes;
+        if (opaque_planes >= get_local_cb_interface(kCbShadePlanes).fifo_limit << 4) {
+            opaque_planes -= get_local_cb_interface(kCbShadePlanes).fifo_size << 4;
+        }
+        const uint32_t* opaque_words = reinterpret_cast<const uint32_t*>(opaque_planes);
         for (uint32_t plane = 0; plane < kPlanes; ++plane) {
             for (int32_t pair = first_row / 2; pair < end_row / 2; ++pair) {
                 const uint32_t at = plane * kPlaneWords + 64 * pair;
                 for (uint32_t half = 0; half < 64; half += 32) {
+                    vuint32m8_t value = (
+                        __riscv_vle32_v_u32m8(plane_words + at + half, vl)
+                    );
+                    if (merging && plane == kPlanes - 1) {
+                        const uint32_t depth_at = 64 * pair + half;
+                        const vbool4_t nearer = (
+                            __riscv_vmand_mm_b4(
+                                __riscv_vmsltu_vx_u32m8_b4(value, 0x80000000, vl),
+                                __riscv_vmsgtu_vv_u32m8_b4(
+                                    __riscv_vle32_v_u32m8(plane_words + depth_at, vl),
+                                    __riscv_vle32_v_u32m8(opaque_words + depth_at, vl),
+                                    vl
+                                ),
+                                vl
+                            )
+                        );
+                        value = (
+                            __riscv_vmerge_vvm_u32m8(
+                                __riscv_vmv_v_x_u32m8(kMinusOne, vl), value, nearer, vl
+                            )
+                        );
+                    }
                     __riscv_vse32_v_u32m8(
-                        const_cast<uint32_t*>(window() + at + half),
-                        __riscv_vle32_v_u32m8(
-                            reinterpret_cast<const uint32_t*>(planes) + at + half, vl
-                        ),
-                        vl
+                        const_cast<uint32_t*>(window() + at + half), value, vl
                     );
                 }
             }
         }
         asm volatile("" ::: "memory");
         pass_k::setup_pass::order((kPlanes - 1) * kPlaneWords + 32 * end_row - 1);
-        if (!pop(kCbShadePlanes, kPlanes)) {
+        if (!merging && !pop(kCbShadePlanes, kPlanes)) {
             succeeded = false;
             break;
         }
@@ -671,7 +812,7 @@ void shade_compute_command(const km_command_t& command) {
             const uint32_t entry_base = material_at[0] >> 8;
             const bool emissive = kind == kKindEmissive;
             Mode mode = kind == kKindFlat ? kFlat : emissive ? kEmissive : kLight;
-            uint32_t numbers[kConstBase + 3] = {};
+            uint32_t numbers[kRecordNumbers] = {};
             numbers[kConstTri] = record[kRecTri];
             if (
                 kind != kKindFlat && entry_base != 0 && entry_base - 1 + level < entries
@@ -688,6 +829,30 @@ void shade_compute_command(const km_command_t& command) {
                     numbers[kConstHLast] = pass_k::float_bits(height - 1);
                     numbers[kConstAcross] = pass_k::float_bits((width + 31) / 32);
                     numbers[kConstFirst] = pass_k::float_bits(entry[0] + 1);
+                }
+                // merging, a masked material's mask at the same level and sizes
+                const uint32_t mask_base = material_at[kMaterialMask];
+                if (
+                    merging && mode == kLightTexture && kind == kKindMasked &&
+                    mask_base != 0 && mask_base - 1 + level < entries
+                ) {
+                    const uint32_t* mask_entry = (
+                        entry_words + kEntryWords * (mask_base - 1 + level)
+                    );
+                    if (mask_entry[1] == entry[1]) {
+                        const int32_t pages_on = (
+                            static_cast<int32_t>(mask_entry[0] - entry[0])
+                        );
+                        mode = kLightTextureMask;
+                        numbers[kConstMask] = (
+                            pass_k::float_bits(
+                                static_cast<uint32_t>(
+                                    pages_on < 0 ? -pages_on : pages_on
+                                )
+                            ) |
+                            (pages_on < 0 ? 0x80000000u : 0u)
+                        );
+                    }
                 }
             }
             for (uint32_t channel = 0; channel < 3; ++channel) {
@@ -717,6 +882,7 @@ void shade_compute_command(const km_command_t& command) {
             gamma,
             slots_address,
             page_limit,
+            merging,
             counters
         )) {
             succeeded = false;
@@ -744,12 +910,48 @@ void shade_compute_command(const km_command_t& command) {
                 words
             );
         }
+        if (merging) {  // the opaque layer's colour where the depth row is not 1
+            uint32_t* out = reinterpret_cast<uint32_t*>(destination);
+            for (uint32_t at = first_word; at < first_word + words; at += 32) {
+                const vbool4_t take = (
+                    __riscv_vmsne_vx_u32m8_b4(
+                        __riscv_vle32_v_u32m8(
+                            const_cast<const uint32_t*>(window() + at), vl
+                        ),
+                        0,
+                        vl
+                    )
+                );
+                for (uint32_t plane = 0; plane < kShadeColourPages; ++plane) {
+                    uint32_t* colour = out + plane * kPlaneWords + at;
+                    __riscv_vse32_v_u32m8(
+                        colour,
+                        __riscv_vmerge_vvm_u32m8(
+                            __riscv_vle32_v_u32m8(
+                                opaque_words + (1 + plane) * kPlaneWords + at, vl
+                            ),
+                            __riscv_vle32_v_u32m8(colour, vl),
+                            take,
+                            vl
+                        ),
+                        vl
+                    );
+                }
+            }
+            asm volatile("" ::: "memory");
+        }
         push(
             kCbOut,
             destination +
                 4 * ((kShadeColourPages - 1) * kPlaneWords + first_word + words - 1),
             kShadeOutPages
         );
+        if (
+            merging && (!pop(kCbShadePlanes, kPlanes) || !pop(kCbShadePlanes, kPlanes))
+        ) {
+            succeeded = false;
+            break;
+        }
         values[kShadeProfOut] += km::wall() - mark;
         values[kShadeProfTiles]++;
     }

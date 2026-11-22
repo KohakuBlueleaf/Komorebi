@@ -2,7 +2,7 @@
  * PLACE, SETUP, FILL, each submitted and waited for (words, regions: frame.h). */
 
 /* Built with RF_SERVE, kmx_main sets up and the thread serves FRAME commands: a frame
- * and SHOW each, from the camera the host wrote before the command. */
+ * (a masked layer: twice, on its words) and SHOW each, from the host's camera. */
 #include <stdint.h>
 
 #include "frame.h"
@@ -226,10 +226,12 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
             ? RF_RANGES
             : 0
     );
-    if (ranges && !frame->ready) {
-        set_ranges(frame, work, regions);
+    if (ranges) { /* the masked layer's frame leaves the next frame's ranges */
+        if (!frame->ready) {
+            set_ranges(frame, work, regions);
+        }
+        frame->ready = 0;
     }
-    frame->ready = 0;
     new_command(&command, RF_HANDLER_COUNT, frame);
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_COUNTERS];        /* counters_address */
@@ -458,6 +460,30 @@ static void* g_regions[RF_REGIONS] __attribute__((section(".data"))) = {0};
 #ifdef RF_SERVE
 static uint32_t g_set_up __attribute__((section(".data"))) = RF_NOT_SERVING;
 static uint32_t g_served __attribute__((section(".data"))) = 0;
+/* the masked layer's words: the program's, its own in place of the opaque layer's */
+static uint32_t g_masked_words[RF_WORDS] __attribute__((section(".data"))) = {0};
+
+/* Fills g_masked_words: 0, or the code to report. */
+static uint32_t masked_words(const uint32_t* words) {
+    if (words[RF_W_M_FRAMES] > RF_FRAME_MAX) {
+        return RF_BAD_ARGS;
+    }
+    for (uint32_t i = 0; i < RF_WORDS; i++) {
+        g_masked_words[i] = words[i];
+    }
+    g_masked_words[RF_W_MESH] = words[RF_W_M_MESH];
+    g_masked_words[RF_W_BLOCKS] = words[RF_W_M_BLOCKS];
+    g_masked_words[RF_W_LISTS] = words[RF_W_M_LISTS];
+    g_masked_words[RF_W_LIST_SLOTS] = words[RF_W_M_LIST_SLOTS];
+    g_masked_words[RF_W_DIR] = words[RF_W_M_DIR];
+    g_masked_words[RF_W_SHADE] = words[RF_W_M_SHADE];
+    g_masked_words[RF_W_FRAMES] = words[RF_W_M_FRAMES];
+    for (uint32_t frame_slot = 0; frame_slot < RF_FRAME_MAX; frame_slot++) {
+        g_masked_words[RF_W_FRAME + frame_slot] = words[RF_W_M_FRAME + frame_slot];
+    }
+    g_masked_words[RF_W_BALANCE] = 0; /* the ranges region holds one layer's */
+    return 0;
+}
 #endif
 
 int kmx_main(int core) {
@@ -510,6 +536,9 @@ int kmx_main(int core) {
 #ifdef RF_SERVE
     if (frames == 0) {
         g_set_up = frame->words[RF_W_DISPLAY] ? 0u : RF_BAD_ARGS;
+        if (g_set_up == 0 && frame->words[RF_W_M_MESH]) {
+            g_set_up = masked_words(frame->words);
+        }
         return finish(g_set_up, frame);
     }
 #endif
@@ -539,16 +568,20 @@ static uint32_t show(frame_t* frame) {
     return run(&command);
 }
 
-/* SHADE: the frame's colour from the materials and textures, in place
- * (kernels/shade.h). 0, or the code to report. */
-static uint32_t shade(frame_t* frame) {
+/* SHADE: the frame's colour from materials and textures in place (kernels/shade.h);
+ * `opaque` (its directory): the masked layer's into it. 0, or the code to report. */
+static uint32_t shade(
+    frame_t* frame, uint32_t directory, uint32_t lists, uint32_t opaque
+) {
     km_command_t command;
     new_command(&command, RF_HANDLER_SHADE, frame);
-    command.a0 = frame->words[RF_W_DIR];         /* directory_address */
-    command.a1 = frame->words[RF_W_LISTS];       /* lists_address */
+    command.a0 = directory;                      /* directory_address */
+    command.a1 = lists;                          /* lists_address */
     command.a2 = frame->words[RF_W_TEXTURES];    /* textures_address */
     command.a3 = frame->words[RF_W_SHADE_TABLE]; /* table_address */
-    command.a4 = frame->words[RF_W_SHADEPROF];   /* profile_address */
+    /* profile_address: the opaque layer's command's */
+    command.a4 = opaque ? 0 : frame->words[RF_W_SHADEPROF];
+    command.a6 = opaque; /* opaque_directory_address */
     return run(&command);
 }
 
@@ -576,20 +609,46 @@ static uint32_t push(uint32_t key) {
     return run(&command);
 }
 
-/* FRAME: one frame from the camera at the start of its region, SHADE when shaded, SHOW,
- * then (a1) the display's PUSH; its parts' ticks go to a row of the times region. */
+/* FRAME: a frame (each layer's), SHADE when shaded (each layer's), SHOW, (a1) PUSH;
+ * ticks to a times row (parts summed over layers, the middle pass's finds: opaque). */
 static uint32_t serve_frame(const km_command_t* command) {
     frame_t* frame = &g_frame;
+    const uint32_t* words = frame->words;
     const uint64_t started = kmx_time();
     kmx_invalidate_at(RF_R_CAMERA, 0, 64);
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
         frame->result[i] = 0;
     }
-    uint32_t code = frame_once(frame, (work_t*)g_regions[RF_R_WORK], g_regions);
-    uint32_t shade_ticks = 0;
-    if (code == 0 && frame->words[RF_W_SHADE]) {
+    work_t* work = (work_t*)g_regions[RF_R_WORK];
+    uint32_t code = frame_once(frame, work, g_regions);
+    const uint64_t opaque_ended = kmx_time();
+    uint32_t masked_ticks = 0;
+    if (code == 0 && words[RF_W_M_MESH]) {
+        /* scalars: a local array's initialiser may call memcpy, which does not link */
+        const uint32_t slots = frame->result[RF_O_SLOTS];
+        const uint32_t items = frame->result[RF_O_ITEMS];
+        const uint32_t marks = frame->result[RF_O_MARKS];
+        const uint32_t heavy = frame->result[RF_O_HEAVY];
+        frame->words = g_masked_words;
+        code = frame_once(frame, work, g_regions);
+        frame->words = words;
+        frame->result[RF_O_SLOTS] = slots;
+        frame->result[RF_O_ITEMS] = items;
+        frame->result[RF_O_MARKS] = marks;
+        frame->result[RF_O_HEAVY] = heavy;
+        masked_ticks = (uint32_t)(kmx_time() - opaque_ended);
+    }
+    uint32_t shade_ticks = 0, shade_masked_ticks = 0;
+    if (code == 0 && words[RF_W_SHADE]) {
         const uint64_t shade_started = kmx_time();
-        code = shade(frame);
+        code = shade(frame, words[RF_W_DIR], words[RF_W_LISTS], 0);
+        if (code == 0 && words[RF_W_M_MESH]) {
+            const uint64_t masked_started = kmx_time();
+            code = (
+                shade(frame, words[RF_W_M_DIR], words[RF_W_M_LISTS], words[RF_W_DIR])
+            );
+            shade_masked_ticks = (uint32_t)(kmx_time() - masked_started);
+        }
         shade_ticks = (uint32_t)(kmx_time() - shade_started);
     }
     uint32_t show_ticks = 0;
@@ -612,6 +671,9 @@ static uint32_t serve_frame(const km_command_t* command) {
     }
     times[RF_T_SHOW] = show_ticks;
     times[RF_T_SHADE] = shade_ticks;
+    times[RF_T_OPAQUE] = (uint32_t)(opaque_ended - started);
+    times[RF_T_MASKED] = masked_ticks;
+    times[RF_T_SHADE_MASKED] = shade_masked_ticks;
     times[RF_T_PUSH] = push_ticks;
     times[RF_T_NUMBER] = g_served;
     times[RF_T_CODE] = code;

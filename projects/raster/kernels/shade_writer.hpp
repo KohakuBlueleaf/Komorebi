@@ -1,13 +1,28 @@
 // SHADE's writer (shade.h): each item's colour planes back to the frame (a band: its
-// rows), then the profile page. In frame_writer.cpp after writer.cpp.
+// rows; a6: the opaque layer's), then the profile page. In frame_writer.cpp.
 #include "shade.h"
 
 static_assert(kShadeOutPages == kPlanes && kOutPages % kShadeOutPages == 0);
 
 bool shade_writer_command(const km::Writer& writer, const km_command_t& command) {
     const uint32_t directory_address = command.a0, profile_address = command.a4;
+    const uint32_t opaque_address = command.a6;
     const uint32_t scratch = get_write_ptr(kCbDirWriter);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
+    // the frame written: the directory's own, or the opaque layer's
+    uint32_t frame[kDirFrameMax + 1] = {};
+    if (opaque_address != 0) {
+        if (!km::read_pages(
+            writer, command, Directories(opaque_address), writer.me(), 1, scratch
+        ) ||
+            !read_done(writer, command.sequence)) {
+            return false;
+        }
+        invalidate_l1_cache();
+        for (uint32_t i = 0; i <= kDirFrameMax; ++i) {
+            frame[i] = directory[kDirFrame + i];
+        }
+    }
     if (!km::read_pages(
         writer, command, Directories(directory_address), writer.me(), 1, scratch
     ) ||
@@ -15,7 +30,12 @@ bool shade_writer_command(const km::Writer& writer, const km_command_t& command)
         return false;
     }
     invalidate_l1_cache();
-    const uint32_t items = directory[kDirItems], tensor_pages = directory[kDirFrame];
+    if (opaque_address == 0) {
+        for (uint32_t i = 0; i <= kDirFrameMax; ++i) {
+            frame[i] = directory[kDirFrame + i];
+        }
+    }
+    const uint32_t items = directory[kDirItems], tensor_pages = frame[0];
     if (tensor_pages == 0 || tensor_pages % kPlanes != 0 || items > kDirMaxItems) {
         writer.gave_up(
             km::kStWriter, kGaveBadItem, kWhereShadeBad, 0, command.sequence
@@ -49,7 +69,7 @@ bool shade_writer_command(const km::Writer& writer, const km_command_t& command)
             end_row > 0 ? (end_row - first_row) * kRowBytes : kOutPageBytes
         );
         const InterleavedAddrGen<true> frame_tensor = {
-            .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
+            .bank_base_address = frame[1 + page / tensor_pages],
             .page_size = kOutPageBytes
         };
         const uint32_t source = get_read_ptr(kCbOut) + byte_offset;

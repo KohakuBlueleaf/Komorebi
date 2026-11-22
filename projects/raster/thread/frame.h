@@ -77,7 +77,17 @@
 #define RF_W_TEXTURES (RF_W_SHADE + 1)
 #define RF_W_SHADE_TABLE (RF_W_TEXTURES + 1)
 #define RF_W_SHADEPROF (RF_W_SHADE_TABLE + 1)
-#define RF_WORDS (RF_W_SHADEPROF + 1)
+/* A shaded frame's masked layer (serving; 0: none): its words for those above in its
+ * frame (mesh, lists, directory, shade, frame); its COUNT, SETUP equal partitions */
+#define RF_W_M_MESH (RF_W_SHADEPROF + 1)
+#define RF_W_M_BLOCKS (RF_W_M_MESH + 1)
+#define RF_W_M_LISTS (RF_W_M_BLOCKS + 1)
+#define RF_W_M_LIST_SLOTS (RF_W_M_LISTS + 1)
+#define RF_W_M_DIR (RF_W_M_LIST_SLOTS + 1)
+#define RF_W_M_SHADE (RF_W_M_DIR + 1)
+#define RF_W_M_FRAMES (RF_W_M_SHADE + 1)
+#define RF_W_M_FRAME (RF_W_M_FRAMES + 1) /* RF_FRAME_MAX words */
+#define RF_WORDS (RF_W_M_FRAME + RF_FRAME_MAX)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */
@@ -109,6 +119,9 @@
 #define RF_T_CODE 24          /* its answer */
 #define RF_T_PUSH 25          /* the PUSH submitted to its event (0: none) */
 #define RF_T_SHADE 26         /* SHADE submitted to its event (0: not shaded) */
+#define RF_T_OPAQUE 27       /* the opaque layer's frame (no masked layer: the frame) */
+#define RF_T_MASKED 28       /* the frame of the masked layer (0: none) */
+#define RF_T_SHADE_MASKED 29 /* the masked layer's SHADE, part of RF_T_SHADE */
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0

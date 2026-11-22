@@ -446,13 +446,41 @@ pixels apart and takes its share (ok under 1 %) over the others.
 A texture level is stored in blocks of 32 x 32 texels, a 4 KB page each. For a tile
 SHADE finds the pages its pixels fetch, reads them into 128 page slots in L1 and
 fetches the texels there; a tile needing more pages is shaded in several passes of
-rows. Masked and lit materials are shaded as textured (no holes, no lighting yet).
-Measured on one card at 1,350 MHz, 20 frames with `--push` (ms; pages read a frame):
+rows. Lit materials are shaded as textured (no lighting yet).
 
-| scene | FILL | SHADE | SHOW | card frame | host frame | not shaded, host | pages |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Sponza | 1.59 | 4.04 | 0.79 | 8.87 | 9.61 | 5.47 | 20,544 |
-| Bistro interior | 2.11 | 4.68 | 0.83 | 12.41 | 13.12 | 8.11 | 10,565 |
+**Holes (the masked layer).** A scene with masked triangles is loaded as two meshes:
+the triangles whose material is not `masked` and those whose material is, each with its
+own mesh, shade, lists (sized from its own triangles), directory and frame tensors
+(`shade.prepare`, `card_thread.layer_tensors`). The thread runs its frame (COUNT to
+FILL) once per mesh, the second time on the masked layer's words (`RF_W_M_*` in
+`thread/frame.h`), with COUNT's and SETUP's ranges on equal partitions there (the
+camera's region holds one layer's ranges). Then two SHADE commands: the opaque layer's
+as before, then the masked layer's (a6 the opaque layer's directory). For each masked
+item it reads its five planes and the opaque layer's five of the same tile, drops the
+pixels where the opaque layer is nearer (FILL's rule, larger 1/z; a tie goes to the
+opaque layer, where the reference gives it to the lower triangle number), shades the
+rest, takes each texel's alpha byte (the mask texture's, keyed beside the albedo's at
+the same place and level, or the albedo's) and writes into the opaque layer's colour
+planes its own colour where the byte is at least 128, the opaque layer's elsewhere. A
+hole shows the opaque layer, never a second masked surface. A scene without masked
+triangles runs as before.
+
+Card 1, 2026-11-22 23:31 and 23:32, AICLK 1,350 MHz, 20 frames each, `live.py --scene
+<s> --frames 20 --push --shade --check-shade` (ms, medians; pages read by the opaque
+layer's SHADE in a frame). FILL is both layers' FILL; SHADE both commands, the masked
+layer's in brackets:
+
+| scene | opaque layer's frame | masked layer's frame | FILL | SHADE | SHOW | card frame | host frame | pages |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Sponza (34,940 masked) | 3.54 | 1.35 | 1.64 | 4.52 (0.46) | 0.79 | 10.49 | 11.28 | 20,454 |
+| Bistro interior (19,876 masked) | 6.45 | 1.19 | 2.20 | 5.11 (0.15) | 0.83 | 13.88 | 14.59 | 10,491 |
+
+Frames 0, 10 and 19 against the reference's shaded frame with only `lit` made textured:
+pixels differing by more than 2 in a channel, at most 0.0006 % (Sponza) and 0.0059 %
+(Bistro interior) of those checked; the masked kind's own share 0.011 % at most (Sponza frame 0, 1
+pixel), 0 on Bistro interior. The step before (masked shaded as textured, one layer;
+the page's earlier run): Sponza FILL 1.59, SHADE 4.04, SHOW 0.79, card frame 8.87, host
+9.61; Bistro interior 2.11, 4.68, 0.83, 12.41, 13.12.
 
 ## The interactive loop
 

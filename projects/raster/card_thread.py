@@ -38,7 +38,11 @@ F["RF_W_DISPLAY"] = F["RF_W_BALANCE"] + 1
 F["RF_W_SHOWPROF"] = F["RF_W_DISPLAY"] + 1
 for i, name in enumerate(["SHADE", "TEXTURES", "SHADE_TABLE", "SHADEPROF"]):
     F[f"RF_W_{name}"] = F["RF_W_SHOWPROF"] + 1 + i
-F["RF_WORDS"] = F["RF_W_SHADEPROF"] + 1
+for i, name in enumerate(["MESH", "BLOCKS", "LISTS", "LIST_SLOTS", "DIR", "SHADE"]):
+    F[f"RF_W_M_{name}"] = F["RF_W_SHADEPROF"] + 1 + i
+F["RF_W_M_FRAMES"] = F["RF_W_M_SHADE"] + 1
+F["RF_W_M_FRAME"] = F["RF_W_M_FRAMES"] + 1
+F["RF_WORDS"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
@@ -202,9 +206,8 @@ def program(scene, words, workers, show_table=None):
     return frame_program
 
 
-def tensors(session, blocks, workers, list_slots):
-    """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
-    the pages only the cores read and write."""
+def layer_tensors(session, blocks, workers, list_slots):
+    """A mesh's own DRAM tensors: the mesh (once per scene), lists, directory, frame."""
     pages = -(-list_slots // lists.PAGE_SLOTS)
     output_pages = lists.TILES * 5
     chunks = -(-output_pages // card.CHUNK_PAGES)
@@ -217,11 +220,20 @@ def tensors(session, blocks, workers, list_slots):
         )
         for chunk in range(chunks)
     ]
-    uploaded = {
+    return {
         "mesh": card.tensor(session, blocks),
         "lists": card.tensor(session, np.zeros((pages, lists.PAGE_WORDS))),
         "dir": card.tensor(session, np.zeros((workers, K["kDirBytes"] // 4))),
         "frame": frame,
+        "list_slots": pages * lists.PAGE_SLOTS,
+    }
+
+
+def tensors(session, blocks, workers, list_slots):
+    """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
+    the pages only the cores read and write."""
+    uploaded = {
+        **layer_tensors(session, blocks, workers, list_slots),
         "prof": card.tensor(session, np.zeros((workers, 1024))),
         "sprof": card.tensor(session, np.zeros((workers, S["kSProfPageBytes"] // 4))),
         "counters": card.tensor(
@@ -232,7 +244,6 @@ def tensors(session, blocks, workers, list_slots):
         "hprefix": card.tensor(
             session, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))
         ),
-        "list_slots": pages * lists.PAGE_SLOTS,
     }
     session.device.finish()  # the uploads land before any frame runs
     return uploaded
@@ -258,6 +269,21 @@ def words(uploaded, blocks, cores, workers, steps, balance=True):
     thread_words[F["RF_W_SPROF"]] = uploaded["sprof"].address
     for name in ("counters", "hist", "slots", "hprefix"):
         thread_words[F[f"RF_W_{name.upper()}"]] = uploaded[name].address
+    return thread_words
+
+
+def masked_words(thread_words, layer, blocks, shade_address):
+    """The masked layer's words (frame.h RF_W_M_*) into `thread_words`: its tensors
+    (layer_tensors), blocks and shade tensor."""
+    thread_words[F["RF_W_M_MESH"]] = layer["mesh"].address
+    thread_words[F["RF_W_M_BLOCKS"]] = blocks
+    thread_words[F["RF_W_M_LISTS"]] = layer["lists"].address
+    thread_words[F["RF_W_M_LIST_SLOTS"]] = layer["list_slots"]
+    thread_words[F["RF_W_M_DIR"]] = layer["dir"].address
+    thread_words[F["RF_W_M_SHADE"]] = shade_address
+    thread_words[F["RF_W_M_FRAMES"]] = len(layer["frame"])
+    for index, frame_tensor in enumerate(layer["frame"]):
+        thread_words[F["RF_W_M_FRAME"] + index] = frame_tensor.address
     return thread_words
 
 

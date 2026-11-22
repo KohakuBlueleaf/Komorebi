@@ -1,6 +1,7 @@
 """A frame loaded shaded (SHADE, kernels/shade.h): what the host uploads once per scene
 (the mesh with each corner's u, v and light term, the texel areas and materials, the
-textures in pages, the table) and the check against the reference's shaded frame."""
+textures in pages, the table; a scene with masked triangles as two meshes, the layers)
+and the check against the reference's shaded frame."""
 
 import numpy as np
 
@@ -120,6 +121,20 @@ def table(materials, entries, pages):
         | np.where(albedo >= 0, albedo * levels + 1, 0).astype(np.uint32) << 8
     )
     rows[:, 1:4] = materials["base_colour"].astype(F32).view(np.uint32)
+    mask = materials["textures"][:, raster.MASK]
+    for material in np.flatnonzero((mask >= 0) & (albedo >= 0)):
+        texture, alpha = albedo[material], mask[material]
+        same = (
+            materials["levels"][texture] == materials["levels"][alpha]
+            and (
+                materials["mip"][texture, :, 1:] == materials["mip"][alpha, :, 1:]
+            ).all()
+        )
+        if not same:  # the mask's texel is fetched at the albedo's place and level
+            raise ValueError(f"material {material}: mask and albedo sizes differ")
+    rows[:, SH["kMaterialMask"]] = np.where(
+        (mask >= 0) & (albedo >= 0), mask * levels + 1, 0
+    ).astype(np.uint32)
     end = at + rows.size
     entry_words = np.zeros((count * levels, SH["kEntryWords"]), dtype=np.uint32)
     entry_words[:, 0] = entries[:, :, 0].ravel()
@@ -131,12 +146,35 @@ def table(materials, entries, pages):
     return words
 
 
+def layer(scene, materials, keep):
+    """The scene and the materials of the triangles `keep` (a bool per triangle), in
+    their order: a layer's mesh (reference/raster.py rasterize_shaded)."""
+    per_triangle = {name: materials[name][keep] for name in ("uv", "light", "material")}
+    return {**scene, "indices": scene["indices"][keep]}, {**materials, **per_triangle}
+
+
 def prepare(scene, materials):
     """Everything uploaded once for a shaded frame: mesh and shade blocks, texture
-    pages, table."""
-    blocks, shade_blocks = mesh_blocks(scene, materials)
+    pages, table. With masked triangles the mesh is two: the triangles that are not
+    masked ("blocks", "shade_blocks") and the masked ones ("masked_blocks",
+    "masked_shade_blocks", "masked_triangles"), each numbered from 0."""
+    masked = materials["kind"][materials["material"]] == raster.MASKED
+    prepared = {}
+    if masked.any():
+        layer_scene, layer_materials = layer(scene, materials, masked)
+        blocks, shade_blocks = mesh_blocks(layer_scene, layer_materials)
+        prepared["masked_blocks"], prepared["masked_shade_blocks"] = (
+            blocks,
+            shade_blocks,
+        )
+        prepared["masked_triangles"] = int(masked.sum())
+        scene, materials_kept = layer(scene, materials, ~masked)
+    else:
+        materials_kept = materials
+    blocks, shade_blocks = mesh_blocks(scene, materials_kept)
     pages, entries = texture_pages(materials)
     return {
+        **prepared,
         "blocks": blocks,
         "shade_blocks": shade_blocks,
         "pages": pages,
@@ -145,10 +183,10 @@ def prepare(scene, materials):
 
 
 def as_shaded(materials):
-    """A copy of the materials with masked and lit kinds made textured: what SHADE
-    shades in this step (no holes, no lighting)."""
+    """A copy of the materials with the lit kind made textured: what SHADE shades in
+    this step (masked with its holes, no lighting)."""
     kind = materials["kind"].copy()
-    kind[np.isin(kind, (raster.MASKED, raster.LIT))] = raster.TEXTURED
+    kind[kind == raster.LIT] = raster.TEXTURED
     return {**materials, "kind": kind}
 
 
@@ -202,6 +240,16 @@ def check(view, materials, got, to_srgb8):
         "frame_share": round(float(over.mean()), 6),
         "differ_by_kind": {
             name: int((over & checked & (kind == value)).sum())
+            for value, name in names.items()
+        },
+        "share_by_kind": {
+            name: round(
+                float(
+                    (over & checked & (kind == value)).sum()
+                    / max((checked & (kind == value)).sum(), 1)
+                ),
+                6,
+            )
             for value, name in names.items()
         },
     }

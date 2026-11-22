@@ -1,7 +1,7 @@
 """The thread-driven frame as a loop a host drives: the scene loaded once; for each
 camera one FRAME command, and the 8-bit image read from the display tensor or, with
 `--push`, pushed by the thread into the host channel; `--shade` loads it shaded (SHADE
-between FILL and SHOW). Prints one JSON line; exits 1 unless `ok`."""
+between FILL and SHOW; masked ones a second layer). One JSON line; exit 1 unless ok."""
 
 import argparse
 import json
@@ -171,8 +171,8 @@ def times_rows(raw, frames):
 class Loop:
     """The scene loaded once in `session` and the thread's program running: a FRAME
     command a camera (`frame`), the image read back or, with `push`, pushed into the
-    host channel; with `materials` the frame shaded (shade.py's tensors uploaded once).
-    `report` gets upload_s and load_s."""
+    host channel; with `materials` the frame shaded (shade.py's tensors uploaded once;
+    masked triangles a layer of their own, lists from them). Fills upload_s, load_s."""
 
     def __init__(self, session, scene, push, list_slots, table, report, materials=None):
         self.session = session
@@ -193,6 +193,14 @@ class Loop:
                 session, np.zeros((workers, SH["kShadeProfBytes"] // 4))
             )
             report["texture_pages"] = len(prepared["pages"])
+        self.masked = None
+        if prepared is not None and "masked_blocks" in prepared:
+            masked_slots = 2 * prepared["masked_triangles"] + 65536  # card_thread's
+            self.masked = card_thread.layer_tensors(
+                session, prepared["masked_blocks"], workers, masked_slots
+            )
+            self.masked["shade"] = card.tensor(session, prepared["masked_shade_blocks"])
+            report["masked_triangles"] = prepared["masked_triangles"]
         self.display = card.tensor(
             session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
         )
@@ -209,6 +217,13 @@ class Loop:
             words[F["RF_W_TEXTURES"]] = self.shaded["textures"].address
             words[F["RF_W_SHADE_TABLE"]] = self.shaded["table"].address
             words[F["RF_W_SHADEPROF"]] = self.shade_profile.address
+        if self.masked is not None:
+            card_thread.masked_words(
+                words,
+                self.masked,
+                len(prepared["masked_blocks"]),
+                self.masked["shade"].address,
+            )
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
         self.running = running = session.load(
@@ -338,6 +353,16 @@ def loop(args):
     report["card_shade_ms"] = round(
         float(np.median(rows[:, F["RF_T_SHADE"]])) * ticks_ms, 4
     )
+    if live.masked is not None:
+        report["card_layer_ms"] = {
+            layer: round(
+                float(np.median(rows[:, F[f"RF_T_{layer.upper()}"]])) * ticks_ms, 4
+            )
+            for layer in ("opaque", "masked")
+        }
+        report["card_shade_masked_ms"] = round(
+            float(np.median(rows[:, F["RF_T_SHADE_MASKED"]])) * ticks_ms, 4
+        )
     report["card_parts_ms"] = {
         part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
         for part in ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
