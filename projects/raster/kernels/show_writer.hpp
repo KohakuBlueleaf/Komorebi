@@ -1,15 +1,9 @@
-// SHOW's writer (show.h): each item's planes from kCbShow to 8-bit R, G, B, 255 in
-// scalar code, written as its rows of the tile's display page; then the profile page.
-// Included by frame_writer.cpp after writer.cpp, in its namespace.
+// SHOW's writer (show.h): each item's planes from kCbShow to 8-bit R, G, B, 255,
+// written as its rows of the tile's display page. Included by frame_writer.cpp.
 #include "show.h"
 
-// The 8-bit value of a float32 colour by reference/png.py's rule (to_srgb8), from the
-// block's thresholds: word k is the bits of the smallest float32 whose value is k. The
-// rule is monotonic and positive float32 bits order as integers, so the value is the
-// thresholds at or under the bits, compared as signed words: a negative value or -0
-// lies under kShowBucketBase (0), one of 1 or more over the last threshold (255), as
-// the rule's clamp gives. In between, `buckets` holds the value at the start of each
-// range of 2^kShowBucketShift bits, and the thresholds inside it are stepped over.
+// The 8-bit value of a float32 colour by reference/png.py's rule: the thresholds at or
+// under its bits (word k: the smallest float32 of value k), found from `buckets`.
 inline uint32_t show_byte(
     const int32_t* thresholds, const tt_l1_ptr uint8_t* buckets, uint32_t bits
 ) {

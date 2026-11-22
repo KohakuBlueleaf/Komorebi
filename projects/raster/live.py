@@ -1,13 +1,7 @@
-"""The thread-driven frame as a loop a host drives: the scene and the program loaded
-once; for each camera the host writes the camera into the thread's region, sends one
-FRAME command (the frame, then SHOW: the image as 8-bit R, G, B, 255 a page a tile)
-and reads the display into one array, untiled by one reshape and transpose.
-With `--push` the thread pushes the display into the host channel after SHOW (a
-session.channel_transfer issued by the thread) and answers FRAME after it: the host
-arms the transfer, writes the camera, sends FRAME, waits for the push's words and
-untiles the region's pages, with no read.
-`python -m projects.raster.live --scene SCENE --frames N [--push] [--pictures DIR]
-[--json FILE]` prints one JSON line; exits 1 unless `ok`."""
+"""The thread-driven frame as a loop a host drives: the scene loaded once; for each
+camera one FRAME command, and the 8-bit image read from the display tensor or, with
+`--push`, pushed by the thread into the host channel. Prints one JSON line; exits 1
+unless `ok`."""
 
 import argparse
 import json

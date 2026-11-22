@@ -1,17 +1,11 @@
-// SHOW: the frame's colour as an image for a display. One command to the fill's cores
-// after FILL: each core, for each item of its directory (as FILL), reads the tile's
-// three colour planes from the frame and writes one page of the display tensor (page =
-// tile number): 32 x 32 pixels row by row, 4 bytes a pixel R, G, B, 255. A band writes
-// only its rows' bytes of the page, so the bands of a tile give the page of the whole
-// tile.
+// SHOW, after FILL: each core writes one page of the display tensor for each tile of
+// its directory, 32 x 32 pixels of R, G, B, 255; a band writes only its rows' bytes.
 #pragma once
 
 #include <stdint.h>
 
-// SHOW: a0 directory_address (FILL's), a1 display_address (pages of kShowPageBytes),
-// a2 profile_address (pages of kShowProfBytes, one per core; 0: none); the block (a7,
-// a8): kShowTableWords words, word k (1 to 255) the bits of the smallest float32 whose
-// 8-bit value is k (reference/png.py to_srgb8), word 0 unused. The writer converts.
+// SHOW: a0 directory_address (FILL's), a1 display_address, a2 profile_address (0:
+// none); the block holds the thresholds of the 8-bit rule (reference/png.py to_srgb8).
 constexpr uint32_t kHandlerShow = 4;
 // The reader's colour planes to the writer: a tile's three planes an item.
 constexpr uint32_t kCbShow = 13;

@@ -477,6 +477,161 @@ def planned(
     )
 
 
+def image_check(scene, tree, flat_pixels, colour, want, against):
+    """The card's colour (pixels, 3) against the reference's: pixels whose bits differ,
+    those that are ties (ties.py) apart from the rest, the largest error."""
+    check = {"against": against, "pixels": len(flat_pixels)}
+    differing = (packets.bits(colour) != packets.bits(want)).any(axis=1)
+    if colour.any():
+        ties, wrong = ties_module.classify(
+            scene, tree, flat_pixels[differing], colour[differing]
+        )
+    else:  # no pixel written: zero data (a prebuild's reads), not ties to classify
+        ties, wrong = 0, int(differing.sum())
+        check["zero_data"] = True
+        print("frame: every colour read is zero: no image to check", file=sys.stderr)
+    check["differs"], check["ties"] = wrong, ties
+    check["max_abs_error"] = float(np.abs(colour - want).max())
+    check["first_pixels"] = flat_pixels[differing][:64].tolist()
+    return check
+
+
+def prepare(arguments):
+    """The frame's host side before a session: the steps, the scene, its tree, the
+    treelet cut and the tree image (and with treelets their pages, table and slot
+    bytes)."""
+    steps = sorted_steps() if arguments.sort else STEPS
+    data = native.data_dir()
+    tree = harness.ensure_tree(arguments.scene)
+    scene = scenes.load_scene(data / f"{arguments.scene}.npz")
+    cut = (
+        load_cut(arguments.scene, tree, arguments.treelets)
+        if arguments.treelets
+        else None
+    )
+    prepared = {"steps": steps, "tree": tree, "scene": scene, "cut": cut}
+    if cut is None:
+        prepared["image"] = packets.tree_image(tree, scene)
+    else:
+        treelet_pages, treelet_table = packets.treelet_images(tree, cut, scene)
+        prepared["image"] = packets.top_image(cut, treelet_table)
+        prepared["slot_bytes"] = int(treelet_table[:, 1].max()) * K["kTreePageBytes"]
+        prepared.update(treelet_pages=treelet_pages, treelet_table=treelet_table)
+    return prepared
+
+
+def build(arguments, session, prepared, report):
+    """The frame in a session, before the program's load: the layout, the streams'
+    tensors, the treelets and directory chunks, the constants, the tree, the profiles,
+    LOAD's record and the frame's commands (a dict of them; a tensor lives while the
+    dict holds it, so keep the dict while its commands run)."""
+    steps, tree, scene, cut, image = (
+        prepared[name] for name in ("steps", "tree", "scene", "cut", "image")
+    )
+    if cut is not None:
+        treelet_pages, treelet_table, slot_bytes = (
+            prepared[name] for name in ("treelet_pages", "treelet_table", "slot_bytes")
+        )
+    packets_per_command = None
+    workers = card.workers(session)
+    cost = None if arguments.balance is None else np.load(arguments.balance)["cost"]
+    pixels, directory, desc = packets.frame_layout(arguments.tiles, workers, cost)
+    packet_count = len(pixels)
+    report["packets"] = packet_count
+    stream_names = {
+        stream for _, _, inputs, outputs in steps for stream in inputs + outputs
+    }
+    tensors = {
+        stream: card.tensor(
+            session,
+            packets.group(np.zeros((packet_count, vectors(stream) * VEC))),
+        )
+        for stream in sorted(stream_names)
+    }
+    tensors["desc"] = card.tensor(session, packets.group(desc))
+    directory_chunks, sizes, treelets = [directory], None, None
+    if cut is not None:
+        longest = int(directory[:, K["kDirCount"]].max())
+        # SORT works in the slot buffer (free between treelet commands).
+        sort_bytes, shortfall = (
+            packets.sort_bytes(longest) if arguments.sort else 0,
+            0,
+        )
+        for _ in range(4):
+            packets_per_command, slots, sizes = packets.plan_commands(
+                longest,
+                len(treelet_table),
+                slot_bytes,
+                len(image),
+                arguments.slots,
+                budget=packets.L1_BUDGET - shortfall,
+            )
+            if sort_bytes - sizes["slots"] <= shortfall:
+                break
+            shortfall = sort_bytes - sizes["slots"]
+        sizes["slots"] = max(sizes["slots"], sort_bytes)
+        directory_chunks = packets.chunks(directory, packets_per_command)
+        treelet_tensor = card.tensor(session, treelet_pages)
+        treelet_words = [sizes["entries"], slot_bytes, slots, K["kPolicyOnce"]]
+        treelets = (treelet_tensor, treelet_words)
+        report["treelets"] = {
+            "count": len(treelet_table),
+            "packets_per_command": packets_per_command,
+        }
+        report["treelets"].update(sizes, slot_count=slots, chunks=len(directory_chunks))
+    directory_tensors = [
+        card.tensor(session, chunk)
+        for chunk in [directory] + directory_chunks[1 if cut is None else 0 :]
+    ]
+    constants_tensor = card.tensor(session, packets.frame_constants(scene))
+    tree_tensor = card.tensor(session, image)
+    profile_page = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
+    per_step = [
+        (len(directory_chunks) if cut is not None and step[1] == "kHandlerTrace" else 1)
+        for step in steps
+    ]
+    chunk_counts = [
+        planner.P["RP_CHUNKS"] if arguments.plan else count for count in per_step
+    ]
+    chunk_counts = [
+        count if step[1] == "kHandlerTrace" else 1
+        for count, step in zip(chunk_counts, steps)
+    ]
+    profiles = [
+        [card.tensor(session, profile_page) for _ in range(count)]
+        for count in chunk_counts
+    ]
+    records = [(K["kHandlerLoad"], [tree_tensor.address, image.nbytes])]
+    sort_words = sort_key(tree) if arguments.sort else ()
+    frame_commands = commands(
+        tensors,
+        directory_tensors,
+        constants_tensor,
+        profiles,
+        treelets,
+        steps,
+        sort_words,
+    )
+    return {
+        "workers": workers,
+        "pixels": pixels,
+        "directory": directory,
+        "packet_count": packet_count,
+        "stream_names": stream_names,
+        "tensors": tensors,
+        "sizes": sizes,
+        "treelets": treelets,
+        "packets_per_command": packets_per_command,
+        "per_step": per_step,
+        "profiles": profiles,
+        "directory_tensors": directory_tensors,
+        "constants_tensor": constants_tensor,
+        "tree_tensor": tree_tensor,
+        "records": records,
+        "frame_commands": frame_commands,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--scene", default="tiny")
@@ -514,21 +669,10 @@ def main():
         parser.error("--sort and --plan need --treelets")
     if arguments.plan and planner.same_numbers():
         parser.error(f"plan.h differs from raytrace.h: {planner.same_numbers()}")
-    steps = sorted_steps() if arguments.sort else STEPS
-    data = native.data_dir()
-    tree = harness.ensure_tree(arguments.scene)
-    scene = scenes.load_scene(data / f"{arguments.scene}.npz")
-    cut = (
-        load_cut(arguments.scene, tree, arguments.treelets)
-        if arguments.treelets
-        else None
+    prepared = prepare(arguments)
+    steps, tree, scene, cut, image = (
+        prepared[name] for name in ("steps", "tree", "scene", "cut", "image")
     )
-    if cut is None:
-        image = packets.tree_image(tree, scene)
-    else:
-        treelet_pages, treelet_table = packets.treelet_images(tree, cut, scene)
-        image = packets.top_image(cut, treelet_table)
-        slot_bytes = int(treelet_table[:, 1].max()) * K["kTreePageBytes"]
     report = {
         "scene": arguments.scene,
         "tiles": arguments.tiles,
@@ -536,91 +680,17 @@ def main():
     }
     report["sort"] = arguments.sort
     with card.open_session() as session:
-        workers = card.workers(session)
-        cost = None if arguments.balance is None else np.load(arguments.balance)["cost"]
-        pixels, directory, desc = packets.frame_layout(arguments.tiles, workers, cost)
-        packet_count = len(pixels)
-        report["packets"] = packet_count
-        stream_names = {
-            stream for _, _, inputs, outputs in steps for stream in inputs + outputs
-        }
-        tensors = {
-            stream: card.tensor(
-                session,
-                packets.group(np.zeros((packet_count, vectors(stream) * VEC))),
-            )
-            for stream in sorted(stream_names)
-        }
-        tensors["desc"] = card.tensor(session, packets.group(desc))
-        directory_chunks, sizes, treelets = [directory], None, None
-        if cut is not None:
-            longest = int(directory[:, K["kDirCount"]].max())
-            # SORT works in the slot buffer (free between treelet commands).
-            sort_bytes, shortfall = (
-                packets.sort_bytes(longest) if arguments.sort else 0,
-                0,
-            )
-            for _ in range(4):
-                packets_per_command, slots, sizes = packets.plan_commands(
-                    longest,
-                    len(treelet_table),
-                    slot_bytes,
-                    len(image),
-                    arguments.slots,
-                    budget=packets.L1_BUDGET - shortfall,
-                )
-                if sort_bytes - sizes["slots"] <= shortfall:
-                    break
-                shortfall = sort_bytes - sizes["slots"]
-            sizes["slots"] = max(sizes["slots"], sort_bytes)
-            directory_chunks = packets.chunks(directory, packets_per_command)
-            treelet_tensor = card.tensor(session, treelet_pages)
-            treelet_words = [sizes["entries"], slot_bytes, slots, K["kPolicyOnce"]]
-            treelets = (treelet_tensor, treelet_words)
-            report["treelets"] = {
-                "count": len(treelet_table),
-                "packets_per_command": packets_per_command,
-            }
-            report["treelets"].update(
-                sizes, slot_count=slots, chunks=len(directory_chunks)
-            )
-        directory_tensors = [
-            card.tensor(session, chunk)
-            for chunk in [directory] + directory_chunks[1 if cut is None else 0 :]
-        ]
-        constants_tensor = card.tensor(session, packets.frame_constants(scene))
-        tree_tensor = card.tensor(session, image)
-        profile_page = np.zeros((workers, K["kOutPageBytes"] // 4), dtype=np.uint32)
-        per_step = [
-            (
-                len(directory_chunks)
-                if cut is not None and step[1] == "kHandlerTrace"
-                else 1
-            )
-            for step in steps
-        ]
-        chunk_counts = [
-            planner.P["RP_CHUNKS"] if arguments.plan else count for count in per_step
-        ]
-        chunk_counts = [
-            count if step[1] == "kHandlerTrace" else 1
-            for count, step in zip(chunk_counts, steps)
-        ]
-        profiles = [
-            [card.tensor(session, profile_page) for _ in range(count)]
-            for count in chunk_counts
-        ]
-        records = [(K["kHandlerLoad"], [tree_tensor.address, image.nbytes])]
-        sort_words = sort_key(tree) if arguments.sort else ()
-        frame_commands = commands(
-            tensors,
-            directory_tensors,
-            constants_tensor,
-            profiles,
-            treelets,
-            steps,
-            sort_words,
+        built = build(arguments, session, prepared, report)
+        workers, pixels, directory, packet_count = (
+            built[name] for name in ("workers", "pixels", "directory", "packet_count")
         )
+        stream_names, tensors, sizes, treelets = (
+            built[name] for name in ("stream_names", "tensors", "sizes", "treelets")
+        )
+        packets_per_command, per_step, profiles = (
+            built[name] for name in ("packets_per_command", "per_step", "profiles")
+        )
+        records, frame_commands = built["records"], built["frame_commands"]
         meter = card.Power()
         report["power_idle_w"] = meter.idle()
         report["aiclk_mhz"] = card.aiclk_mhz()
@@ -745,19 +815,7 @@ def main():
         want = reference["image"].reshape(-1, 3)[flat_pixels]
     else:
         name, want = "numpy", raytrace.render(scene, tree, flat_pixels)["image"]
-    report["image_check"] = {"against": name, "pixels": len(flat_pixels)}
-    differing = (packets.bits(colour) != packets.bits(want)).any(axis=1)
-    if colour.any():
-        ties, wrong = ties_module.classify(
-            scene, tree, flat_pixels[differing], colour[differing]
-        )
-    else:  # no pixel written: zero data (a prebuild's reads), not ties to classify
-        ties, wrong = 0, int(differing.sum())
-        report["image_check"]["zero_data"] = True
-        print("frame: every colour read is zero: no image to check", file=sys.stderr)
-    report["image_check"]["differs"], report["image_check"]["ties"] = wrong, ties
-    report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
-    report["image_check"]["first_pixels"] = flat_pixels[differing][:64].tolist()
+    report["image_check"] = image_check(scene, tree, flat_pixels, colour, want, name)
     if arguments.stages:
         report["stages"] = check_stages(got, scene, tree, flat_pixels)
     ok = card.ran_cleanly(run, workers) and report["image_check"]["differs"] == 0

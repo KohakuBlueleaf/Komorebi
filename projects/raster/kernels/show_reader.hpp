@@ -1,6 +1,5 @@
-// SHOW's reader (show.h): each item's three colour planes (a band: only its rows' bytes
-// of each) from the frame into kCbShow, an item at a time; the writer converts them
-// (show_writer.hpp). Included by frame_reader.cpp after reader.cpp, in its namespace.
+// SHOW's reader (show.h): each item's three colour planes from the frame into kCbShow
+// (a band: only its rows); the writer converts. Included by frame_reader.cpp.
 #include "show.h"
 
 void show_reader_command(const km::Reader& reader, const km_command_t& command) {

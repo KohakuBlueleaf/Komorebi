@@ -53,6 +53,9 @@ constexpr uint32_t kHandlerSort = 12;
 constexpr uint32_t kSortCellBits = 9;       // origin cells per axis: 2^9
 constexpr uint32_t kSortDigitBits = 11;     // radix sort: three passes over 31 key bits
 constexpr uint32_t kSortInvalid = 1 << 30;  // the key of a lane without a ray
+// SHOW (the reader, after IMAGE): a0 directory, a1 colour, a2 display (a page a tile),
+// a3 the thresholds' page, a5 the descriptors; 32 x 32 pixels a page (show.hpp).
+constexpr uint32_t kHandlerShow = 13;
 
 constexpr uint32_t kModeNearest = 0;
 constexpr uint32_t kModeAny = 1;
@@ -240,6 +243,28 @@ constexpr uint32_t kS2Cos1 = 12;
 constexpr uint32_t kS2Vectors = 13;
 // Colour page (IMAGE): r, g, b.
 constexpr uint32_t kColVectors = 3;
+// SHOW: the image's and a packet's width, a tile's side and packets, and its scratch
+// buffer in L1; the 8-bit rule's constants are projects/raster's (show.h).
+constexpr uint32_t kCbShow = 9;
+constexpr uint32_t kShowWidth = 1024;
+constexpr uint32_t kShowBlockW = 8;
+constexpr uint32_t kShowTile = 32;
+constexpr uint32_t kShowTilePackets = 32;
+constexpr uint32_t kShowPageBytes = 4096;
+constexpr uint32_t kShowTableWords = 256;
+constexpr uint32_t kShowAlpha = 0xFF000000;
+constexpr uint32_t kShowBucketBase = 0x35800000;
+constexpr uint32_t kShowOne = 0x3F800000;
+constexpr uint32_t kShowBucketShift = 16;
+constexpr uint32_t kShowBuckets = (
+    (kShowOne - kShowBucketBase) / (1 << kShowBucketShift)
+);
+constexpr uint32_t kShowDescBytes = kShowTilePackets * kDescVectors * kVec * 4;
+constexpr uint32_t kShowColourBytes = kShowTilePackets * kColVectors * kVec * 4;
+constexpr uint32_t kShowScratchBytes = (
+    kShowDescBytes + kShowColourBytes + kShowPageBytes + 4 * kShowTableWords +
+    kShowBuckets
+);
 
 // A stage's streams: inputs, then outputs, each a page per packet of these vectors;
 // of an input page, the vectors the stage reads (bit k: vector k).

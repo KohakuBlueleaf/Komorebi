@@ -133,7 +133,8 @@ CHAIN_PAGE = 2816  # a chain's words on each core (km_chain.hpp's kChainAreaByte
 
 def program(tree_pages=1, sizes=None):
     """The ray tracer's program; sizes: bytes of the treelet buffers (state, lists,
-    slots), small when absent. One command at a time: its event time is its own."""
+    slots) and of SHOW's scratch (show), small when absent. One command at a time: its
+    event time is its own."""
     sizes = sizes or {}
     specs = [
         (K["kCbIn"], K["kInPageBytes"], K["kInPages"]),
@@ -150,6 +151,7 @@ def program(tree_pages=1, sizes=None):
         ),
         (K["kCbLists"], sizes.get("lists", 64), 1),
         (K["kCbSlots"], sizes.get("slots", 64), 1),
+        (K["kCbShow"], sizes.get("show", 64), 1),
         (kc.words()["kChainBuffer"], CHAIN_PAGE, 1),
     ]
     # Packet states are unpacked into Dst and packed back as float32 tiles (Dst held

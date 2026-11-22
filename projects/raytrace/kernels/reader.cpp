@@ -814,6 +814,8 @@ namespace {
         uint8_t* valid_ = nullptr;
     };
 
+#include "show.hpp"
+
 }  // namespace
 
 void kernel_main() {
@@ -839,6 +841,10 @@ void kernel_main() {
             }
             g_tree = base;
             cb_push_back(kCbTree, pages);
+            return;
+        }
+        if (handler == kHandlerShow) {
+            show::frame<Directories>(reader, command);
             return;
         }
         if (handler == kHandlerSort) {
