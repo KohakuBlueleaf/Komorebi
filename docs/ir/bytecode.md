@@ -1,8 +1,10 @@
-# The IR's byte code (being built)
+# The IR's byte code
 
-!!! note "Being built"
-    The Komorebi IR and its command `komo` are being built. This page gives the layout of a byte-code
-    program as the build writes it today; it changes with each version.
+!!! note "Frozen at byte code version 6"
+    The Komorebi IR is frozen: its language, its checks and its byte code change only with a
+    new byte code version. It is not released, and no backend or frontend is part of the build
+    yet; the reference interpreter runs it (`komo run`). This page gives the layout of a byte-code
+    file and the number of every variant it writes.
 
 A byte-code program (`.komc`) is the stored form of a module's program structure: what program
 compile gives after its checks. `komo compile x.kom -o x.komc` writes one; `komo print x.komc` prints

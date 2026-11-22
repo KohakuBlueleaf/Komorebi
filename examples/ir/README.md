@@ -1,6 +1,7 @@
 # IR examples
 
-Work in progress: the Komorebi IR is being built, and these files change with it.
+Programs in the Komorebi IR, each run on its reference interpreter by a test. The IR is frozen at
+byte code version 6.
 
 ## The lessons
 

@@ -155,7 +155,7 @@ nav:
       - examples/30_add_overlay/README.md
       - examples/31_swiglu/README.md
       - examples/32_islands_l1/README.md
-  - IR (being built):
+  - IR:
       - ir/checks.md
       - ir/operations.md
       - ir/bytecode.md

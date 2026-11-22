@@ -1,8 +1,10 @@
-# The IR's operations (being built)
+# The IR's operations
 
-!!! note "Being built"
-    The Komorebi IR and its command `komo` are being built. This page lists the operations of the
-    language as the specification and its lessons write them.
+!!! note "Frozen at byte code version 6"
+    The Komorebi IR is frozen: its language, its checks and its byte code change only with a
+    new byte code version. It is not released, and no backend or frontend is part of the build
+    yet; the reference interpreter runs it (`komo run`). This page lists the operations of the
+    language.
 
 `//` starts a comment and is no operator.
 

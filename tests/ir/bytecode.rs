@@ -710,3 +710,22 @@ fn an_origin_that_does_not_hold_is_refused_by_name() {
         assert!(r.what.contains(said), "{case}: {}", r.what);
     }
 }
+
+/// Version 6 is frozen: its number tables are held by one digest. A change to a table
+/// is a new `VERSION`, with its own digest here.
+#[test]
+fn version_6_is_frozen() {
+    use komorebi_ir::bytecode::hash::{hex, sha256};
+    let mut text = String::new();
+    for (table, rows) in version::TABLES {
+        for (number, name) in rows.iter() {
+            text.push_str(&format!("{table}:{number}={name};"));
+        }
+    }
+    assert_eq!(version::VERSION, 6);
+    assert_eq!(
+        hex(&sha256(text.as_bytes())),
+        "317cbf28513ebe1aea6a3eeb1cdf1c46b21268e790fc61255aa5a6c5abbf5a51",
+        "{text}"
+    );
+}

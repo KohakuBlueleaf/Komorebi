@@ -1,8 +1,10 @@
 # Run scripts
 
-!!! note "Being built"
-    The Komorebi IR and its command `komo` are work in progress: the language still changes
-    and nothing here is a released interface.
+!!! note "Frozen at byte code version 6"
+    The Komorebi IR is frozen: its language, its checks and its byte code change only with a
+    new byte code version. It is not released, and no backend or frontend is part of the build
+    yet; the reference interpreter runs it (`komo run`). This page gives the run script, the text
+    the reference interpreter runs a module from.
 
 A run script is what a host does with a loaded module, as plain text: the tensors it makes, the
 invocations and control programs it runs, and the tensors it reads. The same script is the input of

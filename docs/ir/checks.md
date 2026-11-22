@@ -1,8 +1,10 @@
-# The IR's checks (being built)
+# The IR's checks
 
-!!! note "Being built"
-    The Komorebi IR and its command `komo` are being built. This page lists the rules the build
-    checks; it grows with the checker.
+!!! note "Frozen at byte code version 6"
+    The Komorebi IR is frozen: its language, its checks and its byte code change only with a
+    new byte code version. It is not released, and no backend or frontend is part of the build
+    yet; the reference interpreter runs it (`komo run`). This page lists the rules program compile
+    and the run check, one a diagnostic code.
 
 Every rule of the IR that a program can break has one code. This page gives, for each, the sentence
 of the specification that states it, with the topic it belongs to, and who finds a program that

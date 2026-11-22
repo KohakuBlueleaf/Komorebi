@@ -10,7 +10,7 @@
 pub const MAGIC: [u8; 4] = *b"KOMC";
 
 /// The version this build writes, and the only one it reads. Any change to the layout
-/// or to a table below is a new version.
+/// or to a table below is a new version. Version 6 is frozen: a test holds its tables.
 pub const VERSION: u32 = 6;
 
 /// The bytes of the header: the magic, the version (u32), and the length of each part,

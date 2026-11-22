@@ -787,13 +787,13 @@ runs are in [the Wormhole reference](docs/reference/wormhole.md).
 `kmr prebuild --arch wormhole_b0 <script>` builds a script's kernels for Wormhole on a
 machine with no Wormhole chip.
 
-## Komorebi IR (work in progress)
+## Komorebi IR
 
 `src/komorebi-ir/` is a Rust crate: a language for Komorebi programs (`.kom` files), its
 checker, a byte code (`.komc`) and a reference interpreter, with the command `komo`
 (`komo check`, `komo fmt`, `komo compile`, `komo run`). The language states what a program
 means and what the hardware must be able to do to run it, and never which hardware. It is
-not released, and nothing in the `komorebi-tt` package depends on it: a Python class is
+frozen at byte code version 6 and not released, and nothing in the `komorebi-tt` package depends on it: a Python class is
 compiled as before. No backend and no frontend is part of the build yet; the ones written
 before the language was finished are kept as reference material under
 `experiments/ir/reference/`. The pages under [docs/ir](docs/ir/operations.md) describe the
@@ -857,7 +857,7 @@ src/komorebi/                  the Python package: Program, Session, Run, layout
                                simulators; the host-fed executor
   program/thread.py            X280 threads: declaration, regions, results, host fallback
   manifest/                    reserved: a program's commands and handlers declared
-src/komorebi-ir/               work in progress: the Komorebi IR (Rust): text, checker, byte
+src/komorebi-ir/               the Komorebi IR (Rust), frozen at byte code 6: text, checker, byte
                                code, interpreter, `komo`
 src/komorebi_native/
   include/komorebi/abi/        the command, the event and the stream format, shared by all
@@ -892,7 +892,7 @@ docs/                          concepts, references, measured, install, developm
 | [the chain](docs/reference/chain.md) | calls written once as records and run as one command, each input waiting for marks, not for the host |
 | [measured](docs/measured.md) | every program's tables, with conditions and where the time goes |
 | [examples](examples/README.md), [projects](projects/README.md) | runnable examples; the five programs and their results |
-| [the IR's operations](docs/ir/operations.md), [checks](docs/ir/checks.md), [run scripts](docs/ir/run-scripts.md) | work in progress: the Komorebi IR and `komo` |
+| [the IR's operations](docs/ir/operations.md), [checks](docs/ir/checks.md), [run scripts](docs/ir/run-scripts.md) | the Komorebi IR and `komo`, frozen at byte code version 6 |
 | [install](docs/install.md), [development](docs/development.md) | building from a clone; layout, checks, conventions |
 
 ## Contributing
