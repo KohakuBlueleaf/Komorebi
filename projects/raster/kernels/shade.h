@@ -18,7 +18,9 @@ constexpr uint32_t kHandlerLight = 6;
 constexpr uint32_t kCbShadePlanes = 14;
 constexpr uint32_t kShadePlanePages = 20;  // items of 5, 10 (a6), 15 (LIGHT) pages
 constexpr uint32_t kCbShadeTable = 15;
-constexpr uint32_t kShadeTableBytes = 16384;
+// the table in L1: 816 + 14 per material + 2 per (texture, level) words; Bistro
+// exterior's needs 7,254 (133 materials, 208 textures of 11 levels)
+constexpr uint32_t kShadeTableBytes = 32768;
 constexpr uint32_t kCbShadeAsk = 20;
 constexpr uint32_t kShadeAskBytes = 1024;
 constexpr uint32_t kShadeAskPages = 2;
@@ -191,6 +193,11 @@ constexpr uint32_t kShadeProfWaitPages = 11;
 constexpr uint32_t kShadeProfGather = 12;  // texels and their linear values to Dst
 constexpr uint32_t kShadeProfOut = 13;     // colour, planes to the writer
 constexpr uint32_t kShadeProfTotal = 14;
+// not summed: the most pages one item's rows read, the items read in more than one
+// pass
+constexpr uint32_t kShadeProfItemPages = 15;
+constexpr uint32_t kShadeProfItemPasses = 16;
+constexpr uint32_t kShadeProfWords = 17;
 // LIGHT's profile page: tiles, rows, then cycles waiting for planes, copying in, the
 // vector unit's arithmetic, copying out, the texel steps; pages, passes; in all.
 constexpr uint32_t kLightProfTiles = 0;

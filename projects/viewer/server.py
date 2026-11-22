@@ -25,7 +25,12 @@ from PIL import Image
 from projects.viewer import renderers
 
 HERE = Path(__file__).resolve().parent
-SCENES = ("tiny", "sponza_overview", "bistro_interior_overview")
+SCENES = (
+    "tiny",
+    "sponza_overview",
+    "bistro_interior_overview",
+    "bistro_exterior_overview",
+)
 OFFERS = renderers.offers(SCENES)  # {renderer: the scenes it is offered on}
 KEEP_ALIVE_S = 1.0  # a frame a second when no pose comes
 JPEG_QUALITY = 85

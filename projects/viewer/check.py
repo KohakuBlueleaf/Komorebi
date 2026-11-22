@@ -16,6 +16,8 @@ import urllib.request
 from PIL import Image
 
 SIDE = 1024
+# each renderer must offer Bistro exterior (2.83 M triangles, 1 GB of texture pages)
+EXTERIOR = "bistro_exterior_overview"
 POSES = 20
 POSE_GAP_S = 0.1
 OPEN_TIMEOUT_S = 1800.0  # a scene's first open builds its tree, lists and kernels
@@ -154,6 +156,7 @@ def run_case(base, token, renderer, scene):
         card_ms_label=now["card_ms_label"],
         card_ms_median=sorted(card_ms)[len(card_ms) // 2] if card_ms else None,
         fps_max=max(fps) if fps else None,
+        fps_median=sorted(fps)[len(fps) // 2] if fps else None,
         statuses=sorted(statuses),
         stream_error=reader.error,
     )
@@ -188,6 +191,7 @@ def main():
     state = json.loads(get(f"{base}/state?token={token}")[1])
     offers = state["offers"]
     report["offers"] = offers
+    report["exterior_offered"] = all(EXTERIOR in offers[name] for name in offers)
     report["refused"] = {  # a renderer selected on a scene it is not offered on: 400
         f"{renderer}/{scene}": status_of(
             lambda renderer=renderer, scene=scene: post(
@@ -209,6 +213,7 @@ def main():
         and offers.get("raster-textured")
         and offers.get("raster-lit")
         and report["page"]
+        and report["exterior_offered"]
         and all(case["ok"] for case in report["cases"])
     )
     print(json.dumps(report), flush=True)

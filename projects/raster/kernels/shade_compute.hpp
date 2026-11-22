@@ -479,7 +479,7 @@ namespace shade_pass {
     };
 
     struct Counters {
-        uint32_t values[kShadeProfTotal + 1] = {};
+        uint32_t values[kShadeProfWords] = {};
     };
 
     // A command's page passes: cycles finding pages, waiting for them; passes, pages.
@@ -539,6 +539,10 @@ namespace shade_pass {
         counters.values[kShadeProfWaitPages] += counts.wait;
         counters.values[kShadeProfPasses] += counts.passes;
         counters.values[kShadeProfPages] += counts.pages;
+        if (counts.pages > counters.values[kShadeProfItemPages]) {
+            counters.values[kShadeProfItemPages] = counts.pages;
+        }
+        counters.values[kShadeProfItemPasses] += counts.passes > 1 ? 1 : 0;
     }
 
     // Rows [first, end): texel offsets from the keys, in passes whose pages fit the
@@ -1020,7 +1024,7 @@ void shade_compute_command(const km_command_t& command) {
             reinterpret_cast<volatile uint32_t*>(write_ptr(kCbOut))
         );
         for (uint32_t i = 0; i < kShadeProfBytes / 4; ++i) {
-            profile[i] = i <= kShadeProfTotal ? values[i] : 0;
+            profile[i] = i < kShadeProfWords ? values[i] : 0;
         }
         push(
             kCbOut,

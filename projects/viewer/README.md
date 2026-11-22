@@ -30,7 +30,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 
 ```
 python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
-    [--renderer raster|raster-textured|raster-lit|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview]
+    [--renderer raster|raster-textured|raster-lit|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview]
 ```
 
 The server binds only the address `--host` gives. Open
@@ -77,6 +77,10 @@ public scene takes a while, and the page shows `loading` meanwhile.
 - `Raytrace`: the frame as one chain, `--treelets 128 --sort` on every scene but
   `tiny`; its number, `frame ms (card)`, is the chain command's time (`live.py`'s
   `card_frame_ms`).
+- Bistro exterior (2.83 M triangles, 1 GB of texture pages) on card 1, 2026-11-23, poses
+  posted as fast as the server took them: `raster` 34 frames a second, `raster-textured`
+  and `raster-lit` 20, `raytrace` 1 (933 ms a frame); a switch to it took 2.7, 5.2, 5.7 and
+  4.2 s. Its first `raytrace` open cuts its two treelet files (306 MB each) into `KR_DATA`.
 
 Requests: `GET /` the page; `GET /stream` the frames; `POST /pose`
 (`{"position": [x, y, z], "yaw": a, "pitch": b, "scene_serial": n}`); `POST /select`

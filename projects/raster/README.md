@@ -474,11 +474,14 @@ layer's in brackets:
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Sponza (34,940 masked) | 3.54 | 1.35 | 1.64 | 4.52 (0.46) | 0.79 | 10.49 | 11.28 | 20,454 |
 | Bistro interior (19,876 masked) | 6.45 | 1.19 | 2.20 | 5.11 (0.15) | 0.83 | 13.88 | 14.59 | 10,491 |
+| Bistro exterior (765,306 masked) | 10.10 | 9.49 | 4.51 | 11.07 (4.37) | 0.86 | 31.83 | 32.62 | 15,192 |
 
 Frames 0, 10 and 19 against the reference's shaded frame with only `lit` made textured:
 pixels differing by more than 2 in a channel, at most 0.0006 % (Sponza) and 0.0059 %
 (Bistro interior) of those checked; the masked kind's own share 0.011 % at most (Sponza frame 0, 1
-pixel), 0 on Bistro interior. The step before (masked shaded as textured, one layer;
+pixel), 0 on Bistro interior. Bistro exterior (card 1, 2026-11-23 02:41, the same command): 2, 3 and
+5 of 1,048,576 pixels (0.0005 % at most), the masked kind 0; the most pages one item read 74, no item
+in more than one pass (SHADE's profile words `kShadeProfItemPages`, `kShadeProfItemPasses`). The step before (masked shaded as textured, one layer;
 the page's earlier run): Sponza FILL 1.59, SHADE 4.04, SHOW 0.79, card frame 8.87, host
 9.61; Bistro interior 2.11, 4.68, 0.83, 12.41, 13.12.
 
@@ -559,6 +562,8 @@ brackets):
 | Sponza | `--shade` | 3.55 | 1.35 | 1.64 | 4.57 (0.46) | - | 0.79 | 10.55 | 11.26 |
 | Bistro interior (4 lamps) | `--light` | 6.75 | 1.19 | 2.20 | 4.94 (0.44) | 2.89 | 0.82 | 16.88 | 17.60 |
 | Bistro interior | `--shade` | 6.75 | 1.18 | 2.20 | 5.17 (0.15) | - | 0.83 | 14.22 | 14.89 |
+| Bistro exterior (sun, sky map, no lamps) | `--light` | 10.10 | 9.49 | 4.51 | 8.87 (2.58) | 2.32 | 0.86 | 31.83 | 32.67 |
+| Bistro exterior | `--shade` | 10.10 | 9.49 | 4.51 | 11.07 (4.37) | - | 0.86 | 31.83 | 32.62 |
 
 LIGHT's pack-thread cycles a tile (the profile's mean over the tiles; each part ends
 with a drain of the vector unit). The keys, the page scan, the wait for pages and the
@@ -569,6 +574,7 @@ scan (a hash lookup per tap per pixel in scalar code) is the largest part:
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Sponza (no lamps) | 52,963 | 144,853 | 4,346 | 16,043 | 5,051 | 864 | 20,648 | 32,325 | 19,810 | 301,272 |
 | Bistro interior | 46,326 | 127,837 | 3,877 | 14,035 | 4,670 | 79,967 | 18,917 | 28,268 | 17,973 | 345,840 |
+| Bistro exterior (no lamps) | 52,984 | 145,037 | 4,248 | 16,043 | 5,046 | 862 | 20,644 | 32,328 | 19,794 | 301,356 |
 
 A lamp costs 19,992 cycles a tile on Bistro interior, its specular term included. Part
 A's LIGHT (sky, ambient, unshadowed sun) took 0.35 to 0.37 ms and 45 to 50 thousand
@@ -593,9 +599,35 @@ multiply-adds round the point and the projection once where numpy rounds twice).
 interior has no such band (the sun's share is 0 or 1 at every pixel). On Sponza's later
 pieces (33,600 pixels) 35 % to 67 % differ by more than 2, as with SHADE.
 
-Bistro exterior (2.83 M triangles) does not load lit: SHADE's table needs 7,254 words
-(133 materials, 208 textures of 11 levels) and holds 4,096 (`kShadeTableBytes`); its
-texture pages would be 246,778 (1.01 GB). Not changed.
+**Bistro exterior** (2,833,330 triangles, 765,306 of them masked; 133 materials, 208
+textures; the authored sun and sky map, no lamps). One size bound: SHADE's table (L1
+buffer `kCbShadeTable` and its tensor, `kShadeTableBytes`) needs 816 + 14 a material + 2
+a (texture, level) words, 7,254 for the exterior, and held 4,096; it holds 8,192 now (32
+KB; the frame program's L1 1,134,448 of 1,398,336 bytes), and `shade.table` refuses a
+scene beyond it by name. The texture pages are one interleaved tensor of 246,778 pages of
+4 KB (1,010,802,688 bytes), each level of each texture in 32 x 32 blocks row by row; a
+texel's key holds 2^20 - 1 pages (`shade.KEY_PAGES`, checked at the load). Nothing else
+bound: the lists, the heavy tiles (68 at most), the items, the ring and LIGHT's tables
+took the scene as they were. Card 1, 2026-11-23, AICLK 1,350 MHz, 20 frames each unless
+said, `live.py --scene bistro_exterior_<view> --push`:
+
+- vertex colours (02:36): 0 pixels differ (frames 0, 10, 19); card frame 13.29 ms (COUNT
+  2.47, SETUP 4.87, FILL 3.99, SHOW 0.87), host 14.04 ms, 71 frames a second;
+- `--light --check-surface --check-light` (02:43, the tables above): check C over 2 / 4 / 8
+  at most 0.053 % / 0.022 % / 0.019 %, `ok`; in the shadow-edge band (512 thousand pixels:
+  the trees' shadows) 0.040 % to 0.044 % more than 4 off, outside it 0.0002 % to 0.0007 %;
+  check B: `a` off by more than 2/255 on 2 and 5 pixels, the normal's angle median 0.009,
+  99th percentile 0.031 degrees, 5 and 4 pixels over 2 degrees (most 24.8); lit SHADE read
+  34,143 pages, at most 217 for one item, one item in two passes; LIGHT 7,693 pages;
+- `bistro_exterior_close --light --check-light` (02:45): `ok`, over 2 / 4 / 8 at most
+  0.035 % / 0.022 % / 0.018 % (later pieces, 6,261 to 6,368 pixels, apart); card frame
+  33.40 ms (masked layer 13.26), host 34.25; lit SHADE at most 816 pages for one item, 22
+  items in passes of rows;
+- 200 frames along the camera path (`--frames 200 --light`, 02:46): every result word 0,
+  card frame median 32.26 ms, worst 38.26; host median 33.09, worst 39.43.
+
+The exterior's frame is the two layers' passes: the masked layer (trees) runs COUNT and
+SETUP on equal partitions (9.5 ms of the 31.8).
 
 ## The interactive loop
 
@@ -628,7 +660,8 @@ the view; frames 0, 100 and 199 equal the reference rasterizer's 8-bit image of 
 
 `SHOW` is 0.80 to 1.14 ms of a card frame (107 to 114 thousand cycles a tile) and the push
 0.287 ms. The lists are sized at the load: a camera that puts more triangles in view than
-they hold ends its frame with the result word 6 (`--list-slots` makes them larger).
+they hold ends its frame with the result word 6 (`--list-slots` makes them larger; the
+masked layer's lists grow by the same factor).
 
 ## Results
 

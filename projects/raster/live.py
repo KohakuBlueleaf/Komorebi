@@ -146,6 +146,8 @@ def shade_profile(profile):
     }
     report["slowest_core_cycles"] = int(profile[:, SH["kShadeProfTotal"]].max())
     report["cores_reported"] = int((profile[:, SH["kShadeProfTotal"]] != 0).sum())
+    report["item_pages_max"] = int(profile[:, SH["kShadeProfItemPages"]].max())
+    report["items_in_passes"] = int(profile[:, SH["kShadeProfItemPasses"]].sum())
     return report
 
 
@@ -229,7 +231,8 @@ class Loop:
         blocks = passes.mesh_blocks(scene) if prepared is None else prepared["blocks"]
         self.workers = workers = card.workers(session)
         started = time.perf_counter()
-        slots = list_slots or 2 * len(scene["indices"]) + 65536  # card_thread's
+        default_slots = 2 * len(scene["indices"]) + 65536  # card_thread's
+        slots = list_slots or default_slots
         self.uploaded = card_thread.tensors(session, blocks, workers, slots)
         self.shade_profile = None
         if prepared is not None:
@@ -251,6 +254,8 @@ class Loop:
         self.masked = None
         if prepared is not None and "masked_blocks" in prepared:
             masked_slots = 2 * prepared["masked_triangles"] + 65536  # card_thread's
+            if list_slots:  # the masked layer's lists grown as the others are
+                masked_slots = -(-masked_slots * list_slots // default_slots)
             self.masked = card_thread.layer_tensors(
                 session, prepared["masked_blocks"], workers, masked_slots
             )
@@ -429,6 +434,10 @@ def loop(args):
     report["card_frame_ms"] = round(
         float(np.median(rows[:, F["RF_T_FRAME"]])) * ticks_ms, 4
     )
+    report["card_frame_max_ms"] = round(
+        float(rows[:, F["RF_T_FRAME"]].max()) * ticks_ms, 4
+    )
+    report["host_max_ms"] = round(float(np.max(host)), 4)
     report["card_show_ms"] = round(
         float(np.median(rows[:, F["RF_T_SHOW"]])) * ticks_ms, 4
     )

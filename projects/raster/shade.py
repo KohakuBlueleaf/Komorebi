@@ -13,6 +13,9 @@ SH = {
     name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHADE_H.read_text())
 }
 PAGE = 32  # a texture page: 32 x 32 texels of one level
+# a texel's key (kernels/shade_compute.hpp record_row) is (1 + page) << 10 | texel in
+# 30 bits (the masked layer tags bits 30, 31): at most 2^20 - 1 pages
+KEY_PAGES = (1 << 20) - 1
 F32 = np.float32
 
 
@@ -205,7 +208,10 @@ def table(materials, entries, pages, emissive_scale=1.0):
     entry_words[:, 0] = entries[:, :, 0].ravel()
     entry_words[:, 1] = entries[:, :, 1].ravel() | entries[:, :, 2].ravel() << 16
     if end + entry_words.size > len(words):
-        raise ValueError(f"SHADE's table needs {end + entry_words.size} words")
+        raise ValueError(
+            f"SHADE's table needs {end + entry_words.size} words and holds"
+            f" {len(words)} (kernels/shade.h kShadeTableBytes)"
+        )
     words[at:end] = rows.ravel()
     words[end : end + entry_words.size] = entry_words.ravel()
     return words
@@ -241,6 +247,10 @@ def prepare(scene, materials, lights=None):
         materials_kept = materials
     blocks, shade_blocks = mesh_blocks(scene, materials_kept, lit)
     pages, entries = texture_pages(materials)
+    if len(pages) > KEY_PAGES:
+        raise ValueError(
+            f"the textures take {len(pages)} pages; a texel's key holds {KEY_PAGES}"
+        )
     scale = lights["emissive_scale"] if lit else 1.0
     return {
         **prepared,

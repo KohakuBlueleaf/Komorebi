@@ -987,7 +987,7 @@ namespace shade_pass {
                 reinterpret_cast<volatile uint32_t*>(write_ptr(kCbOut))
             );
             for (uint32_t i = 0; i < kShadeProfBytes / 4; ++i) {
-                profile[i] = i <= kShadeProfTotal ? values[i] : 0;
+                profile[i] = i < kShadeProfWords ? values[i] : 0;
             }
             push(
                 kCbOut,
