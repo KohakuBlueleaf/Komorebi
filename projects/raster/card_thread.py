@@ -42,7 +42,8 @@ for i, name in enumerate(["MESH", "BLOCKS", "LISTS", "LIST_SLOTS", "DIR", "SHADE
     F[f"RF_W_M_{name}"] = F["RF_W_SHADEPROF"] + 1 + i
 F["RF_W_M_FRAMES"] = F["RF_W_M_SHADE"] + 1
 F["RF_W_M_FRAME"] = F["RF_W_M_FRAMES"] + 1
-F["RF_WORDS"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
+F["RF_W_SURFACE"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
+F["RF_WORDS"] = F["RF_W_SURFACE"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
@@ -89,6 +90,7 @@ def same_numbers():
         "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
         "RF_DISPLAY_PAGES": lists.TILES,
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
+        "RF_HANDLER_LIGHT": SH["kHandlerLight"],
         "RF_SHADE_ADDR_AT": S["kShadeAddrAt"],
         "kRecShade": (SH["kRecShade"], S["kRecShadeWord"]),
         # PLACE's list and directory words against the fill's
@@ -141,7 +143,7 @@ def regions(scene, workers, show_table=None):
 
 def shade_buffers():
     """SHADE's buffers (kernels/shade.h): planes, table, asks, answers, the page slots
-    and the white texel's page, the pack thread's space."""
+    and the white texel's page, the pack thread's space and its lit space."""
     return [
         km.Buffer(
             SH["kCbShadePlanes"], "uint32", K["kOutPageBytes"], SH["kShadePlanePages"]
@@ -157,6 +159,7 @@ def shade_buffers():
             SH["kCbShadeSlots"], "uint32", SH["kTexPageBytes"], SH["kShadeSlots"] + 1
         ),
         km.Buffer(SH["kCbShadeWork"], "uint32", SH["kShadeWorkBytes"], 1),
+        km.Buffer(SH["kCbLightWork"], "uint32", SH["kLightWorkBytes"], 1),
     ]
 
 
@@ -188,6 +191,7 @@ def program(scene, words, workers, show_table=None):
             **passes_program.handlers,
             "show": SHOW["kHandlerShow"],
             "shade": SH["kHandlerShade"],
+            "light": SH["kHandlerLight"],
         },
     )
     frame_program.thread(

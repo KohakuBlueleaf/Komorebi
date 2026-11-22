@@ -446,7 +446,7 @@ pixels apart and takes its share (ok under 1 %) over the others.
 A texture level is stored in blocks of 32 x 32 texels, a 4 KB page each. For a tile
 SHADE finds the pages its pixels fetch, reads them into 128 page slots in L1 and
 fetches the texels there; a tile needing more pages is shaded in several passes of
-rows. Lit materials are shaded as textured (no lighting yet).
+rows. Lit materials are shaded as textured (no lighting; `--light` below lights them).
 
 **Holes (the masked layer).** A scene with masked triangles is loaded as two meshes:
 the triangles whose material is not `masked` and those whose material is, each with its
@@ -481,6 +481,76 @@ pixels differing by more than 2 in a channel, at most 0.0006 % (Sponza) and 0.00
 pixel), 0 on Bistro interior. The step before (masked shaded as textured, one layer;
 the page's earlier run): Sponza FILL 1.59, SHADE 4.04, SHOW 0.79, card frame 8.87, host
 9.61; Bistro interior 2.11, 4.68, 0.83, 12.41, 13.12.
+
+### Surface planes and LIGHT (`live.py --light`)
+
+A frame loaded lit (`--light`, which implies `--shade`) runs FILL, SHADE, LIGHT, SHOW.
+SHADE becomes the material stage: when its command carries the surface's directory
+(a7, with the camera in a5) it writes per pixel the surface planes instead of a colour
+(`kernels/shade_lit.hpp`), and LIGHT, one command to the fill's cores, turns each tile's
+planes into the three colour planes SHOW reads (`kernels/light_compute.hpp`,
+`light_reader.hpp`, `light_writer.hpp`; `light.py` holds the host's side and checks).
+Without `--light` SHADE runs its old path unchanged and gives the textured frame.
+
+- **The planes.** In the frame: 1/z (merged: where the masked layer's pixel is taken,
+  its 1/z) and, in the triangle's plane, the material word `material | kind << 16` (an
+  empty pixel keeps FILL's -1, bit 31 set). In two more frames of five planes laid out
+  as the fill's (the surface's directory, `light.surface_tensors`): `a` (albedo x base,
+  linear; `emissive` x emissive_scale), the normal (scene, unit), the visibility (the
+  light plane's value, the corners carrying the baked visibility), the specular colour
+  x its texel (0 without a specular term). A lit item leaves SHADE as three five-page
+  parts in kCbOut (frame, surface 0 to 4, 5 to 9), so no push is larger than FILL's.
+- **The normal without per-triangle data.** For each triangle that wins a pixel of the
+  item (a table of the item's winners from its triangle plane; other records are
+  skipped), its first record's planes of 1/z, u/z, v/z and the camera give in scalar
+  code the triangle's normal `-(A f, -B f, A cx + B cy + C)` (planes taken about the
+  centre) and the tangent frame through `M = (m0, m1, m2)`: dP/du ~ diag(1, -1, f)(m2 x
+  m0) sign(det M), the bitangent toward +v (`light.frame_from_planes` is the same in
+  numpy). The slot (16 words: material word, lit base, specular colour, frame) is
+  gathered per pixel with the three texels (albedo, normal, specular: each keyed at its
+  own level, SETUP's record word 30 now holds three levels, the shade block four words a
+  triangle) and the vector unit forms `a`, the specular and `normalize(T tx + B ty + N
+  tz)` (rsqrt: estimate and three Newton steps); a frame that is not valid, or no normal
+  texture, leaves T = B = 0 and the white texel.
+- **LIGHT.** Per pixel, as vector arithmetic over a row's 32 lanes in Dst, half a tile
+  at a time: `E = max(0, sky(n)) x vis + ambient + sun x max(0, n.s)` with the sky's
+  quadratic form as nine products per channel from a 256-byte table (`light.light_table`,
+  named by the surface's directory with LIGHT's profile tensor, since the thread's words
+  are full), `x = exposure / pi x a E`; `emissive` `exposure x a`; empty `exposure x` the
+  old background; then `x / (1 + x)` by the exact reciprocal. No shadow, lamps, specular
+  term or environment background yet.
+
+Check A (host, `python -m projects.raster.light --check-frame 5000`): the frame from a
+record's float32 planes against the reference's `shade_setup` frame on 5,000 whole
+records: normal median / 99th percentile / most 0.0000 / 0.031 / 0.038 degrees (Sponza),
+0.0061 / 0.034 / 0.147 (Bistro interior); a handful of records where the reference's uv
+determinant is exactly 0 have a non-zero float32 det M, so the card finds a frame there.
+
+Card 1, 2026-11-23 00:41 to 00:44, AICLK 1,350 MHz, 20 frames each, `live.py --scene <s>
+--frames 20 --push --light --check-surface --check-light` and the same with `--shade
+--check-shade` (ms, medians; SHADE both commands, the masked layer's in brackets; LIGHT
+cycles a tile: the pack thread's, its arithmetic in brackets):
+
+| scene | mode | opaque frame | masked frame | FILL | SHADE | LIGHT | SHOW | card frame | host frame | LIGHT cycles a tile |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Sponza | `--light` | 3.55 | 1.34 | 1.64 | 4.97 (0.87) | 0.35 | 0.79 | 11.26 | 11.95 | 50,298 (35,040) |
+| Sponza | `--shade` | 3.55 | 1.35 | 1.64 | 4.52 (0.47) | - | 0.79 | 10.49 | 11.21 | - |
+| Bistro interior | `--light` | 6.74 | 1.18 | 2.20 | 5.12 (0.47) | 0.37 | 0.82 | 14.53 | 15.22 | 44,863 (30,647) |
+| Bistro interior | `--shade` | 6.74 | 1.18 | 2.20 | 5.10 (0.15) | - | 0.83 | 14.14 | 14.77 | - |
+
+Check B, frames 0 and 19 (pixels the reference covers, later pieces of cut triangles
+apart): material words equal, visibility within 1/255 everywhere; `a` off by more than
+2/255 on 6 and 3 of 998,723 pixels (Sponza) and 59 and 62 of 1,015,272 (Bistro
+interior), each a neighbouring texel chosen at a texel's edge; the normal's angle median
+0.013 / 99th percentile 0.030 degrees (Sponza), 0.002 / 0.029 (Bistro interior), over 2
+degrees on 0.07 % / 0.12 % of Sponza's pixels: on frame 0 all 709 are on four
+triangles whose uv determinant is exactly 0 in the reference (no frame) but not in the
+rounded planes, so the card bends their normal by the normal map (up to 14.5 degrees);
+Bistro interior 5 and 3 pixels (up to 37 degrees, not examined). Check C against `rasterize_lighted` driven by its own `terms=("sky", "ambient",
+"sun")`, one shadow tap: share of pixels more than 2 / 4 / 8 off in a channel at most
+0.033 % / 0.017 % / 0.008 % (Sponza, frames 0, 10, 19) and 0.005 % / 0.002 % / 0.0006 %
+(Bistro interior): `ok`. On Sponza's later pieces (33,600 pixels) 39 % to 72 % differ by
+more than 2, as with SHADE.
 
 ## The interactive loop
 

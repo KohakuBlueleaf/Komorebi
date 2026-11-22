@@ -582,6 +582,20 @@ static uint32_t shade(
     /* profile_address: the opaque layer's command's */
     command.a4 = opaque ? 0 : frame->words[RF_W_SHADEPROF];
     command.a6 = opaque; /* opaque_directory_address */
+    if (frame->words[RF_W_SURFACE]) {
+        command.a5 = frame->address[RF_R_CAMERA]; /* camera_address (a8 its bank) */
+        command.a7 = frame->words[RF_W_SURFACE];  /* surface_address */
+    }
+    return run(&command);
+}
+
+/* LIGHT: each tile's lit colour from its surface planes (kernels/shade.h). 0, or the
+ * code to report. */
+static uint32_t light(frame_t* frame) {
+    km_command_t command;
+    new_command(&command, RF_HANDLER_LIGHT, frame);
+    command.a0 = frame->words[RF_W_DIR];     /* directory_address */
+    command.a7 = frame->words[RF_W_SURFACE]; /* surface_address: table, profile */
     return run(&command);
 }
 
@@ -609,8 +623,8 @@ static uint32_t push(uint32_t key) {
     return run(&command);
 }
 
-/* FRAME: a frame (each layer's), SHADE when shaded (each layer's), SHOW, (a1) PUSH;
- * ticks to a times row (parts summed over layers, the middle pass's finds: opaque). */
+/* FRAME: each layer's frame, SHADE when shaded (each layer's), LIGHT when lit, SHOW,
+ * (a1) PUSH; ticks to a times row (parts summed over layers, middle pass: opaque). */
 static uint32_t serve_frame(const km_command_t* command) {
     frame_t* frame = &g_frame;
     const uint32_t* words = frame->words;
@@ -651,6 +665,12 @@ static uint32_t serve_frame(const km_command_t* command) {
         }
         shade_ticks = (uint32_t)(kmx_time() - shade_started);
     }
+    uint32_t light_ticks = 0;
+    if (code == 0 && words[RF_W_SURFACE]) {
+        const uint64_t light_started = kmx_time();
+        code = light(frame);
+        light_ticks = (uint32_t)(kmx_time() - light_started);
+    }
     uint32_t show_ticks = 0;
     if (code == 0) {
         const uint64_t show_started = kmx_time();
@@ -674,6 +694,7 @@ static uint32_t serve_frame(const km_command_t* command) {
     times[RF_T_OPAQUE] = (uint32_t)(opaque_ended - started);
     times[RF_T_MASKED] = masked_ticks;
     times[RF_T_SHADE_MASKED] = shade_masked_ticks;
+    times[RF_T_LIGHT] = light_ticks;
     times[RF_T_PUSH] = push_ticks;
     times[RF_T_NUMBER] = g_served;
     times[RF_T_CODE] = code;

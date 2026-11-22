@@ -30,35 +30,42 @@ def load(name):
     return public.load_materials(name, native.data_dir())[0]
 
 
+LEVEL_SLOTS = (raster.ALBEDO, raster.NORMAL, raster.SPECULAR)  # the record's levels
+
+
 def texel_areas(materials):
-    """Per triangle the doubled area of its corners' texture coordinates in its albedo
-    texture's level 0 texels (reference/raster.py shade_setup, float32) and its
-    material word, material | levels << 16 (levels 1 without an albedo texture)."""
+    """Per triangle the doubled area of its corners' texture coordinates in level 0
+    texels of its albedo, normal and specular textures ((3, T) float32, reference
+    shade_setup) and its material word, material | each one's levels << 16, 20, 24
+    (levels 1 without that texture)."""
     uv = materials["uv"]
     du1, dv1 = uv[:, 1, 0] - uv[:, 0, 0], uv[:, 1, 1] - uv[:, 0, 1]
     du2, dv2 = uv[:, 2, 0] - uv[:, 0, 0], uv[:, 2, 1] - uv[:, 0, 1]
     uv_area2 = np.abs(du1 * dv2 - du2 * dv1)
-    albedo = materials["textures"][materials["material"], raster.ALBEDO]
-    texture = np.maximum(albedo, 0)
-    size = materials["mip"][texture, 0]
-    texels = uv_area2 * (size[:, 1] * size[:, 2]).astype(F32)
-    texels = np.where(np.isfinite(texels), texels, F32(0)).astype(F32)
-    levels = np.where(albedo >= 0, materials["levels"][texture], 1).astype(np.uint32)
-    word = materials["material"].astype(np.uint32) | levels << 16
-    return texels, word
+    word = materials["material"].astype(np.uint32)
+    areas = np.zeros((len(LEVEL_SLOTS), len(uv)), dtype=F32)
+    for index, slot in enumerate(LEVEL_SLOTS):
+        own = materials["textures"][materials["material"], slot]
+        texture = np.maximum(own, 0)
+        size = materials["mip"][texture, 0]
+        texels = uv_area2 * (size[:, 1] * size[:, 2]).astype(F32)
+        areas[index] = np.where(np.isfinite(texels), texels, F32(0))
+        levels = np.where(own >= 0, materials["levels"][texture], 1).astype(np.uint32)
+        word |= levels << (16 + 4 * index)
+    return areas, word
 
 
-def mesh_blocks(scene, materials):
+def mesh_blocks(scene, materials, lit=False):
     """The mesh as passes.mesh_blocks lays it out, each corner's colour replaced by its
-    u, v and light term where the material is not flat; and the shade blocks (blocks,
-    64): 32 texel areas, then 32 material words (kernels/setup.h kShadeAddrAt)."""
+    u, v and light term where the material is not flat (lit: every corner); and the
+    shade blocks (blocks, 128): 32 albedo texel areas, 32 material words, 32 normal and
+    32 specular texel areas (kernels/setup.h kShadeAddrAt)."""
     kind = materials["kind"][materials["material"]]
     values = np.concatenate(
         [materials["uv"], materials["light"][:, :, None]], axis=2
     ).astype(F32)
-    colors = np.where(
-        (kind != raster.FLAT)[:, None, None], values, scene["colors"][scene["indices"]]
-    )
+    shaded = np.ones(len(kind), dtype=bool) if lit else kind != raster.FLAT
+    colors = np.where(shaded[:, None, None], values, scene["colors"][scene["indices"]])
     flat_scene = {
         **scene,
         "positions": scene["positions"][scene["indices"]].reshape(-1, 3),
@@ -66,12 +73,13 @@ def mesh_blocks(scene, materials):
         "indices": np.arange(3 * len(scene["indices"])).reshape(-1, 3),
     }
     blocks = passes.mesh_blocks(flat_scene)
-    texels, word = texel_areas(materials)
+    areas, word = texel_areas(materials)
     count = len(blocks) * passes.LANES
-    shade = np.zeros((2, count), dtype=np.uint32)
-    shade[0, : len(texels)] = texels.view(np.uint32)
+    shade = np.zeros((4, count), dtype=np.uint32)
+    shade[0, : len(word)] = areas[0].view(np.uint32)
     shade[1, : len(word)] = word
-    shade_blocks = shade.reshape(2, len(blocks), passes.LANES).transpose(1, 0, 2)
+    shade[2:, : len(word)] = areas[1:].view(np.uint32)
+    shade_blocks = shade.reshape(4, len(blocks), passes.LANES).transpose(1, 0, 2)
     return blocks, np.ascontiguousarray(shade_blocks.reshape(len(blocks), -1))
 
 
@@ -102,17 +110,23 @@ def texture_pages(materials):
     return np.concatenate(blocks), entries
 
 
-def table(materials, entries, pages):
-    """SHADE's table (kernels/shade.h): counts, the gamma table, the materials, the
-    (texture, level) entries."""
+def table(materials, entries, pages, emissive_scale=1.0):
+    """SHADE's table (kernels/shade.h): counts, the texel tables, the background, the
+    materials (lit: emissive bases x emissive_scale), the (texture, level) entries."""
     count, levels = entries.shape[:2]
     words = np.zeros(SH["kShadeTableBytes"] // 4, dtype=np.uint32)
     materials_count = len(materials["kind"])
     words[SH["kTabMaterials"]] = materials_count
     words[SH["kTabEntries"]] = count * levels
     words[SH["kTabPages"]] = pages
-    gamma = SH["kTabGamma"]
-    words[gamma : gamma + 256] = raster.TEXEL_LINEAR.view(np.uint32)
+    for name, values in (
+        ("kTabGamma", raster.TEXEL_LINEAR),
+        ("kTabSigned", raster.TEXEL_SIGNED),
+        ("kTabUnit", raster.TEXEL_UNIT),
+    ):
+        words[SH[name] : SH[name] + 256] = values.view(np.uint32)
+    background = SH["kTabBackground"]
+    words[background : background + 3] = raster.BACKGROUND.view(np.uint32)
     at = SH["kTabMaterial"]
     albedo = materials["textures"][:, raster.ALBEDO]
     rows = np.zeros((materials_count, SH["kMaterialWords"]), dtype=np.uint32)
@@ -135,6 +149,23 @@ def table(materials, entries, pages):
     rows[:, SH["kMaterialMask"]] = np.where(
         (mask >= 0) & (albedo >= 0), mask * levels + 1, 0
     ).astype(np.uint32)
+    for name, slot in (
+        ("kMaterialNormal", raster.NORMAL),
+        ("kMaterialSpecular", raster.SPECULAR),
+    ):
+        own = materials["textures"][:, slot]
+        rows[:, SH[name]] = np.where(own >= 0, own * levels + 1, 0).astype(np.uint32)
+    emissive = materials["kind"] == raster.EMISSIVE
+    base = materials["base_colour"].astype(F32)
+    lit_base = np.where(emissive[:, None], base * F32(emissive_scale), base)
+    at_base = SH["kMaterialLitBase"]
+    rows[:, at_base : at_base + 3] = lit_base.astype(F32).view(np.uint32)
+    specular = materials["specular"].astype(F32)
+    has = (materials["kind"] == raster.LIT) & (specular.max(axis=1) > 0)
+    at_specular = SH["kMaterialSpecularColour"]
+    rows[:, at_specular : at_specular + 3] = (
+        np.where(has[:, None], specular, F32(0)).astype(F32).view(np.uint32)
+    )
     end = at + rows.size
     entry_words = np.zeros((count * levels, SH["kEntryWords"]), dtype=np.uint32)
     entry_words[:, 0] = entries[:, :, 0].ravel()
@@ -153,16 +184,19 @@ def layer(scene, materials, keep):
     return {**scene, "indices": scene["indices"][keep]}, {**materials, **per_triangle}
 
 
-def prepare(scene, materials):
-    """Everything uploaded once for a shaded frame: mesh and shade blocks, texture
-    pages, table. With masked triangles the mesh is two: the triangles that are not
-    masked ("blocks", "shade_blocks") and the masked ones ("masked_blocks",
-    "masked_shade_blocks", "masked_triangles"), each numbered from 0."""
+def prepare(scene, materials, lights=None):
+    """Everything uploaded once for a shaded frame (with `lights`, lit: every corner's
+    light term the baked visibility): mesh and shade blocks, texture pages, table. With
+    masked triangles, two meshes: the others ("blocks", "shade_blocks") and the masked
+    ("masked_blocks", "masked_shade_blocks", "masked_triangles"), each from 0."""
+    lit = lights is not None
+    if lit:
+        materials = {**materials, "light": lights["visibility"][scene["indices"]]}
     masked = materials["kind"][materials["material"]] == raster.MASKED
     prepared = {}
     if masked.any():
         layer_scene, layer_materials = layer(scene, materials, masked)
-        blocks, shade_blocks = mesh_blocks(layer_scene, layer_materials)
+        blocks, shade_blocks = mesh_blocks(layer_scene, layer_materials, lit)
         prepared["masked_blocks"], prepared["masked_shade_blocks"] = (
             blocks,
             shade_blocks,
@@ -171,14 +205,15 @@ def prepare(scene, materials):
         scene, materials_kept = layer(scene, materials, ~masked)
     else:
         materials_kept = materials
-    blocks, shade_blocks = mesh_blocks(scene, materials_kept)
+    blocks, shade_blocks = mesh_blocks(scene, materials_kept, lit)
     pages, entries = texture_pages(materials)
+    scale = lights["emissive_scale"] if lit else 1.0
     return {
         **prepared,
         "blocks": blocks,
         "shade_blocks": shade_blocks,
         "pages": pages,
-        "table": table(materials, entries, len(pages)),
+        "table": table(materials, entries, len(pages), scale),
     }
 
 

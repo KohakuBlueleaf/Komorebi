@@ -15,6 +15,7 @@
 #define RF_SHOW_TABLE_BYTES 1024u /* SHOW's block: kShowTableWords words */
 #define RF_DISPLAY_PAGES 1024u    /* the display's pages: a page a tile */
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
+#define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -87,7 +88,10 @@
 #define RF_W_M_SHADE (RF_W_M_DIR + 1)
 #define RF_W_M_FRAMES (RF_W_M_SHADE + 1)
 #define RF_W_M_FRAME (RF_W_M_FRAMES + 1) /* RF_FRAME_MAX words */
-#define RF_WORDS (RF_W_M_FRAME + RF_FRAME_MAX)
+/* A lit frame (serving; 0: not lit): the surface's directory, which also holds LIGHT's
+ * table and profile tensor (kernels/shade.h kSurfaceLight*) */
+#define RF_W_SURFACE (RF_W_M_FRAME + RF_FRAME_MAX)
+#define RF_WORDS (RF_W_SURFACE + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */
@@ -122,6 +126,7 @@
 #define RF_T_OPAQUE 27       /* the opaque layer's frame (no masked layer: the frame) */
 #define RF_T_MASKED 28       /* the frame of the masked layer (0: none) */
 #define RF_T_SHADE_MASKED 29 /* the masked layer's SHADE, part of RF_T_SHADE */
+#define RF_T_LIGHT 30        /* LIGHT submitted to its event (0: not lit) */
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0

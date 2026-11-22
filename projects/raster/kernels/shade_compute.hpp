@@ -246,9 +246,15 @@ namespace shade_pass {
         }
     }
 
-    // Row r, the record's pixels: key (1 + page) << 10 | texel to the depth row, the
-    // colour the albedo multiplies; triangle -2 (a mask: -2's bits | mask's key).
-    inline void record_row(uint32_t r, Mode mode) {
+    // Row r, the record's pixels: key (1 + page) << 10 | texel to the depth row (lit:
+    // `target`), the colour the albedo multiplies; (mark) triangle -2 (-2 | mask key).
+    inline void record_row(
+        uint32_t r,
+        Mode mode,
+        uint32_t target = kVecDepth,
+        bool colour = true,
+        bool mark = true
+    ) {
         load(L0, kVecTri + r);
         load(L1, kVecRecord + kConstTri);
         sub(L0, L1, L0);
@@ -298,7 +304,7 @@ namespace shade_pass {
             TT_SFPAND(0, MASK, L2, 0);
             TT_SFPSHFT(10, 0, L6, kShiftImmediate);
             TT_SFPOR(0, L2, L6, 0);
-            store(L6, kVecDepth + r);
+            store(L6, target + r);
             if (mode == kLightTextureMask) {  // its key, tagged, to the triangle row
                 add(L7, MAGIC, L7);
                 TTI_SFPNOP;
@@ -311,20 +317,23 @@ namespace shade_pass {
                 store(L7, kVecTri + r);
             }
         }
-        if (mode == kLight || mode == kLightTexture || mode == kLightTextureMask) {
+        const bool lit = (
+            mode == kLight || mode == kLightTexture || mode == kLightTextureMask
+        );
+        if (colour && lit) {
             load(L0, kVecBlue + r);
             for (uint32_t channel = 0; channel < 3; ++channel) {
                 load(L1, kVecRecord + kConstBase + channel);
                 mul(L1, L0, L2);
                 store(L2, kVecRed + 32 * channel + r);
             }
-        } else if (mode == kEmissive || mode == kEmissiveTexture) {
+        } else if (colour && (mode == kEmissive || mode == kEmissiveTexture)) {
             for (uint32_t channel = 0; channel < 3; ++channel) {
                 load(L1, kVecRecord + kConstBase + channel);
                 store(L1, kVecRed + 32 * channel + r);
             }
         }
-        if (mode != kLightTextureMask) {
+        if (mark && mode != kLightTextureMask) {
             TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
             store(L0, kVecTri + r);
         }
@@ -656,6 +665,9 @@ namespace shade_pass {
     }
 
 }  // namespace shade_pass
+
+#include "shade_lit.hpp"
+#include "light_compute.hpp"
 #endif
 
 // SHADE of one command (shade.h); the frame program's compute kernel calls it.
@@ -668,6 +680,10 @@ void shade_compute_command(const km_command_t& command) {
 #endif
 #ifdef TRISC_PACK
     using namespace shade_pass;
+    if (command.a7 != 0) {
+        shade_lit(command);
+        return;
+    }
     Counters counters;
     uint32_t* values = counters.values;
     const uint32_t started = km::wall();
@@ -981,5 +997,18 @@ void shade_compute_command(const km_command_t& command) {
             kShadeOutPages
         );
     }
+#endif
+}
+
+// LIGHT of one command (shade.h): the unpack thread serves the pack thread's mails.
+void light_compute_command(const km_command_t& command) {
+    if (km::handler(command) != kHandlerLight) {
+        return;
+    }
+#ifdef TRISC_UNPACK
+    shade_unpack();
+#endif
+#ifdef TRISC_PACK
+    shade_pass::light_pack(command);
 #endif
 }

@@ -41,6 +41,8 @@ void kernel_main() {
     compute.run([&](const km_command_t& command) {
         if (km::handler(command) == shade_k::kHandlerShade) {
             shade_k::shade_compute_command(command);
+        } else if (km::handler(command) == shade_k::kHandlerLight) {
+            shade_k::light_compute_command(command);
         } else if (km::handler(command) >= pass_k::kHandlerLanes) {
             pass_k::setup_compute_command(compute, command);
         } else {

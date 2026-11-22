@@ -1,7 +1,7 @@
-"""The thread-driven frame as a loop a host drives: the scene loaded once; for each
-camera one FRAME command, and the 8-bit image read from the display tensor or, with
-`--push`, pushed by the thread into the host channel; `--shade` loads it shaded (SHADE
-between FILL and SHOW; masked ones a second layer). One JSON line; exit 1 unless ok."""
+"""The thread-driven frame as a loop a host drives: a FRAME command a camera, the image
+read back or (`--push`) pushed by the thread; `--shade` shaded (SHADE between FILL and
+SHOW; masked ones a second layer), `--light` lit (SHADE's surface, LIGHT before SHOW).
+One JSON line; exit 1 unless ok."""
 
 import argparse
 import json
@@ -14,9 +14,10 @@ import numpy as np
 import komorebi as km
 from komorebi.bench import power
 from komorebi.program.thread import TIMER_HZ
-from projects.raster import card, card_thread, lists, passes, run, shade
+from projects.raster import card, card_thread, light, lists, passes, run, shade
 from projects.raytrace import framegraph
-from reference import png, raster
+from reference import lights as light_data
+from reference import native, png, raster
 
 F, SHOW, SH = card_thread.F, card_thread.SHOW, card_thread.SH
 CLUSTER = card_thread.CLUSTER
@@ -148,6 +149,29 @@ def shade_profile(profile):
     return report
 
 
+def light_profile(profile):
+    """LIGHT's profile pages (cores, 64 words) as totals: tiles, rows; the pack
+    thread's cycles a tile by part."""
+    totals = profile[:, : SH["kLightProfTotal"] + 1].sum(axis=0)
+    tiles = max(int(totals[SH["kLightProfTiles"]]), 1)
+    parts = {
+        "wait": "kLightProfWait",
+        "copy_in": "kLightProfCopyIn",
+        "math": "kLightProfMath",
+        "out": "kLightProfOut",
+        "total": "kLightProfTotal",
+    }
+    return {
+        "tiles": int(totals[SH["kLightProfTiles"]]),
+        "rows": int(totals[SH["kLightProfRows"]]),
+        "cycles_per_tile": {
+            key: round(float(totals[SH[name]]) / tiles, 1)
+            for key, name in parts.items()
+        },
+        "slowest_core_cycles": int(profile[:, SH["kLightProfTotal"]].max()),
+    }
+
+
 def figures(values):
     """Median, 5th and 95th percentile of a list of milliseconds."""
     values = np.asarray(values, dtype=np.float64)
@@ -169,14 +193,26 @@ def times_rows(raw, frames):
 
 
 class Loop:
-    """The scene loaded once in `session` and the thread's program running: a FRAME
-    command a camera (`frame`), the image read back or, with `push`, pushed into the
-    host channel; with `materials` the frame shaded (shade.py's tensors uploaded once;
-    masked triangles a layer of their own, lists from them). Fills upload_s, load_s."""
+    """The scene loaded once in `session`, the thread's program running: a FRAME command
+    a camera (`frame`), the image read back or pushed (`push`); `materials`: shaded
+    (shade.py; masked triangles a layer of their own), `lights`: also lit (the surface,
+    LIGHT's table). Fills upload_s, load_s."""
 
-    def __init__(self, session, scene, push, list_slots, table, report, materials=None):
+    def __init__(
+        self,
+        session,
+        scene,
+        push,
+        list_slots,
+        table,
+        report,
+        materials=None,
+        lights=None,
+    ):
         self.session = session
-        prepared = None if materials is None else shade.prepare(scene, materials)
+        prepared = (
+            None if materials is None else shade.prepare(scene, materials, lights)
+        )
         blocks = passes.mesh_blocks(scene) if prepared is None else prepared["blocks"]
         self.workers = workers = card.workers(session)
         started = time.perf_counter()
@@ -193,6 +229,10 @@ class Loop:
                 session, np.zeros((workers, SH["kShadeProfBytes"] // 4))
             )
             report["texture_pages"] = len(prepared["pages"])
+        self.surface = self.light_profile = None
+        if lights is not None:
+            self.surface = light.surface_tensors(session, workers, lights)
+            self.light_profile = self.surface["profile"]
         self.masked = None
         if prepared is not None and "masked_blocks" in prepared:
             masked_slots = 2 * prepared["masked_triangles"] + 65536  # card_thread's
@@ -217,6 +257,8 @@ class Loop:
             words[F["RF_W_TEXTURES"]] = self.shaded["textures"].address
             words[F["RF_W_SHADE_TABLE"]] = self.shaded["table"].address
             words[F["RF_W_SHADEPROF"]] = self.shade_profile.address
+        if self.surface is not None:
+            words[F["RF_W_SURFACE"]] = self.surface["dir"].address
         if self.masked is not None:
             card_thread.masked_words(
                 words,
@@ -289,19 +331,23 @@ def loop(args):
     scene, _ = run.load(args.scene)
     views = framegraph.cameras(scene, args.frames)
     table = show_table()
+    args.shade = args.shade or args.light
     materials = shade.load(args.scene) if args.shade else None
+    lights = light_data.load(args.scene, native.data_dir()) if args.light else None
     report = {
         "scene": args.scene,
         "frames": args.frames,
         "path": "push" if args.push else "read",
         "shaded": bool(args.shade),
+        "lit": bool(args.light),
     }
     report["table_differs"] = table_check(table)
     checked = sorted({0, args.frames // 2, args.frames - 1})
-    kept = {}
+    surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
+    kept, surface_got = {}, {}
     with km.Session(log=card.log) as session:
         live = Loop(
-            session, scene, args.push, args.list_slots, table, report, materials
+            session, scene, args.push, args.list_slots, table, report, materials, lights
         )
         workers, running = live.workers, live.running
         image = np.empty((raster.HEIGHT, raster.WIDTH, 4), dtype=np.uint8)
@@ -320,6 +366,10 @@ def loop(args):
             words_back.append(word)
             if index in checked:
                 kept[index] = image.copy()
+            if index in surfaces and word == 0:  # the planes before the next frame
+                surface_got[index] = light.read_surface(
+                    session, live.uploaded["frame"], live.surface
+                )
             if word != 0:
                 card.log(f"frame {index}: {event.kind}, word {word}")
                 break
@@ -331,6 +381,11 @@ def loop(args):
             (shade_pages,) = card.read(session, live.shade_profile)
             report["shade_profile"] = shade_profile(
                 shade_pages.reshape(workers, -1).astype(np.int64)
+            )
+        if live.light_profile is not None:
+            (light_pages,) = card.read(session, live.light_profile)
+            report["light_profile"] = light_profile(
+                light_pages.reshape(workers, -1).astype(np.int64)
             )
     profile = profile_pages.reshape(workers, -1).astype(np.int64)
     ticks_ms = 1e3 / TIMER_HZ
@@ -352,6 +407,9 @@ def loop(args):
     )
     report["card_shade_ms"] = round(
         float(np.median(rows[:, F["RF_T_SHADE"]])) * ticks_ms, 4
+    )
+    report["card_light_ms"] = round(
+        float(np.median(rows[:, F["RF_T_LIGHT"]])) * ticks_ms, 4
     )
     if live.masked is not None:
         report["card_layer_ms"] = {
@@ -379,14 +437,31 @@ def loop(args):
     report["show_writer_max_cycles"] = int(profile[:, SHOW["kShowProfTotal"]].max())
     report["words_nonzero"] = sum(word != 0 for word in words_back)
     report["frames_run"] = len(words_back)
-    differs, shade_checks = {}, {}
+    differs, shade_checks, light_checks, surface_checks = {}, {}, {}, {}
     folder = Path(args.pictures) if args.pictures else None
     if folder:
         folder.mkdir(parents=True, exist_ok=True)
+    for index, got in surface_got.items():
+        surface_checks[index], _ = light.surface_check(
+            views[index], materials, lights, got
+        )
     for index, got in kept.items():
-        tag = f"{args.scene}_{index:04d}" + ("_shaded" if args.shade else "")
+        mode = "_lit" if args.light else "_shaded" if args.shade else ""
+        tag = f"{args.scene}_{index:04d}{mode}"
         if folder:
             png.write_png(folder / f"{tag}.png", got[..., :3])
+        if args.light:
+            if not args.check_light:
+                continue
+            light_checks[index], want = light.light_check(
+                views[index], materials, lights, got
+            )
+            if folder:
+                png.write_png(folder / f"{tag}_reference.png", want)
+                png.write_png(
+                    folder / f"{tag}_difference.png", difference_image(got, want)
+                )
+            continue
         if args.shade:
             if not args.check_shade:
                 continue
@@ -402,7 +477,18 @@ def loop(args):
             continue
         want = expected(views[index])
         differs[index] = int((got != want).any(axis=2).sum())
-    if args.shade:
+    if args.light:
+        report["surface_check"] = surface_checks
+        report["light_check"] = light_checks
+        # ok: check C's rule; the surface's numbers are reported (all_within: none off)
+        pictures_ok = (
+            not args.check_light
+            or (
+                len(light_checks) == len(checked)
+                and all(check["ok"] for check in light_checks.values())
+            )
+        ) and (not args.check_surface or len(surface_checks) == len(surfaces))
+    elif args.shade:
         report["shade_check"] = shade_checks
         pictures_ok = not args.check_shade or (
             len(shade_checks) == len(checked)
@@ -436,6 +522,21 @@ def main():
         "--check-shade",
         action="store_true",
         help="the checked frames against the reference's shaded frame",
+    )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        help="the frame lit (implies --shade): SHADE's surface planes, LIGHT",
+    )
+    parser.add_argument(
+        "--check-surface",
+        action="store_true",
+        help="lit: the first and last frame's surface planes against the reference",
+    )
+    parser.add_argument(
+        "--check-light",
+        action="store_true",
+        help="lit: the checked frames against the reference's lit frame (part A terms)",
     )
     parser.add_argument(
         "--list-slots", type=int, default=0, help="0: card_thread's, from the triangles"

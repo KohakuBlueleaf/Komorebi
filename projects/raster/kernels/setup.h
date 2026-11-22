@@ -62,12 +62,13 @@ constexpr uint32_t kSetupPrefix = 0x80000000;
 constexpr uint32_t kBaseAt = 8192;
 constexpr uint32_t kBaseSlotBits = 23;
 constexpr uint32_t kHprefixAddrAt = 16384;
-// Shaded SETUP: then the shade tensor (0: none), per mesh block 32 texel areas (level
-// 0) and 32 words material | levels << 16, after the block; corners carry u, v, light.
+// Shaded SETUP: then the shade tensor (0: none), per mesh block 32 texel areas of the
+// albedo, 32 material words, 32 of the normal, 32 of the specular; corners u, v, light.
 constexpr uint32_t kShadeAddrAt = 16388;
 static_assert(kShadeAddrAt == kHprefixAddrAt + 4);
-constexpr uint32_t kShadeBlockBytes = 256;
-constexpr uint32_t kRecShadeWord = 30;  // material | level << 16 (shade.h kRecShade)
+constexpr uint32_t kShadeBlockBytes = 512;
+// material | the albedo's, normal's, specular's levels << 16, << 20, << 24 (shade.h)
+constexpr uint32_t kRecShadeWord = 30;
 constexpr uint32_t kHprefixPageBytes = 32768;  // 128 bytes per heavy tile, 256 of them
 constexpr uint32_t kSumsHeavyAt = 8192;  // in SUM's totals: HSUM's, 128 bytes per tile
 // Then PLACE's words: frame words, per item and per fill core (README.md); each part on
@@ -109,7 +110,7 @@ constexpr uint32_t kTiles = 1024;
 constexpr uint32_t kTilesX = 32;
 constexpr uint32_t kBlockSlots = 18;   // x, y, z of corners 0 to 2, then their colours
 constexpr uint32_t kMeshBytes = 2304;  // kBlockSlots vectors of 32 words
-constexpr uint32_t kMeshPageBytes = 2560;  // a mesh page: the mesh's block, the shade's
+constexpr uint32_t kMeshPageBytes = 2816;  // a mesh page: the mesh's block, the shade's
 static_assert(kMeshPageBytes == kMeshBytes + kShadeBlockBytes);
 constexpr uint32_t kRecBytes = 4096;  // 32 records of 32 words
 static_assert(kMeshBytes == kBlockSlots * 32 * 4);
