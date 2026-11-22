@@ -14,6 +14,9 @@ rather than staying in the project.
   scenes.
 - [raytrace/reference](raytrace/reference/README.md): ray tracing over a saved box tree
   in numpy, threaded C++ and CUDA, with the treelet cuts, timings and pictures.
+- [viewer](viewer/README.md): a web page that steers the rasterizer's and the ray
+  tracer's interactive loops: a browser moves the camera and picks the renderer and the
+  scene, the card renders, the server streams the frames.
 - [dense](dense/README.md): the matrix product on the persistent kernels, checked against
   float64 and measured against Kohaku-TT's routes on the same card.
 - [attention](attention/README.md): scaled dot-product attention on broadcasts of cores,

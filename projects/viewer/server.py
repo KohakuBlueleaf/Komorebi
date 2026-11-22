@@ -1,0 +1,416 @@
+"""A web viewer: the card renders, a browser steers. The main thread owns the card's
+session and renders a frame for the latest pose the page posts; the frames go out as
+a multipart JPEG stream, and every request carries the token. Needs Pillow.
+python -m projects.viewer.server --host HOST --port PORT --token TOKEN"""
+
+import argparse
+import collections
+import functools
+import hmac
+import io
+import json
+import math
+import signal
+import sys
+import threading
+import time
+import traceback
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from projects.viewer import renderers
+
+HERE = Path(__file__).resolve().parent
+SCENES = ("tiny", "sponza_overview", "bistro_interior_overview")
+KEEP_ALIVE_S = 1.0  # a frame a second when no pose comes
+JPEG_QUALITY = 85
+BOUNDARY = "frame"
+TOKEN_HEADER = "X-Token"
+PITCH_LIMIT = math.radians(89.0)
+
+
+def log(message):
+    """A progress line, flushed."""
+    print(f"[viewer {time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+# The camera: 16 numbers as reference/scenes.py lays them out: eye (0:3), right (3:6),
+# up (6:9), forward (9:12), focal, centre x, centre y, near (12:16); y is up.
+
+
+def pose_of(camera):
+    """The pose of a camera: position, yaw (about y, from +z toward +x) and pitch
+    (above the horizon), from its forward direction."""
+    camera = np.asarray(camera, dtype=np.float64)
+    fx, fy, fz = camera[9:12] / np.linalg.norm(camera[9:12])
+    return {
+        "position": [float(value) for value in camera[0:3]],
+        "yaw": math.atan2(fx, fz),
+        "pitch": math.asin(max(-1.0, min(1.0, fy))),
+    }
+
+
+def camera_of(own, pose):
+    """The 16 numbers of `pose`: position and the orientation from yaw and pitch (right
+    = y x forward, up = forward x right, as reference/scenes.py makes them); focal,
+    centre and near the scene's own camera's."""
+    yaw, pitch = pose["yaw"], pose["pitch"]
+    forward = np.array(
+        [
+            math.cos(pitch) * math.sin(yaw),
+            math.sin(pitch),
+            math.cos(pitch) * math.cos(yaw),
+        ]
+    )
+    right = np.cross(np.array([0.0, 1.0, 0.0]), forward)
+    right /= np.linalg.norm(right)
+    up = np.cross(forward, right)
+    camera = np.array(own, dtype=np.float32)
+    camera[0:3] = pose["position"]
+    camera[3:6], camera[6:9], camera[9:12] = right, up, forward
+    return camera
+
+
+def parse_pose(body):
+    """A pose from the page's JSON, its numbers finite and the pitch clamped; else
+    ValueError."""
+    position = [float(value) for value in body["position"]]
+    yaw, pitch = float(body["yaw"]), float(body["pitch"])
+    if len(position) != 3 or not all(map(math.isfinite, position + [yaw, pitch])):
+        raise ValueError("a pose is 3 finite numbers, a yaw and a pitch")
+    pitch = max(-PITCH_LIMIT, min(PITCH_LIMIT, pitch))
+    return {"position": position, "yaw": yaw, "pitch": pitch}
+
+
+def diagonal(scene):
+    """The diagonal of the scene's box."""
+    positions = np.asarray(scene["positions"], dtype=np.float64)
+    return float(np.linalg.norm(positions.max(axis=0) - positions.min(axis=0)))
+
+
+def jpeg(image):
+    """The image's colour (no alpha) as JPEG bytes."""
+    buffer = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(image[..., :3])).save(
+        buffer, "JPEG", quality=JPEG_QUALITY
+    )
+    return buffer.getvalue()
+
+
+class Viewer:
+    """The shared state and the render loop (run on the main thread). `lock` guards
+    everything; `changed` is notified on a new pose, a selection or the stop; `framed`
+    on a new frame."""
+
+    def __init__(self, renderer, scene):
+        self.lock = threading.Lock()
+        self.changed = threading.Condition(self.lock)
+        self.framed = threading.Condition(self.lock)
+        self.selected = (renderer, scene)
+        self.selection = 1  # serial of /select requests (the first: the command line)
+        self.pose = None
+        self.pose_serial = 0
+        self.stopping = False
+        self.status = "loading"
+        self.loaded = (None, None)
+        self.scene_serial = 0  # a new scene: the page takes the new first pose
+        self.first_pose = None
+        self.first_scene = None  # the scene first_pose is of
+        self.diagonal = 1.0
+        self.jpeg = None
+        self.frame_number = 0
+        self.card_ms = None
+        self.card_ms_label = None
+        self.frame_times = collections.deque()
+
+    # Requests
+
+    def set_pose(self, pose, scene_serial):
+        """A pose from the page, for the scene it was made in."""
+        with self.lock:
+            if scene_serial != self.scene_serial:
+                return False
+            self.pose = pose
+            self.pose_serial += 1
+            self.changed.notify_all()
+            return True
+
+    def select(self, renderer, scene):
+        with self.lock:
+            self.selected = (renderer, scene)
+            self.selection += 1
+            self.changed.notify_all()
+
+    def stop(self):
+        with self.lock:
+            self.stopping = True
+            self.changed.notify_all()
+            self.framed.notify_all()
+
+    def state(self):
+        with self.lock:
+            now = time.monotonic()
+            while self.frame_times and now - self.frame_times[0] > 1.0:
+                self.frame_times.popleft()
+            return {
+                "renderer": self.loaded[0],
+                "scene": self.loaded[1],
+                "selected": list(self.selected),
+                "status": self.status,
+                "card_ms": None if self.card_ms is None else round(self.card_ms, 3),
+                "card_ms_label": self.card_ms_label,
+                "fps": len(self.frame_times),
+                "frame": self.frame_number,
+                "renderers": list(renderers.RENDERERS),
+                "scenes": list(SCENES),
+                "diagonal": self.diagonal,
+                "scene_serial": self.scene_serial,
+                "first_pose": self.first_pose,
+            }
+
+    def next_jpeg(self, after, timeout):
+        """The newest frame's (number, JPEG) once its number is past `after`, else
+        (after, None) after `timeout` or at the stop."""
+        with self.lock:
+            self.framed.wait_for(
+                lambda: self.stopping or self.frame_number > after, timeout
+            )
+            if self.frame_number > after and self.jpeg is not None:
+                return self.frame_number, self.jpeg
+            return after, None
+
+    # The render thread
+
+    def render_loop(self):
+        renderer = None
+        failed = 0  # the selection that failed: wait for a new one
+        rendered = (None, None)  # (pose serial, selection) of the last frame
+        last_frame = 0.0
+        try:
+            while True:
+                with self.lock:
+                    due = functools.partial(self.due, failed, rendered, last_frame)
+                    self.changed.wait_for(due, timeout=0.1)
+                    if self.stopping:
+                        return
+                    if not due():
+                        continue
+                    selection, selected = self.selection, self.selected
+                try:
+                    if renderer is None or selected != self.loaded:
+                        renderer = self.open(renderer, selected)
+                    with self.lock:
+                        pose_serial, pose = self.pose_serial, self.pose
+                        own = pose == self.first_pose
+                    camera = (
+                        renderer.scene["camera"]
+                        if own
+                        else camera_of(renderer.scene["camera"], pose)
+                    )
+                    try:
+                        image, card_ms = renderer.frame(camera)
+                    except renderers.FrameRefused as refused:
+                        with self.lock:
+                            self.status = f"refused: {refused.word}"
+                    else:
+                        encoded = jpeg(image)
+                        with self.lock:
+                            self.jpeg = encoded
+                            self.card_ms = card_ms
+                            self.card_ms_label = renderer.time_label
+                            self.frame_number += 1
+                            self.frame_times.append(time.monotonic())
+                            self.status = "running"
+                            self.framed.notify_all()
+                    rendered = (selection, pose_serial)
+                    last_frame = time.monotonic()
+                except Exception as error:  # noqa: BLE001 - shown on the page, closed
+                    traceback.print_exc()
+                    with self.lock:
+                        self.status = f"error: {type(error).__name__}: {error}"
+                        self.loaded = (None, None)
+                    failed = selection
+                    renderer = self.close(renderer)
+        finally:
+            self.close(renderer)
+
+    def due(self, failed, rendered, last_frame):
+        """Under the lock: the stop, or a frame to render (a selection that has not
+        failed, and a new selection or pose, or the keep-alive)."""
+        if self.stopping:
+            return True
+        if self.selection == failed:
+            return False
+        return (self.selection, self.pose_serial) != rendered or (
+            time.monotonic() - last_frame >= KEEP_ALIVE_S
+        )
+
+    def open(self, renderer, selected):
+        """Closes the current renderer and opens the selected one on its scene; the
+        pose becomes the scene's own camera's when the scene is new."""
+        renderer = self.close(renderer)
+        with self.lock:
+            self.status = "loading"
+            self.loaded = (None, None)
+        name, scene = selected
+        log(f"open {name} on {scene}")
+        renderer = renderers.RENDERERS[name]()
+        try:
+            renderer.open(scene)
+        except BaseException:
+            renderer.close()
+            raise
+        with self.lock:
+            if scene != self.first_scene:
+                self.first_pose = pose_of(renderer.scene["camera"])
+                self.pose = self.first_pose
+                self.diagonal = diagonal(renderer.scene)
+                self.scene_serial += 1
+            self.loaded = selected
+            self.first_scene = scene
+        log(f"opened {name} on {scene}")
+        return renderer
+
+    def close(self, renderer):
+        """Closes a renderer (its card session); returns None."""
+        if renderer is not None:
+            log(f"close {renderer.name}")
+            try:
+                renderer.close()
+            except Exception:  # noqa: BLE001 - the close of a failed renderer
+                traceback.print_exc()
+        return None
+
+
+MOST_BODY_BYTES = 1 << 16  # a pose or a selection is far smaller
+
+
+def handler_class(viewer, token, page):
+    """The request handler, bound to the viewer, the token and the page's bytes."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format, *args):  # quiet: 30 poses a second
+            pass
+
+        def allowed(self, given):
+            if given is not None and hmac.compare_digest(given, token):
+                return True
+            self.reply(403, b"forbidden\n", "text/plain")
+            return False
+
+        def reply(self, code, body, kind):
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def reply_json(self, code, value):
+            self.reply(code, json.dumps(value).encode(), "application/json")
+
+        def do_GET(self):
+            url = urllib.parse.urlsplit(self.path)
+            query = urllib.parse.parse_qs(url.query)
+            if not self.allowed(query.get("token", [None])[0]):
+                return
+            if url.path == "/":
+                self.reply(200, page, "text/html; charset=utf-8")
+            elif url.path == "/state":
+                self.reply_json(200, viewer.state())
+            elif url.path == "/stream":
+                self.stream()
+            else:
+                self.reply(404, b"not found\n", "text/plain")
+
+        def do_POST(self):
+            url = urllib.parse.urlsplit(self.path)
+            if not self.allowed(self.headers.get(TOKEN_HEADER)):
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 <= length <= MOST_BODY_BYTES:
+                    raise ValueError("a body of that size is not taken")
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if url.path == "/pose":
+                    taken = viewer.set_pose(
+                        parse_pose(body), int(body.get("scene_serial", -1))
+                    )
+                    self.reply_json(200, {"taken": taken})
+                elif url.path == "/select":
+                    renderer, scene = body["renderer"], body["scene"]
+                    if renderer not in renderers.RENDERERS or scene not in SCENES:
+                        raise ValueError(f"no renderer {renderer} or scene {scene}")
+                    viewer.select(renderer, scene)
+                    self.reply_json(200, {"selected": [renderer, scene]})
+                else:
+                    self.reply(404, b"not found\n", "text/plain")
+            except (ValueError, KeyError, TypeError) as error:
+                self.reply_json(400, {"error": str(error)})
+
+        def stream(self):
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY}"
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            number = 0
+            try:
+                while not viewer.stopping:
+                    number, data = viewer.next_jpeg(number, timeout=1.0)
+                    if data is None:
+                        continue
+                    head = (
+                        f"--{BOUNDARY}\r\nContent-Type: image/jpeg\r\n"
+                        f"Content-Length: {len(data)}\r\n"
+                        f"X-Frame: {number}\r\n\r\n"
+                    )
+                    self.wfile.write(head.encode() + data + b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    return Handler
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--token", required=True)
+    parser.add_argument(
+        "--renderer", choices=list(renderers.RENDERERS), default="raster"
+    )
+    parser.add_argument("--scene", choices=list(SCENES), default="tiny")
+    args = parser.parse_args()
+    page = (HERE / "page.html").read_bytes()
+    viewer = Viewer(args.renderer, args.scene)
+    server = ThreadingHTTPServer(
+        (args.host, args.port), handler_class(viewer, args.token, page)
+    )
+    server.daemon_threads = True
+    for number in (signal.SIGINT, signal.SIGTERM):  # only the flag: no lock taken
+        signal.signal(number, lambda *_: setattr(viewer, "stopping", True))
+    serving = threading.Thread(target=server.serve_forever, name="http", daemon=True)
+    serving.start()
+    log(f"serving on http://{args.host}:{args.port}/?token=...")
+    viewer.render_loop()  # on the main thread: it opens and owns the card's session
+    log("stopping: renderer closed")
+    viewer.stop()
+    server.shutdown()
+    server.server_close()
+    log("stopped")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

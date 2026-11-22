@@ -129,9 +129,92 @@ def times_rows(raw, frames):
     return rows[numbers % F["RF_TIMES_ROWS"]], numbers
 
 
+class Loop:
+    """The scene loaded once in `session` and the thread's program running: a FRAME
+    command a camera (`frame`), the image read back or, with `push`, pushed into the
+    host channel. `report` gets upload_s and load_s."""
+
+    def __init__(self, session, scene, push, list_slots, table, report):
+        self.session = session
+        blocks = passes.mesh_blocks(scene)
+        self.workers = workers = card.workers(session)
+        started = time.perf_counter()
+        slots = list_slots or 2 * len(scene["indices"]) + 65536  # card_thread's
+        self.uploaded = card_thread.tensors(session, blocks, workers, slots)
+        self.display = card.tensor(
+            session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
+        )
+        self.show_profile = card.tensor(
+            session, np.zeros((workers, SHOW["kShowProfBytes"] // 4))
+        )
+        session.device.finish()
+        words = card_thread.words(self.uploaded, len(blocks), workers, workers, 4)
+        words[F["RF_W_REPEAT"]] = 0  # serve FRAME commands
+        words[F["RF_W_DISPLAY"]] = self.display.address
+        words[F["RF_W_SHOWPROF"]] = self.show_profile.address
+        report["upload_s"] = round(time.perf_counter() - started, 3)
+        started = time.perf_counter()
+        self.running = running = session.load(
+            card_thread.program(scene, words, workers, table), deadline=1.0
+        )
+        report["load_s"] = round(time.perf_counter() - started, 3)
+        self.transfer = None
+        if push:
+            self.transfer = transfer = session.channel_transfer(self.display, push=True)
+            entry = transfer.entry
+            push_words = np.zeros(F["RF_PUSH_BYTES"] // 4, dtype=np.uint32)
+            push_words[F["RF_PUSH_HEADER"]] = entry.handler | entry.field << 24
+            push_words[F["RF_PUSH_GROUP"]] = entry.group[0] | entry.group[1] << 16
+            push_words[F["RF_PUSH_ARGS"] : F["RF_PUSH_ARGS"] + 10] = entry.args
+            running.thread.write("push", push_words)
+        self.pages = np.empty((lists.TILES, SHOW["kShowPageBytes"]), dtype=np.uint8)
+
+    def frame(self, camera, image):
+        """One FRAME command for `camera` (16 float32), its 8-bit picture into `image`
+        (1024, 1024, 4). Returns its event, the times (s) began, camera written,
+        commanded, read and ended, and the event's wait after the image (ms; None
+        without the push)."""
+        running, transfer = self.running, self.transfer
+        camera = np.asarray(camera, dtype=np.float32).view(np.uint32)
+        collect = None
+        began = time.perf_counter()
+        if transfer is None:
+            running.thread.write("camera", camera)
+            written = time.perf_counter()
+            event = running.wait(
+                running.submit("frame", cluster=CLUSTER, result=True), timeout=10.0
+            )
+            commanded = time.perf_counter()
+            self.session.read(self.display, out=self.pages)
+            read = time.perf_counter()
+            untile(self.pages, image)
+        else:
+            key = transfer.arm()
+            running.thread.write("camera", camera)
+            written = time.perf_counter()
+            handle = running.submit(
+                "frame", cluster=CLUSTER, args=[key, 1], result=True
+            )
+            running.store()  # submit only queues it: the wait stores it otherwise
+            arrived = transfer.wait(PUSH_TIMEOUT_S, PUSH_SPIN_S)
+            commanded = read = time.perf_counter()
+            if arrived:
+                untile(transfer.data, image)
+        ended = time.perf_counter()
+        if transfer is not None:  # FRAME's event, after the image (its word)
+            event = running.wait(handle, timeout=10.0)
+            collect = (time.perf_counter() - ended) * 1e3
+            if not arrived and event.kind == "done" and event.result == 0:
+                event = event._replace(result="push words missing")
+        return event, (began, written, commanded, read, ended, collect)
+
+    def stop(self):
+        """Stops the program (the run's own stop)."""
+        self.running.stop()
+
+
 def loop(args):
     scene, _ = run.load(args.scene)
-    blocks = passes.mesh_blocks(scene)
     views = framegraph.cameras(scene, args.frames)
     table = show_table()
     report = {
@@ -143,71 +226,16 @@ def loop(args):
     checked = sorted({0, args.frames // 2, args.frames - 1})
     kept = {}
     with km.Session(log=card.log) as session:
-        workers = card.workers(session)
-        started = time.perf_counter()
-        slots = args.list_slots or 2 * len(scene["indices"]) + 65536  # card_thread's
-        uploaded = card_thread.tensors(session, blocks, workers, slots)
-        display = card.tensor(
-            session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
-        )
-        show_profile = card.tensor(
-            session, np.zeros((workers, SHOW["kShowProfBytes"] // 4))
-        )
-        session.device.finish()
-        words = card_thread.words(uploaded, len(blocks), workers, workers, 4)
-        words[F["RF_W_REPEAT"]] = 0  # serve FRAME commands
-        words[F["RF_W_DISPLAY"]] = display.address
-        words[F["RF_W_SHOWPROF"]] = show_profile.address
-        report["upload_s"] = round(time.perf_counter() - started, 3)
-        started = time.perf_counter()
-        running = session.load(
-            card_thread.program(scene, words, workers, table), deadline=1.0
-        )
-        report["load_s"] = round(time.perf_counter() - started, 3)
-        transfer = None
-        if args.push:
-            transfer = session.channel_transfer(display, push=True)
-            entry = transfer.entry
-            push_words = np.zeros(F["RF_PUSH_BYTES"] // 4, dtype=np.uint32)
-            push_words[F["RF_PUSH_HEADER"]] = entry.handler | entry.field << 24
-            push_words[F["RF_PUSH_GROUP"]] = entry.group[0] | entry.group[1] << 16
-            push_words[F["RF_PUSH_ARGS"] : F["RF_PUSH_ARGS"] + 10] = entry.args
-            running.thread.write("push", push_words)
-        pages = np.empty((lists.TILES, SHOW["kShowPageBytes"]), dtype=np.uint8)
+        live = Loop(session, scene, args.push, args.list_slots, table, report)
+        workers, running = live.workers, live.running
         image = np.empty((raster.HEIGHT, raster.WIDTH, 4), dtype=np.uint8)
         host, camera_ms, command_ms, read_ms, words_back = [], [], [], [], []
         collect_ms = []
         for index, view in enumerate(views):
-            camera = np.asarray(view["camera"], dtype=np.float32).view(np.uint32)
-            began = time.perf_counter()
-            if transfer is None:
-                running.thread.write("camera", camera)
-                written = time.perf_counter()
-                event = running.wait(
-                    running.submit("frame", cluster=CLUSTER, result=True), timeout=10.0
-                )
-                commanded = time.perf_counter()
-                session.read(display, out=pages)
-                read = time.perf_counter()
-                untile(pages, image)
-            else:
-                key = transfer.arm()
-                running.thread.write("camera", camera)
-                written = time.perf_counter()
-                handle = running.submit(
-                    "frame", cluster=CLUSTER, args=[key, 1], result=True
-                )
-                running.store()  # submit only queues it: the wait stores it otherwise
-                arrived = transfer.wait(PUSH_TIMEOUT_S, PUSH_SPIN_S)
-                commanded = read = time.perf_counter()
-                if arrived:
-                    untile(transfer.data, image)
-            ended = time.perf_counter()
-            if transfer is not None:  # FRAME's event, after the image (its word)
-                event = running.wait(handle, timeout=10.0)
-                collect_ms.append((time.perf_counter() - ended) * 1e3)
-                if not arrived and event.kind == "done" and event.result == 0:
-                    event = event._replace(result="push words missing")
+            event, times = live.frame(view["camera"], image)
+            began, written, commanded, read, ended, collect = times
+            if collect is not None:
+                collect_ms.append(collect)
             host.append((ended - began) * 1e3)
             camera_ms.append((written - began) * 1e3)
             command_ms.append((commanded - written) * 1e3)
@@ -219,10 +247,10 @@ def loop(args):
             if word != 0:
                 card.log(f"frame {index}: {event.kind}, word {word}")
                 break
-        running.stop()
+        live.stop()
         report["status"] = card.check_run(running, workers, 0, [])
         rows, numbers = times_rows(running.thread.read("times"), len(words_back))
-        (profile_pages,) = card.read(session, show_profile)
+        (profile_pages,) = card.read(session, live.show_profile)
     profile = profile_pages.reshape(workers, -1).astype(np.int64)
     ticks_ms = 1e3 / TIMER_HZ
     report["host_ms"] = figures(host)

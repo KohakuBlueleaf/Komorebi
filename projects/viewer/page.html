@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card viewer</title>
+<style>
+  :root { color-scheme: dark; --bg: #111; --fg: #ddd; --dim: #888; --line: #333; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+           padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  select { background: #222; color: var(--fg); border: 1px solid var(--line);
+           padding: 2px 6px; }
+  #numbers { font-family: ui-monospace, monospace; color: var(--dim); }
+  #status.bad { color: #e87; }
+  main { display: flex; justify-content: center; padding: 8px 16px; }
+  #view { width: min(100%, 1024px, calc(100vh - 110px)); aspect-ratio: 1;
+          background: #000; cursor: grab; user-select: none; outline: none;
+          -webkit-user-drag: none; }
+  #view.dragging { cursor: grabbing; }
+  footer { padding: 0 16px 8px; color: var(--dim); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <label>renderer <select id="renderer"></select></label>
+  <label>scene <select id="scene"></select></label>
+  <span id="numbers"></span>
+  <span id="status"></span>
+</header>
+<main><img id="view" alt="the card's frames" tabindex="0" draggable="false"></main>
+<footer>click the image, then: W A S D move, Q E down / up, drag to turn, shift faster</footer>
+<script>
+"use strict";
+const token = new URLSearchParams(location.search).get("token") || "";
+const q = "?token=" + encodeURIComponent(token);
+const view = document.getElementById("view");
+const rendererSelect = document.getElementById("renderer");
+const sceneSelect = document.getElementById("scene");
+const numbers = document.getElementById("numbers");
+const statusText = document.getElementById("status");
+
+let pose = null;          // {position: [x, y, z], yaw, pitch}
+let sceneSerial = -1;     // the scene the pose is of
+let diagonal = 1;
+let changed = false;
+let lastPost = 0;
+let posting = false;
+const held = new Set();
+
+view.src = "/stream" + q;
+
+function post(path, body) {
+  return fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-Token": token},
+    body: JSON.stringify(body),
+  });
+}
+
+function fill(select, values, chosen) {
+  if (select.options.length !== values.length) {
+    select.innerHTML = "";
+    for (const value of values) select.add(new Option(value, value));
+  }
+  if (document.activeElement !== select && chosen) select.value = chosen;
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/state" + q, {cache: "no-store"});
+    const state = await response.json();
+    fill(rendererSelect, state.renderers, state.selected[0]);
+    fill(sceneSelect, state.scenes, state.selected[1]);
+    diagonal = state.diagonal || 1;
+    if (state.scene_serial !== sceneSerial && state.first_pose) {
+      sceneSerial = state.scene_serial;
+      pose = JSON.parse(JSON.stringify(state.first_pose));
+      changed = false;
+    }
+    const ms = state.card_ms === null ? "-" : state.card_ms.toFixed(1);
+    numbers.textContent = `${state.renderer || "-"} / ${state.scene || "-"}  ` +
+      `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}`;
+    statusText.textContent = state.status;
+    statusText.className = state.status === "running" ? "" :
+      (state.status === "loading" ? "" : "bad");
+  } catch (error) {
+    statusText.textContent = "no answer from the server";
+    statusText.className = "bad";
+  }
+}
+refresh();
+setInterval(refresh, 500);
+
+function select() {
+  post("/select", {renderer: rendererSelect.value, scene: sceneSelect.value});
+}
+rendererSelect.addEventListener("change", select);
+sceneSelect.addEventListener("change", select);
+
+function forward() {
+  const c = Math.cos(pose.pitch);
+  return [c * Math.sin(pose.yaw), Math.sin(pose.pitch), c * Math.cos(pose.yaw)];
+}
+function right() {  // y x forward, on the ground
+  return [Math.cos(pose.yaw), 0, -Math.sin(pose.yaw)];
+}
+
+const keys = {w: 1, a: 1, s: 1, d: 1, q: 1, e: 1};
+addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLSelectElement) return;
+  const key = event.key.toLowerCase();
+  if (keys[key]) { held.add(key); event.preventDefault(); }
+});
+addEventListener("keyup", (event) => held.delete(event.key.toLowerCase()));
+addEventListener("blur", () => held.clear());
+let shift = false;
+addEventListener("keydown", (event) => { shift = event.shiftKey; });
+addEventListener("keyup", (event) => { shift = event.shiftKey; });
+
+let drag = null;
+view.addEventListener("pointerdown", (event) => {
+  view.focus();
+  drag = {x: event.clientX, y: event.clientY};
+  view.setPointerCapture(event.pointerId);
+  view.classList.add("dragging");
+});
+view.addEventListener("pointermove", (event) => {
+  if (!drag || !pose) return;
+  const turn = Math.PI / view.clientWidth;  // a whole width: half a turn
+  pose.yaw += (event.clientX - drag.x) * turn;
+  pose.pitch -= (event.clientY - drag.y) * turn;
+  const limit = 89 * Math.PI / 180;
+  pose.pitch = Math.max(-limit, Math.min(limit, pose.pitch));
+  drag = {x: event.clientX, y: event.clientY};
+  changed = true;
+});
+function endDrag() { drag = null; view.classList.remove("dragging"); }
+view.addEventListener("pointerup", endDrag);
+view.addEventListener("pointercancel", endDrag);
+
+let before = performance.now();
+function tick(now) {
+  const seconds = Math.min((now - before) / 1000, 0.1);
+  before = now;
+  if (pose && held.size) {
+    const step = diagonal * 0.1 * (shift ? 5 : 1) * seconds;  // a tenth of the box a second
+    const f = forward(), r = right(), move = [0, 0, 0];
+    const add = (v, s) => { for (let i = 0; i < 3; i++) move[i] += v[i] * s; };
+    if (held.has("w")) add(f, 1);
+    if (held.has("s")) add(f, -1);
+    if (held.has("d")) add(r, 1);
+    if (held.has("a")) add(r, -1);
+    if (held.has("e")) add([0, 1, 0], 1);
+    if (held.has("q")) add([0, 1, 0], -1);
+    for (let i = 0; i < 3; i++) pose.position[i] += move[i] * step;
+    changed = true;
+  }
+  if (changed && !posting && now - lastPost >= 1000 / 30) {
+    changed = false;
+    posting = true;
+    lastPost = now;
+    post("/pose", {...pose, scene_serial: sceneSerial})
+      .catch(() => {})
+      .finally(() => { posting = false; });
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

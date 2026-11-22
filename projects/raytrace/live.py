@@ -70,6 +70,82 @@ def assemble(pages, packet_count, flat_pixels, image):
     return image
 
 
+class Loop:
+    """The frame built in `session`, the program loaded, LOAD run and the frame's
+    chain made: a chain command a camera (`frame`). With `table` SHOW ends the chain
+    and a frame reads the 8-bit display, else the colour stream. `report` gets the
+    build's entries and times, `events` LOAD's event."""
+
+    def __init__(self, session, arguments, prepared, table, report):
+        self.session = session
+        self.show = table is not None
+        started = time.perf_counter()
+        self.built = built = frame.build(arguments, session, prepared, report)
+        self.workers, self.pixels = built["workers"], built["pixels"]
+        self.packet_count = built["packet_count"]
+        self.constants_tensor = built["constants_tensor"]
+        self.colour_tensor = built["tensors"]["colour"]
+        frame_commands = list(built["frame_commands"])
+        sizes = built["sizes"]
+        if self.show:
+            self.display = card.tensor(
+                session, np.zeros((packets.TILES, packets.K["kShowPageBytes"] // 4))
+            )
+            self.table_tensor = card.tensor(session, table.reshape(1, -1))
+            frame_commands.append(show_record(built, self.display, self.table_tensor))
+            sizes = dict(sizes or {}, show=packets.K["kShowScratchBytes"])
+            self.display_pages = np.empty(
+                (self.display.pages, self.display.page_bytes), np.uint8
+            )
+        session.device.finish()
+        report["upload_s"] = round(time.perf_counter() - started, 3)
+        self.pages = np.empty(
+            (self.colour_tensor.pages, self.colour_tensor.page_bytes), np.uint8
+        )
+        started = time.perf_counter()
+        self.run = run = session.load(
+            card.program(len(prepared["image"]), sizes), deadline=DEADLINE_S
+        )
+        self.events = []
+        try:
+            load = built["records"][0]
+            self.events.append(
+                run.wait(run.submit(load[0], args=load[1]), timeout=10.0)
+            )
+            self.chain = card.frame_chain(run, frame_commands, self.workers)
+        except BaseException:
+            run.stop()
+            raise
+        report["load_s"] = round(time.perf_counter() - started, 3)
+        report["chain_records"] = len(frame_commands)
+        self.chain_records = len(frame_commands)
+
+    def frame(self, view, out):
+        """The chain command for `view` (a scene dict with its camera): with SHOW the
+        8-bit display into `out` (SIDE, SIDE, 4), else the colour stream's pages read
+        (`self.pages`). Returns the event and the times (s) began, constants written,
+        commanded, read."""
+        constants = packets.frame_constants(view).view(np.uint8)
+        began = time.perf_counter()
+        self.session.write(self.constants_tensor, constants)
+        written = time.perf_counter()
+        event = self.run.wait(self.run.submit(self.chain), timeout=10.0 + DEADLINE_S)
+        commanded = time.perf_counter()
+        if self.show:
+            self.session.read(self.display, out=self.display_pages)
+            read = time.perf_counter()
+            untile(self.display_pages, out)
+        else:
+            self.session.read(self.colour_tensor, out=self.pages)
+            read = time.perf_counter()
+        return event, (began, written, commanded, read)
+
+    def stop(self):
+        """Stops the program; returns frame.py's Ran of the events so far."""
+        self.run.stop()
+        return card.Ran(self.events, self.run.result(), self.run.state(), 0.0)
+
+
 def loop(args):
     arguments = frame_arguments(args)
     prepared = frame.prepare(arguments)
@@ -83,63 +159,32 @@ def loop(args):
         "sort": args.sort,
         "path": "show" if args.show else "read",
     }
+    table = None
     if args.show:
         table, report["table_differs"] = show_table_checked()
     kept = {}
     host, constants_ms, command_ms, read_ms, assembly_ms = [], [], [], [], []
-    convert_ms, card_ms, events = [], [], []
+    convert_ms, card_ms = [], []
     with card.open_session() as session:
-        started = time.perf_counter()
-        built = frame.build(arguments, session, prepared, report)
-        workers, pixels = built["workers"], built["pixels"]
-        packet_count = built["packet_count"]
-        constants_tensor = built["constants_tensor"]
-        colour_tensor = built["tensors"]["colour"]
-        frame_commands = list(built["frame_commands"])
-        sizes = built["sizes"]
+        live = Loop(session, arguments, prepared, table, report)
+        workers, pixels = live.workers, live.pixels
+        packet_count, colour_tensor = live.packet_count, live.colour_tensor
+        pages, events = live.pages, live.events
         if args.show:
-            display = card.tensor(
-                session, np.zeros((packets.TILES, packets.K["kShowPageBytes"] // 4))
-            )
-            table_tensor = card.tensor(session, table.reshape(1, -1))
-            frame_commands.append(show_record(built, display, table_tensor))
-            sizes = dict(sizes or {}, show=packets.K["kShowScratchBytes"])
-            display_pages = np.empty((display.pages, display.page_bytes), np.uint8)
             shown = np.empty((SIDE, SIDE, 4), dtype=np.uint8)
-        session.device.finish()
-        report["upload_s"] = round(time.perf_counter() - started, 3)
         flat_pixels = pixels.reshape(-1)
-        pages = np.empty((colour_tensor.pages, colour_tensor.page_bytes), np.uint8)
         image = np.zeros((SIDE * SIDE, 3), dtype=F)
-        started = time.perf_counter()
-        run = session.load(
-            card.program(len(prepared["image"]), sizes), deadline=DEADLINE_S
-        )
         try:
-            load = built["records"][0]
-            events.append(run.wait(run.submit(load[0], args=load[1]), timeout=10.0))
-            chain = card.frame_chain(run, frame_commands, workers)
-            report["load_s"] = round(time.perf_counter() - started, 3)
-            report["chain_records"] = len(frame_commands)
             card.log(
                 f"live: {packet_count} packets, a chain of "
-                f"{len(frame_commands)}, {args.frames} cameras"
+                f"{live.chain_records}, {args.frames} cameras"
             )
             for index, view in enumerate(views):
-                constants = packets.frame_constants(view).view(np.uint8)
-                began = time.perf_counter()
-                session.write(constants_tensor, constants)
-                written = time.perf_counter()
-                event = run.wait(run.submit(chain), timeout=10.0 + DEADLINE_S)
-                commanded = time.perf_counter()
+                event, times = live.frame(view, shown if args.show else None)
+                began, written, commanded, read = times
                 if args.show:
-                    session.read(display, out=display_pages)
-                    read = time.perf_counter()
-                    untile(display_pages, shown)
                     assembled = converted = time.perf_counter()
                 else:
-                    session.read(colour_tensor, out=pages)
-                    read = time.perf_counter()
                     assemble(pages, packet_count, flat_pixels, image)
                     assembled = time.perf_counter()
                     eight = png.to_srgb8(image.reshape(SIDE, SIDE, 3))
@@ -164,8 +209,7 @@ def loop(args):
                     card.log(f"frame {index}: {event.kind}")
                     break
         finally:
-            run.stop()
-        ran = card.Ran(events, run.result(), run.state(), 0.0)
+            ran = live.stop()
         status = card.check_run(ran, workers)
     report["frames_run"] = len(events) - 1
     report["host_ms"] = figures(host)
