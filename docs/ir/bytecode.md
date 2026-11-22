@@ -34,7 +34,10 @@ write where their body comes from as an option of `ScalarsFrom` (`Value` and a v
 and a state member), `Send` after its rank; `Forward` writes the type it goes on as (`as`) as an
 option of a message id after its message; the operation `Body` and the type `Body` are new. The operation `AllGather`
 (number 89) is new too: its operand, then its `publish` list; and the operation `StoreScalars`
-(number 90): its view, then where its scalars come from as a `ScalarsFrom`. A reader refuses a version 5 program
+(number 90): its view, then where its scalars come from as a `ScalarsFrom`. Version 6 also gives a
+module several tile shapes: the module writes the list of its shapes (a count, then each shape's rows
+and columns, the default first) where it wrote its one shape, and each function, state member,
+handler and run writes, last, its shape's place in that list (a u32). A reader refuses a version 5 program
 with `K952`, naming both versions.
 
 ## How values are written
@@ -59,19 +62,22 @@ Names are written where they stand; there is no table of names, so that S does n
 
 Each part is one walk of the program structure, each list in its one order:
 
-- **S**: the module's name; the tile shape (rows, cols); the formats; the parameters (name, scalar
+- **S**: the module's name; the tile shapes (a count, then each shape's rows and cols, the default
+  first); the formats; the parameters (name, scalar
   type, binding); the records and the messages (name, the program it is declared in as an option,
   the fields as name and scalar type; a message then the bytes of its body); the functions; the
   programs; the control programs; the requirements.
     - A function: name, kind (`Plain`; `Combine` and whether commutative; `Extern` with its
       implementation name, the positions it reads, the positions it writes), the parameter types,
-      the result type, the body as an option, the effects.
+      the result type, the body as an option, the effects, the tile shape (its place in the
+      module's list).
     - A program: name, the state members, the handlers, the runs, the chains.
-    - A state member: name, kind, count, scope, lifetime, `@export`, `@filled(element)`.
+    - A state member: name, kind, count, scope, lifetime, `@export`, `@filled(element)`, the tile
+      shape of its `state` block.
     - A handler: name, parameter types, the result as an option, `@on`, `@exclusive`, body,
-      effects.
+      effects, the tile shape.
     - A run: name, parameter types, `@peers`, the seed, the `on M` bodies (message id, body),
-      effects.
+      effects, the tile shape.
     - A chain: name, parameter types, `@on`, the calls (handler id, arguments, the part of the
       group as `Part`), the dependency edges (writer, reader, parameter, write, read, `past`).
     - A control program: name, parameter types, the result as an option, body.

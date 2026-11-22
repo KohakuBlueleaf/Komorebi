@@ -1,0 +1,10 @@
+// refused: `@tile` names a shape no `tile` line declares (Module)
+module shapes
+
+tile [32, 32]
+tile [16, 16]
+format f32
+
+func twice(a: tile<f32>) -> tile<f32> @tile(8, 8) {
+    return a + a
+}

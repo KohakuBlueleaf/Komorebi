@@ -1016,23 +1016,54 @@ fn view_end<T>() -> Result<T, Fault> {
     Err(Fault::Failure(Failure::ViewEnd))
 }
 
-/// `t.tiles(first, n)`: n consecutive tiles. Past the tensor's end: `view_end`.
-pub fn tiles(heap: &Heap, t: TensorId, first: usize, n: usize) -> Result<View, Fault> {
+/// `t.tiles(first, n)`: n consecutive tiles of `shape`, the shape of the body that
+/// makes the view, counted row of tiles after row of tiles. Past the tensor's end:
+/// `view_end`.
+pub fn tiles(
+    heap: &Heap,
+    t: TensorId,
+    first: usize,
+    n: usize,
+    shape: TileShape,
+) -> Result<View, Fault> {
     let tensor = heap.get(t)?;
+    whole_tiles(tensor, shape)?;
     match first.checked_add(n) {
-        Some(end) if end <= tensor.tile_count() => Ok(View {
+        Some(end) if end <= tensor.tile_count(shape) => Ok(View {
             tensor: t,
+            shape,
             kind: ViewKind::Tiles(Walk::Run { first, n }),
         }),
         _ => view_end(),
     }
 }
 
+/// A tensor addressed in tiles of `shape` is whole tiles of it; the invocation checks
+/// it when it is given the tensor, so this is not defined otherwise.
+fn whole_tiles(tensor: &Tensor, shape: TileShape) -> Result<(), Fault> {
+    if tensor.whole_in(shape) {
+        Ok(())
+    } else {
+        Err(Fault::undefined(format!(
+            "a tensor whose padded shape is not whole tiles of [{}, {}]",
+            shape.rows, shape.cols
+        )))
+    }
+}
+
 /// `t.tiles[r0:r1:s, c0:c1:s]`: a rectangle of the tensor's grid of tiles, walked row
 /// by row. A range past the grid: `view_end`. A step of 0, or a range that ends before
 /// it starts, is not defined.
-pub fn rect(heap: &Heap, t: TensorId, rows: Steps, cols: Steps) -> Result<View, Fault> {
+pub fn rect(
+    heap: &Heap,
+    t: TensorId,
+    rows: Steps,
+    cols: Steps,
+    shape: TileShape,
+) -> Result<View, Fault> {
     let tensor = heap.get(t)?;
+    whole_tiles(tensor, shape)?;
+    let grid = tensor.grid_in(shape);
     for range in [rows, cols] {
         if range.step == 0 || range.end < range.start {
             return Err(Fault::undefined(format!(
@@ -1041,15 +1072,16 @@ pub fn rect(heap: &Heap, t: TensorId, rows: Steps, cols: Steps) -> Result<View, 
             )));
         }
     }
-    if rows.end > tensor.grid.0 || cols.end > tensor.grid.1 {
+    if rows.end > grid.0 || cols.end > grid.1 {
         return view_end();
     }
     Ok(View {
         tensor: t,
+        shape,
         kind: ViewKind::Tiles(Walk::Rect {
             rows,
             cols,
-            grid_cols: tensor.grid.1,
+            grid_cols: grid.1,
             turned: false,
         }),
     })
@@ -1066,6 +1098,7 @@ pub fn turn(v: &View) -> Result<View, Fault> {
             turned,
         }) => Ok(View {
             tensor: v.tensor,
+            shape: v.shape,
             kind: ViewKind::Tiles(Walk::Rect {
                 rows: *rows,
                 cols: *cols,
@@ -1077,34 +1110,43 @@ pub fn turn(v: &View) -> Result<View, Fault> {
     }
 }
 
-/// The bytes of a tensor's tiles, one tile after another.
-fn tensor_bytes(tensor: &Tensor) -> Result<usize, Fault> {
+/// The bytes of one tile of `shape` of a tensor: what its items are laid by.
+fn tile_bytes(tensor: &Tensor, shape: TileShape) -> Result<usize, Fault> {
     let width = tensor
         .format
         .bytes()
         .ok_or_else(|| Fault::undefined(format!("the bytes of a tensor of {}", tensor.format)))?;
-    Ok(width * tensor.tile.count() * tensor.tile_count())
+    Ok(width * shape.count())
+}
+
+/// The bytes of a tensor's tiles of `shape`, one tile after another.
+fn tensor_bytes(tensor: &Tensor, shape: TileShape) -> Result<usize, Fault> {
+    Ok(tile_bytes(tensor, shape)? * tensor.tile_count(shape))
 }
 
 /// `t.items(size = B)` (`range` left out): every whole item of B bytes of the tensor;
 /// `t.items(first, n, size = B)`: n items from item `first`, or `view_end` past the
 /// last whole item. Item `i` is bytes `i * B` to `(i + 1) * B` of the tensor's tiles
-/// laid one after another, each tile's elements row by row, little-endian.
+/// of `shape` (the body's) laid one after another, each tile's elements row by row,
+/// little-endian.
 pub fn items(
     heap: &Heap,
     t: TensorId,
     range: Option<(usize, usize)>,
     size: usize,
+    shape: TileShape,
 ) -> Result<View, Fault> {
     let tensor = heap.get(t)?;
     if size == 0 {
         return Err(Fault::undefined("items of 0 bytes"));
     }
-    let whole = tensor_bytes(tensor)? / size;
+    whole_tiles(tensor, shape)?;
+    let whole = tensor_bytes(tensor, shape)? / size;
     let (first, n) = range.unwrap_or((0, whole));
     match first.checked_add(n) {
         Some(end) if end <= whole => Ok(View {
             tensor: t,
+            shape,
             kind: ViewKind::Items { size, first, n },
         }),
         _ => view_end(),
@@ -1118,14 +1160,14 @@ fn tile_walk(v: &View) -> Result<&Walk, Fault> {
     }
 }
 
-/// The numbers of the tiles a view names, in its order; an items view names the
-/// tiles its bytes lie in.
+/// The numbers of the tiles a view names, in its order, in the view's shape; an items
+/// view names the tiles its bytes lie in.
 pub fn view_tiles(heap: &Heap, v: &View) -> Result<Vec<usize>, Fault> {
     match v.kind {
         ViewKind::Tiles(ref walk) => Ok(walk.tiles()),
         ViewKind::Items { size, first, n } => {
             let tensor = heap.get(v.tensor)?;
-            let per_tile = (tensor_bytes(tensor)? / tensor.tile_count().max(1)).max(1);
+            let per_tile = tile_bytes(tensor, v.shape)?.max(1);
             let (start, end) = (first.saturating_mul(size), (first + n).saturating_mul(size));
             if end <= start {
                 return Ok(Vec::new());
@@ -1145,13 +1187,14 @@ pub fn push_tiles(s: &Sink, n: usize) -> Result<Vec<usize>, Fault> {
         .unwrap_or_default())
 }
 
-/// The places item `at` of an items view lies in: its bytes in each tile.
+/// The places item `at` of an items view lies in: its bytes in each tile of the
+/// view's shape, as places of the stored tiles.
 pub fn item_places(heap: &Heap, v: &View, at: usize) -> Result<Vec<TensorPlace>, Fault> {
     let ViewKind::Items { size, first, .. } = v.kind else {
         return Ok(Vec::new());
     };
     let tensor = heap.get(v.tensor)?;
-    let per_tile = (tensor_bytes(tensor)? / tensor.tile_count().max(1)).max(1);
+    let per_tile = tile_bytes(tensor, v.shape)?.max(1);
     let start = (first + at).saturating_mul(size);
     let end = start.saturating_add(size);
     let mut out = Vec::new();
@@ -1159,15 +1202,22 @@ pub fn item_places(heap: &Heap, v: &View, at: usize) -> Result<Vec<TensorPlace>,
     while b < end {
         let (tile, lo) = (b / per_tile, b % per_tile);
         let hi = (per_tile).min(lo + (end - b));
-        out.push(TensorPlace {
-            tensor: v.tensor.0,
-            tile,
-            lo,
-            hi,
-        });
+        out.extend(tensor.range_places(v.tensor, v.shape, tile, lo, hi));
         b += hi - lo;
     }
     Ok(out)
+}
+
+/// The places of the stored tiles the tiles a view names in its shape cover (`numbers`,
+/// as `view_tiles` gives them).
+pub fn tile_places(heap: &Heap, v: &View, numbers: &[usize]) -> Vec<TensorPlace> {
+    let Ok(tensor) = heap.get(v.tensor) else {
+        return Vec::new();
+    };
+    numbers
+        .iter()
+        .flat_map(|&n| tensor.places(v.tensor, v.shape, n))
+        .collect()
 }
 
 /// The numbers of the tiles a stream's next block reads; none at its end.
@@ -1188,7 +1238,7 @@ pub fn read(heap: &Heap, v: &View, i: usize) -> Result<Tile, Fault> {
         return out_of_range();
     };
     let tensor = heap.get(v.tensor)?;
-    tensor.tiles.get(number).cloned().map_or_else(view_end, Ok)
+    tensor.read_tile(v.shape, number).map_or_else(view_end, Ok)
 }
 
 /// The one tile of a view of one tile.
@@ -1312,22 +1362,30 @@ pub fn put(heap: &mut Heap, v: &View, src: &Member, at: usize) -> Result<(), Fau
             bytes.len()
         )));
     }
+    let shape = v.shape;
     let tensor = heap.get_mut(v.tensor)?;
-    let per_tile = tensor_bytes(tensor)? / tensor.tile_count().max(1);
+    let per_tile = tile_bytes(tensor, shape)?.max(1);
     let start = (first + at) * size;
-    for (k, &byte) in bytes.iter().enumerate() {
+    // tile by tile of the view's shape: each tile's bytes, written where the item lies
+    let mut k = 0;
+    while k < bytes.len() {
         let place = start + k;
         let (number, offset) = (place / per_tile, place % per_tile);
-        let Some(tile) = tensor.tiles.get(number) else {
+        let n = (per_tile - offset).min(bytes.len() - k);
+        let Some(tile) = tensor.read_tile(shape, number) else {
             return view_end();
         };
-        let mut tile_bytes = tile.to_bytes().ok_or_else(|| Fault::undefined("bytes"))?;
-        match tile_bytes.get_mut(offset) {
-            Some(slot) => *slot = byte,
+        let mut held = tile.to_bytes().ok_or_else(|| Fault::undefined("bytes"))?;
+        match held.get_mut(offset..offset + n) {
+            Some(slot) => slot.copy_from_slice(&bytes[k..k + n]),
             None => return view_end(),
         }
-        tensor.tiles[number] = Tile::from_bytes(tile.format, tile.shape, &tile_bytes)
+        let written = Tile::from_bytes(tile.format, tile.shape, &held)
             .ok_or_else(|| Fault::undefined("bytes"))?;
+        tensor
+            .write_tile(shape, number, &written)
+            .map_or_else(view_end, Ok)?;
+        k += n;
     }
     Ok(())
 }
@@ -1359,6 +1417,7 @@ pub fn partition(v: &View, rank: usize, size: usize) -> Result<View, Fault> {
     };
     Ok(View {
         tensor: v.tensor,
+        shape: v.shape,
         kind,
     })
 }
@@ -1424,8 +1483,8 @@ pub fn next_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> {
     let tensor = heap.get(s.view.tensor)?;
     let mut tiles = Vec::with_capacity(end - s.next);
     for &number in &numbers[s.next..end] {
-        match tensor.tiles.get(number) {
-            Some(tile) => tiles.push(tile.clone()),
+        match tensor.read_tile(s.view.shape, number) {
+            Some(tile) => tiles.push(tile),
             None => return view_end(),
         }
     }
@@ -1449,8 +1508,11 @@ fn next_rect_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> 
     for r in 0..s.rows {
         for c in 0..s.block {
             let at = (bi * s.rows + r) * grid_cols + bj * s.block + c;
-            match numbers.get(at).and_then(|&n| tensor.tiles.get(n)) {
-                Some(tile) => tiles.push(tile.clone()),
+            match numbers
+                .get(at)
+                .and_then(|&n| tensor.read_tile(s.view.shape, n))
+            {
+                Some(tile) => tiles.push(tile),
                 None => return view_end(),
             }
         }
@@ -1531,29 +1593,23 @@ pub fn push(heap: &mut Heap, s: &mut Sink, block: &Block) -> Result<(), Fault> {
         )));
     }
     let end = (s.next + block.tiles.len()).min(numbers.len());
-    write_tiles(heap, s.view.tensor, &numbers[s.next..end], &block.tiles)?;
+    write_tiles(heap, &s.view, &numbers[s.next..end], &block.tiles)?;
     s.next = end;
     Ok(())
 }
 
-fn write_tiles(
-    heap: &mut Heap,
-    t: TensorId,
-    numbers: &[usize],
-    tiles: &[Tile],
-) -> Result<(), Fault> {
-    let tensor = heap.get_mut(t)?;
+/// Writes tiles of the view's shape at these numbers (in that shape), each as the
+/// tensor's format holds it.
+fn write_tiles(heap: &mut Heap, v: &View, numbers: &[usize], tiles: &[Tile]) -> Result<(), Fault> {
+    let tensor = heap.get_mut(v.tensor)?;
     for (&number, tile) in numbers.iter().zip(tiles) {
-        if tile.shape != tensor.tile {
-            return Err(Fault::undefined(
-                "a tile of another shape than the tensor's",
-            ));
+        if tile.shape != v.shape {
+            return Err(Fault::undefined("a tile of another shape than the view's"));
         }
         let written = convert(tile, tensor.format)?;
-        match tensor.tiles.get_mut(number) {
-            Some(slot) => *slot = written,
-            None => return view_end(),
-        }
+        tensor
+            .write_tile(v.shape, number, &written)
+            .map_or_else(view_end, Ok)?;
     }
     Ok(())
 }
@@ -1569,7 +1625,7 @@ pub fn store(heap: &mut Heap, v: &View, value: &Block) -> Result<(), Fault> {
             numbers.len()
         )));
     }
-    write_tiles(heap, v.tensor, &numbers, &value.tiles)
+    write_tiles(heap, v, &numbers, &value.tiles)
 }
 
 /// `store view <- scalars`, the mirror of `v.words()`: the view names one tile (else
@@ -1584,7 +1640,7 @@ pub fn store_scalars(heap: &mut Heap, v: &View, scalars: &[Scalar]) -> Result<()
         )));
     }
     let tensor = heap.get(v.tensor)?;
-    let (format, shape) = (tensor.format, tensor.tile);
+    let (format, shape) = (tensor.format, v.shape);
     if format.as_scalar().is_none() {
         return Err(Fault::undefined(format!("the words of a tile of {format}")));
     }
@@ -1605,7 +1661,7 @@ pub fn store_scalars(heap: &mut Heap, v: &View, scalars: &[Scalar]) -> Result<()
         }
     }
     let numbers = tile_walk(v)?.tiles();
-    write_tiles(heap, v.tensor, &numbers, &[tile])
+    write_tiles(heap, v, &numbers, &[tile])
 }
 
 // ---- State ----

@@ -55,6 +55,9 @@ struct Ctx<'m> {
     program: Option<ProgramId>,
     /// The message an `on M` body receives.
     arrived: Option<MessageId>,
+    /// The body's tile shape, by its place in `Module::tiles`; none in a control
+    /// program, which computes on no tile.
+    tile: Option<u32>,
 }
 
 /// An open construct.
@@ -241,6 +244,80 @@ impl<'m> Validator<'m> {
         }
     }
 
+    /// The module's tile shapes: each once, none of no element; every declaration's
+    /// shape one of them (the default, 0, in a module with no `tile` line).
+    fn tile_shapes(&mut self) {
+        let m = self.module;
+        for (i, t) in m.tiles.iter().enumerate() {
+            if t.rows == 0 || t.cols == 0 || m.tiles[..i].contains(t) {
+                self.fail(
+                    None,
+                    None,
+                    format!(
+                        "tile shape {i} [{}, {}]: of no element, or twice",
+                        t.rows, t.cols
+                    ),
+                );
+            }
+        }
+        let funcs = m.funcs.iter().map(|f| (&f.name, f.tile));
+        let progs = m.programs.iter().flat_map(|p| {
+            let state = p.state.iter().map(|x| (&x.name, x.tile));
+            let handlers = p.handlers.iter().map(|x| (&x.name, x.tile));
+            state
+                .chain(handlers)
+                .chain(p.runs.iter().map(|x| (&x.name, x.tile)))
+        });
+        let past: Vec<String> = funcs
+            .chain(progs)
+            .filter(|(_, t)| m.shape(*t).is_none() && !(*t == 0 && m.tiles.is_empty()))
+            .map(|(name, t)| format!("{name}: tile shape {t} out of range"))
+            .collect();
+        for what in past {
+            self.fail(None, None, what);
+        }
+    }
+
+    /// The rules on two tile shapes in one body: a call of a function, a `combine` a
+    /// `reduce` or an `all_reduce` names, and a state member of tiles, each of the
+    /// body's own shape. A control program is free.
+    fn same_shape(&self, op: &Op, ctx: &Ctx<'m>) -> Result<(), String> {
+        let Some(own) = ctx.tile else {
+            return Ok(());
+        };
+        let m = self.module;
+        let func = |f: &crate::types::FuncId| m.funcs.get(f.0 as usize).map(|x| x.tile);
+        let member = |id: &super::MemberId| {
+            let prog = ctx.program.and_then(|p| self.program(p))?;
+            let mm = prog.state.get(id.0 as usize)?;
+            matches!(mm.kind, MemberKind::Tiles(_)).then_some(mm.tile)
+        };
+        let (theirs, what) = match op {
+            Op::CallFunc(f, _) => (func(f), "a call of a function"),
+            Op::ReduceGroup {
+                with: Combiner::Func(f),
+                ..
+            }
+            | Op::AllReduce {
+                with: Combiner::Func(f),
+                ..
+            } => (func(f), "a `combine`"),
+            Op::Fill(mm, _)
+            | Op::ZeroState(mm)
+            | Op::StateSet(mm, ..)
+            | Op::StateGet(mm, _)
+            | Op::Bump(mm, _)
+            | Op::Put { src: mm, .. } => (member(mm), "a state member of tiles"),
+            _ => (None, ""),
+        };
+        match theirs {
+            Some(t) if t != own => Err(format!(
+                "{what} of tile shape {t} in a body of tile shape {own}"
+            )),
+            _ => Ok(()),
+        }
+    }
+
     fn fail(&mut self, body: Option<BodyRef>, inst: Option<InstId>, what: impl Into<String>) {
         self.out.push(Violation {
             body,
@@ -265,6 +342,7 @@ impl<'m> Validator<'m> {
                     program: None,
                     arrived: None,
                     on_blocks: f.on_blocks(),
+                    tile: Some(f.tile),
                 };
                 out.push((BodyRef::Func(FuncId(i as u32)), body, ctx));
             }
@@ -278,6 +356,7 @@ impl<'m> Validator<'m> {
                     program: Some(pid),
                     arrived: None,
                     on_blocks: false,
+                    tile: Some(handler.tile),
                 };
                 let r = BodyRef::Handler(pid, super::HandlerId(h as u32));
                 out.push((r, &handler.body, ctx));
@@ -290,6 +369,7 @@ impl<'m> Validator<'m> {
                     program: Some(pid),
                     arrived: None,
                     on_blocks: false,
+                    tile: Some(run.tile),
                 };
                 out.push((BodyRef::Seed(pid, rid), &run.seed, seed));
                 for (k, (message, body)) in run.on_message.iter().enumerate() {
@@ -299,6 +379,7 @@ impl<'m> Validator<'m> {
                         program: Some(pid),
                         arrived: Some(*message),
                         on_blocks: false,
+                        tile: Some(run.tile),
                     };
                     out.push((BodyRef::On(pid, rid, k as u32), body, ctx));
                 }
@@ -311,6 +392,7 @@ impl<'m> Validator<'m> {
                 program: None,
                 arrived: None,
                 on_blocks: false,
+                tile: None,
             };
             out.push((
                 BodyRef::Control(super::ControlId(c as u32)),
@@ -362,6 +444,7 @@ impl<'m> Validator<'m> {
 
     fn declarations(&mut self) {
         let m = self.module;
+        self.tile_shapes();
         let owners = m.records.iter().map(|r| (&r.name, r.program));
         for (name, owner) in owners.chain(m.messages.iter().map(|x| (&x.name, x.program))) {
             if owner.is_some_and(|p| self.program(p).is_none()) {
@@ -598,7 +681,12 @@ impl<'m> Validator<'m> {
         ctx: &Ctx<'m>,
         body: &Body,
     ) -> Result<(), String> {
+        self.same_shape(op, ctx)?;
         let m = self.module;
+        let shape = ctx
+            .tile
+            .and_then(|t| m.shape(t))
+            .unwrap_or_else(|| m.default_tile());
         let u32_ = Type::Scalar(ScalarType::U32);
         let int = |i: usize| a.get(i).is_some_and(|t| is_int(t));
         let ints = |from: usize| (from..a.len()).all(&int);
@@ -637,7 +725,7 @@ impl<'m> Validator<'m> {
                     };
                     match body.values.get(v.0 as usize)? {
                         Type::Body => arrived,
-                        Type::View(_) => Some(4 * m.tile.elements()),
+                        Type::View(_) => Some(4 * shape.elements()),
                         _ => None,
                     }
                 }
@@ -1013,7 +1101,7 @@ impl<'m> Validator<'m> {
                     },
                 };
                 need(
-                    count.is_none_or(|k| k <= m.tile.elements()) && d.is_empty(),
+                    count.is_none_or(|k| k <= shape.elements()) && d.is_empty(),
                     "a store of more scalars than one tile holds",
                 )
             }

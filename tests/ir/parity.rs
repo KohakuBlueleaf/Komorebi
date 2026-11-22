@@ -214,7 +214,7 @@ fn every_script_gives_the_same_report_on_the_interpreter_and_the_cpu() {
             String::from_utf8_lossy(&run.stderr)
         );
         let cpu = read_report(&String::from_utf8_lossy(&run.stdout));
-        compare(&name, &text, module.tile, &reference, &cpu);
+        compare(&name, &text, module.default_tile(), &reference, &cpu);
     }
 }
 

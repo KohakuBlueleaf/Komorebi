@@ -35,6 +35,16 @@ fn list<T>(items: &[T], f: impl Fn(&T) -> String) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+/// A declaration's tile shape as the text writes it: nothing for the default (place 0),
+/// else `  tile [R, C]` (`  tile #i` for a place past the module's shapes).
+fn shape(m: &Module, i: u32) -> String {
+    match (i, m.shape(i)) {
+        (0, _) => String::new(),
+        (_, Some(t)) => format!("  tile [{}, {}]", t.rows, t.cols),
+        (_, None) => format!("  tile #{i}"),
+    }
+}
+
 fn yes(b: bool) -> &'static str {
     if b {
         "yes"
@@ -526,9 +536,15 @@ impl Printer {
 
     fn module(&mut self, m: &Module) {
         let formats = list(&m.formats, |f| f.name().to_string());
+        let tiles: Vec<String> = m
+            .tiles
+            .iter()
+            .map(|t| format!("[{}, {}]", t.rows, t.cols))
+            .collect();
         let head = format!(
-            "module {:?}  tile [{}, {}]  formats {formats}",
-            m.name, m.tile.rows, m.tile.cols
+            "module {:?}  tile {}  formats {formats}",
+            m.name,
+            tiles.join(", ")
         );
         self.line(0, &head);
         let params = m
@@ -636,10 +652,11 @@ impl Printer {
                 ),
             };
             let head = format!(
-                "f{i} {}  {kind}  params {} -> {}",
+                "f{i} {}  {kind}  params {} -> {}{}",
                 f.name,
                 types(&f.params),
-                type_text(&f.ret)
+                type_text(&f.ret),
+                shape(m, f.tile)
             );
             self.line(1, &head);
             if let Some(body) = &f.body {
@@ -669,13 +686,14 @@ impl Printer {
                         MemberKind::Scalars(t) => format!("Scalars {t}"),
                     };
                     format!(
-                        "s{i} {}  {kind}  count {}  scope {:?}  lifetime {:?}  export {}  by_element {}",
+                        "s{i} {}  {kind}  count {}  scope {:?}  lifetime {:?}  export {}  by_element {}{}",
                         s.name,
                         count(&s.count),
                         s.scope,
                         s.lifetime,
                         yes(s.export),
-                        yes(s.by_element)
+                        yes(s.by_element),
+                        shape(m, s.tile)
                     )
                 })
                 .collect();
@@ -689,10 +707,11 @@ impl Printer {
                     .ret
                     .map_or("none".to_string(), |s| s.name().to_string());
                 let head = format!(
-                    "h{h} {}  params {}  ret {ret}  on {on}  exclusive {}",
+                    "h{h} {}  params {}  ret {ret}  on {on}  exclusive {}{}",
                     handler.name,
                     types(&handler.params),
-                    yes(handler.exclusive)
+                    yes(handler.exclusive),
+                    shape(m, handler.tile)
                 );
                 self.line(2, &head);
                 self.body(3, &handler.body);
@@ -705,9 +724,10 @@ impl Printer {
                     Peers::Pairs(ps) => format!("Pairs {}", list(ps, |(a, b)| format!("{a} {b}"))),
                 };
                 let head = format!(
-                    "r{r} {}  params {}  peers {peers}",
+                    "r{r} {}  params {}  peers {peers}{}",
                     run.name,
-                    types(&run.params)
+                    types(&run.params),
+                    shape(m, run.tile)
                 );
                 self.line(2, &head);
                 self.line(3, "seed:");

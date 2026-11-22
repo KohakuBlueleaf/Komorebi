@@ -16,6 +16,7 @@ mod index;
 mod messages;
 pub mod op;
 mod ops;
+mod shapes;
 pub mod ty;
 mod views;
 
@@ -28,6 +29,7 @@ pub use decls::Decls;
 pub(crate) use env::body_bytes;
 use index::Index;
 use op::{OpKind, Resolved};
+pub(crate) use shapes::{tile_index, tile_lines};
 use ty::{Count, Ty};
 
 /// What a name in a body stands for: the declaration it refers to, by its place.
@@ -209,6 +211,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
     let env = checker.collect(&module);
     checker.module_rules(&module, &env.ix);
     checker.bodies(&module, &env);
+    checker.shape_uses(&module, &env);
     // A tile read through a view of no format takes the format its place states (R35);
     // one whose place states none has no format, and is refused.
     let mut unformatted: Vec<(usize, usize)> = checker

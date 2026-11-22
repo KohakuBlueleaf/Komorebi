@@ -17,7 +17,7 @@ use std::fmt::{self, Write as _};
 use super::delivery;
 use super::memory::{
     Failure, Fault, Filled, Format, Heap, MemberData, Races, Scalar, Tensor, TensorId, TensorPlace,
-    Tile,
+    Tile, TileShape,
 };
 use super::ops;
 use super::workers::{
@@ -395,11 +395,13 @@ impl<'m> Machine<'m> {
         i: usize,
         memory: u64,
     ) -> Result<u64, Refusal> {
-        let tile = module.tile.rows.saturating_mul(module.tile.cols);
         let mut worst: Option<u64> = None;
         for program in &module.programs {
             let (mut fixed, mut per) = (0u64, 0u64);
             for m in &program.state {
+                // a tile of its `state` block's shape
+                let tile = module.shape(m.tile).unwrap_or(module.default_tile());
+                let tile = tile.rows.saturating_mul(tile.cols);
                 let each = match &m.kind {
                     crate::program::MemberKind::Tiles(f) => tile.saturating_mul(held_bytes(*f)),
                     crate::program::MemberKind::Scalars(s) => held_bytes(s.format()),
@@ -461,8 +463,9 @@ impl<'m> Machine<'m> {
         self.copies.get(&t.0).and_then(|c| c.get(island)).copied()
     }
 
-    /// Shows tensor `t` in the report as it is now: each tile's elements. A replicated
-    /// tensor (named by its copy 0) is shown copy by copy.
+    /// Shows tensor `t` in the report as it is now: each tile's elements, in tiles of
+    /// the module's default shape (the stored tiles of a tensor not whole tiles of it).
+    /// A replicated tensor (named by its copy 0) is shown copy by copy.
     pub fn show_tensor(&mut self, t: TensorId) -> Result<(), String> {
         let copies = self.copies.get(&t.0).cloned();
         let each: Vec<(TensorId, Option<usize>)> = match &copies {
@@ -479,8 +482,15 @@ impl<'m> Machine<'m> {
                 tensor.shape.0,
                 tensor.shape.1
             );
-            let lines = tensor
-                .tiles
+            let shape = self.module.default_tile();
+            let tiles: Vec<Tile> = if tensor.whole_in(shape) {
+                (0..tensor.tile_count(shape))
+                    .filter_map(|i| tensor.read_tile(shape, i))
+                    .collect()
+            } else {
+                tensor.tiles.clone()
+            };
+            let lines = tiles
                 .iter()
                 .enumerate()
                 .map(|(i, tile)| format!("tile {i}: {}", tile_text(tile)))
@@ -665,7 +675,7 @@ impl<'m> Machine<'m> {
         else {
             return invalid("no such chain".into());
         };
-        if let Err(what) = self.arg_values(args, &chain.params) {
+        if let Err(what) = self.arg_values(args, &chain.params, None) {
             return invalid(what);
         }
         let mut opened = BTreeSet::new();
@@ -793,7 +803,7 @@ impl<'m> Machine<'m> {
             Ok(x) => x,
             Err(end) => return end,
         };
-        let values = match self.arg_values(args, &run.params) {
+        let values = match self.arg_values(args, &run.params, module.shape(run.tile)) {
             Ok(v) => v,
             Err(what) => return invalid(what),
         };
@@ -970,8 +980,14 @@ impl<'m> Machine<'m> {
         Ok(params)
     }
 
-    /// The arguments as a body reads them, each checked against its parameter.
-    fn arg_values(&self, args: &[Arg], params: &[Type]) -> Result<Vec<Value>, String> {
+    /// The arguments as a body reads them, each checked against its parameter; given a
+    /// handler's or a run's tile shape, each tensor whole tiles of it.
+    fn arg_values(
+        &self,
+        args: &[Arg],
+        params: &[Type],
+        shape: Option<TileShape>,
+    ) -> Result<Vec<Value>, String> {
         if args.len() != params.len() {
             return Err(format!(
                 "{} arguments for {} parameters",
@@ -991,7 +1007,14 @@ impl<'m> Machine<'m> {
                             "a replicated tensor, for a parameter that is not `@replicated`".into()
                         });
                     }
-                    self.heap.get(*id).is_ok_and(|x| x.format == *f)
+                    let tensor = self.heap.get(*id).map_err(|f| f.to_string())?;
+                    if let Some(s) = shape.filter(|s| !tensor.whole_in(*s)) {
+                        return Err(format!(
+                            "a tensor whose padded shape is not whole tiles of [{}, {}]",
+                            s.rows, s.cols
+                        ));
+                    }
+                    tensor.format == *f
                 }
                 (Arg::Scalar(s), Type::Scalar(st)) => s.format() == Some(st.format()),
                 _ => false,
@@ -1028,7 +1051,7 @@ impl<'m> Machine<'m> {
         };
         let at = BodyRef::Control(ControlId(c as u32));
         let frame = self
-            .arg_values(args, &control.params)
+            .arg_values(args, &control.params, None)
             .and_then(|values| Frame::new(module, at, values).map_err(|f| f.to_string()));
         let mut thread = match frame {
             Ok(f) => Thread::new(f),
@@ -1220,6 +1243,7 @@ impl<'m> Machine<'m> {
             }
         };
         let n = self.races.begin(before, 1, self.report.ended.len());
+        // the race record and the marks count stored tiles
         let tiles = match self.heap.get(t) {
             Ok(x) => x.tiles.len(),
             Err(f) => return Err(self.record(entry, None, invalid(&f.to_string()))),
@@ -1234,7 +1258,7 @@ impl<'m> Machine<'m> {
                 }
             }
         }
-        match self.fold_copies(&copies, over, tiles) {
+        match self.fold_copies(&copies, over) {
             Ok(()) => {
                 match over {
                     // it writes island `to`'s copy only: island `to` wrote every place
@@ -1249,17 +1273,38 @@ impl<'m> Machine<'m> {
         }
     }
 
-    /// The values of a collective over copies, written to the heap.
-    fn fold_copies(
-        &mut self,
-        copies: &[TensorId],
-        over: OverCopies,
-        tiles: usize,
-    ) -> Result<(), Fault> {
+    /// The values of a collective over copies, written to the heap, tile by tile: a
+    /// `combine` function is applied in its own tile shape, a provided combination
+    /// element by element (in the stored tiles).
+    fn fold_copies(&mut self, copies: &[TensorId], over: OverCopies) -> Result<(), Fault> {
         if over == OverCopies::AllGather {
             return self.gather_copies(copies);
         }
         let module = self.module;
+        let first = copies.first().copied().unwrap_or(TensorId(usize::MAX));
+        let stored = self.heap.get(first)?.tile;
+        let shape = match over {
+            OverCopies::ReduceTo {
+                with: Combiner::Func(f),
+                ..
+            }
+            | OverCopies::AllReduce {
+                with: Combiner::Func(f),
+            } => module
+                .funcs
+                .get(f.0 as usize)
+                .and_then(|x| module.shape(x.tile))
+                .unwrap_or(stored),
+            _ => stored,
+        };
+        let tensor = self.heap.get(first)?;
+        if !tensor.whole_in(shape) {
+            return Err(Fault::undefined(format!(
+                "a tensor whose padded shape is not whole tiles of [{}, {}]",
+                shape.rows, shape.cols
+            )));
+        }
+        let tiles = tensor.tile_count(shape);
         let mut lines = Lines::new();
         let mut cx = Context {
             module,
@@ -1290,9 +1335,7 @@ impl<'m> Machine<'m> {
             let tile_of = |cx: &Context<'_>, c: TensorId| -> Result<Tile, Fault> {
                 cx.heap
                     .get(c)?
-                    .tiles
-                    .get(k)
-                    .cloned()
+                    .read_tile(shape, k)
                     .ok_or_else(|| Fault::undefined("a copy of another shape"))
             };
             let value = match with {
@@ -1322,10 +1365,9 @@ impl<'m> Machine<'m> {
             for c in targets {
                 let tensor = cx.heap.get_mut(c)?;
                 let held = ops::convert(&value, tensor.format)?;
-                match tensor.tiles.get_mut(k) {
-                    Some(slot) => *slot = held,
-                    None => return Err(Fault::undefined("a copy of another shape")),
-                }
+                tensor
+                    .write_tile(shape, k, &held)
+                    .ok_or_else(|| Fault::undefined("a copy of another shape"))?;
             }
         }
         Ok(())
@@ -1373,7 +1415,11 @@ impl<'m> Machine<'m> {
                     *slot = value.clone();
                     continue;
                 }
-                // part of a tile: the bytes of an item
+                // part of a tile: bytes of a format with stated bytes, else elements
+                if slot.format.bytes().is_none() {
+                    copy_elements(slot, &value, lo, hi).ok_or_else(shape)?;
+                    continue;
+                }
                 let bytes = || Fault::undefined("bytes");
                 let src = value.to_bytes().ok_or_else(bytes)?;
                 let mut dst = slot.to_bytes().ok_or_else(bytes)?;
@@ -1555,7 +1601,7 @@ impl<'m> Machine<'m> {
             Ok(x) => x,
             Err(end) => return end,
         };
-        let values = match self.arg_values(args, &handler.params) {
+        let values = match self.arg_values(args, &handler.params, module.shape(handler.tile)) {
             Ok(v) => v,
             Err(what) => return invalid(what),
         };
@@ -1616,6 +1662,18 @@ impl<'m> Machine<'m> {
 }
 
 /// Adds a body's steps to its rank's count.
+/// Elements `lo .. hi` of `from` copied into `to`, both of one format and shape.
+fn copy_elements(to: &mut Tile, from: &Tile, lo: usize, hi: usize) -> Option<()> {
+    use super::memory::Elements;
+    match (&mut to.elements, &from.elements) {
+        (Elements::Int(a), Elements::Int(b)) => a.get_mut(lo..hi)?.copy_from_slice(b.get(lo..hi)?),
+        (Elements::F32(a), Elements::F32(b)) => a.get_mut(lo..hi)?.copy_from_slice(b.get(lo..hi)?),
+        (Elements::F64(a), Elements::F64(b)) => a.get_mut(lo..hi)?.copy_from_slice(b.get(lo..hi)?),
+        _ => return None,
+    }
+    Some(())
+}
+
 fn add(spent: &mut [u64], rank: usize, steps: u64) {
     if let Some(s) = spent.get_mut(rank) {
         *s = s.saturating_add(steps);

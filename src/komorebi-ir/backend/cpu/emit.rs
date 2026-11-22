@@ -116,6 +116,9 @@ fn not_built(what: String, at: Anchor) -> Refusal {
 /// its construct. Empty when the module is printed whole.
 pub fn unbuilt_parts(m: &Module) -> Vec<Refusal> {
     let mut out = Vec::new();
+    if m.tiles.len() > 1 {
+        out.push(not_built("several tile shapes".into(), Anchor::Module));
+    }
     for (i, _) in m.params.iter().enumerate() {
         let at = Anchor::Param(crate::types::ParamId(i as u32));
         out.push(not_built("a module parameter".into(), at));
@@ -246,7 +249,8 @@ pub fn source(m: &Module, build_hash: &str) -> String {
     let _ = writeln!(
         s,
         "constexpr TileShape TILE{{{}, {}}};",
-        m.tile.rows, m.tile.cols
+        m.default_tile().rows,
+        m.default_tile().cols
     );
     for (f, func) in m.funcs.iter().enumerate() {
         if let Some(body) = &func.body {
@@ -307,8 +311,8 @@ pub fn source(m: &Module, build_hash: &str) -> String {
         s,
         "extern \"C\" const komo_cpu::Module komo_module = {{\n    KOMO_CPU_ABI, \"{}\", {{{}, {}}}, {}, entries\n}};",
         m.name,
-        m.tile.rows,
-        m.tile.cols,
+        m.default_tile().rows,
+        m.default_tile().cols,
         entries.len()
     );
     s

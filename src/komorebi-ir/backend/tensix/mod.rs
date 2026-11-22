@@ -200,7 +200,7 @@ fn planned(module: &Module) -> Result<(Vec<Plan>, Vec<Unit>), Vec<Refusal>> {
     if !module.controls.is_empty() {
         refusals.push(refused("a control program", Anchor::Module));
     }
-    if (module.tile.rows, module.tile.cols) != (32, 32) {
+    if module.tiles.iter().any(|t| (t.rows, t.cols) != (32, 32)) {
         refusals.push(refused("a tile other than [32, 32]", Anchor::Module));
     }
     if !refusals.is_empty() {

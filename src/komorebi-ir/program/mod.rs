@@ -61,8 +61,10 @@ pub enum BodyRef {
 pub struct Module {
     /// The module's name.
     pub name: String,
-    /// The module's one tile shape.
-    pub tile: TileShape,
+    /// The module's tile shapes, in the order of its `tile` lines: the first is the
+    /// default shape, that of every declaration without `@tile`. A declaration names
+    /// its shape by its place in this list.
+    pub tiles: Vec<TileShape>,
     /// The formats the module declares, in the order written.
     pub formats: Vec<Format>,
     /// The module's parameters in text order (`ParamId` is a place in this list),
@@ -87,6 +89,43 @@ pub struct Module {
     /// Hints, source positions and the names of values: everything the semantic hash
     /// leaves out.
     pub notes: Notes,
+}
+
+impl Module {
+    /// The shape at place `i` of the module's tile shapes; `None` past them.
+    pub fn shape(&self, i: u32) -> Option<TileShape> {
+        self.tiles.get(i as usize).copied()
+    }
+
+    /// The default shape: the first `tile` line's (none, a shape of no element).
+    pub fn default_tile(&self) -> TileShape {
+        self.tiles
+            .first()
+            .copied()
+            .unwrap_or(TileShape { rows: 0, cols: 0 })
+    }
+
+    /// The place in `tiles` of the shape of the body `at`: its declaration's; a control
+    /// program computes on no tile, and is given the default.
+    pub fn tile_of(&self, at: BodyRef) -> u32 {
+        let program = |p: ProgramId| self.programs.get(p.0 as usize);
+        let run = |p: ProgramId, r: RunId| program(p).and_then(|x| x.runs.get(r.0 as usize));
+        match at {
+            BodyRef::Func(f) => self.funcs.get(f.0 as usize).map(|x| x.tile),
+            BodyRef::Handler(p, h) => program(p)
+                .and_then(|x| x.handlers.get(h.0 as usize))
+                .map(|x| x.tile),
+            BodyRef::Seed(p, r) | BodyRef::On(p, r, _) => run(p, r).map(|x| x.tile),
+            BodyRef::Control(_) => None,
+        }
+        .unwrap_or(0)
+    }
+
+    /// The shape of the body `at` (see `tile_of`).
+    pub fn shape_of(&self, at: BodyRef) -> TileShape {
+        self.shape(self.tile_of(at))
+            .unwrap_or_else(|| self.default_tile())
+    }
 }
 
 /// A module parameter.
@@ -151,6 +190,8 @@ pub struct Func {
     /// What an external function's fallback does to its view parameters, as a
     /// handler's effects say it (Derive); empty for every other function.
     pub effects: Effects,
+    /// Its tile shape (`@tile`), by its place in `Module::tiles`.
+    pub tile: u32,
 }
 
 impl Func {
@@ -237,6 +278,9 @@ pub struct Member {
     pub export: bool,
     /// `@filled(element)`: each element filled on its own.
     pub by_element: bool,
+    /// The tile shape of its `state` block (`@tile`), by its place in `Module::tiles`:
+    /// that of each of its tiles.
+    pub tile: u32,
 }
 
 /// A state member's scope.
@@ -270,6 +314,8 @@ pub struct Handler {
     pub body: Body,
     /// What the body reads and writes (Derive).
     pub effects: Effects,
+    /// Its tile shape (`@tile`), by its place in `Module::tiles`.
+    pub tile: u32,
 }
 
 /// A dynamic run: a seed body, and one body for each message type it receives.
@@ -289,6 +335,9 @@ pub struct Run {
     pub on_message: Vec<(MessageId, Body)>,
     /// What the bodies read and write, together (Derive).
     pub effects: Effects,
+    /// The tile shape of every body of the run (`@tile`), by its place in
+    /// `Module::tiles`.
+    pub tile: u32,
 }
 
 /// A chain: calls of the program's own handlers, in order, as one invocation.

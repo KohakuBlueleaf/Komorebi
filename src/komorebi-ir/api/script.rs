@@ -206,9 +206,33 @@ pub fn parse(text: &str) -> Result<Script, String> {
     Ok(script)
 }
 
-/// A tensor of the module's tile, filled as the script says.
+/// The least common multiple of two counts above 0.
+fn lcm(a: usize, b: usize) -> usize {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a.checked_div(x).map_or(0, |q| q * b)
+}
+
+/// A tensor stored in the module's default tile shape, filled as the script says. Its
+/// rows are padded up to a multiple of every row count among the module's tile shapes
+/// (their least common multiple), its columns likewise: whole tiles of every shape.
 fn made(m: &Module, name: &str, format: Format, rows: usize, cols: usize, fill: Fill) -> Tensor {
-    let mut t = Tensor::zeros(name, format, rows, cols, m.tile);
+    let shape = m.default_tile();
+    let side = |f: fn(&crate::types::TileShape) -> u64| {
+        m.tiles
+            .iter()
+            .map(|t| usize::try_from(f(t)).unwrap_or(1).max(1))
+            .fold(1, lcm)
+    };
+    let (by_rows, by_cols) = (side(|t| t.rows), side(|t| t.cols));
+    let padded = (
+        rows.div_ceil(by_rows) * by_rows,
+        cols.div_ceil(by_cols) * by_cols,
+    );
+    let mut t = Tensor::zeros(name, format, padded.0, padded.1, shape);
+    t.shape = (rows, cols);
     let count = t.tiles.first().map_or(0, |x| x.elements.len());
     for (i, tile) in t.tiles.iter_mut().enumerate() {
         let v = match fill {
@@ -216,9 +240,9 @@ fn made(m: &Module, name: &str, format: Format, rows: usize, cols: usize, fill: 
             Fill::TilePlus(k) => i as f64 + k,
         };
         let filled = if format.is_integer() {
-            Tile::from_ints(format, m.tile, &vec![v as i128; count])
+            Tile::from_ints(format, shape, &vec![v as i128; count])
         } else {
-            Tile::from_f64(format, m.tile, &vec![v; count])
+            Tile::from_f64(format, shape, &vec![v; count])
         };
         if let Some(filled) = filled {
             *tile = filled;

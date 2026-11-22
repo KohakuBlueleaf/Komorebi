@@ -263,11 +263,33 @@ In a control program only (`K703`).
 | `broadcast_from(t, from = i)` | `t` by position; `from` by name | a replicated tensor; an island | in a control program only (`K801`) | T12 |
 | `all_gather(t)` | one by position | in a control program, a replicated tensor (`K102`), and the islands take part | each island's value is what it wrote into its own copy since the copies were last equal (when the tensor was made, and after each `all_reduce`, `broadcast_from` or `all_gather` over it; a `reduce_to(t, to = i, ...)` counts as island i writing every place of `t`). After it every copy holds, at each place: written by one island, that island's value; written by none, what it held (the copies already agree there); written on several islands, one of those islands' values on every copy, which one the backend's (the language leaves that order open, as for any two unordered writes). After it the copies are equal | Islands |
 
+## Tile shapes
+
+A tile is the block of elements compute functions take and return; its shape is the module's own
+choice. A tensor is held by the execution context and addressed in tiles by the code that reads or
+writes it: the tile shape belongs to the code, not to the tensor. Two handlers of different shapes
+may address one tensor; each sees the same elements, cut into its own tiles.
+
+| Rule | Where it is checked |
+|---|---|
+| A module has one or more `tile [R, C]` lines. The first is the module's default shape. The same shape twice is refused | `K112` |
+| `@tile(R, C)` names a shape of the module: two whole numbers written in the text (another argument form `K004`), one of the module's `tile` lines (`K101`) | Program compile |
+| `@tile` stands on a `func`, a `combine`, an `extern func`, a handler, a run or a `state` block; anywhere else (a control program, a chain, a chain's call, a state member, a parameter, a message) it is refused. A declaration of that list without `@tile` has the default shape | `K006` |
+| The shape of a declaration is that of every tile its body computes on, of every block of its streams and sinks, of every tile of every view it makes (`t.tiles(first, n)` counts the tensor's tiles of that shape, row of tiles after row of tiles), of the tile `.words()`, `.records()` and `.items()` lay their bytes by, and, for a `state` block, of its members of tiles | |
+| A call of a `func` or an `extern func` from a body of another shape is refused | `K102` |
+| A `combine` named by `reduce` or `all_reduce` in a handler body of another shape is refused | `K102` |
+| A handler or run body that reads or writes a state member of tiles of a `state` block of another shape is refused; a member of scalars has no shape | `K102` |
+| In a control program, `all_reduce` and `reduce_to` over the copies of a replicated tensor apply a `combine` in its own shape, a provided combination (`sum`, `max`, ...) element by element; `broadcast_from` and `all_gather` move elements and have no shape | |
+| A chain calls handlers of any shapes; a control program invokes handlers of any shapes | |
+| The proofs on views (`past`, `K601`; a race shown at compile, `K701`; a stream that writes where it reads, `K206`) compare two views only in bodies of one shape. Between two shapes a `past` is not shown, and is refused, the message saying the two calls address the tensor in different tile shapes; no race is claimed at compile | `K601` |
+| A tensor has a padded shape in elements, fixed when the execution context makes it. An invocation of a handler of shape `[R, C]` given a tensor whose padded rows are not a multiple of R, or columns not a multiple of C, is invalid: "a tensor whose padded shape is not whole tiles of [R, C]" | At the invocation |
+| Every read and write of a tile goes through the body's shape. Element (r, c) of the tensor is element (r mod R, c mod C) of tile `(r / R) * (padded cols / C) + c / C` in shape `[R, C]`, whatever shape the tensor is held in | At the run |
+| The record of reads and writes that finds races between invocations no edge orders is exact between shapes: two accesses meet when they share an element | At the run |
+
 ## Named, not built yet
 
 The language names these and the build does not have them yet. Each is refused by name (`K010`):
 
-- Several tile shapes in one module.
 - In a function on blocks: a reduction along a column, `.col()` of other than a reduction along a
   row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func` on blocks.
 - A block of more than one row other than a function's parameter or result, and a `sink` of one.

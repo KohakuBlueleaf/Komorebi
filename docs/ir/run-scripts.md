@@ -25,12 +25,12 @@ One statement a line; `#` starts a comment that runs to the line's end.
 | Line | Does |
 |---|---|
 | `options workers N islands A,B,...` | Loads the module on `N` workers (1 if no line says), in islands of `A`, `B`, ... workers (one island if none). Each option is optional; the line, when there is one, comes first. |
-| `tensor NAME FORMAT ROWS COLS` | Makes a tensor of `ROWS` by `COLS` elements of `FORMAT`, in tiles of the module's tile, every element 0. |
+| `tensor NAME FORMAT ROWS COLS` | Makes a tensor of `ROWS` by `COLS` elements of `FORMAT`, every element 0. Its rows are padded up to a multiple of the row count of every tile shape of the module (their least common multiple), its columns likewise, so that it is whole tiles of each shape; it is stored in tiles of the module's default shape (its first `tile` line). With one shape, that shape's tiles. |
 | `... fill VALUE` | Every element `VALUE`. |
-| `... fill tile+K` | Every element of tile `i` (row of tiles after row of tiles) `i + K`; `fill tile` is `fill tile+0`. |
+| `... fill tile+K` | Every element of tile `i` of the default shape (row of tiles after row of tiles) `i + K`; `fill tile` is `fill tile+0`. |
 | `invoke Program.handler ARG... on FIRST COUNT` | Invokes the handler on the workers `FIRST` to `FIRST + COUNT - 1` and waits for its end. |
 | `control NAME ARG...` | Runs the control program `NAME`. |
-| `read NAME` | Shows the tensor as it is now in the report. |
+| `read NAME` | Shows the tensor as it is now in the report, in tiles of the module's default shape. |
 
 An argument is a tensor's name, a scalar `VALUE:TYPE` (`5:u32`, `2.0:f32`, `-1:i32`), `true` or
 `false`.
