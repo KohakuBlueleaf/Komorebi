@@ -1,0 +1,4 @@
+# T9: eight Visits end as eight Dones at worker 0: worker 0's ended is 8, 6; the others' 0, 0.
+options workers 4
+invoke Walk.walk 2:u32 on 0 4
+state Walk.ended

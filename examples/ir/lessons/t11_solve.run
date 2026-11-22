@@ -1,0 +1,6 @@
+# T11: refine with limit 5 runs one round (x tile i is (i + 1) / 2) and gives 1; with limit 0 it runs none and gives 0.
+options workers 60
+tensor x bf16 2048 32 fill tile+1
+control refine x 5:u32
+read x
+control refine x 0:u32

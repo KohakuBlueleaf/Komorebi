@@ -1,0 +1,11 @@
+#0 Relay.pass group(0, 4): completed
+tensor x f32 [256, 32]
+  tile 0: 5.0*1024
+  tile 1: 5.0*1024
+  tile 2: 5.0*1024
+  tile 3: 5.0*1024
+  tile 4: 5.0*1024
+  tile 5: 5.0*1024
+  tile 6: 5.0*1024
+  tile 7: 5.0*1024
+#1 Relay.halo group(0, 4): completed

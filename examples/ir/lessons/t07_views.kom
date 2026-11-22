@@ -1,0 +1,42 @@
+module views
+
+tile [32, 32]
+format bf16, u32
+
+record Node { lo: u32, hi: u32, child: u32 }
+
+program Views {
+    state @scope(worker) @lifetime(program) {
+        hit: u32[4] @filled(element)
+    }
+
+    // copy a 4 by 4 rectangle of tiles, walked row by row
+    handler crop(image: tensor<bf16>, out: tensor<bf16>, r0: u32, c0: u32) @on(group) {
+        let window = image.tiles[r0:r0 + 4, c0:c0 + 4]
+        let src = partition(window, worker.rank, group.size)
+        let dst = sink(partition(out.tiles(0, 16), worker.rank, group.size), block = 1)
+        for xb in stream(src, block = 1) {
+            dst.push(xb)
+        }
+    }
+
+    // the same rectangle, walked column by column
+    handler turn(image: tensor<bf16>, out: tensor<bf16>) @on(group) {
+        let src = partition(image.tiles[0:4, 0:4].T, worker.rank, group.size)
+        let dst = sink(partition(out.tiles(0, 16), worker.rank, group.size), block = 1)
+        for xb in stream(src, block = 1) {
+            dst.push(xb)
+        }
+    }
+
+    // read one record of a table, write one 16-byte item for each worker
+    handler lookup(table: tensor<u32>, results: tensor<u32>, entry: u32) @on(group) {
+        let nodes = table.tiles(0, 1).records(Node, count = 64)
+        let node = nodes[entry % 64]
+        hit[0] = node.lo
+        hit[1] = node.hi
+        hit[2] = node.child
+        hit[3] = worker.rank
+        results.items(size = 16).put(hit, at = worker.rank)
+    }
+}

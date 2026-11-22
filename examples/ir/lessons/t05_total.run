@@ -1,0 +1,15 @@
+# T5: tiles 1 to 10 summed three ways (each y tile 0 is 55), then scaled by the peak (tile i is (i + 1) / 10).
+options workers 8
+tensor x f32 320 32 fill tile+1
+tensor y1 f32 32 32
+invoke Total.any_order x y1 0:u32 10:u32 on 0 8
+read y1
+tensor y2 f32 32 32
+invoke Total.by_fours x y2 0:u32 10:u32 on 0 8
+read y2
+tensor y3 f32 32 32
+invoke Total.rank_order x y3 0:u32 10:u32 on 0 8
+read y3
+tensor y4 f32 320 32
+invoke Total.by_peak x y4 0:u32 10:u32 on 0 8
+read y4

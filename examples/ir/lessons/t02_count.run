@@ -1,0 +1,7 @@
+# T2: blocks counted with BLOCK as declared (completed 1), passed as 2 (completed 3) and as 9 (failed over_bound), then the checksum of tile 0 (completed 2295). The test fills every tile with its element index; element+0 is the nearest fill and the same in tile 0.
+options workers 4
+tensor x u32 640 32 fill element+0
+invoke Count.blocks x 0:u32 20:u32 on 0 4
+invoke Count.blocks x 0:u32 20:u32 on 0 4 with BLOCK=2:u32
+invoke Count.blocks x 0:u32 20:u32 on 0 4 with BLOCK=9:u32
+invoke Count.checksum x 0:u32 on 0 4

@@ -1,0 +1,11 @@
+# T12 whole with what it shows: seen before (not filled) and after locate, w copy by copy after learn and after merge.
+options workers 4 islands 2,2
+tensor x f32 128 32 fill tile+1
+tensor w f32 128 32 replicated
+state Spread.seen
+invoke Spread.locate on 0 4
+state Spread.seen
+invoke Spread.learn x w 4:u32 on 0 4
+read w
+control merge w
+read w

@@ -1,0 +1,38 @@
+module hinted
+
+tile [32, 32]
+format bf16, f32
+
+func project(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {
+    return matmul(x, w)
+}
+
+program Hinted {
+    state @scope(worker) @lifetime(program) {
+        weight: tile<bf16>
+    }
+
+    handler load(w: tensor<bf16>) @on(group) @exclusive {
+        weight.fill(stream(w.tiles(0, 1), block = 1))
+    }
+
+    handler forward(
+        x: tensor<bf16>,
+        y: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) @exclusive @tensix.on_demand {
+        let src = partition(x.tiles(first, tiles), worker.rank, group.size)
+        let mine = partition(y.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(src, block = 1) @tensix.pattern("AAAB") @cpu.vector(512) {
+            out.push(project(xb, weight))
+        }
+    }
+}
+
+control drive(w: tensor<bf16>, x: tensor<bf16>, y: tensor<f32>) @place.control("near") {
+    let l = invoke(Hinted.load(w), on = group(0, 64))
+    let h = invoke(Hinted.forward(x, y, 0, 64), on = group(0, 64), after = [l])
+    await h
+}

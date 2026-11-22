@@ -1,0 +1,12 @@
+# T7: crop rows 2-5, columns 1-4 of tiles (out tile k is (2 + k/4) * 8 + 1 + k%4), turned (k%4 * 8 + k/4), then the lookup: item r is 15, 16, 17, r.
+options workers 4
+tensor image bf16 256 256 fill tile
+tensor out bf16 512 32
+invoke Views.crop image out 2:u32 1:u32 on 0 4
+read out
+invoke Views.turn image out on 0 4
+read out
+tensor table u32 32 32 fill element+0
+tensor results u32 32 32
+invoke Views.lookup table results 5:u32 on 0 3
+read results

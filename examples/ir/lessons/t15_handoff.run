@@ -1,0 +1,6 @@
+# T15: the job passes four hops, each adding 1 to every tile of x (5); then the halo completes. done and edge, which the test also checks, are not exported and so not shown.
+options workers 4
+tensor x f32 256 32 fill 1
+invoke Relay.pass x 8:u32 on 0 4
+read x
+invoke Relay.halo x 8:u32 on 0 4

@@ -1,0 +1,10 @@
+# T12: each island writes its copy of w (1, 2, 0, 0 and 0, 0, 3, 4), merge makes both 1, 2, 3, 4; a plain tensor for w, and w for x, are invalid.
+options workers 4 islands 2,2
+tensor x f32 128 32 fill tile+1
+tensor w f32 128 32 replicated
+invoke Spread.learn x w 4:u32 on 0 4
+read w
+control merge w
+read w
+invoke Spread.learn x x 4:u32 on 0 4
+invoke Spread.learn w w 4:u32 on 0 4

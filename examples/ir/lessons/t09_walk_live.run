@@ -1,0 +1,3 @@
+# T9 with room for seven live messages: the eighth send (rank 3's second, in the seed) fails send_refused.
+options workers 4 live 7
+invoke Walk.walk 2:u32 on 0 4

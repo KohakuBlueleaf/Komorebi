@@ -1,0 +1,8 @@
+# T1 on a tensor whose last row and column of tiles are cut, on groups that start past 0.
+options workers 8
+tensor x bf16 150 40 fill tile+1
+tensor y bf16 150 40 fill 7
+invoke Scale.run x y 2:u32 6:u32 0.5:f32 on 3 4
+read y
+invoke Scale.run x y 0:u32 10:u32 -4.0:f32 on 1 7
+read y

@@ -1,0 +1,7 @@
+# T13: drive loads w (0.5) and runs forward on 64 workers: y tile i is 16 * (i + 1); the hints change nothing.
+options workers 64
+tensor w bf16 32 32 fill 0.5
+tensor x bf16 2048 32 fill tile+1
+tensor y f32 2048 32
+control drive w x y
+read y

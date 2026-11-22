@@ -1,0 +1,84 @@
+module total
+
+tile [32, 32]
+format f32
+
+combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return a + b
+}
+
+program Total {
+    // (a) the grouping and the order are the backend's
+    handler any_order(
+        x: tensor<f32>,
+        y: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = add)
+        if worker.is_leader {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    // (b) the program writes the shape: inside sub-groups, then among their leaders
+    handler by_fours(
+        x: tensor<f32>,
+        y: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
+        let four = reduce(acc, with = add, within = group.split(parts = 4))
+        let whole = reduce(four, with = add, among = group.leaders(parts = 4))
+        if worker.is_leader {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+
+    // (c) every bit fixed: the leader takes every rank's value and adds in rank order
+    handler rank_order(
+        x: tensor<f32>,
+        y: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
+        let every = gather(acc)  // tile<f32>[group.size], by rank
+        if worker.is_leader {
+            var sum: tile<f32> = zeros
+            for r in range(group.size) {
+                sum += every[r]
+            }
+            store y.tiles(0, 1) <- sum
+        }
+    }
+
+    // (d) the same value at every rank: scale each part by the group's largest tile
+    handler by_peak(x: tensor<f32>, y: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let src = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var top: tile<f32> = zeros
+        for xb in stream(src, block = 1) {
+            top = maximum(top, xb)
+        }
+        let peak = all_reduce(top, with = max)
+        let mine = partition(y.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(xb * reciprocal(peak))
+        }
+    }
+}

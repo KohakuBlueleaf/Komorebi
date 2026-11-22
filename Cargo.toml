@@ -86,6 +86,10 @@ path = "tests/ir/tensix_chunks.rs"
 name = "editors"
 path = "tests/ir/editors.rs"
 
+[[test]]
+name = "examples"
+path = "tests/ir/examples.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

@@ -1,0 +1,37 @@
+module solve
+
+tile [32, 32]
+format bf16
+
+program Solver {
+    handler step(x: tensor<bf16>) @on(group) @exclusive {
+        let part = partition(x.tiles(0, 64), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+
+    handler norm(x: tensor<bf16>) -> u32 @on(group) {
+        var blocks: u32 = 0
+        for xb in stream(
+            partition(x.tiles(0, 64), worker.rank, group.size),
+            block = 1,
+        ) {
+            blocks += 1
+        }
+        return blocks
+    }
+}
+
+control refine(x: tensor<bf16>, limit: u32) -> u32 {
+    var round: u32 = 0
+    var error: u32 = 0xffffffff
+    while round < limit && error > 64 {
+        let a = invoke(Solver.step(x), on = group(0, 60))
+        let b = invoke(Solver.norm(x), on = group(0, 60), after = [a])
+        error = await b
+        round += 1
+    }
+    return round
+}

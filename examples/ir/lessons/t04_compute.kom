@@ -1,0 +1,51 @@
+module compute
+
+tile [32, 32]
+format f32, bf16
+
+func gate(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return silu(a) * b
+}
+
+func clamp01(a: tile<f32>) -> tile<f32> {
+    return minimum(maximum(a, 0.0), 1.0)
+}
+
+func leaky(a: tile<f32>) -> tile<f32> {
+    return where(a > 0.0, a, a * 0.01)
+}
+
+// one value for each row, then spread back along the row
+func rms_norm(a: tile<f32>, w: tile<bf16>) -> tile<f32> {
+    let ms = reduce_sum(a * a, axis = row) * (1.0 / 32)
+    return a * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func softmax_rows(a: tile<f32>) -> tile<f32> {
+    let top = reduce_max(a, axis = row)
+    let e = exp(a - top.col())
+    return e * reciprocal(reduce_sum(e, axis = row)).col()
+}
+
+func gram(a: tile<f32>) -> tile<f32> {
+    return matmul(a, a.T)
+}
+
+program Compute {
+    // each worker adds up gate(a, b) over its part and writes its own tile
+    handler gated(
+        a: tensor<f32>,
+        b: tensor<f32>,
+        out: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) {
+        let pa = partition(a.tiles(first, tiles), worker.rank, group.size)
+        let pb = partition(b.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xa, xb in zip(stream(pa, block = 1), stream(pb, block = 1)) {
+            acc += gate(xa, xb)
+        }
+        store out.tiles(worker.rank, 1) <- acc
+    }
+}

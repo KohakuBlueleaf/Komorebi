@@ -1,0 +1,6 @@
+#0 Walk.walk group(0, 4): completed
+state Walk.ended
+  worker 0: 8:u32, 6:u32
+  worker 1: 0:u32*2
+  worker 2: 0:u32*2
+  worker 3: 0:u32*2

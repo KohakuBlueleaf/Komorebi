@@ -1,0 +1,6 @@
+# T16: step fails view_end (4096 tiles of 64), tidy runs, the retry copies 8 tiles a rank (careful gives 8): s tile i is i + 1.
+options workers 8
+tensor x f32 2048 32 fill tile+1
+tensor s f32 2048 32 fill 7
+control careful x s
+read s

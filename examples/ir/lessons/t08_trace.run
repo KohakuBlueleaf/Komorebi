@@ -1,0 +1,2 @@
+# T8: the interpreter has no implementation of the external function kohaku.accel.ray_box, which the module requires with no fallback, so it refuses the load by name.
+options workers 1

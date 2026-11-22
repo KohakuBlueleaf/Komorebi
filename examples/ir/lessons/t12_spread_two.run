@@ -1,0 +1,4 @@
+# T12's queries on two islands, every pair joined: seen is count, own island, crosses to the next, hops (2,0,0,0 / 2,0,1,1 / 2,1,0,0 / 2,1,1,1).
+options workers 4 islands 2,2
+invoke Spread.locate on 0 4
+state Spread.seen

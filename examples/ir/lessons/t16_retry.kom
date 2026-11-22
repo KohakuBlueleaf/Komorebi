@@ -1,0 +1,40 @@
+module retry
+
+tile [32, 32]
+format f32
+
+program Work {
+    // copies x into the scratch tensor s and counts the blocks
+    handler step(x: tensor<f32>, s: tensor<f32>, tiles: u32) -> u32 @on(group) {
+        let src = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let dst = partition(s.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(dst, block = 1)
+        var count: u32 = 0
+        for xb in stream(src, block = 1) {
+            out.push(xb)
+            count += 1
+        }
+        return count
+    }
+
+    // clears the scratch without reading it
+    handler tidy(s: tensor<f32>, tiles: u32) @on(group) {
+        if worker.is_leader {
+            for i in range(tiles) {
+                store s.tiles(i, 1) <- zeros
+            }
+        }
+    }
+}
+
+control careful(x: tensor<f32>, s: tensor<f32>) -> u32 {
+    let a = invoke(Work.step(x, s, 4096), on = group(0, 8))
+    let t = invoke(Work.tidy(s, 64), on = group(0, 8), after_end = [a])
+    let o = outcome(a)
+    if o.failed {
+        let b = invoke(Work.step(x, s, 64), on = group(0, 8), after = [t])
+        return await b
+    }
+    await t
+    return o.value
+}

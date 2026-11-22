@@ -1,0 +1,6 @@
+# T6: row r's sender casts tiles 2r + 1 and 2r + 2; every other column of the row receives them, column 0 stays 0.
+options workers 32
+tensor x bf16 256 32 fill tile+1
+tensor y bf16 2048 32
+invoke Rows.spread x y 2:u32 on 0 32
+read y

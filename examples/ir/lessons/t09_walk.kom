@@ -1,0 +1,45 @@
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32, hops: u32, total: u32 }
+    message Done { id: u32, total: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        ended: u32[2] @export
+    }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            ended.zero()
+            for i in range(count) {
+                send(Visit { id: i, hops: 4, total: 0 }, to = worker.rank)
+            }
+        }
+
+        on Visit(m) {
+            if m.hops == 0 {
+                send(Done { id: m.id, total: m.total }, to = 0)
+                consume m
+            } else {
+                forward(
+                    m,
+                    with = { hops: m.hops - 1, total: m.total + worker.rank },
+                    to = (worker.rank + m.id + 1) % group.size,
+                )
+            }
+        }
+
+        on Done(d) {
+            ended.bump(0)
+            ended[1] = d.total
+            consume d
+        }
+    }
+}

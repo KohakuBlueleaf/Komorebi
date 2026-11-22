@@ -1,0 +1,6 @@
+#0 Spread.locate group(0, 4): completed
+state Spread.seen
+  worker 0: 2:u32, 0:u32*3
+  worker 1: 2:u32, 0:u32, 1:u32*2
+  worker 2: 2:u32, 1:u32, 0:u32*2
+  worker 3: 2:u32, 1:u32*3

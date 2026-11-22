@@ -1,0 +1,21 @@
+#0 Total.any_order group(0, 8): completed
+tensor y1 f32 [32, 32]
+  tile 0: 55.0*1024
+#1 Total.by_fours group(0, 8): completed
+tensor y2 f32 [32, 32]
+  tile 0: 55.0*1024
+#2 Total.rank_order group(0, 8): completed
+tensor y3 f32 [32, 32]
+  tile 0: 55.0*1024
+#3 Total.by_peak group(0, 8): completed
+tensor y4 f32 [320, 32]
+  tile 0: 0.1*1024
+  tile 1: 0.2*1024
+  tile 2: 0.3*1024
+  tile 3: 0.4*1024
+  tile 4: 0.5*1024
+  tile 5: 0.6*1024
+  tile 6: 0.7*1024
+  tile 7: 0.8*1024
+  tile 8: 0.90000004*1024
+  tile 9: 1.0*1024

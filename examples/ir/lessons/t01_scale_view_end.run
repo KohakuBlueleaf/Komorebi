@@ -1,0 +1,10 @@
+# T1 with `first + tiles` past x's end: view_end, the only reason possible. y is not
+# compared after it; z, which the failed invocation was not given, is.
+options workers 4
+tensor x bf16 160 32 fill tile+1
+tensor y bf16 160 32
+tensor z bf16 160 32
+invoke Scale.run x y 3:u32 5:u32 2.0:f32 on 0 4
+read y
+invoke Scale.run x z 0:u32 5:u32 2.0:f32 on 0 4
+read z

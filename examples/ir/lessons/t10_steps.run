@@ -1,0 +1,14 @@
+# T10: the chain makes y = 2x, s = z + y (10 + 2(i + 1)), t = 152; with 16 tiles its first call fails view_end and t2 stays 0.
+options workers 4
+tensor x bf16 256 32 fill tile+1
+tensor y bf16 256 32
+tensor z bf16 256 32 fill 10
+tensor s bf16 256 32
+tensor t bf16 32 32
+invoke Steps.steps x y z s t 2.0:f32 8:u32 on 0 4
+read y
+read s
+read t
+tensor t2 bf16 32 32
+invoke Steps.steps x y z s t2 2.0:f32 16:u32 on 0 4
+read t2

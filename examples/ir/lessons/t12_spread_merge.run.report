@@ -1,0 +1,26 @@
+#0 Spread.learn group(0, 4): completed
+tensor w copy 0 f32 [128, 32]
+  tile 0: 1.0*1024
+  tile 1: 2.0*1024
+  tile 2: 0.0*1024
+  tile 3: 0.0*1024
+tensor w copy 1 f32 [128, 32]
+  tile 0: 0.0*1024
+  tile 1: 0.0*1024
+  tile 2: 3.0*1024
+  tile 3: 4.0*1024
+#1 control merge reduce_to: completed
+#2 control merge broadcast_from: completed
+#3 control merge: completed
+tensor w copy 0 f32 [128, 32]
+  tile 0: 1.0*1024
+  tile 1: 2.0*1024
+  tile 2: 3.0*1024
+  tile 3: 4.0*1024
+tensor w copy 1 f32 [128, 32]
+  tile 0: 1.0*1024
+  tile 1: 2.0*1024
+  tile 2: 3.0*1024
+  tile 3: 4.0*1024
+#4 Spread.learn group(0, 4): invalid: a tensor that is not replicated, for a `@replicated` parameter
+#5 Spread.learn group(0, 4): invalid: a replicated tensor, for a parameter that is not `@replicated`

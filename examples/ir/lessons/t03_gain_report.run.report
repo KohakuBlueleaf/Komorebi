@@ -1,0 +1,4 @@
+#0 Gain.fill group(0, 2): completed
+#1 Gain.apply group(0, 2): completed
+#2 Gain.apply group(0, 4): failed empty_state at rank 2, p0.h1 i6
+#3 Gain.apply group(2, 4): failed capacity

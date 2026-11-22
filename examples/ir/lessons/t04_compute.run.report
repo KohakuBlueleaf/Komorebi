@@ -1,0 +1,4 @@
+#0 Compute.gated group(0, 2): completed
+tensor out f32 [64, 32]
+  tile 0: 2.9242344*1024
+  tile 1: 2.9242344*1024
