@@ -7,8 +7,8 @@
 // SHADE: a0 directory, a1 lists (FILL's), a2 texture pages, a3 table, a4 profile (0:
 // none), a6 the opaque layer's directory (0: none; else a0, a1 the masked layer's).
 constexpr uint32_t kHandlerShade = 5;  // lit: a7 the surface directory, a5 camera, a8 bank
-// LIGHT: a0 directory (the opaque layer's), a7 the surface directory (which names the
-// lights' table and the profile tensor): each item's lit colour from its surface.
+// LIGHT: a0 directory (the opaque layer's), a7 the surface directory (lights' table,
+// pages, profile), a5 camera (a8 bank): each item's lit colour from its surface.
 constexpr uint32_t kHandlerLight = 6;
 // With a6, a pixel nearer than the opaque layer's (a tie to it) with alpha byte >=
 // kAlphaOpaque takes the masked colour, else the opaque one, in the opaque frame.
@@ -16,7 +16,7 @@ constexpr uint32_t kHandlerLight = 6;
 // Buffers: the reader's planes, the table, the pack thread's page requests, the
 // reader's answers, the page slots (plain memory), the pack thread's own space.
 constexpr uint32_t kCbShadePlanes = 14;
-constexpr uint32_t kShadePlanePages = 20;  // items of five planes, of ten (a6), LIGHT's
+constexpr uint32_t kShadePlanePages = 20;  // items of 5, 10 (a6), 15 (LIGHT) pages
 constexpr uint32_t kCbShadeTable = 15;
 constexpr uint32_t kShadeTableBytes = 16384;
 constexpr uint32_t kCbShadeAsk = 20;
@@ -53,6 +53,7 @@ constexpr uint32_t kMaterialNormal = 5;    // 1 + normal's entry
 constexpr uint32_t kMaterialSpecular = 6;  // 1 + specular's entry
 constexpr uint32_t kMaterialLitBase = 7;   // rgb, emissive: x emissive_scale
 constexpr uint32_t kMaterialSpecularColour = 10;  // rgb, 0: no specular term
+constexpr uint32_t kMaterialExponent = 13;        // lit: specular exponent (0: none)
 constexpr uint32_t kEntryWords = 2;
 // kinds (reference/raster.py): lit is shaded as textured in this step; masked as
 // textured, its holes by the masked layer's SHADE (a6)
@@ -69,11 +70,17 @@ constexpr uint32_t kRecShade = 30;
 constexpr uint32_t kShadeLevelShift = 16;
 constexpr uint32_t kShadeNormalLevelShift = 20;
 constexpr uint32_t kShadeSpecularLevelShift = 24;
+// lit: the triangle's coordinates give no tangent frame (the reference's frame_ok
+// false, set by the host): its pixels take the triangle's normal
+constexpr uint32_t kShadeNoFrame = 0x10000000;
 
-// Lit SHADE's frame planes: 1/z (merged), the material word material | kind << 16 in
-// the triangle's plane (empty: FILL's -1, bit 31 set); planes 1 to 3 are LIGHT's.
+// Lit SHADE's frame planes: 1/z (merged), material | kind << 16 | exponent << 20 in the
+// triangle's plane (empty: FILL's -1, bit 31 set); planes 1 to 3 are LIGHT's.
 constexpr uint32_t kMaterialNone = 0x80000000;
 constexpr uint32_t kMaterialKindShift = 16;
+constexpr uint32_t kMaterialKindMask = 0xF;
+constexpr uint32_t kMaterialExponentShift = 20;
+constexpr uint32_t kExponentMax = 2047;  // 11 bits under bit 31
 // Its surface planes, two frames like the fill's: a (albedo x base, linear) rgb, normal
 // x, y | normal z, visibility, specular rgb (x its texel; 0: no specular term).
 constexpr uint32_t kSurfacePlanes = 10;
@@ -83,6 +90,7 @@ constexpr uint32_t kSurfaceSecond = 0;
 constexpr uint32_t kSurfaceWords = 32;  // both frames' words (kDirFrameMax + 1 each)
 constexpr uint32_t kSurfaceLightTable = 16;    // LIGHT's table tensor
 constexpr uint32_t kSurfaceLightProfile = 17;  // LIGHT's profile tensor (0: none)
+constexpr uint32_t kSurfaceLightPages = 18;    // LIGHT's pages: shadow map, background
 constexpr uint32_t kSurfaceAlbedo = 0;
 constexpr uint32_t kSurfaceNormal = 3;
 constexpr uint32_t kSurfaceVisibility = 6;
@@ -106,9 +114,9 @@ constexpr uint32_t kLitSlotWords = 16;
 constexpr uint32_t kLitSlotEmpty = 1024;  // the empty pixels' slot
 static_assert(4 * (kLwSlots + kLitSlotWords * (kLitSlotEmpty + 1)) <= kLightWorkBytes);
 
-// LIGHT's table (float32, light.py light_table): per channel c at 16 c the sky's terms,
-// ambient, the sun; then the sun's direction, exposure, exposure / pi, the background.
-constexpr uint32_t kLightTableBytes = 256;
+// LIGHT's table (light.py light_table; float32 unless int): per channel c at 16 c the
+// sky's terms, ambient, the sun; then the words below, the camera (a5), each lamp.
+constexpr uint32_t kLightTableBytes = 4096;
 constexpr uint32_t kLtChannel = 16;
 constexpr uint32_t kLtSky = 0;  // K0, z z, x x - y y, x y, x z, y z, x, y, z
 constexpr uint32_t kLtSkyTerms = 9;
@@ -117,11 +125,50 @@ constexpr uint32_t kLtSun = 10;
 constexpr uint32_t kLtSunDirection = 48;
 constexpr uint32_t kLtExposure = 51;
 constexpr uint32_t kLtScale = 52;       // exposure / pi
-constexpr uint32_t kLtBackground = 53;  // exposure x FILL's background rgb
-constexpr uint32_t kLtWords = 56;
-// LIGHT's reader: an answer page an item, first_row | end_row << 8 (kShadeAskEnd: the
-// end), and its planes: the surface's 0 to 4; the material word, the surface's 5, 6.
-constexpr uint32_t kLightItemPages = 10;
+constexpr uint32_t kLtBackground = 53;  // FILL's background rgb
+constexpr uint32_t kLtInvPi = 56;
+constexpr uint32_t kLtTerms = 57;         // int: kTerm* bits
+constexpr uint32_t kLtExponentBits = 58;  // int: bits of the largest exponent
+constexpr uint32_t kLtLamps = 59;         // int: lamps
+constexpr uint32_t kLtShadowTexel = 60;   // a shadow texel's world size
+constexpr uint32_t kLtShadowBias = 61;    // as 1/z
+constexpr uint32_t kLtShadowCamera = 64;  // 16 words (reference/scenes.py)
+// a map's pages from the light pages' page first - 1, across a row, side in texels
+constexpr uint32_t kLtShadowFirst = 80;
+constexpr uint32_t kLtShadowAcross = 81;
+constexpr uint32_t kLtShadowSide = 82;
+constexpr uint32_t kLtOctaFirst = 83;
+constexpr uint32_t kLtOctaAcross = 84;
+constexpr uint32_t kLtOctaSide = 85;
+constexpr uint32_t kLtOctaLast = 86;     // side - 1
+constexpr uint32_t kLtOctaChannel = 87;  // int: a channel's key step (pages << 10)
+constexpr uint32_t kLtPages = 88;        // int: the light pages
+constexpr uint32_t kLtCamera = 96;       // 16 words, the reader's copy (a5)
+constexpr uint32_t kLtLamp = 128;
+// a lamp: position, colour, intensity, radius, 1 / radius, size^2
+constexpr uint32_t kLampWords = 16;
+constexpr uint32_t kLampColour = 3;
+constexpr uint32_t kLampIntensity = 6;
+constexpr uint32_t kLampRadius = 7;
+constexpr uint32_t kLampInvRadius = 8;
+constexpr uint32_t kLampSize2 = 9;
+constexpr uint32_t kLampsMax = 32;
+static_assert(4 * (kLtLamp + kLampWords * kLampsMax) <= kLightTableBytes);
+// The terms past part A's (sky, ambient, the sun): its shadow, the lamps, the specular
+// term, the background map (without: FILL's background).
+constexpr uint32_t kTermShadow = 1;
+constexpr uint32_t kTermLamps = 2;
+constexpr uint32_t kTermSpecular = 4;
+constexpr uint32_t kTermBackground = 8;
+// LIGHT's reader: an item's word in kCbIn (first_row | end_row << 8, kShadeAskEnd: the
+// end; then its tile) and its planes: the surface's ten, the frame's 1/z, material word
+constexpr uint32_t kLightItemPlanes = 12;
+// in three parts of five pages: the ring's place stays a multiple of five for SHADE
+constexpr uint32_t kLightItemPages = 15;
+static_assert(kLightItemPages % 5 == 0 && kShadePlanePages % 5 == 0);
+static_assert(
+    kLightItemPlanes <= kLightItemPages && kLightItemPages <= kShadePlanePages
+);
 
 // An ask page: word 0 the pages to read (kShadeAskEnd: the command's end), then the
 // texture pages, the page for slot i at word 1 + i.
@@ -145,14 +192,23 @@ constexpr uint32_t kShadeProfGather = 12;  // texels and their linear values to 
 constexpr uint32_t kShadeProfOut = 13;     // colour, planes to the writer
 constexpr uint32_t kShadeProfTotal = 14;
 // LIGHT's profile page: tiles, rows, then cycles waiting for planes, copying in, the
-// vector unit's arithmetic, copying out, in all (the same 64 words).
+// vector unit's arithmetic, copying out, the texel steps; pages, passes; in all.
 constexpr uint32_t kLightProfTiles = 0;
 constexpr uint32_t kLightProfRows = 1;
 constexpr uint32_t kLightProfWait = 2;
 constexpr uint32_t kLightProfCopyIn = 3;
-constexpr uint32_t kLightProfMath = 4;
+constexpr uint32_t kLightProfMath = 4;  // the colour rows but the three below
 constexpr uint32_t kLightProfOut = 5;
-constexpr uint32_t kLightProfTotal = 6;
+constexpr uint32_t kLightProfKeys = 6;  // the texel keys (shadow, background)
+constexpr uint32_t kLightProfScan = 7;  // pages found, texel addresses
+constexpr uint32_t kLightProfWaitPages = 8;
+constexpr uint32_t kLightProfGather = 9;     // texels to Dst
+constexpr uint32_t kLightProfShadow = 10;    // of kLightProfMath: the shadow's filter
+constexpr uint32_t kLightProfLamps = 11;     // the lamps (their specular terms too)
+constexpr uint32_t kLightProfSpecular = 12;  // the sun's specular term
+constexpr uint32_t kLightProfPages = 13;
+constexpr uint32_t kLightProfPasses = 14;
+constexpr uint32_t kLightProfTotal = 15;
 
 // Gave-up places (the writer's word): a wait of the unpack or pack thread, a bad
 // header or table, the reader's loop.

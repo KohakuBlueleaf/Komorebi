@@ -68,7 +68,9 @@ constexpr uint32_t kShadeAddrAt = 16388;
 static_assert(kShadeAddrAt == kHprefixAddrAt + 4);
 constexpr uint32_t kShadeBlockBytes = 512;
 // material | the albedo's, normal's, specular's levels << 16, << 20, << 24 (shade.h)
+// | the shade block's bit 28 (lit: no tangent frame, shade.h kShadeNoFrame)
 constexpr uint32_t kRecShadeWord = 30;
+constexpr uint32_t kShadeWordKept = 0x10000000;
 constexpr uint32_t kHprefixPageBytes = 32768;  // 128 bytes per heavy tile, 256 of them
 constexpr uint32_t kSumsHeavyAt = 8192;  // in SUM's totals: HSUM's, 128 bytes per tile
 // Then PLACE's words: frame words, per item and per fill core (README.md); each part on

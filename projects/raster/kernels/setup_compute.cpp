@@ -268,7 +268,7 @@ namespace {
     // (32 apart); a level = #k < levels with texels > area 2^(2k - 1), as integers.
     inline uint32_t shade_word(uint32_t area_bits, const uint32_t* shade) {
         const uint32_t material = shade[32];
-        uint32_t word = material & 0xFFFF;
+        uint32_t word = material & (0xFFFF | kShadeWordKept);
         for (uint32_t texture = 0; texture < 3; ++texture) {
             const uint32_t levels = material >> (16 + 4 * texture) & 0xF;
             const uint32_t texels_bits = shade[texture == 0 ? 0 : 32 + 32 * texture];

@@ -1,7 +1,7 @@
 """The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
-(1024, 1024, 4) uint8, ms), `close()`. Raster: the rasterizer's `--push` loop;
-RasterTextured: `--push --shade` (scenes with materials); Raytrace: the ray tracer's
-`--show` loop. Each opens its own card session, owned by the thread calling them."""
+(1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--push
+--shade`; RasterLit: `--push --light`; Raytrace: the ray tracer's `--show` loop. Each
+opens its own card session, owned by the thread calling them."""
 
 import argparse
 import contextlib
@@ -16,6 +16,8 @@ from projects.raster import shade as raster_shade
 from projects.raytrace import card as raytrace_card
 from projects.raytrace import frame as raytrace_frame
 from projects.raytrace import live as raytrace_live
+from reference import lights as light_data
+from reference import native, public
 
 SIDE = 1024
 LIST_SLOTS_TIMES = 4  # the triangle lists: four times card_thread's default slots
@@ -63,16 +65,27 @@ class Raster(Renderer):
         """The materials the loop is loaded with (None: not shaded)."""
         return None
 
+    def lights(self, scene_name):
+        """The lights the loop is loaded with (None: not lit)."""
+        return None
+
     def open(self, scene_name):
         self.close()
         scene, _ = raster_run.load(scene_name)
-        materials = self.materials(scene_name)
+        materials, lights = self.materials(scene_name), self.lights(scene_name)
         slots = LIST_SLOTS_TIMES * (2 * len(scene["indices"]) + 65536)
         self.stack = contextlib.ExitStack()
         try:
             session = self.stack.enter_context(km.Session(log=raster_card.log))
             self.live = raster_live.Loop(
-                session, scene, True, slots, raster_live.show_table(), {}, materials
+                session,
+                scene,
+                True,
+                slots,
+                raster_live.show_table(),
+                {},
+                materials,
+                lights,
             )
             self.stack.callback(self.live.stop)
         except BaseException:
@@ -105,6 +118,24 @@ class RasterTextured(Raster):
 
     def materials(self, scene_name):
         return raster_shade.load(scene_name)
+
+
+class RasterLit(RasterTextured):
+    """projects/raster/live.py's `--push --light` path: SHADE's surface, then LIGHT."""
+
+    name = "raster-lit"
+
+    @staticmethod
+    def offered(scene_name):
+        if not raster_shade.has_materials(scene_name):
+            return False
+        name = (
+            public.views()[scene_name][0] if public.is_view(scene_name) else scene_name
+        )
+        return light_data.lighting_path(name, native.data_dir()).exists()
+
+    def lights(self, scene_name):
+        return light_data.load(scene_name, native.data_dir())
 
 
 class Raytrace(Renderer):
@@ -149,7 +180,10 @@ class Raytrace(Renderer):
         return self.image, event.microseconds / 1e3
 
 
-RENDERERS = {renderer.name: renderer for renderer in (Raster, RasterTextured, Raytrace)}
+RENDERERS = {
+    renderer.name: renderer
+    for renderer in (Raster, RasterTextured, RasterLit, Raytrace)
+}
 
 
 def offers(scenes):

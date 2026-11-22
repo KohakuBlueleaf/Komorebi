@@ -55,11 +55,30 @@ def texel_areas(materials):
     return areas, word
 
 
+def frame_ok(scene, materials):
+    """Per triangle the reference's `frame_ok` (raster.shade_setup, the same float32
+    steps): its coordinates give a tangent frame. The camera is left out: turning the
+    normal toward the eye does not change the tangent."""
+    p = scene["positions"][scene["indices"]]
+    uv = materials["uv"]
+    e1, e2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    normal = raster.normalized(raster.cross3(e1, e2))
+    du1, dv1 = uv[:, 1, 0] - uv[:, 0, 0], uv[:, 1, 1] - uv[:, 0, 1]
+    du2, dv2 = uv[:, 2, 0] - uv[:, 0, 0], uv[:, 2, 1] - uv[:, 0, 1]
+    det = du1 * dv2 - du2 * dv1
+    sign = np.where(det < 0, F32(-1), F32(1))[:, None]
+    tangent = (e1 * dv2[:, None] - e2 * dv1[:, None]) * sign
+    tangent = raster.normalized(
+        tangent - normal * raster.dot3(normal, tangent)[:, None]
+    )
+    return (det != 0) & (raster.dot3(tangent, tangent) > 0)
+
+
 def mesh_blocks(scene, materials, lit=False):
     """The mesh as passes.mesh_blocks lays it out, each corner's colour replaced by its
     u, v and light term where the material is not flat (lit: every corner); and the
-    shade blocks (blocks, 128): 32 albedo texel areas, 32 material words, 32 normal and
-    32 specular texel areas (kernels/setup.h kShadeAddrAt)."""
+    shade blocks (blocks, 128, kernels/setup.h kShadeAddrAt): 32 albedo texel areas, 32
+    material words (lit: kShadeNoFrame where not frame_ok), 32 normal, 32 specular."""
     kind = materials["kind"][materials["material"]]
     values = np.concatenate(
         [materials["uv"], materials["light"][:, :, None]], axis=2
@@ -74,6 +93,10 @@ def mesh_blocks(scene, materials, lit=False):
     }
     blocks = passes.mesh_blocks(flat_scene)
     areas, word = texel_areas(materials)
+    if lit:
+        word = np.where(
+            frame_ok(scene, materials), word, word | np.uint32(SH["kShadeNoFrame"])
+        )
     count = len(blocks) * passes.LANES
     shade = np.zeros((4, count), dtype=np.uint32)
     shade[0, : len(word)] = areas[0].view(np.uint32)
@@ -108,6 +131,16 @@ def texture_pages(materials):
             entries[texture, level] = first, width, height
             first += across * down
     return np.concatenate(blocks), entries
+
+
+def exponents(materials):
+    """Per material its specular exponent where it has a specular term (lit, a
+    specular colour), else 0: the material word's bits from kMaterialExponentShift."""
+    has = (materials["kind"] == raster.LIT) & (materials["specular"].max(axis=1) > 0)
+    exponent = np.where(has, materials["exponent"], 0).astype(np.int64)
+    if (exponent < 0).any() or exponent.max(initial=0) > SH["kExponentMax"]:
+        raise ValueError(f"a specular exponent is outside 0 to {SH['kExponentMax']}")
+    return exponent.astype(np.uint32)
 
 
 def table(materials, entries, pages, emissive_scale=1.0):
@@ -166,6 +199,7 @@ def table(materials, entries, pages, emissive_scale=1.0):
     rows[:, at_specular : at_specular + 3] = (
         np.where(has[:, None], specular, F32(0)).astype(F32).view(np.uint32)
     )
+    rows[:, SH["kMaterialExponent"]] = exponents(materials)
     end = at + rows.size
     entry_words = np.zeros((count * levels, SH["kEntryWords"]), dtype=np.uint32)
     entry_words[:, 0] = entries[:, :, 0].ravel()

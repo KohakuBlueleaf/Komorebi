@@ -2,8 +2,8 @@
 // opaque layer's of its tile), the texture pages the pack thread asks for into slots.
 #include "shade.h"
 
-// The surface directory's words (a7) into `surface`: the first frame's, the second's,
-// LIGHT's table and profile; false: gave up or not two frames of five planes.
+// The surface directory's words (a7) into `surface` (kSurfaceWords + 3): both frames',
+// LIGHT's table, profile, pages; false: gave up or not two frames of five planes.
 inline bool surface_words(
     const km::Reader& reader,
     const km_command_t& command,
@@ -24,6 +24,7 @@ inline bool surface_words(
     }
     surface[kSurfaceWords] = words[kSurfaceLightTable];
     surface[kSurfaceWords + 1] = words[kSurfaceLightProfile];
+    surface[kSurfaceWords + 2] = words[kSurfaceLightPages];
     for (uint32_t frame = 0; frame < 2; ++frame) {
         const uint32_t tensor_pages = surface[(kDirFrameMax + 1) * frame];
         if (tensor_pages == 0 || tensor_pages % kPlanes != 0) {
@@ -31,6 +32,48 @@ inline bool surface_words(
         }
     }
     return true;
+}
+
+// A step of the pack thread's asks (SHADE, LIGHT): none, waiting for room to answer,
+// served (pages into the slots, answered), the pack thread's end, failed.
+enum AskStep : uint32_t { kAskNone, kAskBlocked, kAskServed, kAskEnd, kAskFailed };
+
+inline AskStep serve_ask(
+    const km::Reader& reader,
+    const km_command_t& command,
+    const InterleavedAddrGen<true>& pages,
+    uint32_t slots
+) {
+    if (!cb_pages_available_at_front(kCbShadeAsk, 1)) {
+        return kAskNone;
+    }
+    invalidate_l1_cache();
+    volatile tt_l1_ptr uint32_t* ask = km::l1(get_read_ptr(kCbShadeAsk));
+    const uint32_t count = ask[0];
+    if (count == kShadeAskEnd) {
+        cb_pop_front(kCbShadeAsk, 1);
+        return kAskEnd;
+    }
+    if (count > kShadeSlots) {
+        return kAskFailed;
+    }
+    if (!cb_pages_reservable_at_back(kCbShadeDone, 1)) {
+        return kAskBlocked;
+    }
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        noc_async_read(
+            get_noc_addr(ask[1 + slot], pages),
+            slots + slot * kTexPageBytes,
+            kTexPageBytes
+        );
+    }
+    if (!read_done(reader, command.sequence)) {
+        return kAskFailed;
+    }
+    cb_pop_front(kCbShadeAsk, 1);
+    cb_reserve_back(kCbShadeDone, 1);
+    cb_push_back(kCbShadeDone, 1);
+    return kAskServed;
 }
 
 void shade_reader_command(const km::Reader& reader, const km_command_t& command) {
@@ -43,7 +86,7 @@ void shade_reader_command(const km::Reader& reader, const km_command_t& command)
     uint32_t opaque[kDirFrameMax + 1] = {};  // the opaque layer's frame words
     // lit: the surface's frame words (a merging command reads the opaque's surface)
     const bool lit = command.a7 != 0;
-    uint32_t surface[kSurfaceWords + 2] = {};
+    uint32_t surface[kSurfaceWords + 3] = {};
     if (lit && !surface_words(reader, command, scratch, surface)) {
         return;
     }
@@ -104,34 +147,18 @@ void shade_reader_command(const km::Reader& reader, const km_command_t& command)
     bool ended = false, failed = false;
     // One step at a time, asks first: true once the pack thread's end has come.
     auto step = [&]() -> bool {
-        if (cb_pages_available_at_front(kCbShadeAsk, 1)) {
-            invalidate_l1_cache();
-            volatile tt_l1_ptr uint32_t* ask = km::l1(get_read_ptr(kCbShadeAsk));
-            const uint32_t count = ask[0];
-            if (count == kShadeAskEnd) {
-                cb_pop_front(kCbShadeAsk, 1);
+        switch (serve_ask(reader, command, textures, slots)) {
+            case kAskEnd:
                 ended = true;
                 return true;
-            }
-            if (count > kShadeSlots || !cb_pages_reservable_at_back(kCbShadeDone, 1)) {
-                failed = count > kShadeSlots;
-                return failed;
-            }
-            for (uint32_t slot = 0; slot < count; ++slot) {
-                noc_async_read(
-                    get_noc_addr(ask[1 + slot], textures),
-                    slots + slot * kTexPageBytes,
-                    kTexPageBytes
-                );
-            }
-            if (!read_done(reader, command.sequence)) {
+            case kAskFailed:
                 failed = true;
                 return true;
-            }
-            cb_pop_front(kCbShadeAsk, 1);
-            cb_reserve_back(kCbShadeDone, 1);
-            cb_push_back(kCbShadeDone, 1);
-            return false;
+            case kAskServed:
+            case kAskBlocked:
+                return false;
+            case kAskNone:
+                break;
         }
         if (page < pages && cb_pages_reservable_at_back(kCbIn, 1)) {
             cb_reserve_back(kCbIn, 1);

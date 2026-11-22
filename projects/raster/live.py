@@ -149,21 +149,33 @@ def shade_profile(profile):
     return report
 
 
-def light_profile(profile):
-    """LIGHT's profile pages (cores, 64 words) as totals: tiles, rows; the pack
-    thread's cycles a tile by part."""
+def light_profile(profile, lamps=0):
+    """LIGHT's profile pages (cores, 64 words) as totals: tiles, rows, pages read,
+    passes; the pack thread's cycles a tile by part (the colour's: shadow filter,
+    lamps, the sun's specular term, the rest), and a lamp's cycles a tile."""
     totals = profile[:, : SH["kLightProfTotal"] + 1].sum(axis=0)
     tiles = max(int(totals[SH["kLightProfTiles"]]), 1)
     parts = {
         "wait": "kLightProfWait",
         "copy_in": "kLightProfCopyIn",
-        "math": "kLightProfMath",
+        "keys": "kLightProfKeys",
+        "scan": "kLightProfScan",
+        "wait_pages": "kLightProfWaitPages",
+        "gather": "kLightProfGather",
+        "shadow": "kLightProfShadow",
+        "lamps": "kLightProfLamps",
+        "specular": "kLightProfSpecular",
+        "rest": "kLightProfMath",
         "out": "kLightProfOut",
         "total": "kLightProfTotal",
     }
+    lamp_cycles = float(totals[SH["kLightProfLamps"]]) / tiles / max(lamps, 1)
     return {
         "tiles": int(totals[SH["kLightProfTiles"]]),
         "rows": int(totals[SH["kLightProfRows"]]),
+        "pages_read": int(totals[SH["kLightProfPages"]]),
+        "passes": int(totals[SH["kLightProfPasses"]]),
+        "cycles_a_lamp_a_tile": round(lamp_cycles, 1) if lamps else None,
         "cycles_per_tile": {
             key: round(float(totals[SH[name]]) / tiles, 1)
             for key, name in parts.items()
@@ -208,6 +220,7 @@ class Loop:
         report,
         materials=None,
         lights=None,
+        terms=raster.TERMS,
     ):
         self.session = session
         prepared = (
@@ -231,7 +244,9 @@ class Loop:
             report["texture_pages"] = len(prepared["pages"])
         self.surface = self.light_profile = None
         if lights is not None:
-            self.surface = light.surface_tensors(session, workers, lights)
+            self.surface = light.surface_tensors(
+                session, workers, lights, materials, terms
+            )
             self.light_profile = self.surface["profile"]
         self.masked = None
         if prepared is not None and "masked_blocks" in prepared:
@@ -334,6 +349,7 @@ def loop(args):
     args.shade = args.shade or args.light
     materials = shade.load(args.scene) if args.shade else None
     lights = light_data.load(args.scene, native.data_dir()) if args.light else None
+    terms = tuple(args.light_terms.split(","))
     report = {
         "scene": args.scene,
         "frames": args.frames,
@@ -341,13 +357,23 @@ def loop(args):
         "shaded": bool(args.shade),
         "lit": bool(args.light),
     }
+    if args.light:
+        report["light_terms"] = list(terms)
     report["table_differs"] = table_check(table)
     checked = sorted({0, args.frames // 2, args.frames - 1})
     surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
     kept, surface_got = {}, {}
     with km.Session(log=card.log) as session:
         live = Loop(
-            session, scene, args.push, args.list_slots, table, report, materials, lights
+            session,
+            scene,
+            args.push,
+            args.list_slots,
+            table,
+            report,
+            materials,
+            lights,
+            terms,
         )
         workers, running = live.workers, live.running
         image = np.empty((raster.HEIGHT, raster.WIDTH, 4), dtype=np.uint8)
@@ -385,7 +411,8 @@ def loop(args):
         if live.light_profile is not None:
             (light_pages,) = card.read(session, live.light_profile)
             report["light_profile"] = light_profile(
-                light_pages.reshape(workers, -1).astype(np.int64)
+                light_pages.reshape(workers, -1).astype(np.int64),
+                len(lights["lamp_intensity"]) if "lamps" in terms else 0,
             )
     profile = profile_pages.reshape(workers, -1).astype(np.int64)
     ticks_ms = 1e3 / TIMER_HZ
@@ -454,7 +481,7 @@ def loop(args):
             if not args.check_light:
                 continue
             light_checks[index], want = light.light_check(
-                views[index], materials, lights, got
+                views[index], materials, lights, got, terms
             )
             if folder:
                 png.write_png(folder / f"{tag}_reference.png", want)
@@ -536,7 +563,12 @@ def main():
     parser.add_argument(
         "--check-light",
         action="store_true",
-        help="lit: the checked frames against the reference's lit frame (part A terms)",
+        help="lit: the checked frames against the reference's lit frame (its terms)",
+    )
+    parser.add_argument(
+        "--light-terms",
+        default=",".join(raster.TERMS),
+        help="lit: the reference's terms the card computes (sky, ambient, sun always)",
     )
     parser.add_argument(
         "--list-slots", type=int, default=0, help="0: card_thread's, from the triangles"

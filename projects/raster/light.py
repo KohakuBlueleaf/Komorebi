@@ -134,11 +134,63 @@ def frame_check(name, samples, seed=1):
     return report
 
 
-def light_table(lights):
-    """LIGHT's table (kernels/shade.h kLt*): per channel the sky's quadratic form as
-    products (lights.sky_irradiance's terms), ambient, the sun; the sun's direction,
-    exposure, exposure / pi, exposure x the old background (float32 bits)."""
-    words = np.zeros(SH["kLightTableBytes"] // 4, dtype=F32)
+# The card's terms past part A's (sky, ambient, the sun, always on): kernels/shade.h
+# kTerm* by the reference's names (raster.TERMS).
+BASE_TERMS = ("sky", "ambient", "sun")
+CARD_TERMS = {
+    "shadow": "kTermShadow",
+    "lamps": "kTermLamps",
+    "specular": "kTermSpecular",
+    "background": "kTermBackground",
+}
+PAGE = 32  # a light page: 32 x 32 values of a map (as a texture page)
+
+
+def term_bits(terms):
+    """The table's kLtTerms word of a set of the reference's terms (must hold
+    BASE_TERMS; the sun's shadow only with the sun)."""
+    terms = set(terms)
+    unknown = terms - set(raster.TERMS)
+    if unknown or not set(BASE_TERMS) <= terms:
+        raise ValueError(
+            f"the card's terms: {BASE_TERMS} and any of {list(CARD_TERMS)}"
+        )
+    return sum(SH[name] for term, name in CARD_TERMS.items() if term in terms)
+
+
+def map_pages(values):
+    """A map (side, side) of 32-bit values in pages of 32 x 32, pages row by row, a
+    page's values row by row from the top: (pages, 1024) uint32."""
+    side = values.shape[0]
+    blocks = values.reshape(side // PAGE, PAGE, side // PAGE, PAGE).transpose(
+        0, 2, 1, 3
+    )
+    return np.ascontiguousarray(blocks.reshape(-1, PAGE * PAGE).view(np.uint32))
+
+
+def light_pages(lights):
+    """LIGHT's pages: the shadow map's 1/z, then the background map's red, green and
+    blue planes, each a map_pages; and each map's first page."""
+    shadow = lights["shadow_map"].astype(F32)
+    octa = lights["octahedral"].astype(F32)
+    if shadow.shape[0] % PAGE or octa.shape[0] % PAGE:
+        raise ValueError("a light map's side is not a multiple of 32")
+    parts = [map_pages(shadow)] + [map_pages(octa[:, :, c]) for c in range(3)]
+    first = {"shadow": 0, "octahedral": len(parts[0])}
+    return np.concatenate(parts), first
+
+
+def light_table(lights, materials, terms=raster.TERMS):
+    """LIGHT's table (kernels/shade.h kLt*): per channel the sky's products
+    (lights.sky_irradiance's terms), ambient, the sun; the sun's direction, exposure,
+    FILL's background, 1 / pi, terms, exponent bits, lamps; the shadow map's texel,
+    bias, camera; both maps' pages (light_pages); each lamp."""
+    words = np.zeros(SH["kLightTableBytes"] // 4, dtype=np.uint32)
+
+    def put(at, values):
+        values = np.atleast_1d(np.asarray(values, dtype=F32))
+        words[at : at + len(values)] = values.view(np.uint32)
+
     s = lights["sh"].astype(F32)
     c1, c2, c3, c4, c5 = (
         light_data.C1,
@@ -162,17 +214,45 @@ def light_table(lights):
             two_c2 * k[2],
         ]
         at = SH["kLtChannel"] * channel
-        words[at + SH["kLtSky"] : at + SH["kLtSky"] + SH["kLtSkyTerms"]] = sky
-        words[at + SH["kLtAmbient"]] = lights["ambient"][channel]
-        words[at + SH["kLtSun"]] = lights["sun_irradiance"][channel]
-    at = SH["kLtSunDirection"]
-    words[at : at + 3] = lights["sun_direction"]
+        put(at + SH["kLtSky"], sky)
+        put(at + SH["kLtAmbient"], lights["ambient"][channel])
+        put(at + SH["kLtSun"], lights["sun_irradiance"][channel])
+    put(SH["kLtSunDirection"], lights["sun_direction"])
     exposure = F32(lights["exposure"])
-    words[SH["kLtExposure"]] = exposure
-    words[SH["kLtScale"]] = exposure * F32(1 / np.pi)
-    at = SH["kLtBackground"]
-    words[at : at + 3] = exposure * raster.BACKGROUND
-    return words.view(np.uint32)
+    put(SH["kLtExposure"], exposure)
+    put(SH["kLtScale"], exposure * F32(1 / np.pi))
+    put(SH["kLtBackground"], raster.BACKGROUND)
+    put(SH["kLtInvPi"], F32(1 / np.pi))
+    words[SH["kLtTerms"]] = term_bits(terms)
+    words[SH["kLtExponentBits"]] = int(
+        shade.exponents(materials).max(initial=0)
+    ).bit_length()
+    lamps = len(lights["lamp_intensity"]) if "lamps" in terms else 0
+    if lamps > SH["kLampsMax"]:
+        raise ValueError(f"{lamps} lamps: LIGHT's table holds {SH['kLampsMax']}")
+    words[SH["kLtLamps"]] = lamps
+    put(SH["kLtShadowTexel"], lights["shadow_texel"])
+    put(SH["kLtShadowBias"], lights["shadow_bias"])
+    put(SH["kLtShadowCamera"], lights["shadow_camera"])
+    pages, first = light_pages(lights)
+    for name, key in (("Shadow", "shadow_map"), ("Octa", "octahedral")):
+        side = lights[key].shape[0]
+        put(SH[f"kLt{name}First"], 1 + first["shadow" if name == "Shadow" else key])
+        put(SH[f"kLt{name}Across"], side // PAGE)
+        put(SH[f"kLt{name}Side"], side)
+    put(SH["kLtOctaLast"], lights["octahedral"].shape[0] - 1)
+    words[SH["kLtOctaChannel"]] = (lights["octahedral"].shape[0] // PAGE) ** 2 << 10
+    words[SH["kLtPages"]] = len(pages)
+    radius, size = F32(lights["radius"]), F32(lights["size"])
+    for lamp in range(lamps):
+        at = SH["kLtLamp"] + SH["kLampWords"] * lamp
+        put(at, lights["lamp_position"][lamp])
+        put(at + SH["kLampColour"], lights["lamp_colour"][lamp])
+        put(at + SH["kLampIntensity"], lights["lamp_intensity"][lamp])
+        put(at + SH["kLampRadius"], radius)
+        put(at + SH["kLampInvRadius"], F32(1) / radius)
+        put(at + SH["kLampSize2"], size**2)
+    return words
 
 
 def frame_tensors(session):
@@ -185,12 +265,13 @@ def frame_tensors(session):
     ]
 
 
-def surface_tensors(session, workers, lights):
-    """The surface's two frames, LIGHT's table and profile tensor, and the directory
-    (a page a worker): the first frame's words at kDirFrame, the second's at
-    kSurfaceSecond, the table's and profile's addresses (kernels/shade.h)."""
+def surface_tensors(session, workers, lights, materials, terms=raster.TERMS):
+    """The surface's two frames, LIGHT's table, pages and profile tensor, and the
+    directory (a page a worker): the first frame's words at kDirFrame, the second's at
+    kSurfaceSecond, the table's, profile's and pages' addresses (kernels/shade.h)."""
     frames = [frame_tensors(session), frame_tensors(session)]
-    table = card.tensor(session, light_table(lights)[None, :])
+    table = card.tensor(session, light_table(lights, materials, terms)[None, :])
+    pages = card.tensor(session, light_pages(lights)[0])
     profile = card.tensor(session, np.zeros((workers, SH["kShadeProfBytes"] // 4)))
     page = np.zeros(K["kDirBytes"] // 4, dtype=np.uint32)
     for frame, at in zip(frames, (K["kDirFrame"], SH["kSurfaceSecond"])):
@@ -198,8 +279,15 @@ def surface_tensors(session, workers, lights):
         page[at + 1 : at + 1 + len(frame)] = [tensor.address for tensor in frame]
     page[SH["kSurfaceLightTable"]] = table.address
     page[SH["kSurfaceLightProfile"]] = profile.address
+    page[SH["kSurfaceLightPages"]] = pages.address
     directory = card.tensor(session, np.tile(page, (workers, 1)))
-    return {"frames": frames, "dir": directory, "table": table, "profile": profile}
+    return {
+        "frames": frames,
+        "dir": directory,
+        "table": table,
+        "pages": pages,
+        "profile": profile,
+    }
 
 
 def decode_planes(pages):
@@ -243,7 +331,9 @@ def reference_surface(view, materials, lights):
     emissive = (parts["material"] >= 0) & (kind == raster.EMISSIVE)
     scale = np.where(emissive, F32(lights["emissive_scale"]), F32(1))
     word = (
-        material.astype(np.uint32) | kind.astype(np.uint32) << SH["kMaterialKindShift"]
+        material.astype(np.uint32)
+        | kind.astype(np.uint32) << SH["kMaterialKindShift"]
+        | shade.exponents(materials)[material] << SH["kMaterialExponentShift"]
     )
     corner = {**materials, "light": lights["visibility"][view["indices"]]}
     return {
@@ -299,18 +389,37 @@ def surface_check(view, materials, lights, got):
     return report, want
 
 
-def light_reference(view, materials, lights):
-    """Check C's reference: rasterize_lighted with part A's terms (sky, ambient, the sun
-    without its shadow; no lamps, no specular, the old background), one shadow tap."""
-    return raster.rasterize_lighted(
-        view, materials, lights, pcf=False, terms=("sky", "ambient", "sun")
-    )
+def light_reference(view, materials, lights, terms=raster.TERMS):
+    """Check C's reference: rasterize_lighted with `terms` (all: the default frame),
+    the 2 x 2 filter."""
+    return raster.rasterize_lighted(view, materials, lights, terms=terms)
 
 
-def light_check(view, materials, lights, got):
+def shadow_band(view, lights, lit):
+    """The pixels of the sun's shadow edge band: the reference's sun_shadow (2 x 2
+    filter) strictly between 0 and 1 at the pixel's point and normal (lit's parts),
+    and their neighbours (one pixel)."""
+    tri = lit["tri"]
+    ys, xs = np.nonzero(tri >= 0)
+    px = xs.astype(F32) + F32(0.5)
+    py = ys.astype(F32) + F32(0.5)
+    points = raster.world_points(view["camera"], px, py, lit["depth"][ys, xs])
+    share = light_data.sun_shadow(lights, points, lit["parts"]["normal"][ys, xs])
+    edge = np.zeros(tri.shape, dtype=bool)
+    edge[ys, xs] = (share > 0) & (share < 1)
+    band = edge.copy()
+    band[1:] |= edge[:-1]
+    band[:-1] |= edge[1:]
+    band[:, 1:] |= band[:, :-1].copy()
+    band[:, :-1] |= band[:, 1:].copy()
+    return band & (tri >= 0)
+
+
+def light_check(view, materials, lights, got, terms=raster.TERMS):
     """Check C: the card's 8-bit picture against light_reference's by png's rule:
-    shares of pixels off by more than 2, 4, 8 in a channel, later pieces apart."""
-    lit = light_reference(view, materials, lights)
+    shares of pixels off by more than 2, 4, 8 in a channel, later pieces apart; with
+    the shadow, the same inside the sun's shadow edge band (shadow_band) and outside."""
+    lit = light_reference(view, materials, lights, terms)
     want = png.to_srgb8(lit["display"])
     error = np.abs(got[..., :3].astype(np.int16) - want.astype(np.int16)).max(axis=2)
     corner = {**materials, "light": lights["visibility"][view["indices"]]}
@@ -324,6 +433,19 @@ def light_check(view, materials, lights, got):
         )
         report[f"later_over_{limit}"] = int((error[apart] > limit).sum())
     report["max_error"] = int(error[checked].max(initial=0))
+    if "shadow" in terms:
+        band = shadow_band(view, lights, lit)
+        for name, chosen in (
+            ("band", checked & band),
+            ("outside_band", checked & ~band),
+        ):
+            part = {"pixels": int(chosen.sum())}
+            for limit in (2, 4, 8):
+                part[f"over_{limit}"] = int((error[chosen] > limit).sum())
+                part[f"share_over_{limit}"] = round(
+                    float((error[chosen] > limit).sum() / max(int(chosen.sum()), 1)), 6
+                )
+            report[name] = part
     report["ok"] = report["share_over_4"] < 0.01
     return report, want
 

@@ -594,8 +594,9 @@ static uint32_t shade(
 static uint32_t light(frame_t* frame) {
     km_command_t command;
     new_command(&command, RF_HANDLER_LIGHT, frame);
-    command.a0 = frame->words[RF_W_DIR];     /* directory_address */
-    command.a7 = frame->words[RF_W_SURFACE]; /* surface_address: table, profile */
+    command.a0 = frame->words[RF_W_DIR];      /* directory_address */
+    command.a5 = frame->address[RF_R_CAMERA]; /* camera_address (a8 its bank) */
+    command.a7 = frame->words[RF_W_SURFACE];  /* surface_address */
     return run(&command);
 }
 

@@ -207,6 +207,7 @@ def main():
         all(code == 403 for code in report["forbidden"].values())
         and all(code == 400 for code in report["refused"].values())
         and offers.get("raster-textured")
+        and offers.get("raster-lit")
         and report["page"]
         and all(case["ok"] for case in report["cases"])
     )
