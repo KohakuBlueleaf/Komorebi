@@ -1,0 +1,11 @@
+// refused: a store of scalars writes a tensor's bytes, and bf16 has no stated bytes (Types and data)
+module counted
+
+tile [4, 4]
+format bf16
+
+program Counted {
+    handler put(y: tensor<bf16>) @on(group) {
+        store y.tiles(worker.rank, 1) <- 1.0
+    }
+}

@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::{refuse, source_span, Cx, Res};
 use crate::check::Name;
-use crate::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
+use crate::program::body::{Body, Inst, InstId, LocalId, Op, ScalarsFrom, ValueId};
 use crate::program::notes::{Anchor, Hint, Named};
 use crate::program::BodyRef;
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{BinOp, ConstValue, MessageId, ProgramId, ScalarType, Type};
+use crate::types::{BinOp, ConstValue, MemberId, MessageId, ProgramId, ScalarType, Type};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
@@ -305,8 +305,26 @@ impl B<'_, '_> {
             }
             Stmt::Store { target, value } => {
                 let t = self.expr(target)?;
+                // a store of scalars: a state member of scalars named whole (no value)
+                // by its id, a scalar or the words of a tile by its value
+                if let ExprKind::Name(n) = &value.kind {
+                    let binding = self.cx.checked.binding(n.span);
+                    if let (Some(Name::State { member, .. }), None) =
+                        (binding, self.cx.checked.type_of(value))
+                    {
+                        let from = ScalarsFrom::Member(MemberId(*member));
+                        self.emit0(Op::StoreScalars(t, from), span);
+                        return Ok(());
+                    }
+                }
                 let v = self.expr(value)?;
-                self.emit0(Op::Store(t, v), span);
+                let op = match self.cx.checked.type_of(value) {
+                    Some(Type::Scalar(_) | Type::Words(_)) => {
+                        Op::StoreScalars(t, ScalarsFrom::Value(v))
+                    }
+                    _ => Op::Store(t, v),
+                };
+                self.emit0(op, span);
                 Ok(())
             }
             Stmt::Consume(name) => match self.lookup(&name.name) {

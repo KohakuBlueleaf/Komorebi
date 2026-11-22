@@ -5,7 +5,9 @@ use crate::syntax::ast::{Attr, BinOp, Expr, ExprKind, IndexItem, Span};
 
 use super::body::{as_int, as_name, is_word_member, Cx, Peers, Rank, ViewKey};
 use super::codes;
+use super::consts;
 use super::env::parse_int;
+use super::index::Index;
 use super::Checker;
 
 impl Checker<'_> {
@@ -152,8 +154,10 @@ impl Checker<'_> {
     }
 }
 
-/// The peers `@peers(offsets = [...])` or `@peers(pairs = [(s, r), ...])` declares.
-pub(super) fn peers_of(attr: &Attr) -> Peers {
+/// The peers `@peers(offsets = [...])` or `@peers(pairs = [(s, r), ...])` declares, each
+/// number a constant expression.
+pub(super) fn peers_of(attr: &Attr, ix: &Index) -> Peers {
+    let number = |e: &Expr| consts::count(e, &|n| ix.known(&n.name, None));
     let mut peers = Peers::default();
     let Some(args) = &attr.args else {
         return peers;
@@ -168,11 +172,11 @@ pub(super) fn peers_of(attr: &Attr) -> Peers {
             .filter(|n| !n.quoted)
             .map(|n| n.name.as_str())
         {
-            Some("offsets") => peers.offsets.extend(items.values().filter_map(as_int)),
+            Some("offsets") => peers.offsets.extend(items.values().filter_map(number)),
             Some("pairs") => {
                 for item in items.values() {
                     if let ExprKind::Tuple(pair) = &item.kind {
-                        let v: Vec<Option<u64>> = pair.values().map(as_int).collect();
+                        let v: Vec<Option<u64>> = pair.values().map(number).collect();
                         if let [Some(s), Some(r)] = v.as_slice() {
                             peers.pairs.push((*s, *r));
                         }

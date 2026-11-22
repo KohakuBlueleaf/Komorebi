@@ -1,0 +1,16 @@
+// refused: a state member is tiles or scalars (Programs, state, handlers)
+module held
+
+tile [32, 32]
+format f32
+
+record Node { id: u32 }
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        kept: tensor<f32>
+    }
+
+    handler h(x: tensor<f32>) @on(group) {
+    }
+}

@@ -1,0 +1,34 @@
+// a store of scalars: the mirror of words() (Handler bodies)
+module counted
+
+tile [4, 4]
+format u32
+
+program Counted {
+    state @scope(worker) @lifetime(program) {
+        note: u32[4] @filled(element)
+    }
+
+    // each worker counts the blocks of its part and writes the count into its own tile
+    handler blocks(x: tensor<u32>, y: tensor<u32>, tiles: u32) @on(group) {
+        var walked: u32 = 0
+        for xb in stream(partition(x.tiles(0, tiles), worker.rank, group.size), block = 1) {
+            walked += 1
+        }
+        store y.tiles(worker.rank, 1) <- walked
+    }
+
+    // each worker writes four scalars of its own into its own tile
+    handler notes(y: tensor<u32>) @on(group) {
+        note[0] = worker.rank
+        note[1] = group.size
+        note[2] = 7
+        note[3] = 9
+        store y.tiles(worker.rank, 1) <- note
+    }
+
+    // each worker copies the scalars of its tile of x into its tile of y
+    handler copy(x: tensor<u32>, y: tensor<u32>) @on(group) {
+        store y.tiles(worker.rank, 1) <- x.tiles(worker.rank, 1).words()
+    }
+}

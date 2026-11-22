@@ -52,6 +52,32 @@ tile of any format may stand where a float tile of another is declared. Integer 
 (`K102`). `return matmul(x, w)` of two `bf16` tiles, in a function returning `tile<f32>`, yields a
 `tile<f32>`.
 
+## Constant expressions
+
+A **constant expression** is made of whole numbers written in the text, module parameters bound at
+build (`@bind(build)`), the operators `+ - * / % << >> & | ^`, `min(a, b)`, `max(a, b)` and
+brackets. Program compile evaluates it with the language's integer rules (`/` rounds toward zero).
+Its value must fit the type its place asks, `u32` where the place is a count, a size, a rank or a
+grid side (`K115`). A division or a remainder by zero is refused (`K114`); a parameter bound at
+load or at the invocation inside one is refused (`K102`: a constant expression names only
+parameters bound at build); a parameter named before its own declaration is refused (`K101`). At a
+place of a float type (a float parameter's value) it is made of numbers with a point, float
+parameters bound at build, `+ - * /` and brackets. In the program structure a constant expression
+is the number it evaluates to, as a number written in the text is.
+
+A constant expression is taken in these places:
+
+- A module parameter's value: `param H: u32 = 2 * D @bind(build)`, of any binding of `H` (`= fit`
+  is unchanged).
+- Each side of `@on(grid[R, C])` on a handler and a chain, above 0 (`K115`).
+- Each number of `@peers(offsets = [d, ...])` and `@peers(pairs = [(s, r), ...])`.
+- A count in a type: `u32[N * 2]`, `tile<F>[N * 2]`; or the bare name of one module parameter of
+  any binding.
+- The size of an item, `t.items(size = B)` and `t.items(first, n, size = B)`; another value is
+  refused (`K102`).
+- The block of `stream(view, block = n)` and `sink(view, block = n)`; or the bare name of one
+  module parameter of any binding; another value is refused (`K209`).
+
 The "Written in" column names a lesson (T1 to T16) or the topic of the specification that writes the
 form. What the language names and the build does not have yet is listed at the end; it is refused by
 name (`K010`).
@@ -143,18 +169,18 @@ is its own statement ([backends](backends.md)).
 | `t.tiles(first, n)` | two by position | a tensor; integers | a view of n consecutive tiles | T1 |
 | `t.tiles[r0:r1, c0:c1]`, `t.tiles[r0:r1:s, c0:c1:s]` | two ranges, each with a step *optional* | a tensor; integers | a rectangle of tiles, walked row by row | T7, Types and data |
 | `v.T` | none | a rectangle view | the rectangle walked column by column, each tile as it is (a tile is turned by its own `.T`) | T7, Compute functions |
-| `t.items(size = B)` | `size` by name | a tensor whose format is an integer type, `f32` or `f64` (`K208`); an integer | a view of all the tensor's items of B bytes | T7, Types and data |
-| `t.items(first, n, size = B)` | `first` and `n` by position, `size` by name | a tensor; integers | a view of n items of B bytes from item `first` | Types and data |
+| `t.items(size = B)` | `size` by name | a tensor whose format is an integer type, `f32` or `f64` (`K208`); a constant expression (`K102`) | a view of all the tensor's items of B bytes | T7, Types and data |
+| `t.items(first, n, size = B)` | `first` and `n` by position, `size` by name | a tensor; integers; B a constant expression (`K102`) | a view of n items of B bytes from item `first` | Types and data |
 | `v[i]` | one by position | a view; an integer | one tile, read, of the view's format; through a `view` of no format (a parameter declared `view`), of the format its place states: a `let` with a type, an argument, a result; with no such place it is refused (`K102`); an index past the view's end is `out_of_range` (`K115`) | Handler bodies |
 | `v.words()` | none | a view of one tile (`K207`) of a tensor whose format is an integer type, `f32` or `f64` (`K208`) | the scalars of the tile, read by index | T2, Types and data |
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
+| `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
 | `zip(s1, s2, ...)` | two or more by position | streams of the same number of blocks (`K115` where the compile knows each stream's tiles and block) | a block of each, together | T4 |
-| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
+| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
-| `store view <- value` | a view, a value | a view; a tile, or a block of one row (a store of scalars: `K010`) | writes it, visible at completion; a block's tiles in the view's order | T4 |
+| `store view <- value` | a view, a value | a view; a tile, or a block of one row; or scalars: one scalar, a state member of scalars named whole, or the words of a tile, into a view of one tile (`K102` where the text shows more), of a format with stated bytes (`K208`), of the format's scalar type (`K102`), no more than the tile's rows times columns (`K115` where the text shows the count; at the run `out_of_range`) | writes it, visible at completion; a block's tiles in the view's order; scalars, the mirror of `.words()`: the tile's first k scalars, in the order `.words()` reads them, are the k values given, every other scalar of the tile is 0, and the whole tile is written | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
 
 A tensor is reached only through a view (`K107`).
@@ -241,7 +267,6 @@ In a control program only (`K703`).
 
 The language names these and the build does not have them yet. Each is refused by name (`K010`):
 
-- A `store` of scalars.
 - Several tile shapes in one module.
 - In a function on blocks: a reduction along a column, `.col()` of other than a reduction along a
   row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func` on blocks.

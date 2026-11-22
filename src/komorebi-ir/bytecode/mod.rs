@@ -145,6 +145,8 @@ mod tests {
             Op::Sink(x(1), x(2)),
             Op::Push(x(1), x(2)),
             Op::Store(x(1), x(2)),
+            Op::StoreScalars(x(1), ScalarsFrom::Value(x(2))),
+            Op::StoreScalars(x(1), ScalarsFrom::Member(MemberId(3))),
             Op::BlockAt(x(1), x(2)),
             Op::Fill(MemberId(1), x(2)),
             Op::ZeroState(MemberId(3)),

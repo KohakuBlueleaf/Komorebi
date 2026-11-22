@@ -10,7 +10,7 @@ use crate::types::{
     Ability, Binding, ConstValue, Count, Format, On, Peers, ProgramId, ScalarType, TileShape, Type,
 };
 
-use super::body::number_value;
+use super::consts::{self, Num};
 use super::env::{is_named, parse_int};
 use super::index::Index;
 use super::ty::Count as Known;
@@ -224,7 +224,10 @@ pub(crate) fn of(module: &Module, ix: &Index) -> Result<Decls, Span> {
                     }
                 }
             }
-            Item::Param(p) => d.params.push(param(p)?),
+            Item::Param(p) => {
+                let value = ix.values.get(d.params.len()).copied().flatten();
+                d.params.push(param(p, value)?);
+            }
             Item::Record(r) => d.records.push(Fields {
                 name: r.name.name.clone(),
                 program: None,
@@ -310,18 +313,18 @@ pub(crate) fn of(module: &Module, ix: &Index) -> Result<Decls, Span> {
                             name: h.name.name.clone(),
                             params: params(ix, &h.params, program)?,
                             ret: h.ret.as_ref().map(scalar).transpose()?,
-                            on: on(&h.attrs)?,
+                            on: on(ix, &h.attrs)?,
                             exclusive: has(&h.attrs, "exclusive"),
                         }),
                         ProgramItem::Run(r) => decl.runs.push(RunDecl {
                             name: r.name.name.clone(),
                             params: params(ix, &r.params, program)?,
-                            peers: peers(&r.attrs)?,
+                            peers: peers(ix, &r.attrs)?,
                         }),
                         ProgramItem::Chain(c) => decl.chains.push(ChainDecl {
                             name: c.name.name.clone(),
                             params: params(ix, &c.params, program)?,
-                            on: on(&c.attrs)?,
+                            on: on(ix, &c.attrs)?,
                         }),
                     }
                 }
@@ -356,11 +359,9 @@ fn gives(attrs: &[Attr], name: &str, word: &str) -> bool {
         .any(|a| matches!(&a.value.kind, ExprKind::Name(n) if n.name == word && !n.quoted))
 }
 
-fn number(e: &ast::Expr) -> Option<u64> {
-    match &e.kind {
-        ExprKind::Int(t) => parse_int(t),
-        _ => None,
-    }
+/// The value of a constant expression at a `u32` place: a count, a rank, a grid side.
+fn number(ix: &Index, e: &ast::Expr) -> Option<u64> {
+    consts::count(e, &|n| ix.known(&n.name, None))
 }
 
 /// A requirement line as an ability; `None` for `group = line`.
@@ -394,13 +395,13 @@ fn format(id: &ast::Ident) -> Result<Format, Span> {
     Format::from_name(&id.name).ok_or(id.span)
 }
 
-/// A count a type writes: a number, or a module parameter (its value when bound at
-/// build).
+/// A count a type writes: a number, a module parameter (its value when bound at
+/// build), or a constant expression.
 fn count(ix: &Index, e: &ast::Expr) -> Result<Count, Span> {
     let known = match &e.kind {
         ExprKind::Int(t) => parse_int(t).map(Known::Known),
         ExprKind::Name(n) => ix.param_count(&n.name),
-        _ => None,
+        _ => number(ix, e).map(Known::Known),
     };
     match known {
         Some(Known::Known(n)) => Ok(Count::Const(n)),
@@ -453,11 +454,15 @@ fn params(
         .collect()
 }
 
-/// A parameter: its type, and when it is fixed with its value.
-fn param(p: &ast::Param) -> Result<Param, Span> {
+/// A parameter: its type, and when it is fixed with its value, the value its
+/// constant expression gives (`value`).
+fn param(p: &ast::Param, value: Option<Num>) -> Result<Param, Span> {
     let s = scalar(&p.ty)?;
     let value = match &p.value {
-        ParamValue::Expr(e) => Some(constant(e, s).ok_or(e.span)?),
+        ParamValue::Expr(e) => Some(match &e.kind {
+            ExprKind::Bool(b) => ConstValue::Bool(*b),
+            _ => value.and_then(|v| at_type(v, s)).ok_or(e.span)?,
+        }),
         ParamValue::Fit(_) => None,
     };
     let binding = match value {
@@ -473,24 +478,22 @@ fn param(p: &ast::Param) -> Result<Param, Span> {
     })
 }
 
-/// The constant a literal (negated or not) or `true`/`false` writes, at the type `s`;
-/// an integer is held as its bits masked to the type's width.
-pub(crate) fn constant(e: &ast::Expr, s: ScalarType) -> Option<ConstValue> {
-    if let ExprKind::Bool(b) = &e.kind {
-        return Some(ConstValue::Bool(*b));
+/// The value of a constant expression at the type `s`; an integer is held as its bits
+/// masked to the type's width.
+fn at_type(v: Num, s: ScalarType) -> Option<ConstValue> {
+    match v {
+        Num::Float(v) if s.is_float() => Some(ConstValue::Float(s, v)),
+        Num::Int(v) if !s.is_float() => {
+            let bits = s.bits();
+            let mask = if bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            };
+            Some(ConstValue::Int(s, (v as u64) & mask))
+        }
+        _ => None,
     }
-    let v = number_value(e)?;
-    if s.is_float() {
-        return Some(ConstValue::Float(s, v));
-    }
-    let bits = s.bits();
-    let whole = v as i128;
-    let mask = if bits >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << bits) - 1
-    };
-    Some(ConstValue::Int(s, (whole as u64) & mask))
 }
 
 /// A state member, with its attributes and its block's.
@@ -514,15 +517,15 @@ fn member(ix: &Index, m: &ast::StateMember, block: &[Attr]) -> Result<Member, Sp
     })
 }
 
-/// `@on(group)` or `@on(grid[R, C])`.
-fn on(attrs: &[Attr]) -> Result<On, Span> {
+/// `@on(group)` or `@on(grid[R, C])`, each side a constant expression.
+fn on(ix: &Index, attrs: &[Attr]) -> Result<On, Span> {
     for arg in args(attrs, "on") {
         if let ExprKind::Index { base, index } = &arg.value.kind {
             if matches!(&base.kind, ExprKind::Name(n) if n.name == "grid" && !n.quoted) {
                 let dims: Vec<Option<u64>> = index
                     .values()
                     .map(|i| match i {
-                        IndexItem::At(e) => number(e),
+                        IndexItem::At(e) => number(ix, e).filter(|n| *n > 0),
                         IndexItem::Slice { .. } => None,
                     })
                     .collect();
@@ -536,8 +539,9 @@ fn on(attrs: &[Attr]) -> Result<On, Span> {
     Ok(On::Group)
 }
 
-/// `@peers(offsets = [...])` or `@peers(pairs = [(s, r), ...])`.
-fn peers(attrs: &[Attr]) -> Result<Peers, Span> {
+/// `@peers(offsets = [...])` or `@peers(pairs = [(s, r), ...])`, each number a constant
+/// expression.
+fn peers(ix: &Index, attrs: &[Attr]) -> Result<Peers, Span> {
     let Some(arg) = args(attrs, "peers").next() else {
         return Ok(Peers::None);
     };
@@ -552,7 +556,7 @@ fn peers(attrs: &[Attr]) -> Result<Peers, Span> {
     {
         Some("offsets") => items
             .values()
-            .map(number)
+            .map(|e| number(ix, e))
             .collect::<Option<Vec<u64>>>()
             .map(Peers::Offsets)
             .ok_or(arg.span),
@@ -560,7 +564,7 @@ fn peers(attrs: &[Attr]) -> Result<Peers, Span> {
             .values()
             .map(|p| match &p.kind {
                 ExprKind::Tuple(xs) => match xs.values().collect::<Vec<_>>().as_slice() {
-                    [a, b] => Some((number(a)?, number(b)?)),
+                    [a, b] => Some((number(ix, a)?, number(ix, b)?)),
                     _ => None,
                 },
                 _ => None,

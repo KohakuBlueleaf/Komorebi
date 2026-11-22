@@ -990,6 +990,33 @@ impl<'m> Validator<'m> {
                     "a write that does not fit",
                 )
             }
+            // the view of a format of a scalar type; a scalar or the words of that type,
+            // or a member of its scalars, no more than one tile holds where shown
+            Op::StoreScalars(_, from) => {
+                let s = match a[0] {
+                    Type::View(Some(f)) => f.as_scalar(),
+                    _ => return Err("a store of scalars into a value that is not a view".into()),
+                };
+                let s = s.ok_or("a store of scalars into a view whose format is no scalar type")?;
+                let count = match from {
+                    ScalarsFrom::Value(_) => match a.get(1) {
+                        Some(Type::Scalar(x)) if *x == s => Some(1),
+                        Some(Type::Words(x)) if *x == s => None,
+                        _ => return Err("a store of scalars of another type".into()),
+                    },
+                    ScalarsFrom::Member(id) => match member(*id) {
+                        Some(mm) if mm.kind == MemberKind::Scalars(s) => match mm.count {
+                            Count::Const(k) => Some(k),
+                            _ => None,
+                        },
+                        _ => return Err("a store of scalars from a member of another type".into()),
+                    },
+                };
+                need(
+                    count.is_none_or(|k| k <= m.tile.elements()) && d.is_empty(),
+                    "a store of more scalars than one tile holds",
+                )
+            }
             Op::BlockAt(..) => match a[0] {
                 Type::Block(f, Count::Const(1), _) if int(1) => exact(&[Type::Tile(*f)]),
                 _ => Err("`block[i]` of a value that is not a block".into()),
@@ -1633,6 +1660,12 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         Offer(a, b, body) => {
             v.extend([*a, *b]);
             if let Some(ScalarsFrom::Value(x)) = body {
+                v.push(*x);
+            }
+        }
+        StoreScalars(a, from) => {
+            v.push(*a);
+            if let ScalarsFrom::Value(x) = from {
                 v.push(*x);
             }
         }

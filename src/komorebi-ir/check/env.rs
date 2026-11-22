@@ -11,6 +11,7 @@ use crate::syntax::ast::{
 use crate::types::{Format, ScalarType};
 
 use super::codes;
+use super::consts::Num;
 use super::index::Index;
 use super::Checker;
 
@@ -354,7 +355,18 @@ impl Checker<'_> {
                     for member in s.members.nodes() {
                         names.declare(self, &member.name);
                         self.bare_word(&member.name, Declared::Value);
-                        let ty = self.ty(env, &member.ty, Place::StateMember);
+                        // tiles or scalars, with a count or not (`bool` is `K109`'s)
+                        let ty = match &member.ty.kind {
+                            TypeKind::Tensor { .. } | TypeKind::View | TypeKind::Named(_) => {
+                                self.error(
+                                    codes::WRONG_TYPE,
+                                    "a state member is tiles or scalars".into(),
+                                    member.ty.span,
+                                );
+                                Ty::Unknown
+                            }
+                            _ => self.ty(env, &member.ty, Place::StateMember),
+                        };
                         info.state
                             .insert(member.name.name.clone(), MemberInfo { ty });
                     }
@@ -469,15 +481,15 @@ impl Checker<'_> {
                 );
             }
             let ty = self.ty(env, &f.ty, Place::Field);
-            if message
-                && f.ty.count.is_none()
+            if f.ty.count.is_none()
                 && !matches!(ty, Ty::Scalar(_) | Ty::Unknown)
                 && !matches!(f.ty.kind, TypeKind::Bool)
             {
+                let whose = if message { "a message's" } else { "a record's" };
                 self.error(
                     codes::MESSAGE_FIELD,
                     format!(
-                        "the field `{}` is {ty}; a message's fields are scalars",
+                        "the field `{}` is {ty}; {whose} fields are scalars",
                         f.name.name
                     ),
                     f.span,
@@ -562,13 +574,13 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
             },
+            // a constant expression
             _ => {
-                self.error(
-                    codes::WRONG_TYPE,
-                    "a count is a number written in the text or a module parameter".into(),
-                    count.span,
-                );
-                return Ty::Unknown;
+                let look = |n: &Ident| env.ix.known(&n.name, None);
+                match self.constant_at(count, ScalarType::U32, "a count", &look) {
+                    Some(Num::Int(n)) => Count::Known(n as u64),
+                    _ => return Ty::Unknown,
+                }
             }
         };
         // `tile<F>[r, c]` (R45): r rows of c tiles, r a number the text writes or a

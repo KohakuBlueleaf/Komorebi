@@ -33,7 +33,8 @@ message type writes the bytes of its body (a u32, `0` for none) after its fields
 write where their body comes from as an option of `ScalarsFrom` (`Value` and a value, or `Member`
 and a state member), `Send` after its rank; `Forward` writes the type it goes on as (`as`) as an
 option of a message id after its message; the operation `Body` and the type `Body` are new. The operation `AllGather`
-(number 89) is new too: its operand, then its `publish` list. A reader refuses a version 5 program
+(number 89) is new too: its operand, then its `publish` list; and the operation `StoreScalars`
+(number 90): its view, then where its scalars come from as a `ScalarsFrom`. A reader refuses a version 5 program
 with `K952`, naming both versions.
 
 ## How values are written
@@ -265,6 +266,7 @@ version.
 | 87 | `BroadcastFrom` |
 | 88 | `Body` |
 | 89 | `AllGather` |
+| 90 | `StoreScalars` |
 
 ### `Access`
 

@@ -1,0 +1,16 @@
+// refused: more scalars stored than one tile holds (Handler bodies)
+module counted
+
+tile [4, 4]
+format u32
+
+program Counted {
+    state @scope(worker) @lifetime(program) {
+        note: u32[32]
+    }
+
+    handler put(y: tensor<u32>) @on(group) {
+        note.zero()
+        store y.tiles(worker.rank, 1) <- note
+    }
+}

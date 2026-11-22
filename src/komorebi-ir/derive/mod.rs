@@ -205,6 +205,14 @@ fn effects(module: &Module, calls: &[BTreeSet<u32>], bodies: &[(BodyRef, &Body)]
                 Op::Push(s, _) => access(&mut out, of(&origin, s), Access::Sink),
                 Op::ReadTile(x, _) => access(&mut out, of(&origin, x), Access::Read),
                 Op::Store(x, _) => access(&mut out, of(&origin, x), Access::Store),
+                // a store of scalars writes its view as a store does; a state member
+                // named whole is read, as a `put`'s source
+                Op::StoreScalars(x, from) => {
+                    access(&mut out, of(&origin, x), Access::Store);
+                    if let ScalarsFrom::Member(m) = from {
+                        state(&mut out, *m, StateUse::Read);
+                    }
+                }
                 Op::Put { items, src, .. } => {
                     state(&mut out, *src, StateUse::Read);
                     access(&mut out, of(&origin, items), Access::Put);

@@ -2139,6 +2139,39 @@ fn step(
             ops::store(cx.heap, v, &block)?;
             return Ok(Next::Go);
         }
+        Op::StoreScalars(v, from) => {
+            let scalars = match from {
+                ScalarsFrom::Value(x) => match get(frame, *x)? {
+                    Value::Scalar(s) => vec![*s],
+                    Value::Words(words) => words.clone(),
+                    other => {
+                        return Err(Fault::undefined(format!(
+                            "{} where scalars are stored",
+                            kind(other)
+                        )))
+                    }
+                },
+                // a state member read whole: not filled, `empty_state`
+                ScalarsFrom::Member(m) => {
+                    let member = member(worker, frame.at, *m)?;
+                    let mut scalars = Vec::with_capacity(member.len());
+                    for i in 0..member.len() {
+                        match ops::get(member, i)? {
+                            Element::Scalar(s) => scalars.push(s),
+                            Element::Tile(_) => {
+                                return Err(Fault::undefined("a store of a member of tiles"))
+                            }
+                        }
+                    }
+                    scalars
+                }
+            };
+            let v = view(frame, *v)?;
+            note_view(cx, place.rank, v, true);
+            touch(cx, place, here, tile_places(cx, v), true)?;
+            ops::store_scalars(cx.heap, v, &scalars)?;
+            return Ok(Next::Go);
+        }
         Op::BlockAt(b, i) => {
             let Value::Block(block) = get(frame, *b)? else {
                 return Err(Fault::undefined("a tile of what is not a block"));

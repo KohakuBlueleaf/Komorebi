@@ -9,8 +9,11 @@ use crate::syntax::ast::{
 };
 
 use super::codes;
+use super::consts::Num;
 use super::env::{body_bytes, is_named};
+use super::index::Index;
 use super::Checker;
+use crate::types::ScalarType;
 
 /// The language's own undotted attributes. A dotted name is a hint and never an error.
 const KNOWN: [&str; 15] = [
@@ -118,21 +121,23 @@ fn is_word(value: &Expr, word: &str) -> bool {
     matches!(&value.kind, ExprKind::Name(n) if n.name == word && !n.quoted)
 }
 
-/// True when `value` is `grid[R, C]`, each of R and C a whole number written in the
-/// text or the name of a module parameter.
-fn is_grid(value: &Expr, params: &HashSet<String>) -> bool {
+/// The sides R and C when `value` is `grid[R, C]`, each an expression (the rule on
+/// constant expressions gives each its code).
+fn grid_sides(value: &Expr) -> Option<[&Expr; 2]> {
     let ExprKind::Index { base, index } = &value.kind else {
-        return false;
+        return None;
     };
-    let side = |item: &IndexItem| match item {
-        IndexItem::At(e) => match &e.kind {
-            ExprKind::Int(_) => true,
-            ExprKind::Name(n) => !n.quoted && params.contains(&n.name),
-            _ => false,
-        },
-        IndexItem::Slice { .. } => false,
-    };
-    is_word(base, "grid") && index.len() == 2 && index.values().all(side)
+    let sides: Vec<&Expr> = index
+        .values()
+        .filter_map(|item| match item {
+            IndexItem::At(e) => Some(e),
+            IndexItem::Slice { .. } => None,
+        })
+        .collect();
+    match sides.as_slice() {
+        [r, c] if is_word(base, "grid") && index.len() == 2 => Some([r, c]),
+        _ => None,
+    }
 }
 
 /// True when an operand of `attr` is a name between backticks: `K101` reports it
@@ -154,10 +159,10 @@ fn has_quoted(attr: &Attr) -> bool {
 impl Checker<'_> {
     /// Checks the arguments of the attributes in `checked` among `attrs` (`K004`):
     /// `@scope(worker)`, `@lifetime(program)`, `@filled(element)`, `@bind` with one of
-    /// `build`, `load`, `invoke`, `@on(group)` or `@on(grid[R, C])` (R and C whole
-    /// numbers in the text or module parameters, `params`), and no list at all after
+    /// `build`, `load`, `invoke`, `@on(group)` or `@on(grid[R, C])` (R and C constant
+    /// expressions, each above 0, given their codes by `ix`), and no list at all after
     /// `@exclusive` and `@export`.
-    fn attr_args(&mut self, attrs: &[Attr], checked: &[&str], params: &HashSet<String>) {
+    fn attr_args(&mut self, attrs: &[Attr], checked: &[&str], ix: &Index) {
         for attr in attrs.iter().filter(|a| !a.is_hint()) {
             let name = attr.path[0].name.as_str();
             if !checked.contains(&name) || has_quoted(attr) {
@@ -170,7 +175,7 @@ impl Checker<'_> {
                         let arg = args.values().next().expect("one operand");
                         arg.name.is_none()
                             && match name {
-                                "on" => is_word(&arg.value, "group") || is_grid(&arg.value, params),
+                                "on" => is_word(&arg.value, "group") || self.grid(&arg.value, ix),
                                 _ => words_taken(name).iter().any(|w| is_word(&arg.value, w)),
                             }
                     }
@@ -229,6 +234,51 @@ impl Checker<'_> {
                 };
                 if let Some(n) = word.filter(|n| words && n.quoted) {
                     self.unknown(n);
+                }
+            }
+        }
+    }
+
+    /// True when `value` is `grid[R, C]`; each side a constant expression above 0 that
+    /// fits a `u32`, reported where it is not.
+    fn grid(&mut self, value: &Expr, ix: &Index) -> bool {
+        let Some(sides) = grid_sides(value) else {
+            return false;
+        };
+        let look = |n: &crate::syntax::ast::Ident| ix.known(&n.name, None);
+        for side in sides {
+            let what = "a side of a grid";
+            if let Some(Num::Int(0)) = self.constant_at(side, ScalarType::U32, what, &look) {
+                self.error(
+                    codes::OUT_OF_RANGE,
+                    "a side of a grid is above 0".into(),
+                    side.span,
+                );
+            }
+        }
+        true
+    }
+
+    /// `@peers(offsets = [d, ...])` or `@peers(pairs = [(s, r), ...])`: each number a
+    /// constant expression that fits a `u32`, reported where it is not.
+    fn peer_numbers(&mut self, attrs: &[Attr], ix: &Index) {
+        let look = |n: &crate::syntax::ast::Ident| ix.known(&n.name, None);
+        for arg in attrs
+            .iter()
+            .filter(|a| is_named(a, "peers"))
+            .filter_map(|a| a.args.as_ref())
+            .flat_map(|args| args.values())
+        {
+            let ExprKind::List(items) = &arg.value.kind else {
+                continue;
+            };
+            for item in items.values() {
+                let numbers: Vec<&Expr> = match &item.kind {
+                    ExprKind::Tuple(pair) => pair.values().collect(),
+                    _ => vec![item],
+                };
+                for e in numbers {
+                    self.constant_at(e, ScalarType::U32, "a peer", &look);
                 }
             }
         }
@@ -307,19 +357,11 @@ impl Checker<'_> {
     }
 
     /// The rules on the declarations of the module.
-    pub(crate) fn module_rules(&mut self, module: &Module) {
+    pub(crate) fn module_rules(&mut self, module: &Module, ix: &Index) {
         let mut has_dynamic = false;
         let mut has_grid = false;
         let mut impls: HashSet<String> = HashSet::new();
         let mut tiles = 0;
-        let params: HashSet<String> = module
-            .items
-            .nodes()
-            .filter_map(|item| match item {
-                Item::Param(p) => Some(p.name.name.clone()),
-                _ => None,
-            })
-            .collect();
         for item in module.items.nodes() {
             match item {
                 Item::Requires(r) => {
@@ -357,7 +399,7 @@ impl Checker<'_> {
                 Item::Tile(_) | Item::Format(_) | Item::Requires(_) => {}
                 Item::Param(p) => {
                     self.attrs_in(&p.attrs, &["bind"], "a module parameter");
-                    self.attr_args(&p.attrs, &["bind"], &params);
+                    self.attr_args(&p.attrs, &["bind"], ix);
                     // before the declaration is described, which has no `bool` parameter
                     if matches!(p.ty.kind, TypeKind::Bool) {
                         self.error(
@@ -441,7 +483,7 @@ impl Checker<'_> {
                 }
                 Item::Program(p) => {
                     for part in p.body.nodes() {
-                        self.program_item_rules(part, has_dynamic, has_grid, &params);
+                        self.program_item_rules(part, has_dynamic, has_grid, ix);
                     }
                 }
                 Item::Control(c) => {
@@ -458,14 +500,14 @@ impl Checker<'_> {
         part: &ProgramItem,
         has_dynamic: bool,
         has_grid: bool,
-        params: &HashSet<String>,
+        ix: &Index,
     ) {
         match part {
             ProgramItem::Message(m) => self.message_attrs(&m.attrs),
             ProgramItem::Record(_) => {}
             ProgramItem::State(s) => {
                 self.attrs_in(&s.attrs, &["scope", "lifetime"], "a state block");
-                self.attr_args(&s.attrs, &["scope", "lifetime"], params);
+                self.attr_args(&s.attrs, &["scope", "lifetime"], ix);
                 let missing: Vec<&str> = ["scope", "lifetime"]
                     .into_iter()
                     .filter(|name| !s.attrs.iter().any(|a| is_named(a, name)))
@@ -482,12 +524,12 @@ impl Checker<'_> {
                 }
                 for member in s.members.nodes() {
                     self.attrs_in(&member.attrs, &["export", "filled"], "a state member");
-                    self.attr_args(&member.attrs, &["export", "filled"], params);
+                    self.attr_args(&member.attrs, &["export", "filled"], ix);
                 }
             }
             ProgramItem::Handler(h) => {
                 self.attrs_in(&h.attrs, &["on", "exclusive"], "a handler");
-                self.attr_args(&h.attrs, &["on", "exclusive"], params);
+                self.attr_args(&h.attrs, &["on", "exclusive"], ix);
                 self.require_attr(&h.attrs, "on", "a handler", h.span);
                 self.param_attrs(&h.params);
                 self.block_attrs(&h.body);
@@ -504,6 +546,7 @@ impl Checker<'_> {
             }
             ProgramItem::Run(r) => {
                 self.attrs_in(&r.attrs, &["dynamic", "peers"], "a run");
+                self.peer_numbers(&r.attrs, ix);
                 self.require_attr(&r.attrs, "dynamic", "a run", r.span);
                 self.param_attrs(&r.params);
                 for part in r.body.nodes() {
@@ -525,7 +568,7 @@ impl Checker<'_> {
             }
             ProgramItem::Chain(c) => {
                 self.attrs_in(&c.attrs, &["on"], "a chain");
-                self.attr_args(&c.attrs, &["on"], params);
+                self.attr_args(&c.attrs, &["on"], ix);
                 self.require_attr(&c.attrs, "on", "a chain", c.span);
                 for call in c.calls.nodes() {
                     self.attrs_in(&call.attrs, &["on"], "a chain's call");

@@ -236,6 +236,9 @@ pub enum Op {
     Push(ValueId, ValueId),
     /// `store view <- value`.
     Store(ValueId, ValueId),
+    /// `store view <- scalars`: the view (of one tile), then the scalars: a scalar or
+    /// the words of a tile (`Value`), or a state member of scalars read whole.
+    StoreScalars(ValueId, ScalarsFrom),
     /// `block[i]` of a block of tiles (`every[r]` of a gather).
     BlockAt(ValueId, ValueId),
     // ---- state ----

@@ -1,0 +1,55 @@
+// constant expressions in declarations and in the sizes a body states (Module)
+module constants
+
+tile [4, 4]
+format f32, u32
+
+requires {
+    dynamic
+    group = grid
+}
+
+param D: u32 = 3 @bind(build)
+param H: u32 = 2 * D + 1 @bind(build)
+param N: u32 = min(H, 8) - 5 @bind(build)
+param R: u32 = H / D @bind(build)
+param C: u32 = (1 << N) % 3 @bind(build)
+param GAIN: f32 = 2.5 * 2.0 @bind(build)
+
+program Constants {
+    message Tick { step: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        seen: u32[N * 2] @filled(element)
+        held: tile<f32>[N * 2]
+    }
+
+    // a grid given by expressions: R rows of 2 * C workers
+    handler place(y: tensor<u32>) -> u32 @on(grid[R, 2 * C]) {
+        return worker.row * 100 + worker.col
+    }
+
+    // blocks of N - 1 tiles; each worker writes one item of 4 * N bytes
+    handler walk(x: tensor<f32>, out: tensor<u32>, tiles: u32) @on(group) {
+        var walked: u32 = 0
+        for xb in stream(partition(x.tiles(0, tiles), worker.rank, group.size), block = N - 1) {
+            walked += 1
+        }
+        seen[0] = walked
+        seen[N * 2 - 1] = worker.rank
+        out.items(size = 4 * N).put(seen, at = worker.rank)
+    }
+
+    // the peer at an offset given by parameters
+    run ring() @dynamic @peers(offsets = [H - D - D]) {
+        seed {
+            if worker.is_leader {
+                let went = offer(Tick { step: 0 }, to = (worker.rank + 1) % group.size)
+            }
+        }
+
+        on Tick(m) {
+            consume m
+        }
+    }
+}

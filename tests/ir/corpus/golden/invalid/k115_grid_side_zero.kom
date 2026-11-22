@@ -1,0 +1,16 @@
+// refused: a side of a grid is above 0 (Programs, state, handlers)
+module rows
+
+tile [32, 32]
+format bf16
+
+requires {
+    group = grid
+}
+
+param R: u32 = 2 @bind(build)
+
+program Rows {
+    handler h(x: tensor<bf16>) @on(grid[R - 2, 4]) {
+    }
+}

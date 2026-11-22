@@ -1,0 +1,16 @@
+// refused: the size of an item is a constant expression (Types and data)
+module views
+
+tile [32, 32]
+format u32
+
+program Views {
+    state @scope(worker) @lifetime(program) {
+        hit: u32[4]
+    }
+
+    handler put(results: tensor<u32>, size: u32) @on(group) {
+        hit.zero()
+        results.items(size = size).put(hit, at = worker.rank)
+    }
+}

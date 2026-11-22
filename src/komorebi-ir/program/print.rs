@@ -315,6 +315,7 @@ pub fn op_text(op: &Op) -> String {
         Sink(x, n) => format!("Sink {} {}", v(x), v(n)),
         Push(s, x) => format!("Push {} {}", v(s), v(x)),
         Store(s, x) => format!("Store {} {}", v(s), v(x)),
+        StoreScalars(s, x) => format!("StoreScalars {} {}", v(s), from(x)),
         BlockAt(x, i) => format!("BlockAt {} {}", v(x), v(i)),
         Fill(m, x) => format!("Fill s{} {}", m.0, v(x)),
         ZeroState(m) => format!("ZeroState s{}", m.0),

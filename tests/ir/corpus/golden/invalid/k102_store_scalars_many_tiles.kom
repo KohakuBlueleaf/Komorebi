@@ -1,0 +1,11 @@
+// refused: a store of scalars writes one tile, and this view holds two (Handler bodies)
+module counted
+
+tile [4, 4]
+format u32
+
+program Counted {
+    handler put(y: tensor<u32>) @on(group) {
+        store y.tiles(worker.rank, 2) <- worker.rank
+    }
+}

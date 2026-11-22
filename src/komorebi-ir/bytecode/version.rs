@@ -174,6 +174,7 @@ pub const OP: Table = &[
     (87, "BroadcastFrom"),
     (88, "Body"),
     (89, "AllGather"),
+    (90, "StoreScalars"),
 ];
 
 /// `program::Access`.

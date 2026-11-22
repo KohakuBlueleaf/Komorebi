@@ -31,7 +31,7 @@ pub const ROW_OUTSIDE_GRID: &str = "K105";
 pub const FORMAT_NOT_DECLARED: &str = "K106";
 /// A tensor indexed directly, not through a view.
 pub const TENSOR_INDEXED: &str = "K107";
-/// A message field that is not a scalar.
+/// A message's or a record's field that is not a scalar.
 pub const MESSAGE_FIELD: &str = "K108";
 /// `bool` as the type of state, a field, a parameter or a result.
 pub const BOOL_PLACE: &str = "K109";
@@ -74,8 +74,8 @@ pub const STREAM_OVERLAP: &str = "K206";
 pub const WORDS_MANY_TILES: &str = "K207";
 /// `items`, `records` or `words` on a tensor whose format has no stated bytes.
 pub const NO_STATED_BYTES: &str = "K208";
-/// The block of a `stream` or a `sink` that is neither a number written in the text
-/// nor a module parameter.
+/// The block of a `stream` or a `sink` that is neither a constant expression nor a
+/// module parameter.
 pub const STREAM_BLOCK: &str = "K209";
 /// A state member that some body reads and no body of the program fills.
 pub const EMPTY_STATE: &str = "K301";

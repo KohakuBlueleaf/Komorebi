@@ -1,0 +1,12 @@
+// refused: a record's fields are of scalar types (Types and data)
+module table
+
+tile [32, 32]
+format f32
+
+record Node { id: u32, data: tile<f32> }
+
+program P {
+    handler h(x: tensor<f32>) @on(group) {
+    }
+}

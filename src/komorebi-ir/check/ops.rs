@@ -9,9 +9,11 @@ use crate::syntax::ast::{Arg, Expr, ExprKind, Ident, List, Span};
 use crate::types::{Axis, Format, ScalarType};
 
 use super::body::{
-    as_int, as_name, count_of, named, named_opt, pos, Cx, Family, Kind, Operand, PROVIDED, UNARY,
+    as_int, as_name, constant_name, count_of, named, named_opt, pos, Cx, Family, Kind, Operand,
+    PROVIDED, UNARY,
 };
 use super::codes;
+use super::consts::{self, Fault, Num};
 use super::env::FuncKind;
 use super::op::OpKind;
 use super::{Checker, Name};
@@ -467,17 +469,39 @@ impl Checker<'_> {
                 };
                 self.note_op(span, kind, &o);
                 let v = self.operand(cx, o[0], &view, "the view");
+                let before = self.diagnostics.len();
                 self.operand(cx, o[1], &Ty::AnyInt, "the block");
                 let format = match v {
                     Ty::View { format, .. } => format,
                     _ => None,
                 };
-                let block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
+                let mut block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
+                // a constant expression: its value (a fault of its own is its code's;
+                // another value is `K209`'s)
+                if let (Some(b), Count::Unknown, true) =
+                    (o[1], block, self.diagnostics.len() == before)
+                {
+                    let look = |n: &Ident| constant_name(cx, n);
+                    match consts::eval(b, false, &look) {
+                        Err(fault @ (Fault::ByZero(_) | Fault::TooLarge(_))) => {
+                            self.constant_fault(fault, &format!("the block of a `{what}`"));
+                            return Ty::Unknown;
+                        }
+                        Ok(_) => {
+                            let what = format!("the block of a `{what}`");
+                            match self.constant_at(b, ScalarType::U32, &what, &look) {
+                                Some(Num::Int(n)) => block = Count::Known(n as u64),
+                                _ => return Ty::Unknown,
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
                 if let (Some(b), Count::Unknown | Count::GroupSize) = (o[1], block) {
                     self.error(
                         codes::STREAM_BLOCK,
                         format!(
-                            "the block of a `{what}` is a number written in the text or a module \
+                            "the block of a `{what}` is a constant expression or a module \
                              parameter, known before the run"
                         ),
                         b.span,
@@ -854,7 +878,7 @@ impl Checker<'_> {
                 self.error(
                     codes::NO_STATED_BYTES,
                     format!(
-                        "`{what}` reads the bytes of a tensor, and `{f}` has no stated bytes: \
+                        "`{what}` uses the bytes of a tensor, and `{f}` has no stated bytes: \
                          only an integer type, `f32` or `f64`"
                     ),
                     span,
@@ -1209,7 +1233,7 @@ impl Checker<'_> {
     }
 
     /// The bytes of the body of the message this body handles, when its type has one.
-    fn arrived_body(&self, cx: &Cx) -> Option<u64> {
+    pub(super) fn arrived_body(&self, cx: &Cx) -> Option<u64> {
         let arrived = cx
             .scopes
             .iter()
@@ -1459,6 +1483,7 @@ impl Checker<'_> {
                 if !self.stated_bytes(*format, "items", span) {
                     return Ty::Unknown;
                 }
+                let before = self.diagnostics.len();
                 for e in &o {
                     self.operand(cx, *e, &Ty::AnyInt, "an operand of `items`");
                 }
@@ -1466,7 +1491,32 @@ impl Checker<'_> {
                     (2, Some(n)) => Count::Known(n),
                     _ => Count::Unknown,
                 };
-                let size = parts[3].map_or(Count::Unknown, |b| count_of(cx, b));
+                // the size of an item: a constant expression
+                let size = match parts[3] {
+                    Some(b) if self.diagnostics.len() == before => {
+                        let look = |n: &Ident| constant_name(cx, n);
+                        match consts::eval(b, false, &look) {
+                            Err(Fault::NotParam(span, _) | Fault::NotConstant(span)) => {
+                                self.error(
+                                    codes::WRONG_TYPE,
+                                    "the size of an item is a constant expression".into(),
+                                    span,
+                                );
+                                Count::Unknown
+                            }
+                            _ => match self.constant_at(
+                                b,
+                                ScalarType::U32,
+                                "the size of an item",
+                                &look,
+                            ) {
+                                Some(Num::Int(n)) => Count::Known(n as u64),
+                                _ => Count::Unknown,
+                            },
+                        }
+                    }
+                    _ => Count::Unknown,
+                };
                 Ty::Items(count, size)
             }
             // the body of a message, read as u32 scalars

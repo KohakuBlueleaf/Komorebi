@@ -490,6 +490,24 @@ fn a_module_with_all_gather_round_trips() {
     assert!(loaded == module, "loaded, another module");
 }
 
+/// A store of scalars, of each of its three values (a scalar, a state member named
+/// whole, the words of a tile), is written, read back and loaded as built.
+#[test]
+fn a_module_with_a_store_of_scalars_round_trips() {
+    let path = golden_dir().join("constructs/c03_store_scalars.kom");
+    let text = std::fs::read_to_string(&path).expect("a corpus file is readable");
+    let module = built(&text);
+    let printed = print(&module);
+    assert_eq!(printed.matches("StoreScalars").count(), 3, "{printed}");
+    let bytes = encode(&module);
+    let back = decode(&bytes).expect("read back");
+    assert!(back == module, "the module read back differs");
+    assert_eq!(print(&back), printed);
+    assert!(encode(&back) == bytes, "written again, other bytes");
+    let loaded = komorebi_ir::api::load(&bytes).expect("loads");
+    assert!(loaded == module, "loaded, another module");
+}
+
 #[test]
 fn derived_parts_that_derive_does_not_give_are_refused() {
     let module = built(&lesson("t13_hinted"));

@@ -14,6 +14,7 @@ mod forms;
 
 use std::collections::HashMap;
 
+use crate::check::consts::{self, Known, Num};
 use crate::check::Checked;
 use crate::program::derive::{Cause, ChainDeps, Effects, Requirement};
 use crate::program::notes::{Anchor, Hint, HintArg, Notes, Owner, SourceSpan};
@@ -182,6 +183,16 @@ fn unquote(text: &str) -> String {
         .to_string()
 }
 
+/// The whole number the bits of an integer of type `s` stand for.
+fn signed(s: ScalarType, bits: u64) -> i128 {
+    let width = s.bits();
+    if s.is_signed() && width < 128 && bits >> (width - 1) & 1 == 1 {
+        bits as i128 - (1i128 << width)
+    } else {
+        bits as i128
+    }
+}
+
 /// The constant a literal (or a negated one) writes, of type `ty`.
 fn literal(e: &ast::Expr, ty: Option<ScalarType>) -> Option<ConstValue> {
     match &e.kind {
@@ -253,7 +264,8 @@ impl<'c> Cx<'c> {
         }
     }
 
-    /// A count the text writes: a number, or a module parameter.
+    /// A count the text writes: a number, a module parameter, or a constant expression
+    /// (its value from the checker's evaluator).
     fn count(&self, e: &ast::Expr) -> Res<Count> {
         match &e.kind {
             ExprKind::Int(t) => match int_value(t).and_then(|v| u64::try_from(v).ok()) {
@@ -266,8 +278,25 @@ impl<'c> Cx<'c> {
                 Some((p, _, _)) => Ok(Count::Param(*p)),
                 None => refuse(e.span, "a count that is neither a number nor a parameter"),
             },
-            _ => refuse(e.span, "a count that is neither a number nor a parameter"),
+            _ => match self.constant(e) {
+                Some(n) => Ok(Count::Const(n)),
+                None => refuse(e.span, "a count that is not a constant expression"),
+            },
         }
+    }
+
+    /// The value of a constant expression at a `u32` place (a count, a rank, a grid
+    /// side), by the checker's evaluator.
+    fn constant(&self, e: &ast::Expr) -> Option<u64> {
+        let look = |n: &ast::Ident| match self.params.get(&n.name) {
+            Some((_, _, Some(ConstValue::Int(s, bits)))) => {
+                Known::Build(Some(Num::Int(signed(*s, *bits))))
+            }
+            Some((_, _, Some(ConstValue::Float(_, v)))) => Known::Build(Some(Num::Float(*v))),
+            Some(_) => Known::Unbuilt,
+            None => Known::NotParam,
+        };
+        consts::count(e, &look)
     }
 
     fn scalar_type(&self, ty: &ast::Type) -> Res<ScalarType> {
@@ -377,11 +406,12 @@ impl<'c> Cx<'c> {
             match item {
                 Item::Param(p) => {
                     let ty = self.scalar_type(&p.ty)?;
-                    let build = attr_args(&p.attrs, "bind")
-                        .iter()
-                        .any(|a| matches!(&a.value.kind, ExprKind::Name(n) if n.name == "build"));
-                    let value = match &p.value {
-                        ast::ParamValue::Expr(e) if build => literal(e, Some(ty)),
+                    // a build parameter's value, as the checker computed it
+                    let value = match self.checked.decls.params.get(param_index as usize) {
+                        Some(crate::check::decls::Param {
+                            binding: Binding::Build(v),
+                            ..
+                        }) => Some(*v),
                         _ => None,
                     };
                     self.params
@@ -529,18 +559,13 @@ impl<'c> Cx<'c> {
                     let dims: Vec<Option<u64>> = index
                         .values()
                         .map(|i| match i {
-                            ast::IndexItem::At(e) => match &e.kind {
-                                ExprKind::Int(t) => {
-                                    int_value(t).and_then(|v| u64::try_from(v).ok())
-                                }
-                                _ => None,
-                            },
+                            ast::IndexItem::At(e) => self.constant(e),
                             ast::IndexItem::Slice { .. } => None,
                         })
                         .collect();
                     return match dims.as_slice() {
                         [Some(r), Some(c)] => Ok(On::Grid(*r, *c)),
-                        _ => refuse(arg.span, "a grid that is not two numbers"),
+                        _ => refuse(arg.span, "a grid that is not two constant expressions"),
                     };
                 }
             }
@@ -549,10 +574,7 @@ impl<'c> Cx<'c> {
     }
 
     fn peers(&self, attrs: &[Attr]) -> Res<Peers> {
-        let number = |e: &ast::Expr| match &e.kind {
-            ExprKind::Int(t) => int_value(t).and_then(|v| u64::try_from(v).ok()),
-            _ => None,
-        };
+        let number = |e: &ast::Expr| self.constant(e);
         if let Some(arg) = attr_args(attrs, "peers").first() {
             let name = arg.name.as_ref().map(|n| n.name.as_str());
             let ExprKind::List(items) = &arg.value.kind else {
@@ -718,7 +740,7 @@ impl<'c> Cx<'c> {
                     }
                     Ok(())
                 }
-                Item::Param(p) => self.param(p).map(|x| {
+                Item::Param(p) => self.param(p, ParamId(out.params.len() as u32)).map(|x| {
                     let at = ParamId(out.params.len() as u32);
                     self.note_item(Anchor::Param(at), p.span, &p.attrs);
                     out.params.push(x);
@@ -792,33 +814,16 @@ impl<'c> Cx<'c> {
         out
     }
 
-    fn param(&self, p: &ast::Param) -> Res<pg::Param> {
-        let ty = self.scalar_type(&p.ty)?;
-        let how = attr_args(&p.attrs, "bind")
-            .first()
-            .and_then(|a| match &a.value.kind {
-                ExprKind::Name(n) => Some(n.name.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let value = match &p.value {
-            ast::ParamValue::Expr(e) => match literal(e, Some(ty)) {
-                Some(v) => Some(v),
-                None => return refuse(e.span, "a parameter's value that is not a constant"),
-            },
-            ast::ParamValue::Fit(_) => None,
-        };
-        let binding = match (how.as_str(), value) {
-            ("build", Some(v)) => Binding::Build(v),
-            ("load", v) => Binding::Load(v),
-            ("invoke", Some(v)) => Binding::Invoke(v),
-            _ => return refuse(p.span, "a parameter bound in no way Lower knows"),
-        };
-        Ok(pg::Param {
-            name: p.name.name.clone(),
-            ty,
-            binding,
-        })
+    /// The parameter at place `at`, its value as the checker's evaluator gave it.
+    fn param(&self, p: &ast::Param, at: ParamId) -> Res<pg::Param> {
+        match self.checked.decls.params.get(at.0 as usize) {
+            Some(d) => Ok(pg::Param {
+                name: p.name.name.clone(),
+                ty: d.ty,
+                binding: d.binding,
+            }),
+            None => refuse(p.span, "a parameter the checker did not read"),
+        }
     }
 
     fn func(

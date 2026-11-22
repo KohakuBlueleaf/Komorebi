@@ -1009,6 +1009,11 @@ impl Writer {
                 self.u32(a.0);
                 self.u32(b.0);
             }
+            Op::StoreScalars(a, from) => {
+                t(self, "StoreScalars");
+                self.u32(a.0);
+                self.scalars_from(from);
+            }
             Op::BlockAt(a, b) => {
                 t(self, "BlockAt");
                 self.u32(a.0);

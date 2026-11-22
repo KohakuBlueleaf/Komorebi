@@ -17,7 +17,7 @@ use super::env::{is_named, parse_int, Declared, Env, Names, Place};
 use super::op::OpKind;
 use super::views::peers_of;
 use super::{Checker, LocalKind, Name, Word};
-use crate::types::{MemberId, UnaryOp};
+use crate::types::{MemberId, ParamId, UnaryOp};
 
 /// The kind of body being checked: it decides which operations it may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -412,6 +412,15 @@ pub(super) fn count_of(cx: &Cx, e: &Expr) -> Count {
     Count::Unknown
 }
 
+/// What a name stands for in a constant expression of a body: none where a local or a
+/// state member of the body hides it, else the module parameter's.
+pub(super) fn constant_name(cx: &Cx, n: &Ident) -> super::consts::Known {
+    if cx.lookup(&n.name).is_some() || cx.state(&n.name).is_some() {
+        return super::consts::Known::NotParam;
+    }
+    cx.env.ix.known(&n.name, None)
+}
+
 /// Whether `e` names a `var` (a handler's block of one row from `zeros`, R48).
 fn block_var(cx: &Cx, e: &Expr) -> bool {
     as_name(e)
@@ -451,6 +460,7 @@ pub(super) fn is_word_member(expr: &Expr, word: &str, name: &str) -> bool {
 impl Checker<'_> {
     /// Checks every body of the module.
     pub(crate) fn bodies(&mut self, module: &Module, env: &Env) {
+        let mut at = 0;
         for item in module.items.nodes() {
             match item {
                 Item::Func(f) | Item::Combine(f) => self.func(env, f),
@@ -459,11 +469,20 @@ impl Checker<'_> {
                 Item::Control(c) => self.control(env, c),
                 Item::Param(p) => {
                     if let crate::syntax::ast::ParamValue::Expr(value) = &p.value {
+                        let before = self.diagnostics.len();
                         let mut cx = self.cx(env, Kind::Chain, None);
                         let ty = self.expr(&mut cx, value);
                         let want = env.params.get(&p.name.name).cloned().unwrap_or(Ty::Unknown);
                         self.fit(value, &ty, &want, "the parameter's value");
+                        // a constant expression, naming only the parameters bound at
+                        // build declared before it, of a value its type holds
+                        if let (Ty::Scalar(s), true) = (want, self.diagnostics.len() == before) {
+                            let place = ParamId(at);
+                            let look = |n: &Ident| env.ix.known(&n.name, Some(place));
+                            self.constant_at(value, s, "the parameter's value", &look);
+                        }
                     }
+                    at += 1;
                 }
                 _ => {}
             }
@@ -651,7 +670,11 @@ impl Checker<'_> {
     }
 
     pub(super) fn run(&mut self, env: &Env, program: &str, r: &Run, params: &[Ty]) {
-        let peers = r.attrs.iter().find(|a| is_named(a, "peers")).map(peers_of);
+        let peers = r
+            .attrs
+            .iter()
+            .find(|a| is_named(a, "peers"))
+            .map(|a| peers_of(a, &env.ix));
         for part in r.body.nodes() {
             let (kind, block, on) = match part {
                 RunPart::Seed(block) => (Kind::Seed, block, None),
@@ -1431,11 +1454,9 @@ impl Checker<'_> {
             return;
         }
         match &got {
-            Ty::Scalar(_) | Ty::Number(_) => self.error(
-                codes::NOT_BUILT,
-                "a store of scalars is named in the language and not built yet".into(),
-                span,
-            ),
+            Ty::Scalar(_) | Ty::Number(_) | Ty::Scalars(..) | Ty::Words(_) => {
+                self.store_scalars(cx, &want, value, &got, span)
+            }
             Ty::Tile(_) => {
                 if let Ty::View {
                     format: Some(f), ..
@@ -1492,6 +1513,97 @@ impl Checker<'_> {
                 format!("a store writes a tile, and this is {other}"),
                 value.span,
             ),
+        }
+    }
+
+    /// A store of scalars, the mirror of `.words()`: one scalar, a state member of
+    /// scalars named whole, or the words of a tile, written into the one tile the view
+    /// names (`K102` for a view the text shows to hold more), of a format with stated
+    /// bytes (`K208`), of the format's scalar type (`K102`), no more than the tile
+    /// holds where the text shows the count (`K115`).
+    fn store_scalars(&mut self, cx: &Cx, want: &Ty, value: &Expr, got: &Ty, span: Span) {
+        let Ty::View { format, tiles } = want else {
+            return;
+        };
+        if tiles.more_than_one() {
+            self.error(
+                codes::WRONG_TYPE,
+                "a store of scalars writes one tile, and this view holds more".into(),
+                span,
+            );
+            return;
+        }
+        if !self.stated_bytes(*format, "store", span) {
+            return;
+        }
+        let Some(s) = format.and_then(Format::as_scalar) else {
+            return;
+        };
+        let member = as_name(value)
+            .filter(|n| cx.lookup(&n.name).is_none())
+            .and_then(|n| cx.member_name(&n.name))
+            .is_some();
+        let (elem, count) = match got {
+            Ty::Scalar(_) | Ty::Number(_) => {
+                self.fit(value, got, &Ty::Scalar(s), "the scalar stored");
+                return;
+            }
+            Ty::Scalars(elem, count) if member => ((**elem).clone(), *count),
+            Ty::Words(w) => {
+                // `v.words()` of a view: the module tile's rows times columns; `b.words()`
+                // of a message's body: its body's words; words named by a local: not shown
+                let base = match &value.kind {
+                    ExprKind::Call { callee, .. } => match &callee.kind {
+                        ExprKind::Member { base, .. } => {
+                            self.types.get(&(base.span.start, base.span.end)).cloned()
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let count = match base {
+                    Some(Ty::View { .. }) => cx
+                        .env
+                        .tile
+                        .map_or(Count::Unknown, |(r, c)| Count::Known(r * c)),
+                    Some(Ty::Body) => self
+                        .arrived_body(cx)
+                        .map_or(Count::Unknown, |b| Count::Known(b / 4)),
+                    _ => Count::Unknown,
+                };
+                (w.map_or(Ty::Unknown, Ty::Scalar), count)
+            }
+            other => {
+                self.error(
+                    codes::WRONG_TYPE,
+                    format!(
+                        "a store of scalars writes a scalar, a state member of scalars or the \
+                         words of a tile, and this is {other}"
+                    ),
+                    value.span,
+                );
+                return;
+            }
+        };
+        if elem != Ty::Unknown && elem != Ty::Scalar(s) {
+            self.error(
+                codes::WRONG_TYPE,
+                format!("the scalars stored are {elem}, and the tensor's format holds {s}"),
+                value.span,
+            );
+            return;
+        }
+        if let (Count::Known(k), Some((rows, cols))) = (count, cx.env.tile) {
+            if k > rows * cols {
+                self.error(
+                    codes::OUT_OF_RANGE,
+                    format!(
+                        "{k} scalars stored into one tile, which holds {}",
+                        rows * cols
+                    ),
+                    value.span,
+                );
+            }
         }
     }
 

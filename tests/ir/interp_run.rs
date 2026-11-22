@@ -1452,6 +1452,292 @@ fn a_word_past_the_bodys_end_fails_out_of_range() {
 }
 
 #[test]
+fn a_scalar_stored_is_the_tiles_first_word_and_the_rest_are_zero() {
+    let m = module(&construct("c03_store_scalars"));
+    let mut run = Machine::load(&m, 3, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::U32, (7, 1), |_, _| 0.0);
+    let y = tensor(&mut run, Format::U32, (3, 1), |_, _| 5.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(7))];
+    assert_eq!(
+        run.invoke("Counted.blocks", &args, (0, 3), &[]),
+        End::Completed(None)
+    );
+    // seven tiles over three workers: three, two, two blocks
+    for (w, count) in [3, 2, 2].into_iter().enumerate() {
+        let mut want = vec![0i128; 16];
+        want[0] = count;
+        assert_eq!(tile_ints(&run, y, w), want, "worker {w}");
+    }
+}
+
+#[test]
+fn a_state_member_stored_is_the_tiles_first_words() {
+    let m = module(&construct("c03_store_scalars"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let y = tensor(&mut run, Format::U32, (2, 1), |_, _| 5.0);
+    assert_eq!(
+        run.invoke("Counted.notes", &[Arg::Tensor(y)], (0, 2), &[]),
+        End::Completed(None)
+    );
+    for w in 0..2 {
+        let mut want = vec![0i128; 16];
+        want[..4].copy_from_slice(&[w as i128, 2, 7, 9]);
+        assert_eq!(tile_ints(&run, y, w), want, "worker {w}");
+    }
+}
+
+#[test]
+fn the_words_of_a_tile_stored_copy_the_tile() {
+    let m = module(&construct("c03_store_scalars"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::U32, (2, 1), |i, k| (100 * i + k) as f64);
+    let y = tensor(&mut run, Format::U32, (2, 1), |_, _| 5.0);
+    assert_eq!(
+        run.invoke(
+            "Counted.copy",
+            &[Arg::Tensor(x), Arg::Tensor(y)],
+            (0, 2),
+            &[]
+        ),
+        End::Completed(None)
+    );
+    for w in 0..2 {
+        assert_eq!(tile_ints(&run, y, w), tile_ints(&run, x, w), "worker {w}");
+    }
+}
+
+const TOO_MANY: &str = "module many
+
+tile [4, 4]
+format u32
+
+param ROOM: u32 = 32 @bind(load)
+
+program M {
+    state @scope(worker) @lifetime(program) {
+        note: u32[ROOM]
+    }
+
+    handler put(y: tensor<u32>) @on(group) {
+        note.zero()
+        store y.tiles(worker.rank, 1) <- note
+    }
+}
+";
+
+#[test]
+fn a_parameters_value_is_its_expression() {
+    let m = module(
+        "module sized
+
+tile [4, 4]
+format u32
+
+param D: u32 = 3 @bind(build)
+param H: u32 = 2 * D + 1 @bind(build)
+
+program S {
+    handler height(x: tensor<u32>) -> u32 @on(group) {
+        return H
+    }
+}
+",
+    );
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::U32, (1, 1), |_, _| 0.0);
+    assert_eq!(
+        run.invoke("S.height", &[Arg::Tensor(x)], (0, 2), &[]),
+        End::Completed(Some(u32s(7)))
+    );
+}
+
+const PLACED: &str = "module placed
+
+tile [4, 4]
+format u32
+
+requires {
+    group = grid
+}
+
+param R: u32 = 2 @bind(build)
+param C: u32 = 2 @bind(build)
+
+program G {
+    handler place(y: tensor<u32>) @on(grid[SIDES]) {
+        store y.tiles(worker.rank, 1) <- worker.row * 100 + worker.col
+    }
+}
+";
+
+#[test]
+fn a_grid_given_by_expressions_runs_as_its_numbers_do() {
+    let tiles = |sides: &str| {
+        let m = module(&PLACED.replace("SIDES", sides));
+        let mut run = Machine::load(&m, 8, &[], Options::default()).expect("loads");
+        let y = tensor(&mut run, Format::U32, (8, 1), |_, _| 5.0);
+        assert_eq!(
+            run.invoke("G.place", &[Arg::Tensor(y)], (0, 8), &[]),
+            End::Completed(None)
+        );
+        (0..8)
+            .map(|i| tile_ints(&run, y, i)[0])
+            .collect::<Vec<i128>>()
+    };
+    let by_numbers = tiles("2, 4");
+    assert_eq!(by_numbers, [0, 1, 2, 3, 100, 101, 102, 103]);
+    assert_eq!(tiles("R, 2 * C"), by_numbers);
+}
+
+const PEERED: &str = "module peered
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+param G: u32 = 2 @bind(build)
+param Z: u32 = 0 @bind(build)
+
+program R {
+    message Tick { step: u32, gap: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        seen: u32[1]
+    }
+
+    run ring(gap: u32) @dynamic @peers(offsets = [G - 1]) {
+        seed {
+            seen.zero()
+            if worker.is_leader {
+                let went = offer(Tick { step: 0, gap: gap }, to = (worker.rank + gap) % group.size)
+            }
+        }
+
+        on Tick(m) {
+            seen.bump(0)
+            consume m
+        }
+    }
+
+    run pair(to: u32) @dynamic @peers(pairs = [(Z, G + 1), (G + 1, Z)]) {
+        seed {
+            seen.zero()
+            if worker.is_leader {
+                let went = offer(Tick { step: 0, gap: 0 }, to = to)
+            }
+        }
+
+        on Tick(m) {
+            seen.bump(0)
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn peers_given_by_parameters_are_the_numbers() {
+    let m = module(PEERED);
+    assert_eq!(
+        m.programs[0]
+            .runs
+            .iter()
+            .map(|r| r.peers.clone())
+            .collect::<Vec<_>>(),
+        [
+            komorebi_ir::types::Peers::Offsets(vec![1]),
+            komorebi_ir::types::Peers::Pairs(vec![(0, 3), (3, 0)]),
+        ]
+    );
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    // the offset G - 1 is 1: a tick to the next rank arrives
+    assert_eq!(
+        run.invoke("R.ring", &[Arg::Scalar(u32s(1))], (0, 4), &[]),
+        End::Completed(None)
+    );
+    assert_eq!(scalars(&run, 1, 0), [u32s(1)]);
+    // rank 2 is no peer of rank 0
+    let End::Failed {
+        reason: Failure::NotAPeer,
+        at: Some((0, _, _)),
+    } = run.invoke("R.ring", &[Arg::Scalar(u32s(2))], (0, 4), &[])
+    else {
+        panic!("an offer to a rank that is not a peer");
+    };
+    // the pair (Z, G + 1) is (0, 3)
+    assert_eq!(
+        run.invoke("R.pair", &[Arg::Scalar(u32s(3))], (0, 4), &[]),
+        End::Completed(None)
+    );
+    assert_eq!(scalars(&run, 3, 0), [u32s(1)]);
+    let End::Failed {
+        reason: Failure::NotAPeer,
+        at: Some((0, _, _)),
+    } = run.invoke("R.pair", &[Arg::Scalar(u32s(1))], (0, 4), &[])
+    else {
+        panic!("an offer to a rank that is not a pair");
+    };
+}
+
+#[test]
+fn a_count_given_by_an_expression() {
+    let m = module(
+        "module counted
+
+tile [4, 4]
+format u32
+
+param N: u32 = 4 @bind(build)
+
+program C {
+    state @scope(worker) @lifetime(program) {
+        seen: u32[N * 2] @filled(element)
+    }
+
+    handler last(x: tensor<u32>) -> u32 @on(group) {
+        seen[N * 2 - 1] = worker.rank + 40
+        return seen[N * 2 - 1]
+    }
+}
+",
+    );
+    assert_eq!(m.programs[0].state[0].count, Count::Const(8));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::U32, (1, 1), |_, _| 0.0);
+    assert_eq!(
+        run.invoke("C.last", &[Arg::Tensor(x)], (0, 2), &[]),
+        End::Completed(Some(u32s(40)))
+    );
+    assert_eq!(scalars(&run, 1, 0)[7], u32s(41));
+}
+
+#[test]
+fn scalars_past_the_tiles_end_fail_out_of_range() {
+    let m = module(TOO_MANY);
+    // 32 scalars, and a tile of [4, 4] holds 16
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    let y = tensor(&mut run, Format::U32, (1, 1), |_, _| 5.0);
+    let End::Failed {
+        reason: Failure::OutOfRange,
+        at: Some((0, BodyRef::Handler(..), _)),
+    } = run.invoke("M.put", &[Arg::Tensor(y)], (0, 1), &[])
+    else {
+        panic!("more scalars than the tile holds");
+    };
+    // sixteen fit
+    let mut run = Machine::load(&m, 1, &[("ROOM", u32s(16))], Options::default()).expect("loads");
+    let y = tensor(&mut run, Format::U32, (1, 1), |_, _| 5.0);
+    assert_eq!(
+        run.invoke("M.put", &[Arg::Tensor(y)], (0, 1), &[]),
+        End::Completed(None)
+    );
+    assert_eq!(tile_ints(&run, y, 0), vec![0i128; 16]);
+}
+
+#[test]
 fn a_message_body_must_handle_its_message_once() {
     use komorebi_ir::program::body::Op;
     use komorebi_ir::types::MemberId;

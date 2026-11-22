@@ -1,0 +1,13 @@
+// refused: a constant expression divides by zero (Module)
+module sizes
+
+tile [32, 32]
+format f32
+
+param D: u32 = 4 @bind(build)
+param H: u32 = 8 / (D - 4) @bind(build)
+
+program P {
+    handler h(x: tensor<f32>) @on(group) {
+    }
+}

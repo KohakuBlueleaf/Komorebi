@@ -1572,6 +1572,42 @@ pub fn store(heap: &mut Heap, v: &View, value: &Block) -> Result<(), Fault> {
     write_tiles(heap, v.tensor, &numbers, &value.tiles)
 }
 
+/// `store view <- scalars`, the mirror of `v.words()`: the view names one tile (else
+/// the failure `words()` gives); its first k scalars, in the order `words()` reads
+/// them, are the k given, every other scalar of the tile is 0, and the whole tile is
+/// written. More scalars than the tile holds: `out_of_range`.
+pub fn store_scalars(heap: &mut Heap, v: &View, scalars: &[Scalar]) -> Result<(), Fault> {
+    if v.len() != 1 || !matches!(v.kind, ViewKind::Tiles(_)) {
+        return Err(Fault::undefined(format!(
+            "`words()` of a view of {} tiles",
+            v.len()
+        )));
+    }
+    let tensor = heap.get(v.tensor)?;
+    let (format, shape) = (tensor.format, tensor.tile);
+    if format.as_scalar().is_none() {
+        return Err(Fault::undefined(format!("the words of a tile of {format}")));
+    }
+    if scalars.len() > shape.count() {
+        return out_of_range();
+    }
+    let mut tile = Tile::zeros(format, shape);
+    for (i, s) in scalars.iter().enumerate() {
+        match (&mut tile.elements, *s) {
+            (Elements::Int(xs), Scalar::Int(f, bits)) if f == format => xs[i] = bits,
+            (Elements::F32(xs), Scalar::F32(f, x)) if f == format => xs[i] = x,
+            (Elements::F64(xs), Scalar::F64(x)) => xs[i] = x,
+            _ => {
+                return Err(Fault::undefined(format!(
+                    "a scalar stored into a tile of {format} of another type"
+                )))
+            }
+        }
+    }
+    let numbers = tile_walk(v)?.tiles();
+    write_tiles(heap, v.tensor, &numbers, &[tile])
+}
+
 // ---- State ----
 
 fn index_of(member: &Member, i: usize) -> Result<(), Fault> {

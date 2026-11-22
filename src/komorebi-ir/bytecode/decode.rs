@@ -1019,6 +1019,7 @@ impl<'b> Reader<'b> {
             "Sink" => Op::Sink(self.value()?, self.value()?),
             "Push" => Op::Push(self.value()?, self.value()?),
             "Store" => Op::Store(self.value()?, self.value()?),
+            "StoreScalars" => Op::StoreScalars(self.value()?, self.scalars_from()?),
             "BlockAt" => Op::BlockAt(self.value()?, self.value()?),
             "Fill" => Op::Fill(MemberId(self.u32()?), self.value()?),
             "ZeroState" => Op::ZeroState(MemberId(self.u32()?)),

@@ -1,0 +1,13 @@
+// refused: a parameter is named before its own declaration (Module)
+module sizes
+
+tile [32, 32]
+format f32
+
+param H: u32 = 2 * D @bind(build)
+param D: u32 = 4 @bind(build)
+
+program P {
+    handler h(x: tensor<f32>) @on(group) {
+    }
+}

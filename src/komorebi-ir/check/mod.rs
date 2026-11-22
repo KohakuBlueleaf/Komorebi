@@ -9,6 +9,7 @@ pub mod codes;
 
 mod attrs;
 mod body;
+pub(crate) mod consts;
 pub mod decls;
 mod env;
 mod index;
@@ -206,7 +207,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         on_blocks: false,
     };
     let env = checker.collect(&module);
-    checker.module_rules(&module);
+    checker.module_rules(&module, &env.ix);
     checker.bodies(&module, &env);
     // A tile read through a view of no format takes the format its place states (R35);
     // one whose place states none has no format, and is refused.
