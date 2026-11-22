@@ -131,7 +131,7 @@ interior 67 and 88, 373 MB; Bistro exterior 133 and 208, 1,007 MB.
 
 ## Lighting
 
-Sponza and the Bistro interior also have the data of `rasterize_lighted`
+Sponza and the two Bistro scenes also have the data of `rasterize_lighted`
 (`projects/raster/reference/README.md`, "Lighting"):
 
 ```sh
@@ -142,11 +142,12 @@ It downloads the scene's environment map (the table's `environments`: one HDR ma
 entry, its page, licence and SHA-256; the file is saved in `downloads/` like the scene
 files and never committed), bakes the sky visibility per vertex (`<scene>_visibility.npz`,
 reused unless `--rebake`; `--workers` processes), finds the lamps, renders the sun's
-shadow map and writes `<scene>_lighting.npz`. The map used:
+shadow map and writes `<scene>_lighting.npz`. The maps used:
 
 | name | page | licence |
 |---|---|---|
 | `kloppenheim_05` | https://polyhaven.com/a/kloppenheim_05 (1k HDR) | CC0 |
+| `san_giuseppe_bridge` | https://polyhaven.com/a/san_giuseppe_bridge (1k HDR; the exterior's own map in the package) | CC0 |
 
 A scene's `lighting` entry holds its numbers:
 
@@ -162,13 +163,26 @@ A scene's `lighting` entry holds its numbers:
 | `emissive_scale` | the factor of an emissive material's colour |
 | `exposure` | the factor before `x / (1 + x)` |
 | `shadow_bias` | the shadow test's bias, in shadow texels |
+| `lights` (optional) | authored point lights, each `{"position", "colour"}`; they replace the emissive groups, each of intensity `lamp_scale` (an empty list: none) |
+| `sun` (optional) | an authored sun, `{"direction"` it shines along`, "colour"}`; the map is turned so its sun's azimuth matches, and `turn` is not used |
 
 Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,
 0.33, 0.30 (the courtyard's sky visibility per vertex is low, so bounced light is most
 of the shade), `shadow_bias` 3 (with the 2 x 2 filter; 1 left acne on the fabrics),
-no lamps;
-Bistro interior `ambient` 0.01, `lamp_scale` 8, `merge_distance` 30, `radius` 600,
-`size` 10; both `exposure` 1 and `emissive_scale` 1.
+no lamps. Bistro interior: the four authored point lights, `lamp_scale` 100,000,
+`radius` 900, `size` 10, `ambient` 0.01, `emissive_scale` 6, `exposure` 1. Bistro
+exterior: the authored sun, the `san_giuseppe_bridge` map, no point lights (`lights`
+empty), `sun_to_sky` 5, `ambient` 0.3, `exposure` 1.
+
+The Bistro's `lights` and `sun` are numbers taken from the scene's original package
+(Amazon Lumberyard Bistro, Open Research Content Archive (ORCA), (c) 2017 Amazon
+Lumberyard, CC BY 4.0; its FBX files, read once and converted to this scene's
+coordinates: interior x 100, exterior x 62.5): the interior's four point lights, one
+in each ceiling lamp, colour (0.702, 0.566, 0.310), and the exterior's directional
+light, colour (0.734, 0.583, 0.377), shining along (0, -0.876, -0.482). The package
+gives an intensity whose unit is not verified, so brightness is `lamp_scale` and
+`sun_to_sky` here. Its README says the analytic lights are for rasterizing and the
+emissive surfaces for ray tracing.
 
 ## Limits
 

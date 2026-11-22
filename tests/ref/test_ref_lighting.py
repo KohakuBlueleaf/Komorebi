@@ -56,3 +56,25 @@ def test_floor_under_a_box_is_shadowed_and_lit_beside_it():
     np.testing.assert_array_equal(one_tap, [0, 0, 1, 1])
     outside = lights.sun_shadow(state, np.array([[90, 0, 0]], dtype=F), up[:1])
     assert outside[0] == 1
+
+
+def test_authored_lights_replace_the_emissive_groups():
+    positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=F)
+    scene = {"positions": positions, "indices": np.array([[0, 1, 2]], np.int32)}
+    materials = {
+        "material": np.array([0], np.int32),
+        "kind": np.array([4], np.int32),
+        "base_colour": np.ones((1, 3), F),
+        "textures": np.full((1, 4), -1, np.int32),
+    }
+    entry = {"merge_distance": 1.0, "lamp_scale": 7.0}
+    position, _, intensity, _ = lights.scene_lamps(entry, scene, materials)
+    assert len(position) == 1 and intensity[0] == F(7.0 * 0.5)
+    entry["lights"] = [
+        {"position": [5, 6, 7], "colour": [1, 0.5, 0.25]},
+        {"position": [-1, 2, 3], "colour": [0.2, 0.2, 0.2]},
+    ]
+    position, colour, intensity, _ = lights.scene_lamps(entry, scene, materials)
+    np.testing.assert_array_equal(position, [[5, 6, 7], [-1, 2, 3]])
+    np.testing.assert_array_equal(colour[0], F([1, 0.5, 0.25]))
+    np.testing.assert_array_equal(intensity, [7.0, 7.0])

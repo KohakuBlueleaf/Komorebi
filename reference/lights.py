@@ -400,6 +400,40 @@ def scene_tree(name, data, mesh):
     return bvh.build(mesh, split="median")
 
 
+def scene_lamps(entry, scene, materials):
+    """The point lights of a `lighting` entry: its authored `lights` (position,
+    colour), each of intensity `lamp_scale`, when it has them; else `find_lamps`
+    (the emissive groups). Positions, colours, intensities and counts."""
+    if "lights" not in entry:
+        return find_lamps(
+            scene, materials, entry["merge_distance"], entry["lamp_scale"]
+        )
+    lights = entry["lights"]
+    position = np.array([light["position"] for light in lights], dtype=np.float32)
+    colour = np.array([light["colour"] for light in lights], dtype=np.float32)
+    intensity = np.full(len(lights), entry["lamp_scale"], dtype=np.float32)
+    return position, colour, intensity, {"authored_lights": len(lights)}
+
+
+def scene_sun(entry, env_path):
+    """The `environment` of a `lighting` entry and its turn (degrees). With an
+    authored `sun` (direction it shines along, colour), the map is turned so its
+    sun's azimuth is the authored one, and the sun is the authored one."""
+    if "sun" not in entry:
+        return environment(env_path, entry["turn"]), float(entry["turn"])
+    own = environment(env_path, 0.0)["sun_direction"].astype(np.float64)
+    to_sun = -np.asarray(entry["sun"]["direction"], dtype=np.float64)
+    to_sun /= np.linalg.norm(to_sun)
+    turn = float(
+        np.degrees(np.arctan2(own[2], own[0]) - np.arctan2(to_sun[2], to_sun[0]))
+    )
+    env = environment(env_path, turn)
+    colour = np.asarray(entry["sun"]["colour"], dtype=np.float64)
+    env["sun_direction"] = to_sun.astype(np.float32)
+    env["sun_colour"] = (colour / (colour @ LUMINANCE)).astype(np.float32)
+    return env, turn
+
+
 def prepare(name, data, workers=4, rebake=False):
     """Fetches the scene's environment map, bakes visibility (kept in
     <scene>_visibility.npz; rebake to trace again), lamps and the shadow map, and
@@ -428,7 +462,7 @@ def prepare(name, data, workers=4, rebake=False):
     with np.load(vis_path) as f:
         visibility, bake = f["visibility"], json.loads(str(f["counts"]))
     counts |= bake
-    env = environment(env_path, entry["turn"])
+    env, turn = scene_sun(entry, env_path)
     up = np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
     horizontal = sky_irradiance(env["sh"], up)[0]
     sun_irradiance = (
@@ -437,11 +471,9 @@ def prepare(name, data, workers=4, rebake=False):
     started = time.perf_counter()
     depth, camera, texel = shadow_map(mesh, env["sun_direction"], materials)
     counts["shadow_seconds"] = time.perf_counter() - started
-    position, colour, intensity, lamps = find_lamps(
-        mesh, materials, entry["merge_distance"], entry["lamp_scale"]
-    )
+    position, colour, intensity, lamps = scene_lamps(entry, mesh, materials)
     counts |= lamps
-    counts["sun_share"] = env["sun_share"]
+    counts["sun_share"], counts["turn"] = env["sun_share"], turn
     out = lighting_path(name, data)
     np.savez(
         out,
@@ -450,7 +482,7 @@ def prepare(name, data, workers=4, rebake=False):
         sun_direction=env["sun_direction"],
         sun_irradiance=sun_irradiance.astype(np.float32),
         environment=env["environment"],
-        turn=np.float32(entry["turn"]),
+        turn=np.float32(turn),
         shadow_map=depth,
         shadow_camera=camera,
         shadow_texel=texel,

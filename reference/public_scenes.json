@@ -11,6 +11,18 @@
      "bytes": 1466851
     }
    ]
+  },
+  "san_giuseppe_bridge": {
+   "title": "San Giuseppe Bridge",
+   "page": "https://polyhaven.com/a/san_giuseppe_bridge",
+   "licence": "CC0",
+   "files": [
+    {
+     "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/san_giuseppe_bridge_1k.hdr",
+     "sha256": "62e671eeed1e3780cd6697aea39eb6db8ebf5e574c01ab45bc05adff09fce604",
+     "bytes": 1567633
+    }
+   ]
   }
  },
  "conference": {
@@ -190,7 +202,13 @@
    }
   ],
   "materials": {"archives": {"BuildingTextures": "BuildingTextures.zip", "OtherTextures": "OtherTextures.zip", "PropTextures": "PropTextures.zip"}},
-  "lighting": {"environment": "kloppenheim_05", "turn": 0.0, "sun_to_sky": 5.0, "ambient": [0.01, 0.01, 0.01], "lamp_scale": 8.0, "merge_distance": 30.0, "radius": 600.0, "size": 10.0, "emissive_scale": 1.0, "exposure": 1.0, "shadow_bias": 1.0},
+  "lighting": {"environment": "kloppenheim_05", "turn": 0.0, "sun_to_sky": 5.0, "ambient": [0.01, 0.01, 0.01], "lamp_scale": 100000.0, "merge_distance": 30.0, "radius": 900.0, "size": 10.0, "emissive_scale": 6.0, "exposure": 1.0, "shadow_bias": 1.0,
+   "lights": [
+    {"position": [499.1, 303.1, -48.9], "colour": [0.702, 0.566, 0.31]},
+    {"position": [798.9, 307.4, 101.5], "colour": [0.702, 0.566, 0.31]},
+    {"position": [426.3, 309.5, -492.0], "colour": [0.702, 0.566, 0.31]},
+    {"position": [610.7, 293.9, -846.8], "colour": [0.702, 0.566, 0.31]}
+   ]},
   "light": [600.0, 330.0, -460.0],
   "views": {
    "overview": {"eye": [450.0, 260.0, -750.0], "target": [750.0, 150.0, -150.0], "fov": 75},
@@ -367,6 +385,7 @@
    }
   ],
   "materials": {"archives": {"BuildingTextures": "BuildingTextures.zip", "OtherTextures": "OtherTextures.zip", "PropTextures": "PropTextures.zip"}},
+  "lighting": {"environment": "san_giuseppe_bridge", "lights": [], "sun": {"direction": [0.0, -0.876, -0.482], "colour": [0.734, 0.583, 0.377]}, "sun_to_sky": 5.0, "ambient": [0.3, 0.3, 0.3], "lamp_scale": 1.0, "merge_distance": 50.0, "radius": 1000.0, "size": 10.0, "emissive_scale": 1.0, "exposure": 1.0, "shadow_bias": 3.0},
   "light": [-2000.0, 4000.0, 1000.0],
   "views": {
    "overview": {"eye": [-1100.0, 700.0, -100.0], "target": [200.0, 100.0, -2400.0], "fov": 70},

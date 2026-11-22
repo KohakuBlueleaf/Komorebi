@@ -279,7 +279,11 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    colour; its irradiance on a normal is the quadratic form of Ramamoorthi and
    Hanrahan (2001), clamped at 0. The sun's irradiance facing it is `sun_to_sky`
    times the sky's irradiance on a horizontal surface (its luminance), in the sun's
-   colour. `lights.environment` recomputes these from the file.
+   colour. `lights.environment` recomputes these from the file. When the entry has an
+   authored `sun` (the direction it shines along, its colour), the sun's direction
+   and colour are those; the map is turned about y so its own sun's azimuth equals
+   the authored one (`turn` is computed) and the sky still comes from the map with its
+   sun removed.
 2. **Sky visibility**, baked per vertex: the share of 64 cosine-weighted rays (fixed
    directions per vertex from the hash of `vertex x 64 + ray`) from the vertex, moved
    the scene's `eps` along its area-weighted normal, that leave the scene without a
@@ -304,6 +308,9 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    `lamp_scale` x its area. Irradiance at distance `d` on normal `n` toward `l`:
    `I max(0, n.l) / (d^2 + s^2) (1 - (d/r)^4)^2` for `d < r`, 0 from `r` on
    (`radius`, `size`). No shadows from point lights.
+   When the scene's entry has a list `lights` (authored point lights: position,
+   colour), the lamps are those instead, each of intensity `lamp_scale`; the emissive
+   groups are used only when `lights` is absent (an empty list: no lamps).
 5. **A pixel.** `a` = albedo x base colour as SHADE has it (`flat`: the base colour).
    The normal is the normal map's in the triangle's frame where the material has one
    and the frame is valid, else the triangle's normal turned toward the eye.
