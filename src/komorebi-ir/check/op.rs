@@ -115,6 +115,9 @@ pub enum OpKind {
     AllReduce(Combiner),
     /// `gather(x)`. Parts: `x`.
     Gather,
+    /// `all_gather(x, publish = [v])` in a handler (parts: `x`, `publish`), or
+    /// `all_gather(t)` in a control program (parts: `t`).
+    AllGather,
     /// `broadcast(along = ..., sender = c)`. Parts: `sender`.
     Broadcast(Axis),
     /// `br.is_sender`. Parts: `br`.

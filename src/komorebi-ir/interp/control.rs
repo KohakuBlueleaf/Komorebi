@@ -21,7 +21,7 @@ use super::memory::{
 };
 use super::ops;
 use super::workers::{
-    bodies, constant, Accesses, Collective, Context, Frame, IslandMap, Letter, Lines, Mail,
+    bodies, constant, Accesses, Collective, Context, Frame, IslandMap, Letter, Lines, Mail, Marks,
     Outcome, OverCopies, Place, Request, Shape, Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
@@ -282,6 +282,9 @@ pub struct Machine<'m> {
     islands: IslandMap,
     /// The copies of each replicated tensor, one for each island, by its copy 0.
     copies: BTreeMap<usize, Vec<TensorId>>,
+    /// The places of each replicated tensor's copies written since they were last
+    /// equal, with the islands that wrote them.
+    marks: Marks,
 }
 
 /// The bytes the interpreter holds an element of a format in: every float format but
@@ -380,6 +383,7 @@ impl<'m> Machine<'m> {
             races: Races::default(),
             islands,
             copies: BTreeMap::new(),
+            marks: Marks::default(),
         })
     }
 
@@ -447,6 +451,7 @@ impl<'m> Machine<'m> {
             .map(|_| self.heap.add(tensor.clone()))
             .collect();
         let first = ids.first().copied().unwrap_or(TensorId(usize::MAX));
+        self.marks.copies(&ids);
         self.copies.insert(first.0, ids);
         first
     }
@@ -812,6 +817,7 @@ impl<'m> Machine<'m> {
             races: &mut self.races,
             inv,
             islands: &self.islands,
+            marks: &mut self.marks,
         };
         let budget = self.options.step_budget;
         let mut spent = vec![0u64; count];
@@ -1049,6 +1055,7 @@ impl<'m> Machine<'m> {
                     races: &mut Races::default(),
                     inv: 0,
                     islands: &self.islands,
+                    marks: &mut Marks::default(),
                 };
                 // a control program has no worker: it reads no state and no identity
                 let mut nobody = Worker {
@@ -1208,7 +1215,9 @@ impl<'m> Machine<'m> {
                 ),
                 None => return Err(self.record(entry, None, invalid("`from` names no island"))),
             },
-            OverCopies::AllReduce { .. } => (copies.clone(), copies.clone()),
+            OverCopies::AllReduce { .. } | OverCopies::AllGather => {
+                (copies.clone(), copies.clone())
+            }
         };
         let n = self.races.begin(before, 1, self.report.ended.len());
         let tiles = match self.heap.get(t) {
@@ -1227,6 +1236,12 @@ impl<'m> Machine<'m> {
         }
         match self.fold_copies(&copies, over, tiles) {
             Ok(()) => {
+                match over {
+                    // it writes island `to`'s copy only: island `to` wrote every place
+                    OverCopies::ReduceTo { to, .. } => self.marks.all_by(t, tiles, to),
+                    // the copies are equal again
+                    _ => self.marks.clear(t),
+                }
                 self.record(entry, None, End::Completed(None));
                 Ok(n)
             }
@@ -1241,6 +1256,9 @@ impl<'m> Machine<'m> {
         over: OverCopies,
         tiles: usize,
     ) -> Result<(), Fault> {
+        if over == OverCopies::AllGather {
+            return self.gather_copies(copies);
+        }
         let module = self.module;
         let mut lines = Lines::new();
         let mut cx = Context {
@@ -1255,6 +1273,7 @@ impl<'m> Machine<'m> {
             races: &mut Races::default(),
             inv: 0,
             islands: &self.islands,
+            marks: &mut Marks::default(),
         };
         let budget = self.options.step_budget;
         let (with, into): (Option<Combiner>, Vec<TensorId>) = match over {
@@ -1265,6 +1284,7 @@ impl<'m> Machine<'m> {
             OverCopies::BroadcastFrom { from } => {
                 (None, copies.get(from).into_iter().copied().collect())
             }
+            OverCopies::AllGather => return Err(Fault::undefined("an `all_gather` as a fold")),
         };
         for k in 0..tiles {
             let tile_of = |cx: &Context<'_>, c: TensorId| -> Result<Tile, Fault> {
@@ -1306,6 +1326,62 @@ impl<'m> Machine<'m> {
                     Some(slot) => *slot = held,
                     None => return Err(Fault::undefined("a copy of another shape")),
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// `all_gather` over `copies`: each place written since the copies were last equal
+    /// takes, on every copy, its value in the copy of an island that wrote it; a place
+    /// no island wrote is left as it is (the copies agree there).
+    fn gather_copies(&mut self, copies: &[TensorId]) -> Result<(), Fault> {
+        let Some(&first) = copies.first() else {
+            return Ok(());
+        };
+        // the language leaves the choice open among the islands that wrote the place;
+        // the interpreter takes the lowest, so that one program and input give one
+        // report
+        let marked: Vec<((usize, usize, usize), usize)> = self
+            .marks
+            .of(first)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(p, islands)| islands.first().map(|i| (*p, *i)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shape = || Fault::undefined("a copy of another shape");
+        for ((tile, lo, hi), island) in marked {
+            let from = *copies
+                .get(island)
+                .ok_or_else(|| Fault::undefined("a write by an island with no copy"))?;
+            let value = self
+                .heap
+                .get(from)?
+                .tiles
+                .get(tile)
+                .cloned()
+                .ok_or_else(shape)?;
+            for &c in copies.iter().filter(|c| **c != from) {
+                let slot = self
+                    .heap
+                    .get_mut(c)?
+                    .tiles
+                    .get_mut(tile)
+                    .ok_or_else(shape)?;
+                if hi == usize::MAX {
+                    *slot = value.clone();
+                    continue;
+                }
+                // part of a tile: the bytes of an item
+                let bytes = || Fault::undefined("bytes");
+                let src = value.to_bytes().ok_or_else(bytes)?;
+                let mut dst = slot.to_bytes().ok_or_else(bytes)?;
+                match (dst.get_mut(lo..hi), src.get(lo..hi)) {
+                    (Some(d), Some(s)) => d.copy_from_slice(s),
+                    _ => return Err(shape()),
+                }
+                *slot = Tile::from_bytes(slot.format, slot.shape, &dst).ok_or_else(bytes)?;
             }
         }
         Ok(())
@@ -1508,6 +1584,7 @@ impl<'m> Machine<'m> {
             races: &mut self.races,
             inv,
             islands: &self.islands,
+            marks: &mut self.marks,
         };
         let place = |rank| Place {
             rank,

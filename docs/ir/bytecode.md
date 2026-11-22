@@ -16,7 +16,7 @@ A header, then three parts, in this order:
 | Bytes | Holds |
 |---|---|
 | 4 | The magic `KOMC` |
-| 4 | The version, a u32: `4` |
+| 4 | The version, a u32: `6` |
 | 8, 8, 8 | The length in bytes of each part, S, H and P, each a u64 |
 | S | The program: everything but the notes |
 | H | The hints |
@@ -28,8 +28,9 @@ Version 3 gave a block, a stream, a sink and a reduction's values the rows and t
 tiles (a block is a matrix of tiles): each writes its rows before its columns. Version 4 gives
 `ForZip` its streams as a list (a count, then the values), so a `zip` walks two streams or more.
 Version 5 gives each call of a chain its part of the chain's group (R47) after its arguments:
-`Whole`, or `Part` and its two ends, each a `Count`. A reader refuses a version 4 program with
-`K952`, naming both versions.
+`Whole`, or `Part` and its two ends, each a `Count`. Version 6 adds the operation `AllGather`
+(number 89; 88 is not used): its operand, then its `publish` list. A reader refuses a version 5
+program with `K952`, naming both versions.
 
 ## How values are written
 
@@ -258,6 +259,7 @@ version.
 | 85 | `IslandHops` |
 | 86 | `ReduceTo` |
 | 87 | `BroadcastFrom` |
+| 89 | `AllGather` |
 
 ### `Access`
 

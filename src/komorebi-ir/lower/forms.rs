@@ -10,7 +10,7 @@ use super::{refuse, Res};
 use crate::check::op::{OpKind, Resolved};
 use crate::check::Name;
 use crate::program::body::{Op, Range, ValueId};
-use crate::program::MemberKind;
+use crate::program::{BodyRef, MemberKind};
 use crate::syntax::ast::{self, ExprKind};
 use crate::types::{Count, Entry, MemberId, ScalarType, Type};
 
@@ -541,6 +541,26 @@ impl B<'_, '_> {
                     return refuse(span, "`gather` of what is not a tile");
                 };
                 (Op::Gather(x), Type::Block(f, Count::ONE, Count::GroupSize))
+            }
+            OpKind::AllGather => {
+                let value = self.part(&p, 0)?;
+                if matches!(self.body_ref, BodyRef::Control(_)) {
+                    // over the islands' copies: it gives no value
+                    self.emit0(
+                        Op::AllGather {
+                            value,
+                            publish: Vec::new(),
+                        },
+                        span,
+                    );
+                    return Ok(None);
+                }
+                let publish = self.list_part(&p, 1)?;
+                let Type::Tile(f) = self.ty(value) else {
+                    return refuse(span, "`all_gather` of what is not a tile");
+                };
+                let ty = Type::Block(f, Count::ONE, Count::GroupSize);
+                (Op::AllGather { value, publish }, ty)
             }
             OpKind::Broadcast(axis) => {
                 // the sender is 0 when left out

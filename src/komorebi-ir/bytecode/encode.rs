@@ -1068,6 +1068,11 @@ impl Writer {
                 t(self, "Gather");
                 self.u32(x.0);
             }
+            Op::AllGather { value, publish } => {
+                t(self, "AllGather");
+                self.u32(value.0);
+                self.values(publish);
+            }
             Op::Broadcast(a, x) => {
                 t(self, "Broadcast");
                 self.axis(*a);

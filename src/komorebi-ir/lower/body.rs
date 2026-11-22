@@ -82,7 +82,7 @@ pub(super) enum Slot {
 pub(super) struct B<'a, 'c> {
     pub(super) cx: &'a mut Cx<'c>,
     pub(super) prog: Option<ProgramId>,
-    body_ref: BodyRef,
+    pub(super) body_ref: BodyRef,
     values: Vec<Type>,
     locals: Vec<Type>,
     insts: Vec<Inst>,

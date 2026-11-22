@@ -283,6 +283,15 @@ pub enum Op {
     },
     /// `gather(x)`.
     Gather(ValueId),
+    /// `all_gather(x, publish = [v])`: in a handler, over the group (every member
+    /// gets the group's tiles in rank order); in a control program, over the islands'
+    /// copies (`publish` empty there).
+    AllGather {
+        /// The operand.
+        value: ValueId,
+        /// `publish`.
+        publish: Vec<ValueId>,
+    },
     /// `broadcast(along = row or col, sender = c)`.
     Broadcast(Axis, ValueId),
     /// `br.is_sender`.

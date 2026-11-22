@@ -189,6 +189,7 @@ A tensor is reached only through a view (`K107`).
 |---|---|---|---|---|
 | `reduce(x, with = f, within = g, among = g, publish = [v])` | `x` by position; `with` by name; `within`, `among`, `publish` by name, *optional* | a value; a `combine` or one of `sum max min and or` (`K401`); sub-groups; views | the combination, at the leader | T5 |
 | `all_reduce(x, with = f, publish = [v])` | `x` by position; `with` by name; `publish` *optional* | in a handler, a value a worker holds, and the group's workers take part; in a control program, a replicated tensor, and the islands take part; `with` as for `reduce` | the same combination at every participant | T5, T12, Handler bodies, Islands |
+| `all_gather(x, publish = [v])` | `x` by position; `publish` by name, *optional* | a tile a worker holds, and the group's workers take part; views | `tile<F>[group.size]` at every worker of the group, indexed by rank: each worker's value kept apart, nothing combined (`gather` delivered to every participant, as `all_reduce` is `reduce` delivered to every participant) | Handler bodies |
 | `gather(x)` | one by position | a value | `tile<F>[group.size]` at the leader, indexed by rank | T5 |
 | `broadcast(along = row, sender = c)` | both by name; `sender` *optional*, 0 when left out | `row` or `col`; an integer | a broadcast, of the format of the tiles its casts send; some cast sends on it (`K404`); in a handler on a grid only (`K402`) | T6 |
 | `br.is_sender` | none | | `bool` | T6 |
@@ -231,13 +232,12 @@ In a control program only (`K703`).
 | `island.hops(id)` | one by position | a worker's id | an integer | T12 |
 | `reduce_to(t, to = i, with = f)` | `t` by position; `to`, `with` by name | a replicated tensor; an island; a combine | in a control program only (`K801`) | T12 |
 | `broadcast_from(t, from = i)` | `t` by position; `from` by name | a replicated tensor; an island | in a control program only (`K801`) | T12 |
+| `all_gather(t)` | one by position | in a control program, a replicated tensor (`K102`), and the islands take part | each island's value is what it wrote into its own copy since the copies were last equal (when the tensor was made, and after each `all_reduce`, `broadcast_from` or `all_gather` over it; a `reduce_to(t, to = i, ...)` counts as island i writing every place of `t`). After it every copy holds, at each place: written by one island, that island's value; written by none, what it held (the copies already agree there); written on several islands, one of those islands' values on every copy, which one the backend's (the language leaves that order open, as for any two unordered writes). After it the copies are equal | Islands |
 
 ## Named, not built yet
 
 The language names these and the build does not have them yet. Each is refused by name (`K010`):
 
-- `all_gather`, a collective with the participants of `all_reduce`: in a handler the group's workers,
-  in a control program the islands. Its operands are not written yet.
 - A `store` of scalars.
 - A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
 - Several tile shapes in one module.
