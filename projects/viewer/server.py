@@ -92,6 +92,15 @@ def parse_pose(body):
     return {"position": position, "yaw": yaw, "pitch": pitch}
 
 
+def parse_sun(body):
+    """A sun from the page's JSON: azimuth and elevation in degrees, finite, the
+    elevation clamped to [-90, 90]; else ValueError."""
+    azimuth, elevation = float(body["azimuth"]), float(body["elevation"])
+    if not (math.isfinite(azimuth) and math.isfinite(elevation)):
+        raise ValueError("a sun is a finite azimuth and elevation")
+    return azimuth, max(-90.0, min(90.0, elevation))
+
+
 def diagonal(scene):
     """The diagonal of the scene's box."""
     positions = np.asarray(scene["positions"], dtype=np.float64)
@@ -132,6 +141,13 @@ class Viewer:
         self.card_ms = None
         self.card_ms_label = None
         self.frame_times = collections.deque()
+        # the sun (raster-lit): the newest the page posted, not yet applied; its serial;
+        # the sun the frames have, the scene's own, the last SUN pass's ms
+        self.sun_pending = None
+        self.sun_serial = 0
+        self.sun = None
+        self.sun_own = None
+        self.sun_ms = None
 
     # Requests
 
@@ -142,6 +158,16 @@ class Viewer:
                 return False
             self.pose = pose
             self.pose_serial += 1
+            self.changed.notify_all()
+            return True
+
+    def set_sun(self, sun, scene_serial):
+        """A sun from the page, for the scene it was posted in: the newest waits."""
+        with self.lock:
+            if scene_serial != self.scene_serial or self.sun_own is None:
+                return False
+            self.sun_pending = sun
+            self.sun_serial += 1
             self.changed.notify_all()
             return True
 
@@ -177,6 +203,9 @@ class Viewer:
                 "diagonal": self.diagonal,
                 "scene_serial": self.scene_serial,
                 "first_pose": self.first_pose,
+                "sun": None if self.sun is None else list(self.sun),
+                "sun_own": None if self.sun_own is None else list(self.sun_own),
+                "sun_ms": None if self.sun_ms is None else round(self.sun_ms, 3),
             }
 
     def next_jpeg(self, after, timeout):
@@ -195,7 +224,7 @@ class Viewer:
     def render_loop(self):
         renderer = None
         failed = 0  # the selection that failed: wait for a new one
-        rendered = (None, None)  # (pose serial, selection) of the last frame
+        rendered = (None, None, None)  # (selection, pose, sun serial) of the last frame
         last_frame = 0.0
         try:
             while True:
@@ -213,6 +242,17 @@ class Viewer:
                     with self.lock:
                         pose_serial, pose = self.pose_serial, self.pose
                         own = pose == self.first_pose
+                        sun_serial, sun = self.sun_serial, self.sun_pending
+                        self.sun_pending = None
+                    refused = None
+                    if sun is not None and renderer.sun_own is not None:
+                        try:  # the SUN pass, between frames
+                            sun_ms = renderer.set_sun(*sun)
+                        except renderers.FrameRefused as error:
+                            refused = f"refused: SUN {error.word}"
+                        else:
+                            with self.lock:
+                                self.sun, self.sun_ms = renderer.sun, sun_ms
                     camera = (
                         renderer.scene["camera"]
                         if own
@@ -220,9 +260,9 @@ class Viewer:
                     )
                     try:
                         image, card_ms = renderer.frame(camera)
-                    except renderers.FrameRefused as refused:
+                    except renderers.FrameRefused as error:
                         with self.lock:
-                            self.status = f"refused: {refused.word}"
+                            self.status = f"refused: {error.word}"
                     else:
                         encoded = jpeg(image)
                         with self.lock:
@@ -231,9 +271,9 @@ class Viewer:
                             self.card_ms_label = renderer.time_label
                             self.frame_number += 1
                             self.frame_times.append(time.monotonic())
-                            self.status = "running"
+                            self.status = refused or "running"
                             self.framed.notify_all()
-                    rendered = (selection, pose_serial)
+                    rendered = (selection, pose_serial, sun_serial)
                     last_frame = time.monotonic()
                 except Exception as error:  # noqa: BLE001 - shown on the page, closed
                     traceback.print_exc()
@@ -252,7 +292,7 @@ class Viewer:
             return True
         if self.selection == failed:
             return False
-        return (self.selection, self.pose_serial) != rendered or (
+        return (self.selection, self.pose_serial, self.sun_serial) != rendered or (
             time.monotonic() - last_frame >= KEEP_ALIVE_S
         )
 
@@ -263,6 +303,7 @@ class Viewer:
         with self.lock:
             self.status = "loading"
             self.loaded = (None, None)
+            self.sun = self.sun_own = self.sun_ms = self.sun_pending = None
         name, scene = selected
         log(f"open {name} on {scene}")
         renderer = renderers.RENDERERS[name]()
@@ -279,6 +320,7 @@ class Viewer:
                 self.scene_serial += 1
             self.loaded = selected
             self.first_scene = scene
+            self.sun = self.sun_own = renderer.sun_own  # a new load: the scene's sun
         log(f"opened {name} on {scene}")
         return renderer
 
@@ -348,6 +390,11 @@ def handler_class(viewer, token, page):
                 if url.path == "/pose":
                     taken = viewer.set_pose(
                         parse_pose(body), int(body.get("scene_serial", -1))
+                    )
+                    self.reply_json(200, {"taken": taken})
+                elif url.path == "/sun":
+                    taken = viewer.set_sun(
+                        parse_sun(body), int(body.get("scene_serial", -1))
                     )
                     self.reply_json(200, {"taken": taken})
                 elif url.path == "/select":

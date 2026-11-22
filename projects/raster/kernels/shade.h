@@ -7,8 +7,8 @@
 // SHADE: a0 directory, a1 lists (FILL's), a2 texture pages, a3 table, a4 profile (0:
 // none), a6 the opaque layer's directory (0: none; else a0, a1 the masked layer's).
 constexpr uint32_t kHandlerShade = 5;  // lit: a7 the surface directory, a5 camera, a8 bank
-// LIGHT: a0 directory (the opaque layer's), a7 the surface directory (lights' table,
-// pages, profile), a5 camera (a8 bank): each item's lit colour from its surface.
+// LIGHT: a0 directory (the opaque layer's), a7 the surface directory (table, pages,
+// profile), a5 camera (a8 bank); a1 the table in bank a8 - 1 (0: the surface's tensor).
 constexpr uint32_t kHandlerLight = 6;
 // With a6, a pixel nearer than the opaque layer's (a tie to it) with alpha byte >=
 // kAlphaOpaque takes the masked colour, else the opaque one, in the opaque frame.
@@ -134,6 +134,9 @@ constexpr uint32_t kLtExponentBits = 58;  // int: bits of the largest exponent
 constexpr uint32_t kLtLamps = 59;         // int: lamps
 constexpr uint32_t kLtShadowTexel = 60;   // a shadow texel's world size
 constexpr uint32_t kLtShadowBias = 61;    // as 1/z
+// the background's turn: cosine and sine of -turn (a view direction turned about y)
+constexpr uint32_t kLtTurnCos = 62;
+constexpr uint32_t kLtTurnSin = 63;
 constexpr uint32_t kLtShadowCamera = 64;  // 16 words (reference/scenes.py)
 // a map's pages from the light pages' page first - 1, across a row, side in texels
 constexpr uint32_t kLtShadowFirst = 80;

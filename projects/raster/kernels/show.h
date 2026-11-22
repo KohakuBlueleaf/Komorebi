@@ -7,6 +7,9 @@
 // SHOW: a0 directory_address (FILL's), a1 display_address, a2 profile_address (0:
 // none); the block holds the thresholds of the 8-bit rule (reference/png.py to_srgb8).
 constexpr uint32_t kHandlerShow = 4;
+// a4 kShowRaw: the frame's plane 0 (1/z) word for word into a1's pages instead, rows
+// from the top (the SUN pass: the merged 1/z as the light pages' shadow map); no block.
+constexpr uint32_t kShowRaw = 1;
 // The reader's colour planes to the writer: a tile's three planes an item.
 constexpr uint32_t kCbShow = 13;
 constexpr uint32_t kShowPlanes = 3;

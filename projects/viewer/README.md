@@ -84,8 +84,19 @@ public scene takes a while, and the page shows `loading` meanwhile.
 
 Requests: `GET /` the page; `GET /stream` the frames; `POST /pose`
 (`{"position": [x, y, z], "yaw": a, "pitch": b, "scene_serial": n}`); `POST /select`
-(`{"renderer": r, "scene": s}`); `GET /state` (the numbers, the status, the renderers
-and scenes offered, the scene box's diagonal, the scene's first pose).
+(`{"renderer": r, "scene": s}`); `POST /sun` (`{"azimuth": a, "elevation": e,
+"scene_serial": n}`, raster-lit); `GET /state` (the numbers, the status, the renderers
+and scenes offered, the scene box's diagonal, the scene's first pose; raster-lit: `sun`,
+`sun_own`, `sun_ms`).
+
+The sun (raster-lit): two sliders, azimuth and elevation, start at the scene's own sun;
+"reset sun" puts them back. A move posts the angles (at most ten times a second); the
+render loop keeps the newest only and applies it between frames (`Loop.set_sun`: the
+sun's numbers into LIGHT's table, the card's SUN pass renders the shadow map, none at or
+below the horizon), and the header shows the sun and the last SUN pass's ms. Card 1,
+2026-11-23 03:53, `check.py`: the sun moved to the own azimuth + 90 at elevation 40 changed
+the frame and `/state` named it on all three scenes; SUN pass 8.6 ms (Sponza), 10.3
+(Bistro interior), 21.5 (Bistro exterior), host side included.
 
 ## Checking it
 

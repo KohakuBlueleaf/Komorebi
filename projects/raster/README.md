@@ -525,17 +525,20 @@ Without `--light` SHADE runs its old path unchanged and gives the textured frame
   that light's irradiance over pi (the exponent in the material word's bits 20 to 30, the
   power by squaring); `emissive` `a`; empty the background; then `x = exposure x
   colour`, `x / (1 + x)` by the exact reciprocal. The numbers are immediates from a 4 KB
-  table (`light.light_table`, named by the surface's directory: the sky's products, the
-  sun, the shadow camera, the maps' page numbers, up to 32 lamps; the reader adds the
-  camera).
+  table (`light.light_table`: the sky's products, the sun, the shadow camera, the
+  background's turn, the maps' page numbers, up to 32 lamps; the reader adds the
+  camera), which the reader takes from the frame thread's sun region (LIGHT's a1), so
+  that the host can rewrite it between frames ("The sun" below).
 - **Shadow and background as pages.** The shadow map (1024 x 1024 float32 1/z) and the
   octahedral map (512 x 512, one map per channel) are uploaded as pages of 32 x 32
   values, pages row by row (`light.light_pages`: 1,024 + 3 x 256 pages). Per pixel the
   vector unit forms the four texel keys: the point moved one shadow texel along `n`
   into the sun's camera, its 1/z there, the 2 x 2 filter's corner and fractions (a tap
   outside the map gets key 0, a texel of 1/z 0: lit); an empty pixel's keys are the
-  background texel of its view direction in each channel (`octahedral_texel`'s
-  arithmetic). Then SHADE's mechanism, shared (`page_passes`, `serve_ask`): the pages a
+  background texel of its view direction turned by `-turn` about y (the map is stored
+  in the environment's own frame; the turn's cosine and sine are table words, each
+  product and sum rounded on its own as in `raster.background`) in each channel
+  (`octahedral_texel`'s arithmetic). Then SHADE's mechanism, shared (`page_passes`, `serve_ask`): the pages a
   pass of rows needs into the 128 slots, the texels gathered into Dst, the colour rows.
   A row needs at most 128 pages (32 pixels x 4 taps).
 - **The ring.** LIGHT's item is 12 planes (surface ten, 1/z, material word) and takes 15
@@ -628,6 +631,75 @@ said, `live.py --scene bistro_exterior_<view> --push`:
 
 The exterior's frame is the two layers' passes: the masked layer (trees) runs COUNT and
 SETUP on equal partitions (9.5 ms of the 31.8).
+
+### The sun (`live.py --sun AZ,EL`, `--sun-path N`)
+
+The sun of a lit frame moves (`lights.moved` in `reference/lights.py`, the reference's
+"Moving the sun"): the host computes the sun's numbers, the card renders its own shadow
+map. Everything in LIGHT that depends on the sun is in LIGHT's table, which now lives in
+the frame thread's sun region (`thread/frame.h` `RF_R_SUN`: the sun's camera page, then
+the table; LIGHT's a1), so the host rewrites it between frames (`running.thread.write`)
+without a load. `light.sun_lights` is `moved` without its shadow map: the turn,
+`sh_turned`, `sun_direction`, `sun_camera`, the texel by `shadow_map`'s rule and the
+bias, each by the reference's own function or line (`sun_camera` reads only the box,
+so it gets the box's two corners: 1 ms instead of 125 on the exterior); at a scene's own
+angles its table equals the loaded one word for word (Sponza, Bistro interior), on the
+exterior but for four words of 3e-17 against -0 (the reference's note).
+
+`Loop.set_sun(azimuth, elevation)` writes the region and submits **SUN** to the thread
+(`serve_sun`), which renders the shadow map with the frame's own stages: each layer's
+COUNT to FILL from the sun region's camera on equal block partitions (the camera
+region's ranges and costs stay the eye's), the masked layer's lit SHADE (its merge
+leaves the merged 1/z in the opaque layer's frame: leaves cast the shadow of their
+leaves), then SHOW in a raw mode (`kShowRaw`: plane 0 word for word, rows from the top)
+into the first 1,024 pages of the light pages tensor, the layout LIGHT fetches. The eye's
+frame and surface tensors are its scratch; the next FRAME writes them again. At or
+below the horizon there is no pass and the sun's irradiance is 0. Check A (host):
+SETUP's and FILL's float32 arithmetic at the sun's camera (1,000 scene radii away, 1/z
+about 1e-7) meets no denormal on Sponza, Bistro interior or exterior and gives the
+reference's map at every covered texel bit for bit.
+
+- **Lists.** The sun sees the whole scene: at the load (`live.sun_slots`) each layer's
+  entries in the sun's view are counted at the scene's own sun, four azimuths at
+  elevations 25 and 80 and the zenith (box tiles, an upper bound; 0.2 / 0.9 / 2.6 s on
+  Sponza / interior / exterior), and the lists hold 1.25 times the most plus 65,536 if
+  that is more than the eye's. Most: Sponza 230,611 + 24,281, interior 484,980 + 12,986,
+  exterior 653,337 + 265,699 (opaque + masked); the eye's default slots are larger on
+  all three. A sun beyond the lists ends SUN with the result word 6 (`RF_LISTS_SMALL`),
+  never an overrun; heavy tiles past 256 and items past 2,048 have their words too.
+- **The ring.** SUN adds no item size: FILL's items (5 pages) and SHADE's (5 a part, 10
+  merging, pushed five at a time) keep `kCbOut` (15) and the plane ring (20) at
+  multiples of five, and SHOW's raw items are its own 3 pages in `kCbShow`.
+
+Card 1, 2026-11-23 03:24 to 03:36, AICLK 1,350 MHz, `live.py --scene <s> --frames 20
+--push --light --check-light --check-sun --sun=AZ,EL` (one SUN pass, then 20 frames; ms
+from the thread's sun row). Check B: the card's map against `rasterize_shaded` at the
+sun's camera; check C: shares of pixels over 2 / 4 / 8 off against `rasterize_lighted`
+with `lights.moved`, later pieces apart, frames 0, 10, 19 (the most of the three):
+
+| scene | sun (az, el) | SUN pass | opaque frame | masked frame | merge | copy | B: texels over 1e-5 / one side empty | C over 2 / 4 / 8 % |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| Sponza | own (144.08, 74.53) | 6.77 | 4.92 | 1.21 | 0.52 | 0.12 | 0 / 0 | 0.018 / 0.013 / 0.009 (= fixed sun) |
+| Sponza | 90, 74.53 | 5.46 | 3.54 | 1.21 | 0.58 | 0.13 | 0 / 0 | 0.0033 / 0.0018 / 0.0014 |
+| Sponza | 144.08, 25 | 5.91 | 4.18 | 1.18 | 0.42 | 0.13 | 0 / 0 | 0.0022 / 0.0010 / 0.0007 |
+| Bistro exterior | own (-90, 61.18) | 20.60 | 12.45 | 6.31 | 1.68 | 0.15 | 0 / 0 | 0.053 / 0.022 / 0.019 (= fixed sun) |
+| Bistro exterior | 90, 61.18 | 20.31 | 12.40 | 6.26 | 1.51 | 0.13 | 0 / 0 | 0.032 / 0.011 / 0.008 |
+| Bistro exterior | -90, 25 | 18.87 | 11.61 | 5.80 | 1.31 | 0.15 | 0 / 0 | 0.108 / 0.036 / 0.029 |
+| Bistro interior | own (144.08, 74.53) | 8.56 | 6.77 | 1.10 | 0.53 | 0.15 | 0 / 0 | 0.0034 / 0.0015 / 0.0003 |
+
+Every check C is `ok`; the moved suns' differences sit in the shadow-edge band as at the
+fixed sun (exterior at elevation 25: 0.13 % of the band over 4, outside 0.0007 %). The
+frames after a pass are the fixed sun's (Sponza card frame 12.89 ms, exterior 31.84,
+interior 16.92, as without a pass). In a loop (`--sun-path 10 --frames 200`: the
+azimuth from the scene's own in steps of 15 degrees, the elevation 25 to 80 by a sine
+over 24 steps; 03:35): every frame's and every pass's word 0; Sponza SUN pass median
+5.99 ms, worst 6.76 (host, numbers and command, 6.86 / 7.63), card frame median 12.82,
+worst 15.08; exterior SUN pass 18.41 / 20.39 (host 19.34 / 21.59), frame 32.27 / 38.26.
+
+Limits: the pass is the eye's frame cost again (the exterior's masked layer runs on
+equal partitions, as in its frames); the elevation moves the light's sun, not the
+background's sun disc (the reference's known inconsistency); the lists are sized from
+sampled suns, so a far other sun may need `--list-slots`.
 
 ## The interactive loop
 

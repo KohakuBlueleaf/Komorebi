@@ -1,7 +1,7 @@
 """The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
 (1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--push
---shade`; RasterLit: `--push --light`; Raytrace: the ray tracer's `--show` loop. Each
-opens its own card session, owned by the thread calling them."""
+--shade`; RasterLit: `--push --light`, `set_sun(az, el)` -> ms (the SUN pass); Raytrace:
+`--show`. Each opens its own card session, owned by the thread calling them."""
 
 import argparse
 import contextlib
@@ -37,6 +37,7 @@ class Renderer:
 
     name = ""
     time_label = ""  # what frame's ms are, as the page labels them
+    sun_own = None  # a lit renderer: the scene's own sun (azimuth, elevation)
 
     @staticmethod
     def offered(scene_name):
@@ -46,6 +47,7 @@ class Renderer:
     def __init__(self):
         self.stack = None
         self.scene = None
+        self.sun = None  # a lit renderer: the sun's (azimuth, elevation) now
         self.image = np.zeros((SIDE, SIDE, 4), dtype=np.uint8)
 
     def close(self):
@@ -136,6 +138,24 @@ class RasterLit(RasterTextured):
 
     def lights(self, scene_name):
         return light_data.load(scene_name, native.data_dir())
+
+    def open(self, scene_name):
+        self.sun_own = self.sun = None
+        super().open(scene_name)
+        own = light_data.sun_angles(self.live.lights["sun_direction"])
+        self.sun_own = self.sun = (round(own[0], 4), round(own[1], 4))
+
+    def set_sun(self, azimuth, elevation):
+        """The sun moved to `azimuth`, `elevation` (degrees): its numbers and the card's
+        SUN pass (none at or below the horizon), applied to the next frame. Returns the
+        host's ms; a result word that is not 0 raises FrameRefused."""
+        word, ms, _ = self.live.set_sun(azimuth, elevation)
+        if isinstance(word, str):
+            raise RuntimeError(f"SUN: {word}")
+        if word not in (0, None):
+            raise FrameRefused(word)
+        self.sun = (azimuth, elevation)
+        return ms
 
 
 class Raytrace(Renderer):

@@ -1,5 +1,5 @@
-// SHOW's reader (show.h): each item's three colour planes from the frame into kCbShow
-// (a band: only its rows); the writer converts. Included by frame_reader.cpp.
+// SHOW's reader (show.h): each item's colour planes (raw: its 1/z) into kCbShow (a
+// band: its rows); the writer converts. Included by frame_reader.cpp.
 #include "show.h"
 
 void show_reader_command(const km::Reader& reader, const km_command_t& command) {
@@ -14,6 +14,10 @@ void show_reader_command(const km::Reader& reader, const km_command_t& command) 
     }
     invalidate_l1_cache();
     const uint32_t items = directory[kDirItems], tensor_pages = directory[kDirFrame];
+    // raw: plane 0 alone, into the item's first page
+    const bool raw = command.a4 == kShowRaw;
+    const uint32_t first_plane = raw ? 0 : kShowFirstPlane;
+    const uint32_t planes = raw ? 1 : kShowPlanes;
     // The writer checks the same and gives up: nothing is read for a table it refuses.
     if (tensor_pages == 0 || tensor_pages % kPlanes != 0 || items > kDirMaxItems) {
         return;
@@ -39,10 +43,10 @@ void show_reader_command(const km::Reader& reader, const km_command_t& command) 
             .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
             .page_size = kOutPageBytes
         };
-        for (uint32_t plane = 0; plane < kShowPlanes; ++plane) {
+        for (uint32_t plane = 0; plane < planes; ++plane) {
             noc_async_read(
                 get_noc_addr(
-                    (page + kShowFirstPlane + plane) % tensor_pages,
+                    (page + first_plane + plane) % tensor_pages,
                     frame_tensor,
                     byte_offset
                 ),

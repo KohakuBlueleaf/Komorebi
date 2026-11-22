@@ -205,6 +205,20 @@ namespace shade_pass {
         add(ZERO, ZERO, L6);
         add(ZERO, ZERO, L7);
         if ((terms & kTermBackground) != 0) {
+            // the view direction turned by -turn about y (raster.py background):
+            // (c x + s z, y, c z - s x), each product and sum rounded on its own
+            load(L0, sx_vector(kSxDirection));
+            load(L2, sx_vector(kSxDirection + 2));
+            immediate(L3, table[kLtTurnCos]);
+            immediate(L4, table[kLtTurnSin]);
+            mul(L3, L0, L5);
+            mul(L4, L2, L6);
+            add(L5, L6, L5);
+            mul(L3, L2, L6);
+            mul(L4, L0, L7);
+            sub(L6, L7, L6);
+            store(L5, sx_vector(kSxDirection));
+            store(L6, sx_vector(kSxDirection + 2));
             // (u, v) = (x, z) / (|x| + |y| + |z|), each by its reciprocal and a step
             load(L0, sx_vector(kSxDirection));
             load(L1, sx_vector(kSxDirection + 1));

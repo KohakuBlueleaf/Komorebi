@@ -16,6 +16,7 @@
 #define RF_DISPLAY_PAGES 1024u    /* the display's pages: a page a tile */
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
+#define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -91,7 +92,10 @@
 /* A lit frame (serving; 0: not lit): the surface's directory, which also holds LIGHT's
  * table and profile tensor (kernels/shade.h kSurfaceLight*) */
 #define RF_W_SURFACE (RF_W_M_FRAME + RF_FRAME_MAX)
-#define RF_WORDS (RF_W_SURFACE + 1)
+/* A lit frame's light pages tensor (serving; 0: none): its first pages the shadow map,
+ * which a SUN command renders (kernels/shade.h kSurfaceLightPages) */
+#define RF_W_SUN_PAGES (RF_W_SURFACE + 1)
+#define RF_WORDS (RF_W_SUN_PAGES + 1)
 
 /* Regions, in this order */
 #define RF_R_CAMERA 0 /* the camera's 16 numbers */
@@ -102,7 +106,15 @@
 #define RF_R_TIMES 5  /* serving: a row per FRAME command, the last RF_TIMES_ROWS */
 #define RF_R_SHOW 6   /* SHOW's block: reference/png.py's thresholds */
 #define RF_R_PUSH 7   /* the display's PUSH to the host channel, written by the host */
-#define RF_REGIONS 8u
+/* the sun's camera page, then LIGHT's table: written by the host */
+#define RF_R_SUN 8
+#define RF_R_SUN_TIMES 9 /* serving: a row per SUN command, the last RF_TIMES_ROWS */
+#define RF_REGIONS 10u
+
+/* The sun region: the sun's camera (16 numbers, COUNT's and SETUP's camera page in a
+ * SUN command), LIGHT's table (kernels/shade.h kLightTableBytes; LIGHT's a1) */
+#define RF_SUN_TABLE_AT 4096u
+#define RF_SUN_BYTES 8192u
 
 /* The PUSH's words in its region (session.channel_transfer's entry): the header, the
  * group, a0 to a9; its nonce word (a7) is XORed with FRAME's a0. */
@@ -127,6 +139,17 @@
 #define RF_T_MASKED 28       /* the frame of the masked layer (0: none) */
 #define RF_T_SHADE_MASKED 29 /* the masked layer's SHADE, part of RF_T_SHADE */
 #define RF_T_LIGHT 30        /* LIGHT submitted to its event (0: not lit) */
+
+/* A row of the sun times region (RF_TIMES_ROW_WORDS words): the result words of the
+ * SUN command's frames (both layers summed), then */
+#define RF_S_OPAQUE 21 /* the opaque layer's frame (COUNT to FILL) */
+#define RF_S_MASKED 22 /* the masked layer's frame (0: none) */
+#define RF_S_MERGE 23  /* the masked layer's SHADE: the merged 1/z (0: none) */
+#define RF_S_COPY 24   /* SHOW's raw copy of the 1/z plane into the shadow map */
+#define RF_S_TOTAL 25  /* the SUN command: from its call to its answer */
+#define RF_S_NUMBER 26 /* SUN commands served before it */
+#define RF_S_CODE 27   /* its answer */
+#define RF_S_FRAMES 28 /* FRAME commands served before it */
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0
@@ -161,3 +184,4 @@
 #define RF_LISTS_SMALL 6u /* the lists tensor has fewer slots than the frame needs */
 #define RF_PARALLEL 7u    /* a part on the four cores did not finish (late, stopped) */
 #define RF_NOT_SERVING 8u /* a FRAME command to a thread not set up to serve */
+#define RF_NOT_LIT 9u     /* a SUN command to a frame that is not lit */

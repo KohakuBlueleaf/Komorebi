@@ -181,10 +181,9 @@ def light_pages(lights):
 
 
 def light_table(lights, materials, terms=raster.TERMS):
-    """LIGHT's table (kernels/shade.h kLt*): per channel the sky's products
-    (lights.sky_irradiance's terms), ambient, the sun; the sun's direction, exposure,
-    FILL's background, 1 / pi, terms, exponent bits, lamps; the shadow map's texel,
-    bias, camera; both maps' pages (light_pages); each lamp."""
+    """LIGHT's table (kernels/shade.h kLt*): per channel the sky's products, ambient,
+    the sun; the sun's direction, exposure, background, 1 / pi, terms, exponent bits,
+    lamps; the shadow texel, bias, camera; the turn; the maps' pages; each lamp."""
     words = np.zeros(SH["kLightTableBytes"] // 4, dtype=np.uint32)
 
     def put(at, values):
@@ -234,7 +233,14 @@ def light_table(lights, materials, terms=raster.TERMS):
     put(SH["kLtShadowTexel"], lights["shadow_texel"])
     put(SH["kLtShadowBias"], lights["shadow_bias"])
     put(SH["kLtShadowCamera"], lights["shadow_camera"])
-    pages, first = light_pages(lights)
+    # the background's view direction turned by -turn about y (raster.py background)
+    angle = np.radians(-float(lights["turn"]))
+    put(SH["kLtTurnCos"], F32(np.cos(angle)))
+    put(SH["kLtTurnSin"], F32(np.sin(angle)))
+    # light_pages' layout from the maps' sides
+    shadow_pages = (lights["shadow_map"].shape[0] // PAGE) ** 2
+    first = {"shadow": 0, "octahedral": shadow_pages}
+    pages = shadow_pages + 3 * (lights["octahedral"].shape[0] // PAGE) ** 2
     for name, key in (("Shadow", "shadow_map"), ("Octa", "octahedral")):
         side = lights[key].shape[0]
         put(SH[f"kLt{name}First"], 1 + first["shadow" if name == "Shadow" else key])
@@ -242,7 +248,7 @@ def light_table(lights, materials, terms=raster.TERMS):
         put(SH[f"kLt{name}Side"], side)
     put(SH["kLtOctaLast"], lights["octahedral"].shape[0] - 1)
     words[SH["kLtOctaChannel"]] = (lights["octahedral"].shape[0] // PAGE) ** 2 << 10
-    words[SH["kLtPages"]] = len(pages)
+    words[SH["kLtPages"]] = pages
     radius, size = F32(lights["radius"]), F32(lights["size"])
     for lamp in range(lamps):
         at = SH["kLtLamp"] + SH["kLampWords"] * lamp
@@ -253,6 +259,167 @@ def light_table(lights, materials, terms=raster.TERMS):
         put(at + SH["kLampInvRadius"], F32(1) / radius)
         put(at + SH["kLampSize2"], size**2)
     return words
+
+
+SUN_PATH_STEP = 15.0  # --sun-path: degrees of azimuth a step
+SUN_PATH_LOW, SUN_PATH_HIGH = 25.0, 80.0  # its elevation's range
+
+
+def scene_box(scene):
+    """The scene's box as a scene of two points (its least and greatest corner): what
+    sun_camera and shadow_map's texel read of the positions (their min and max), at the
+    cost of two points instead of the mesh's."""
+    positions = scene["positions"]
+    return {"positions": np.stack([positions.min(0), positions.max(0)])}
+
+
+def sun_lights(lights, scene, azimuth, elevation):
+    """lights.moved's numbers from the loaded `lights` without its shadow map (the card
+    renders it): turn, sh_turned, direction, sun_camera, texel, bias; elevation <= 0:
+    irradiance 0. The shadow map stays the loaded array (its shape only is used);
+    `scene` may be scene_box's."""
+    own_azimuth, _ = light_data.sun_angles(lights["sun_direction"])
+    change = float(azimuth) - own_azimuth
+    sun = light_data.sun_direction(azimuth, elevation)
+    out = dict(lights)
+    out["turn"] = np.float32(float(lights["turn"]) + change)
+    out["sh"] = light_data.sh_turned(lights["sh"], change)
+    out["sun_direction"] = sun
+    distance = float(lights["shadow_texel"] * lights["shadow_camera"][12])
+    texels = float(lights["shadow_bias"]) * distance**2 / float(lights["shadow_texel"])
+    positions = scene["positions"]
+    camera = light_data.sun_camera(positions, sun)
+    out["shadow_camera"] = camera
+    if elevation <= 0:
+        out["sun_irradiance"] = np.zeros(3, dtype=np.float32)
+        return out
+    centre = (positions.min(0) + positions.max(0)) / 2  # shadow_map's texel
+    texel = F32(np.linalg.norm(camera[0:3].astype(np.float64) - centre) / camera[12])
+    out["shadow_texel"] = texel
+    distance = float(texel * camera[12])
+    out["shadow_bias"] = F32(texels * float(texel) / distance**2)
+    return out
+
+
+def sun_path(azimuth, step):
+    """--sun-path's sun at `step`: the azimuth from `azimuth` on, SUN_PATH_STEP degrees
+    a step; the elevation SUN_PATH_LOW to SUN_PATH_HIGH, a sine over 24 steps."""
+    middle = (SUN_PATH_LOW + SUN_PATH_HIGH) / 2
+    swing = (SUN_PATH_HIGH - SUN_PATH_LOW) / 2
+    angle = np.radians(SUN_PATH_STEP * step)
+    return float(azimuth + SUN_PATH_STEP * step), float(middle + swing * np.sin(angle))
+
+
+def sun_region(lights, materials, terms=raster.TERMS):
+    """The frame thread's sun region (thread/frame.h RF_R_SUN): the sun's camera as
+    COUNT's and SETUP's camera page, then LIGHT's table (light_table)."""
+    words = np.zeros(card_thread.F["RF_SUN_BYTES"] // 4, dtype=np.uint32)
+    words[: SH["kCamWordsShade"]] = np.asarray(lights["shadow_camera"], dtype=F32).view(
+        np.uint32
+    )
+    at = card_thread.F["RF_SUN_TABLE_AT"] // 4
+    words[at : at + SH["kLightTableBytes"] // 4] = light_table(lights, materials, terms)
+    return words
+
+
+def sun_entries(scene, keeps, suns):
+    """The most list entries each layer (each mask of `keeps`) makes in the sun's view
+    over `suns` ((azimuth, elevation)): raster.setup's box, bin_triangles' tiles, zero
+    areas counted too (an upper bound). A list, one number a mask."""
+    box = scene_box(scene)
+    most = [0] * len(keeps)
+    half, tile = F32(0.5), raster.TILE
+    corners = [np.ascontiguousarray(scene["indices"][:, k]) for k in range(3)]
+
+    def lowest(values):
+        return np.minimum(
+            np.minimum(values[corners[0]], values[corners[1]]), values[corners[2]]
+        )
+
+    def highest(values):
+        return np.maximum(
+            np.maximum(values[corners[0]], values[corners[1]]), values[corners[2]]
+        )
+
+    for azimuth, elevation in suns:
+        sun = light_data.sun_direction(azimuth, elevation)
+        camera = light_data.sun_camera(box["positions"], sun)
+        xc, yc, zc = raster.camera_space({**scene, "camera": camera})
+        x, y, _ = raster.to_screen(camera, xc, yc, zc)
+        x0 = np.clip(np.ceil(lowest(x) - half), 0, raster.WIDTH)
+        x1 = np.clip(np.floor(highest(x) - half), -1, raster.WIDTH - 1)
+        y0 = np.clip(np.ceil(lowest(y) - half), 0, raster.HEIGHT)
+        y1 = np.clip(np.floor(highest(y) - half), -1, raster.HEIGHT - 1)
+        tiles = np.where(
+            (x0 <= x1) & (y0 <= y1),
+            (x1 // tile - x0 // tile + 1) * (y1 // tile - y0 // tile + 1),
+            0,
+        )
+        for index, keep in enumerate(keeps):
+            most[index] = max(most[index], int(tiles[keep].sum()))
+    return most
+
+
+def shadow_of_pages(pages):
+    """The shadow map (side, side) float32 from its light pages (map_pages' layout)."""
+    pages = np.asarray(pages, dtype=np.uint32)
+    across = int(round(np.sqrt(len(pages))))
+    blocks = pages.reshape(across, across, PAGE, PAGE).transpose(0, 2, 1, 3)
+    return np.ascontiguousarray(blocks.reshape(across * PAGE, across * PAGE)).view(F32)
+
+
+def sun_check(view, materials, lights, got):
+    """Check B: the card's shadow map `got` against rasterize_shaded at `lights`'
+    shadow camera (lights.moved's): texels over 1e-5 relative apart and texels empty on
+    one side only, by the reference's layer; later pieces of cut triangles apart."""
+    camera = lights["shadow_camera"]
+    sun_view = {
+        "positions": view["positions"],
+        "indices": view["indices"],
+        "colors": np.zeros((len(view["positions"]), 3), dtype=np.float32),
+        "camera": camera,
+        "light": np.zeros(3, dtype=np.float32),
+    }
+    shaded = raster.rasterize_shaded(sun_view, materials)
+    want, tri = shaded["depth"], shaded["tri"]
+    report = {
+        "reference_equals_moved": bool(
+            np.array_equal(want.view(np.uint32), lights["shadow_map"].view(np.uint32))
+        )
+    }
+    owner = raster.setup(sun_view)["tri"]
+    later = np.zeros(want.shape, dtype=bool)
+    if (owner[1:] == owner[:-1]).any():
+        corner = {**materials, "light": lights["visibility"][view["indices"]]}
+        later = shade.later_pieces(sun_view, corner, tri)
+    masked_tri = shaded["masked"]["tri"]
+    taken_masked = (masked_tri >= 0) & (tri == masked_tri)
+    with np.errstate(all="ignore"):
+        relative = np.abs(got.astype(np.float64) - want) / np.abs(
+            want.astype(np.float64)
+        )
+    both = (got != 0) & (want != 0)
+    differs = both & (relative > 1e-5)
+    one_empty = (got == 0) != (want == 0)
+    report["later_pieces"] = int(later.sum())
+    report["texels_covered"] = int((want != 0).sum())
+    groups = {
+        "all": ~later,
+        "opaque_layer": ~later & (tri >= 0) & ~taken_masked,
+        "masked_layer": ~later & taken_masked,
+        "empty_in_reference": ~later & (tri < 0),
+    }
+    for name, chosen in groups.items():
+        count = max(int(chosen.sum()), 1)
+        report[name] = {
+            "texels": int(chosen.sum()),
+            "differ_over_1e-5": int((differs & chosen).sum()),
+            "share_differ": round(float((differs & chosen).sum() / count), 7),
+            "one_empty": int((one_empty & chosen).sum()),
+            "share_one_empty": round(float((one_empty & chosen).sum() / count), 7),
+        }
+    report["max_relative"] = float(relative[both & ~later].max(initial=0))
+    return report
 
 
 def frame_tensors(session):

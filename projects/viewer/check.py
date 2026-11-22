@@ -1,7 +1,7 @@
 """The viewer checked without a browser: each renderer on each scene it is offered on
 selected (400 on the others), 20 poses posted, the frames of /stream decoded (1024 x
-1024, first and last differing), 403 without the token. One JSON line; exits 1 unless
-`ok`. python -m projects.viewer.check --url URL --token TOKEN"""
+1024, first and last differing), a lit renderer's sun moved (frame and /state change),
+403 without the token. One JSON line, exit 1 unless `ok`. check --url URL --token T"""
 
 import argparse
 import io
@@ -21,7 +21,11 @@ EXTERIOR = "bistro_exterior_overview"
 POSES = 20
 POSE_GAP_S = 0.1
 OPEN_TIMEOUT_S = 1800.0  # a scene's first open builds its tree, lists and kernels
-AFTER_S = 2.0  # frames read after the last pose
+AFTER_S = 2.0  # frames read after the last pose (and after the sun's move)
+SUN_TURN = (
+    90.0  # the sun's move: its azimuth turned by this, its elevation SUN_ELEVATION
+)
+SUN_ELEVATION = 40.0
 
 
 def get(url, timeout=10.0):
@@ -136,6 +140,9 @@ def run_case(base, token, renderer, scene):
             card_ms.append(now["card_ms"])
         fps.append(now["fps"])
     time.sleep(AFTER_S)
+    sun = None
+    if state.get("sun_own"):
+        sun = sun_case(base, token, state, reader)
     reader.stop.set()
     reader.join(10.0)
     sizes = set()
@@ -160,14 +167,58 @@ def run_case(base, token, renderer, scene):
         statuses=sorted(statuses),
         stream_error=reader.error,
     )
+    if sun is not None:
+        case["sun"] = sun
     case["ok"] = bool(
         taken == POSES
         and len(reader.frames) >= 2
         and sizes == {(SIDE, SIDE)}
         and differ
         and reader.error is None
+        and (sun is None or sun["ok"])
     )
     return case
+
+
+def sun_case(base, token, state, reader):
+    """The sun moved (SUN_TURN, SUN_ELEVATION) after the poses: the newest frame before
+    and after against each other, and the angles and the SUN pass's ms /state shows."""
+    before = reader.frames[-1] if reader.frames else None
+    count = len(reader.frames)
+    azimuth = round(state["sun_own"][0] + SUN_TURN, 4)
+    taken = post(
+        f"{base}/sun",
+        {
+            "azimuth": azimuth,
+            "elevation": SUN_ELEVATION,
+            "scene_serial": state["scene_serial"],
+        },
+        token,
+    )[1]["taken"]
+    time.sleep(AFTER_S)
+    now = json.loads(get(f"{base}/state?token={token}")[1])
+    after = reader.frames[-1] if len(reader.frames) > count else None
+    changed = (
+        before is not None
+        and after is not None
+        and Image.open(io.BytesIO(before)).tobytes()
+        != Image.open(io.BytesIO(after)).tobytes()
+    )
+    named = now["sun"] is not None and all(
+        abs(got - want) < 1e-6
+        for got, want in zip(now["sun"], (azimuth, SUN_ELEVATION))
+    )
+    return {
+        "own": state["sun_own"],
+        "posted": [azimuth, SUN_ELEVATION],
+        "taken": taken,
+        "state_sun": now["sun"],
+        "sun_ms": now["sun_ms"],
+        "frames_after": len(reader.frames) - count,
+        "frame_changed": bool(changed),
+        "status": now["status"],
+        "ok": bool(taken and changed and named and now["status"] == "running"),
+    }
 
 
 def main():
@@ -184,6 +235,7 @@ def main():
             "stream": status_of(lambda: get(f"{base}/stream")),
             "pose": status_of(lambda: post(f"{base}/pose", {}, None)),
             "select": status_of(lambda: post(f"{base}/select", {}, None)),
+            "sun": status_of(lambda: post(f"{base}/sun", {}, None)),
         }
     }
     page_status, page = get(f"{base}/?token={token}")

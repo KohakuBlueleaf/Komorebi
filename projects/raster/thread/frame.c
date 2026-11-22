@@ -1,8 +1,8 @@
 /* The frame on the work cluster: COUNT, SUM, HIST, HSUM, the middle pass (middle.c),
  * PLACE, SETUP, FILL, each submitted and waited for (words, regions: frame.h). */
 
-/* Built with RF_SERVE, kmx_main sets up and the thread serves FRAME commands: a frame
- * (a masked layer: twice, on its words) and SHOW each, from the host's camera. */
+/* Built with RF_SERVE, kmx_main sets up and the thread serves FRAME commands (a frame
+ * per layer, SHOW) from the host's camera, and on a lit frame SUN commands. */
 #include <stdint.h>
 
 #include "frame.h"
@@ -27,6 +27,8 @@ typedef struct {
     uint32_t result[RF_OUT_WORDS];
     uint32_t ranged; /* frames run with ranges: the costs of the last are in */
     uint32_t ready;  /* the next frame's ranges are in (set during FILL) */
+    /* the camera page COUNT, SETUP, SHADE read (a SUN command: the sun region's) */
+    uint32_t camera;
 } frame_t;
 
 /* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
@@ -236,7 +238,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_COUNTERS];        /* counters_address */
     command.a2 = frame->words[RF_W_BLOCKS] | ranges; /* blocks_word */
-    command.a3 = frame->address[RF_R_CAMERA];        /* camera_address */
+    command.a3 = frame->camera;                      /* camera_address */
     uint32_t code = run(&command);
     frame->result[RF_O_COUNT] += elapsed(&mark);
     if (code || frame->words[RF_W_STEPS] < 2) {
@@ -421,7 +423,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     command.a0 = frame->words[RF_W_MESH];            /* mesh_address */
     command.a1 = frame->words[RF_W_LISTS];           /* lists_address */
     command.a2 = frame->words[RF_W_BLOCKS] | ranges; /* blocks_word */
-    command.a3 = frame->address[RF_R_CAMERA];        /* camera_address */
+    command.a3 = frame->camera;                      /* camera_address */
     command.a4 = frame->words[RF_W_SLOTS];           /* slots_address */
     command.a6 = slots | RF_SETUP_PREFIX;            /* list_slots */
     command.a7 = frame->address[RF_R_ITEMS];         /* items_address */
@@ -462,6 +464,10 @@ static uint32_t g_set_up __attribute__((section(".data"))) = RF_NOT_SERVING;
 static uint32_t g_served __attribute__((section(".data"))) = 0;
 /* the masked layer's words: the program's, its own in place of the opaque layer's */
 static uint32_t g_masked_words[RF_WORDS] __attribute__((section(".data"))) = {0};
+/* a SUN command's opaque layer's words: the program's, on equal partitions (the camera
+ * region's ranges and costs stay the eye's) */
+static uint32_t g_sun_words[RF_WORDS] __attribute__((section(".data"))) = {0};
+static uint32_t g_suns __attribute__((section(".data"))) = 0;
 
 /* Fills g_masked_words: 0, or the code to report. */
 static uint32_t masked_words(const uint32_t* words) {
@@ -483,6 +489,14 @@ static uint32_t masked_words(const uint32_t* words) {
     }
     g_masked_words[RF_W_BALANCE] = 0; /* the ranges region holds one layer's */
     return 0;
+}
+
+/* Fills g_sun_words. */
+static void sun_words(const uint32_t* words) {
+    for (uint32_t i = 0; i < RF_WORDS; i++) {
+        g_sun_words[i] = words[i];
+    }
+    g_sun_words[RF_W_BALANCE] = 0;
 }
 #endif
 
@@ -510,6 +524,8 @@ int kmx_main(int core) {
         RF_TIMES_BYTES,
         RF_SHOW_TABLE_BYTES,
         RF_PUSH_BYTES,
+        RF_SUN_BYTES,
+        RF_TIMES_BYTES,
     };
     void** regions = g_regions;
     for (int i = 0; i < (int)RF_REGIONS; i++) {
@@ -520,6 +536,7 @@ int kmx_main(int core) {
         }
         frame->address[i] = (uint32_t)arguments->region[i].offset;
     }
+    frame->camera = frame->address[RF_R_CAMERA];
     if (
         cores == 0 || cores > workers || workers > RM_MAX_CORES ||
         frame->words[RF_W_FRAMES] > RF_FRAME_MAX
@@ -530,8 +547,10 @@ int kmx_main(int core) {
     /* lines an earlier image left dirty would be written over what the cores write */
     kmx_flush(RF_R_SUMS);
     kmx_flush(RF_R_CAMERA);
-    /* SHOW's thresholds as the host wrote them at the load, not an earlier image's */
+    /* SHOW's thresholds as the host wrote them at the load, not an earlier image's;
+     * likewise the sun region (the thread never reads it, the cores do) */
     kmx_invalidate(RF_R_SHOW);
+    kmx_invalidate(RF_R_SUN);
     const uint32_t frames = frame->words[RF_W_REPEAT];
 #ifdef RF_SERVE
     if (frames == 0) {
@@ -539,6 +558,7 @@ int kmx_main(int core) {
         if (g_set_up == 0 && frame->words[RF_W_M_MESH]) {
             g_set_up = masked_words(frame->words);
         }
+        sun_words(frame->words);
         return finish(g_set_up, frame);
     }
 #endif
@@ -553,15 +573,17 @@ int kmx_main(int core) {
 }
 
 #ifdef RF_SERVE
-/* SHOW: the frame's colour into the display, a page a tile (kernels/show.h). 0, or
- * the code to report. */
-static uint32_t show(frame_t* frame) {
+/* SHOW: the frame's colour into the display (kernels/show.h); `raw`: its 1/z plane into
+ * the light pages' shadow map. 0, or the code to report. */
+static uint32_t show(frame_t* frame, uint32_t raw) {
     km_command_t command;
     new_command(&command, RF_HANDLER_SHOW, frame);
-    command.a0 = frame->words[RF_W_DIR];      /* directory_address */
-    command.a1 = frame->words[RF_W_DISPLAY];  /* display_address */
-    command.a2 = frame->words[RF_W_SHOWPROF]; /* profile_address */
-    command.a3 = RF_DISPLAY_PAGES;            /* display_pages */
+    command.a0 = frame->words[RF_W_DIR]; /* directory_address */
+    /* display_address, profile_address (raw: the shadow map's pages, none) */
+    command.a1 = raw ? frame->words[RF_W_SUN_PAGES] : frame->words[RF_W_DISPLAY];
+    command.a2 = raw ? 0 : frame->words[RF_W_SHOWPROF];
+    command.a3 = RF_DISPLAY_PAGES; /* display_pages: a page a tile either way */
+    command.a4 = raw ? RF_SHOW_RAW : 0;
     if (kmx_block(&command, RF_R_SHOW, 0, RF_SHOW_TABLE_BYTES) != KMX_OK) {
         return RF_BAD_ARGS;
     }
@@ -583,8 +605,8 @@ static uint32_t shade(
     command.a4 = opaque ? 0 : frame->words[RF_W_SHADEPROF];
     command.a6 = opaque; /* opaque_directory_address */
     if (frame->words[RF_W_SURFACE]) {
-        command.a5 = frame->address[RF_R_CAMERA]; /* camera_address (a8 its bank) */
-        command.a7 = frame->words[RF_W_SURFACE];  /* surface_address */
+        command.a5 = frame->camera;              /* camera_address (a8 its bank) */
+        command.a7 = frame->words[RF_W_SURFACE]; /* surface_address */
     }
     return run(&command);
 }
@@ -594,9 +616,11 @@ static uint32_t shade(
 static uint32_t light(frame_t* frame) {
     km_command_t command;
     new_command(&command, RF_HANDLER_LIGHT, frame);
-    command.a0 = frame->words[RF_W_DIR];      /* directory_address */
-    command.a5 = frame->address[RF_R_CAMERA]; /* camera_address (a8 its bank) */
-    command.a7 = frame->words[RF_W_SURFACE];  /* surface_address */
+    command.a0 = frame->words[RF_W_DIR]; /* directory_address */
+    /* the table: the sun region's, which the host rewrites when the sun moves */
+    command.a1 = frame->address[RF_R_SUN] + RF_SUN_TABLE_AT;
+    command.a5 = frame->camera;              /* camera_address (a8 its bank) */
+    command.a7 = frame->words[RF_W_SURFACE]; /* surface_address */
     return run(&command);
 }
 
@@ -675,7 +699,7 @@ static uint32_t serve_frame(const km_command_t* command) {
     uint32_t show_ticks = 0;
     if (code == 0) {
         const uint64_t show_started = kmx_time();
-        code = show(frame);
+        code = show(frame, 0);
         show_ticks = (uint32_t)(kmx_time() - show_started);
     }
     uint32_t push_ticks = 0;
@@ -705,10 +729,62 @@ static uint32_t serve_frame(const km_command_t* command) {
     return code;
 }
 
+/* SUN: each layer's frame from the sun's camera, the masked SHADE's merge, SHOW's raw
+ * copy of the merged 1/z into the shadow map (README "The sun"); a sun times row. */
+static uint32_t serve_sun(void) {
+    frame_t* frame = &g_frame;
+    const uint32_t* words = frame->words;
+    if (!words[RF_W_SURFACE] || !words[RF_W_SUN_PAGES]) {
+        return RF_NOT_LIT;
+    }
+    const uint64_t started = kmx_time();
+    for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+        frame->result[i] = 0;
+    }
+    work_t* work = (work_t*)g_regions[RF_R_WORK];
+    frame->camera = frame->address[RF_R_SUN];
+    frame->words = g_sun_words;
+    uint32_t code = frame_once(frame, work, g_regions);
+    const uint64_t opaque_ended = kmx_time();
+    if (code == 0 && words[RF_W_M_MESH]) {
+        frame->words = g_masked_words;
+        code = frame_once(frame, work, g_regions);
+    }
+    frame->words = words;
+    const uint64_t masked_ended = kmx_time();
+    if (code == 0 && words[RF_W_M_MESH]) {
+        code = shade(frame, words[RF_W_M_DIR], words[RF_W_M_LISTS], words[RF_W_DIR]);
+    }
+    const uint64_t merged = kmx_time();
+    if (code == 0) {
+        code = show(frame, 1);
+    }
+    frame->camera = frame->address[RF_R_CAMERA];
+    const uint64_t copied = kmx_time();
+    const uint32_t row = (g_suns % RF_TIMES_ROWS) * RF_TIMES_ROW_WORDS;
+    volatile uint32_t* times = (volatile uint32_t*)g_regions[RF_R_SUN_TIMES] + row;
+    for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
+        times[i] = frame->result[i];
+    }
+    times[RF_S_OPAQUE] = (uint32_t)(opaque_ended - started);
+    times[RF_S_MASKED] = (uint32_t)(masked_ended - opaque_ended);
+    times[RF_S_MERGE] = (uint32_t)(merged - masked_ended);
+    times[RF_S_COPY] = (uint32_t)(copied - merged);
+    times[RF_S_NUMBER] = g_suns;
+    times[RF_S_CODE] = code;
+    times[RF_S_FRAMES] = g_served;
+    times[RF_S_TOTAL] = (uint32_t)(kmx_time() - started);
+    kmx_flush_at(RF_R_SUN_TIMES, 4u * row, 4u * RF_TIMES_ROW_WORDS);
+    g_suns++;
+    return code;
+}
+
 uint32_t kmx_program(const km_command_t* command) {
     switch (kmx_handler(command)) {
         case kHandlerFrame:
             return g_set_up ? g_set_up : serve_frame(command);
+        case kHandlerSun:
+            return g_set_up ? g_set_up : serve_sun();
     }
     return 0;
 }

@@ -37,8 +37,9 @@ bool show_writer_command(const km::Writer& writer, const km_command_t& command) 
     invalidate_l1_cache();
     const uint32_t items = directory[kDirItems], tensor_pages = directory[kDirFrame];
     const km::Block block = writer.block(command);
+    const bool raw = command.a4 == kShowRaw;  // plane 0's words, no conversion
     if (
-        block.bytes < 4 * kShowTableWords || tensor_pages == 0 ||
+        (!raw && block.bytes < 4 * kShowTableWords) || tensor_pages == 0 ||
         tensor_pages % kPlanes != 0 || items > kDirMaxItems
     ) {
         writer.gave_up(km::kStWriter, kGaveBadItem, kWhereShowBad, 0, command.sequence);
@@ -48,7 +49,7 @@ bool show_writer_command(const km::Writer& writer, const km_command_t& command) 
     // the thresholds in the writer's local memory (its stack), read at every step
     int32_t thresholds[kShowTableWords];
     for (uint32_t word = 0; word < kShowTableWords; ++word) {
-        thresholds[word] = static_cast<int32_t>(block.words[word]);
+        thresholds[word] = raw ? 0 : static_cast<int32_t>(block.words[word]);
     }
     // Two pages of the writer's own scratch: one converted while the other is sent;
     // the third the profile's, the fourth the buckets'.
@@ -107,6 +108,14 @@ bool show_writer_command(const km::Writer& writer, const km_command_t& command) 
             // the Dst window's order: vector v, lane l at 64 (v / 2) + 16 (l / 8) +
             // 2 (l mod 8) + v mod 2 (raster README)
             const uint32_t row_word = 64 * (row / 2) + row % 2;
+            if (raw) {  // the 1/z plane (the reader's first page) as it is
+                for (uint32_t column = 0; column < 32; ++column) {
+                    pixels[32 * row + column] = (
+                        red [row_word + 16 * (column / 8) + 2 * (column % 8)]
+                    );
+                }
+                continue;
+            }
             for (uint32_t column = 0; column < 32; ++column) {
                 const uint32_t word = row_word + 16 * (column / 8) + 2 * (column % 8);
                 pixels[32 * row + column] = (

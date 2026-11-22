@@ -14,6 +14,10 @@
            padding: 2px 6px; }
   #numbers { font-family: ui-monospace, monospace; color: var(--dim); }
   #status.bad { color: #e87; }
+  #sun[hidden] { display: none; }
+  #sun input[type=range] { width: 140px; vertical-align: middle; }
+  button { background: #222; color: var(--fg); border: 1px solid var(--line);
+           padding: 2px 8px; }
   main { display: flex; justify-content: center; padding: 8px 16px; }
   #view { width: min(100%, 1024px, calc(100vh - 110px)); aspect-ratio: 1;
           background: #000; cursor: grab; user-select: none; outline: none;
@@ -26,6 +30,11 @@
 <header>
   <label>renderer <select id="renderer"></select></label>
   <label>scene <select id="scene"></select></label>
+  <span id="sun" hidden>
+    <label>sun azimuth <input id="azimuth" type="range" min="-180" max="180" step="any"></label>
+    <label>elevation <input id="elevation" type="range" min="-10" max="90" step="any"></label>
+    <button id="reset-sun" type="button">reset sun</button>
+  </span>
   <span id="numbers"></span>
   <span id="status"></span>
 </header>
@@ -40,6 +49,9 @@ const rendererSelect = document.getElementById("renderer");
 const sceneSelect = document.getElementById("scene");
 const numbers = document.getElementById("numbers");
 const statusText = document.getElementById("status");
+const sunControls = document.getElementById("sun");
+const azimuthInput = document.getElementById("azimuth");
+const elevationInput = document.getElementById("elevation");
 
 let pose = null;          // {position: [x, y, z], yaw, pitch}
 let sceneSerial = -1;     // the scene the pose is of
@@ -48,6 +60,10 @@ let changed = false;
 let lastPost = 0;
 let posting = false;
 const held = new Set();
+let sunOwn = null;        // the scene's own sun [azimuth, elevation] (raster-lit)
+let sunScene = -1;        // the scene the sliders are of
+let sunChanged = false;
+let lastSunPost = 0;
 
 view.src = "/stream" + q;
 
@@ -80,9 +96,23 @@ async function refresh() {
       pose = JSON.parse(JSON.stringify(state.first_pose));
       changed = false;
     }
+    sunOwn = state.sun_own;
+    sunControls.hidden = sunOwn === null;
+    if (sunOwn !== null && state.scene_serial !== sunScene) {
+      sunScene = state.scene_serial;  // a new scene: its own sun on the sliders
+      azimuthInput.value = state.sun[0];
+      elevationInput.value = state.sun[1];
+      sunChanged = false;
+    }
     const ms = state.card_ms === null ? "-" : state.card_ms.toFixed(1);
+    let sunText = "";
+    if (state.sun) {
+      const pass = state.sun_ms === null ? "-" : state.sun_ms.toFixed(1);
+      sunText = `  sun ${state.sun[0].toFixed(1)}, ${state.sun[1].toFixed(1)}  SUN pass ms ${pass}`;
+    }
     numbers.textContent = `${state.renderer || "-"} / ${state.scene || "-"}  ` +
-      `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}`;
+      `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}` +
+      sunText;
     statusText.textContent = state.status;
     statusText.className = state.status === "running" ? "" :
       (state.status === "loading" ? "" : "bad");
@@ -106,6 +136,17 @@ function select() {
 }
 rendererSelect.addEventListener("change", select);
 sceneSelect.addEventListener("change", select);
+
+// The sun: a slider's move posts the angles (at most 10 times a second, the newest);
+// the server applies the newest between frames (the card's SUN pass).
+azimuthInput.addEventListener("input", () => { sunChanged = true; });
+elevationInput.addEventListener("input", () => { sunChanged = true; });
+document.getElementById("reset-sun").addEventListener("click", () => {
+  if (sunOwn === null) return;
+  azimuthInput.value = sunOwn[0];
+  elevationInput.value = sunOwn[1];
+  sunChanged = true;
+});
 
 function forward() {
   const c = Math.cos(pose.pitch);
@@ -164,6 +205,12 @@ function tick(now) {
     if (held.has("q")) add([0, 1, 0], -1);
     for (let i = 0; i < 3; i++) pose.position[i] += move[i] * step;
     changed = true;
+  }
+  if (sunChanged && sunOwn !== null && now - lastSunPost >= 100) {
+    sunChanged = false;
+    lastSunPost = now;
+    post("/sun", {azimuth: Number(azimuthInput.value), elevation: Number(elevationInput.value),
+                  scene_serial: sceneSerial}).catch(() => {});
   }
   if (changed && !posting && now - lastPost >= 1000 / 30) {
     changed = false;

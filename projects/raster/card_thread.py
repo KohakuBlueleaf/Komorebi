@@ -43,7 +43,8 @@ for i, name in enumerate(["MESH", "BLOCKS", "LISTS", "LIST_SLOTS", "DIR", "SHADE
 F["RF_W_M_FRAMES"] = F["RF_W_M_SHADE"] + 1
 F["RF_W_M_FRAME"] = F["RF_W_M_FRAMES"] + 1
 F["RF_W_SURFACE"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
-F["RF_WORDS"] = F["RF_W_SURFACE"] + 1
+F["RF_W_SUN_PAGES"] = F["RF_W_SURFACE"] + 1
+F["RF_WORDS"] = F["RF_W_SUN_PAGES"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
@@ -91,6 +92,11 @@ def same_numbers():
         "RF_DISPLAY_PAGES": lists.TILES,
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
         "RF_HANDLER_LIGHT": SH["kHandlerLight"],
+        "RF_SHOW_RAW": SHOW["kShowRaw"],
+        "RF_SUN_TABLE_AT + table": (
+            F["RF_SUN_TABLE_AT"] + SH["kLightTableBytes"],
+            F["RF_SUN_BYTES"],
+        ),
         "RF_SHADE_ADDR_AT": S["kShadeAddrAt"],
         "kRecShade": (SH["kRecShade"], S["kRecShadeWord"]),
         # PLACE's list and directory words against the fill's
@@ -121,9 +127,10 @@ def camera_region(scene):
     return region
 
 
-def regions(scene, workers, show_table=None):
+def regions(scene, workers, show_table=None, sun=None):
     """The thread's regions in frame.h's order: the camera's page, then sizes; SHOW's
-    block holds `show_table` (live.py), else nothing."""
+    block holds `show_table` (live.py), else nothing; the sun region `sun` (live.py,
+    lit: the sun's camera and LIGHT's table, light.sun_region), else nothing."""
     work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
     return {
         "camera": camera_region(scene),
@@ -138,6 +145,8 @@ def regions(scene, workers, show_table=None):
             else np.asarray(show_table, dtype=np.uint32)
         ),
         "push": F["RF_PUSH_BYTES"],
+        "sun": F["RF_SUN_BYTES"] if sun is None else np.asarray(sun, dtype=np.uint32),
+        "sun_times": F["RF_TIMES_BYTES"],
     }
 
 
@@ -163,10 +172,11 @@ def shade_buffers():
     ]
 
 
-def program(scene, words, workers, show_table=None):
+def program(scene, words, workers, show_table=None, sun=None):
     """The frame program: the passes' and the fill's kernels behind one entry each
     (kernels/frame_*.cpp), both programs' buffers and SHOW's, with the frame thread on
-    work cluster 1. With `show_table` (live.py) the thread serves FRAME commands."""
+    work cluster 1. With `show_table` (live.py) the thread serves FRAME and SUN
+    commands; `sun`: the sun region's words (regions)."""
     fill_program, passes_program = card.program(), card_passes.program()
     frame_program = km.Program(
         "raster_frame",
@@ -198,11 +208,11 @@ def program(scene, words, workers, show_table=None):
         cluster=CLUSTER,
         sources=[THREAD / "frame.c", THREAD / "middle.c"],
         includes=[THREAD],
-        regions=regions(scene, workers, show_table),
+        regions=regions(scene, workers, show_table, sun),
         words=words,
         deadline=10.0,
         **(
-            {"handlers": {"frame": 1}, "defines": {"RF_SERVE": "1"}}
+            {"handlers": {"frame": 1, "sun": 2}, "defines": {"RF_SERVE": "1"}}
             if show_table is not None
             else {}
         ),

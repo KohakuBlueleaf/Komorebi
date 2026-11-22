@@ -1,7 +1,7 @@
 """The thread-driven frame as a loop a host drives: a FRAME command a camera, the image
-read back or (`--push`) pushed by the thread; `--shade` shaded (SHADE between FILL and
-SHOW; masked ones a second layer), `--light` lit (SHADE's surface, LIGHT before SHOW).
-One JSON line; exit 1 unless ok."""
+read back or (`--push`) pushed by the thread; `--shade` shaded (SHADE, masked ones a
+layer), `--light` lit (SHADE's surface, LIGHT; `--sun AZ,EL`, `--sun-path N` move the
+sun: a SUN pass). One JSON line; exit 1 unless ok."""
 
 import argparse
 import json
@@ -25,6 +25,13 @@ TILE = 32
 PUSH_TIMEOUT_S = 2.0  # a frame's wait for the push's sequence words
 PUSH_SPIN_S = 20e-3  # its looks without a pause: longer than a frame
 WIDE = raster.TILES_X  # tiles a row
+# The lists sized for the sun's view too: its entries at the scene's own sun and at
+# these (azimuth offset, elevation) suns, times the margin, plus card_thread's 65,536.
+SUN_SAMPLES = [
+    (turn, elevation) for turn in (0, 90, 180, 270) for elevation in (25, 80)
+]
+SUN_SAMPLES.append((0, 90))  # the zenith (every azimuth's)
+SUN_LIST_MARGIN = 1.25
 
 
 def show_table():
@@ -196,6 +203,22 @@ def figures(values):
     }
 
 
+def sun_slots(scene, materials, angles):
+    """Each layer's list entries in the sun's view, the most over the scene's own sun
+    (`angles`) and SUN_SAMPLES around it (light.sun_entries), and the slots that take
+    them: {layer: (entries, slots)}; a sun beyond them ends its SUN command with the
+    result word RF_LISTS_SMALL, never an overrun."""
+    masked = materials["kind"][materials["material"]] == raster.MASKED
+    suns = [angles] + [(angles[0] + turn, el) for turn, el in SUN_SAMPLES]
+    layers = [(name, keep) for name, keep in (("opaque", ~masked), ("masked", masked))]
+    layers = [(name, keep) for name, keep in layers if keep.any()]
+    most = light.sun_entries(scene, [keep for _, keep in layers], suns)
+    return {
+        name: (entries, int(np.ceil(SUN_LIST_MARGIN * entries)) + 65536)
+        for (name, _), entries in zip(layers, most)
+    }
+
+
 def times_rows(raw, frames):
     """The thread's rows of the frames served (the last RF_TIMES_ROWS), in order."""
     rows = np.frombuffer(raw, dtype=np.uint32)[
@@ -210,7 +233,7 @@ class Loop:
     """The scene loaded once in `session`, the thread's program running: a FRAME command
     a camera (`frame`), the image read back or pushed (`push`); `materials`: shaded
     (shade.py; masked triangles a layer of their own), `lights`: also lit (the surface,
-    LIGHT's table). Fills upload_s, load_s."""
+    LIGHT's table in the sun region; `set_sun`). Fills upload_s, load_s, sun_lists."""
 
     def __init__(
         self,
@@ -225,6 +248,23 @@ class Loop:
         terms=raster.TERMS,
     ):
         self.session = session
+        self.scene, self.materials, self.lights, self.terms = (
+            scene,
+            materials,
+            lights,
+            terms,
+        )
+        self.sun = None  # (azimuth, elevation) once set_sun moved it
+        self.box = None if lights is None else light.scene_box(scene)
+        sun_need = {}
+        if lights is not None:
+            started = time.perf_counter()
+            angles = light_data.sun_angles(lights["sun_direction"])
+            sun_need = sun_slots(scene, materials, angles)
+            report["sun_lists"] = {
+                "entries": {name: need[0] for name, need in sun_need.items()},
+                "s": round(time.perf_counter() - started, 3),
+            }
         prepared = (
             None if materials is None else shade.prepare(scene, materials, lights)
         )
@@ -232,7 +272,7 @@ class Loop:
         self.workers = workers = card.workers(session)
         started = time.perf_counter()
         default_slots = 2 * len(scene["indices"]) + 65536  # card_thread's
-        slots = list_slots or default_slots
+        slots = max(list_slots or default_slots, sun_need.get("opaque", (0, 0))[1])
         self.uploaded = card_thread.tensors(session, blocks, workers, slots)
         self.shade_profile = None
         if prepared is not None:
@@ -247,6 +287,7 @@ class Loop:
             report["texture_pages"] = len(prepared["pages"])
         self.surface = self.light_profile = None
         if lights is not None:
+            report["list_slots"] = slots
             self.surface = light.surface_tensors(
                 session, workers, lights, materials, terms
             )
@@ -256,6 +297,7 @@ class Loop:
             masked_slots = 2 * prepared["masked_triangles"] + 65536  # card_thread's
             if list_slots:  # the masked layer's lists grown as the others are
                 masked_slots = -(-masked_slots * list_slots // default_slots)
+            masked_slots = max(masked_slots, sun_need.get("masked", (0, 0))[1])
             self.masked = card_thread.layer_tensors(
                 session, prepared["masked_blocks"], workers, masked_slots
             )
@@ -277,8 +319,11 @@ class Loop:
             words[F["RF_W_TEXTURES"]] = self.shaded["textures"].address
             words[F["RF_W_SHADE_TABLE"]] = self.shaded["table"].address
             words[F["RF_W_SHADEPROF"]] = self.shade_profile.address
+        sun = None
         if self.surface is not None:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
+            words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
+            sun = light.sun_region(lights, materials, terms)
         if self.masked is not None:
             card_thread.masked_words(
                 words,
@@ -289,7 +334,7 @@ class Loop:
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
         self.running = running = session.load(
-            card_thread.program(scene, words, workers, table), deadline=1.0
+            card_thread.program(scene, words, workers, table, sun), deadline=1.0
         )
         report["load_s"] = round(time.perf_counter() - started, 3)
         self.transfer = None
@@ -342,6 +387,31 @@ class Loop:
                 event = event._replace(result="push words missing")
         return event, (began, written, commanded, read, ended, collect)
 
+    def set_sun(self, azimuth, elevation):
+        """The sun at `azimuth`, `elevation` (degrees): light.sun_lights into the sun
+        region, then above the horizon the SUN command (the next frame's shadow map).
+        The command's word (None: no pass), the host's ms, the lights (no map)."""
+        began = time.perf_counter()
+        lights = light.sun_lights(self.lights, self.box, azimuth, elevation)
+        region = light.sun_region(lights, self.materials, self.terms)
+        self.running.thread.write("sun", region)
+        word = None
+        if elevation > 0:
+            event = self.running.wait(
+                self.running.submit("sun", cluster=CLUSTER, result=True), timeout=10.0
+            )
+            word = event.result if event.kind == "done" else f"{event.kind}"
+        self.sun = (float(azimuth), float(elevation))
+        return word, (time.perf_counter() - began) * 1e3, lights
+
+    def shadow_map(self):
+        """The card's shadow map (1024 x 1024 float32 1/z) from the light pages."""
+        side = self.lights["shadow_map"].shape[0]
+        (pages,) = self.session.read(
+            self.surface["pages"], first=0, pages=(side // light.PAGE) ** 2
+        )
+        return light.shadow_of_pages(pages.view(np.uint32))
+
     def stop(self):
         """Stops the program (the run's own stop)."""
         self.running.stop()
@@ -365,6 +435,11 @@ def loop(args):
     if args.light:
         report["light_terms"] = list(terms)
     report["table_differs"] = table_check(table)
+    sun_set = parse_sun(args.sun) if args.sun else None
+    if (sun_set or args.sun_path or args.check_sun) and not args.light:
+        raise SystemExit("--sun, --sun-path and --check-sun move a lit frame's sun")
+    sun_at = {}  # frame index: the sun it was rendered with, once moved
+    passes_run = []  # each SUN command: angles, word, host ms
     checked = sorted({0, args.frames // 2, args.frames - 1})
     surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
     kept, surface_got = {}, {}
@@ -381,10 +456,37 @@ def loop(args):
             terms,
         )
         workers, running = live.workers, live.running
+        sun_got = None
+
+        def move_sun(azimuth, elevation, index):
+            word, host_ms, _ = live.set_sun(azimuth, elevation)
+            passes_run.append(
+                {
+                    "frame": index,
+                    "angles": [round(azimuth, 4), round(elevation, 4)],
+                    "word": word,
+                    "host_ms": round(host_ms, 3),
+                }
+            )
+            if word not in (0, None):
+                card.log(f"SUN before frame {index}: word {word}")
+            return word
+
+        if sun_set:
+            word = move_sun(*sun_set, 0)
+            if args.check_sun and word == 0:
+                sun_got = live.shadow_map()
         image = np.empty((raster.HEIGHT, raster.WIDTH, 4), dtype=np.uint8)
         host, camera_ms, command_ms, read_ms, words_back = [], [], [], [], []
         collect_ms = []
+        own = light_data.sun_angles(lights["sun_direction"]) if args.light else None
         for index, view in enumerate(views):
+            if args.sun_path and index % args.sun_path == 0:
+                path_sun = light.sun_path(own[0], index // args.sun_path)
+                if move_sun(*path_sun, index) not in (0, None):
+                    break
+            if live.sun is not None:
+                sun_at[index] = live.sun
             event, times = live.frame(view["camera"], image)
             began, written, commanded, read, ended, collect = times
             if collect is not None:
@@ -407,6 +509,12 @@ def loop(args):
         live.stop()
         report["status"] = card.check_run(running, workers, 0, [])
         rows, numbers = times_rows(running.thread.read("times"), len(words_back))
+        sun_rows = None
+        if passes_run:
+            sun_rows, _ = times_rows(
+                running.thread.read("sun_times"),
+                sum(run["word"] is not None for run in passes_run),
+            )
         (profile_pages,) = card.read(session, live.show_profile)
         if live.shade_profile is not None:
             (shade_pages,) = card.read(session, live.shade_profile)
@@ -473,13 +581,27 @@ def loop(args):
     report["show_writer_max_cycles"] = int(profile[:, SHOW["kShowProfTotal"]].max())
     report["words_nonzero"] = sum(word != 0 for word in words_back)
     report["frames_run"] = len(words_back)
+    if passes_run:
+        report["sun"] = sun_report(passes_run, sun_rows, ticks_ms)
+    moved = {}  # the reference's lights per sun (lights.moved: seconds each)
+
+    def lights_of(index):
+        sun = sun_at.get(index)
+        if sun is None:
+            return lights
+        if sun not in moved:
+            moved[sun] = light_data.moved(lights, scene, materials, *sun)
+        return moved[sun]
+
+    if sun_got is not None:
+        report["sun_check"] = light.sun_check(scene, materials, lights_of(0), sun_got)
     differs, shade_checks, light_checks, surface_checks = {}, {}, {}, {}
     folder = Path(args.pictures) if args.pictures else None
     if folder:
         folder.mkdir(parents=True, exist_ok=True)
     for index, got in surface_got.items():
         surface_checks[index], _ = light.surface_check(
-            views[index], materials, lights, got
+            views[index], materials, lights_of(index), got
         )
     for index, got in kept.items():
         mode = "_lit" if args.light else "_shaded" if args.shade else ""
@@ -490,7 +612,7 @@ def loop(args):
             if not args.check_light:
                 continue
             light_checks[index], want = light.light_check(
-                views[index], materials, lights, got, terms
+                views[index], materials, lights_of(index), got, terms
             )
             if folder:
                 png.write_png(folder / f"{tag}_reference.png", want)
@@ -533,13 +655,49 @@ def loop(args):
     else:
         report["pixels_differ"] = differs
         pictures_ok = len(differs) == len(checked) and not any(differs.values())
+    sun_ok = all(run["word"] in (0, None) for run in passes_run) and (
+        not args.check_sun or "sun_check" in report
+    )
     report["ok"] = bool(
         len(words_back) == args.frames
         and report["words_nonzero"] == 0
+        and sun_ok
         and pictures_ok
         and report["status"]["ok"]
         and report["table_differs"] == 0
     )
+    return report
+
+
+def parse_sun(text):
+    """--sun's "AZ,EL" as two floats (degrees)."""
+    azimuth, elevation = (float(part) for part in text.split(","))
+    return azimuth, elevation
+
+
+def sun_report(passes_run, rows, ticks_ms):
+    """The SUN commands: each one's angles, word and host ms, and from the thread's sun
+    rows (frame.h RF_S_*) each one's parts in ms; the medians and the worst."""
+    report = {"passes": len(passes_run), "runs": passes_run}
+    report["words_nonzero"] = sum(run["word"] not in (0, None) for run in passes_run)
+    host = [run["host_ms"] for run in passes_run if run["word"] is not None]
+    if host:
+        report["host_ms_median"] = round(float(np.median(host)), 3)
+        report["host_ms_max"] = round(float(np.max(host)), 3)
+    if rows is None or len(rows) == 0:
+        return report
+    names = {"total": "TOTAL", "opaque": "OPAQUE", "masked": "MASKED"}
+    names |= {"merge": "MERGE", "copy": "COPY"}
+    for name, key in names.items():
+        values = rows[:, F[f"RF_S_{key}"]] * ticks_ms
+        report[f"{name}_ms_median"] = round(float(np.median(values)), 4)
+        report[f"{name}_ms_max"] = round(float(np.max(values)), 4)
+    report["parts_ms_median"] = {
+        part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
+        for part in ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
+    }
+    report["heavy_tiles_max"] = int(rows[:, F["RF_O_HEAVY"]].max())
+    report["codes"] = rows[:, F["RF_S_CODE"]].tolist()
     return report
 
 
@@ -578,6 +736,22 @@ def main():
         "--light-terms",
         default=",".join(raster.TERMS),
         help="lit: the reference's terms the card computes (sky, ambient, sun always)",
+    )
+    parser.add_argument(
+        "--sun",
+        default=None,
+        help="lit: AZ,EL (degrees): the sun moved before the first frame (SUN pass)",
+    )
+    parser.add_argument(
+        "--sun-path",
+        type=int,
+        default=0,
+        help="lit: the sun moved every N frames (light.sun_path), a SUN pass each",
+    )
+    parser.add_argument(
+        "--check-sun",
+        action="store_true",
+        help="with --sun: the card's shadow map against the reference's (check B)",
     )
     parser.add_argument(
         "--list-slots", type=int, default=0, help="0: card_thread's, from the triangles"
