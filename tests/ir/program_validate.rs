@@ -5,12 +5,12 @@ use komorebi_ir::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
 use komorebi_ir::program::derive::{Cause, Requirement};
 use komorebi_ir::program::notes::{Anchor, Hint, Named, SourceSpan};
 use komorebi_ir::program::{
-    validate, BodyRef, Func, FuncKind, Lifetime, Member, MemberKind, Message, Module, Program, Run,
-    Scope,
+    validate, BodyRef, Func, FuncKind, Handler, Lifetime, Member, MemberKind, Message, Module,
+    Program, Run, Scope,
 };
 use komorebi_ir::types::{
-    Ability, Axis, BinOp, CmpOp, ConstValue, Count, Format, FuncId, MessageId, ParamId, Peers,
-    ProgramId, RecordId, ReduceOp, ScalarType, TileShape, Type,
+    Ability, Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Format, FuncId, MemberId, MessageId,
+    On, ParamId, Peers, ProgramId, RecordId, ReduceOp, ScalarType, TileShape, Type,
 };
 
 const U32: Type = Type::Scalar(ScalarType::U32);
@@ -31,7 +31,7 @@ fn v(i: u32) -> ValueId {
 fn module(params: Vec<Type>, ret: Type, values: Vec<Type>, insts: Vec<Inst>) -> Module {
     Module {
         name: "m".into(),
-        tile: TileShape { rows: 32, cols: 32 },
+        tiles: vec![TileShape { rows: 32, cols: 32 }],
         formats: vec![Format::F32],
         params: Vec::new(),
         records: Vec::new(),
@@ -47,6 +47,7 @@ fn module(params: Vec<Type>, ret: Type, values: Vec<Type>, insts: Vec<Inst>) -> 
                 insts,
             }),
             effects: Default::default(),
+            tile: 0,
         }],
         programs: Vec::new(),
         controls: Vec::new(),
@@ -279,6 +280,7 @@ fn ids_are_in_range() {
             lifetime: Lifetime::Program,
             export: false,
             by_element: false,
+            tile: 0,
         }],
         handlers: Vec::new(),
         runs: Vec::new(),
@@ -324,6 +326,7 @@ fn ids_are_in_range() {
             seed: empty(),
             on_message: vec![(MessageId(0), on)],
             effects: Default::default(),
+            tile: 0,
         }],
         chains: Vec::new(),
     });
@@ -640,4 +643,139 @@ fn a_function_on_blocks_reduces_along_a_row_and_spreads_it_back_and_nothing_else
         );
         has(&m, &format!("{what} in a function on blocks"));
     }
+}
+
+/// `valid()` with a second tile shape, `[16, 16]`, after its default.
+fn two_shapes() -> Module {
+    let mut m = valid();
+    m.tiles.push(TileShape { rows: 16, cols: 16 });
+    m
+}
+
+/// A program of one handler of the default shape with this body, and one state member
+/// of tiles of f32 of the shape at `member_tile`.
+fn with_handler(m: &mut Module, values: Vec<Type>, insts: Vec<Inst>, member_tile: u32) {
+    m.programs.push(Program {
+        name: "p".into(),
+        state: vec![Member {
+            name: "s".into(),
+            kind: MemberKind::Tiles(Format::F32),
+            count: Count::Const(1),
+            scope: Scope::Worker,
+            lifetime: Lifetime::Program,
+            export: false,
+            by_element: false,
+            tile: member_tile,
+        }],
+        handlers: vec![Handler {
+            name: "h".into(),
+            params: Vec::new(),
+            ret: None,
+            on: On::Group,
+            exclusive: false,
+            body: Body {
+                values,
+                locals: Vec::new(),
+                insts,
+            },
+            effects: Default::default(),
+            tile: 0,
+        }],
+        runs: Vec::new(),
+        chains: Vec::new(),
+    });
+}
+
+#[test]
+fn a_call_of_a_function_of_another_tile_shape_is_a_violation() {
+    // f calls g, a copy of f of the second shape
+    let mut m = two_shapes();
+    let mut g = m.funcs[0].clone();
+    g.name = "g".into();
+    g.tile = 1;
+    m.funcs.push(g);
+    body(&mut m).insts[5] = inst(Op::CallFunc(FuncId(1), vec![v(3)]), &[4]);
+    has(
+        &m,
+        "a call of a function of tile shape 1 in a body of tile shape 0",
+    );
+    // of one shape, it is a call like any other
+    m.funcs[1].tile = 0;
+    assert_eq!(found(&m), Vec::<String>::new());
+    // a shape past the module's
+    m.funcs[1].tile = 2;
+    has(&m, "g: tile shape 2 out of range");
+}
+
+#[test]
+fn a_combine_of_another_tile_shape_in_a_reduce_is_a_violation() {
+    let tile = Type::Tile(Format::F32);
+    let mut m = two_shapes();
+    m.funcs.push(Func {
+        name: "add".into(),
+        kind: FuncKind::Combine { commutative: true },
+        params: vec![tile.clone(), tile.clone()],
+        ret: tile.clone(),
+        body: Some(Body {
+            values: vec![tile.clone(), tile.clone(), tile.clone()],
+            locals: Vec::new(),
+            insts: vec![
+                inst(Op::Arg(0), &[0]),
+                inst(Op::Arg(1), &[1]),
+                inst(Op::Binary(BinOp::Add, v(0), v(1)), &[2]),
+                inst(Op::Return(Some(v(2))), &[]),
+            ],
+        }),
+        effects: Default::default(),
+        tile: 1,
+    });
+    // `let t = zeros; let whole = reduce(t, with = add)`
+    let reduce = Op::ReduceGroup {
+        x: v(0),
+        with: Combiner::Func(FuncId(1)),
+        within: None,
+        among: None,
+        publish: Vec::new(),
+    };
+    with_handler(
+        &mut m,
+        vec![tile.clone(), tile.clone()],
+        vec![
+            inst(Op::Zeros, &[0]),
+            inst(reduce, &[1]),
+            inst(Op::Return(None), &[]),
+        ],
+        0,
+    );
+    has(&m, "a `combine` of tile shape 1 in a body of tile shape 0");
+    m.funcs[1].tile = 0;
+    assert_eq!(found(&m), Vec::<String>::new());
+}
+
+#[test]
+fn a_state_member_of_tiles_of_another_tile_shape_is_a_violation() {
+    let tile = Type::Tile(Format::F32);
+    let mut m = two_shapes();
+    // `let t = s[0]`, the member of the second shape
+    with_handler(
+        &mut m,
+        vec![U32, tile],
+        vec![
+            inst(Op::Const(ConstValue::Int(ScalarType::U32, 0)), &[0]),
+            inst(Op::StateGet(MemberId(0), v(0)), &[1]),
+            inst(Op::Return(None), &[]),
+        ],
+        1,
+    );
+    has(
+        &m,
+        "a state member of tiles of tile shape 1 in a body of tile shape 0",
+    );
+    m.programs[0].state[0].tile = 0;
+    assert_eq!(found(&m), Vec::<String>::new());
+    // a member of scalars has no shape
+    m.programs[0].state[0].tile = 1;
+    m.programs[0].state[0].kind = MemberKind::Scalars(ScalarType::F32);
+    m.programs[0].handlers[0].body.values[1] = F32;
+    assert_eq!(found(&m), Vec::<String>::new());
 }

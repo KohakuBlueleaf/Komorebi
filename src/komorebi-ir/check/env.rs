@@ -123,8 +123,15 @@ pub(crate) struct Env {
     pub funcs: HashMap<String, FuncSig>,
     /// The module's programs.
     pub programs: HashMap<String, ProgramInfo>,
-    /// The module's tile shape, rows and columns, when its `tile` line gives one.
+    /// The module's default tile shape, rows and columns, when its first `tile` line
+    /// gives one.
     pub tile: Option<(u64, u64)>,
+    /// The shapes of every `tile` line, in order, each once (the first is the default).
+    pub tiles: Vec<(u64, u64)>,
+    /// The shape of each function, by its place among the functions.
+    pub func_tiles: HashMap<u32, (u64, u64)>,
+    /// The shape of each state member of tiles, by its program's place and its own.
+    pub member_tiles: HashMap<(u32, u32), (u64, u64)>,
     /// The bytes of each record type whose fields are all scalars.
     pub record_bytes: HashMap<String, u64>,
     /// The place of every declaration, by name.
@@ -329,6 +336,7 @@ impl Checker<'_> {
                 env.programs.insert(p.name.name.clone(), info);
             }
         }
+        self.collect_shapes(module, &mut env);
         env
     }
 

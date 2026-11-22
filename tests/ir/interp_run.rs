@@ -4,7 +4,7 @@
 
 use komorebi_ir::derive::derive;
 use komorebi_ir::interp::control::{Arg, End, Machine, Options, Refusal};
-use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Tile};
+use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Tile, TileShape};
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::{BodyRef, Module};
@@ -49,7 +49,7 @@ fn tensor(
     (rows, cols): (usize, usize),
     value: impl Fn(usize, usize) -> f64,
 ) -> TensorId {
-    let shape = m.module().tile;
+    let shape = m.module().default_tile();
     let (h, w) = (shape.rows as usize, shape.cols as usize);
     let mut t = Tensor::zeros("t", format, rows * h, cols * w, shape);
     for (i, tile) in t.tiles.iter_mut().enumerate() {
@@ -2178,7 +2178,7 @@ fn t12_each_island_writes_its_copy_and_merge_makes_them_one() {
     let m = module(&lesson("t12_spread"));
     let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
     let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
-    let shape = m.tile;
+    let shape = m.default_tile();
     let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, shape));
     let args = [Arg::Tensor(x), Arg::Tensor(w), Arg::Scalar(u32s(4))];
     assert_eq!(
@@ -2267,7 +2267,7 @@ control hasty(x: tensor<f32>, w: tensor<f32> @replicated) {
 fn a_collective_over_copies_is_ordered_like_an_invocation() {
     let m = module_unverified(COPIES);
     let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
-    let shape = m.tile;
+    let shape = m.default_tile();
     let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, shape));
     // all_reduce: every copy the sum of both, from 1 in each to 2
     let ones = run.replicated(Tensor::zeros("o", Format::F32, 4 * 32, 32, shape));
@@ -2313,7 +2313,7 @@ fn a_collective_over_copies_is_ordered_like_an_invocation() {
 /// A replicated tensor of `tiles` tiles of the module's tile, one tile wide, every
 /// copy holding `value(i)` in tile i.
 fn replicated(m: &mut Machine<'_>, tiles: usize, value: impl Fn(usize) -> f64) -> TensorId {
-    let shape = m.module().tile;
+    let shape = m.module().default_tile();
     let (h, w) = (shape.rows as usize, shape.cols as usize);
     let mut t = Tensor::zeros("w", Format::F32, tiles * h, w, shape);
     for (i, tile) in t.tiles.iter_mut().enumerate() {
@@ -2449,7 +2449,7 @@ fn all_gather_after_reduce_to_spreads_the_copy_written() {
     for (i, v) in [(0, 1.0), (1, 2.0)] {
         let c = run.copy(w, i).expect("a copy");
         for t in run.heap.tensors[c.0].tiles.iter_mut() {
-            *t = Tile::from_f64(Format::F32, m.tile, &[v; 16]).expect("a tile");
+            *t = Tile::from_f64(Format::F32, m.default_tile(), &[v; 16]).expect("a tile");
         }
     }
     assert_eq!(
@@ -2548,7 +2548,13 @@ fn spread_report() -> String {
     let m = module(&lesson("t12_spread"));
     let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
     let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
-    let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, m.tile));
+    let w = run.replicated(Tensor::zeros(
+        "w",
+        Format::F32,
+        4 * 32,
+        32,
+        m.default_tile(),
+    ));
     run.show_state("Spread.seen").expect("exported");
     run.invoke("Spread.locate", &[], (0, 4), &[]);
     run.show_state("Spread.seen").expect("exported");
@@ -3245,6 +3251,264 @@ program SwiGLU {
             got.iter().all(|v| *v == want),
             "tile {j}: {} for {want}",
             got[0]
+        );
+    }
+}
+
+// ---- several tile shapes in one module ----
+
+/// A tensor of 8 by 8 elements stored in tiles of `shape`, element (r, c) being
+/// `value(r, c)`.
+fn grid8(m: &mut Machine<'_>, shape: TileShape, value: impl Fn(usize, usize) -> f64) -> TensorId {
+    let mut t = Tensor::zeros("t", Format::F32, 8, 8, shape);
+    let (h, w) = (shape.rows as usize, shape.cols as usize);
+    let cols = t.grid.1;
+    for (i, tile) in t.tiles.iter_mut().enumerate() {
+        let values: Vec<f64> = (0..h * w)
+            .map(|k| value((i / cols) * h + k / w, (i % cols) * w + k % w))
+            .collect();
+        *tile = Tile::from_f64(Format::F32, shape, &values).expect("a tile of floats");
+    }
+    m.tensor(t)
+}
+
+/// The 8 by 8 elements of tensor `t`, row by row, whatever tiles it is stored in.
+fn elements8(m: &Machine<'_>, t: TensorId) -> Vec<f64> {
+    let tensor = &m.heap.tensors[t.0];
+    let (h, w) = (tensor.tile.rows as usize, tensor.tile.cols as usize);
+    let mut out = Vec::with_capacity(64);
+    for r in 0..8 {
+        for c in 0..8 {
+            let tile = &tensor.tiles[(r / h) * tensor.grid.1 + c / w];
+            out.push(tile.to_f64().expect("a float tile")[(r % h) * w + c % w]);
+        }
+    }
+    out
+}
+
+const S2: TileShape = TileShape { rows: 2, cols: 2 };
+
+#[test]
+fn a_tensor_read_in_another_tile_shape_holds_the_same_elements() {
+    let m = module(&construct("c05_tile_shapes"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = grid8(&mut run, S2, |r, c| (r * 8 + c) as f64);
+    let (y1, y2) = (
+        grid8(&mut run, S2, |_, _| 0.0),
+        grid8(&mut run, S2, |_, _| 0.0),
+    );
+    // 4 tiles of [4, 4] and 16 of [2, 2] are the same 64 elements
+    let coarse = [Arg::Tensor(x), Arg::Tensor(y1), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        run.invoke("Shaped.coarse", &coarse, (0, 2), &[]),
+        End::Completed(None)
+    );
+    let fine = [Arg::Tensor(x), Arg::Tensor(y2), Arg::Scalar(u32s(16))];
+    assert_eq!(
+        run.invoke("Shaped.fine", &fine, (0, 2), &[]),
+        End::Completed(None)
+    );
+    let want: Vec<f64> = (0..64).map(|k| 2.0 * k as f64).collect();
+    assert_eq!(elements8(&run, y1), want);
+    assert_eq!(elements8(&run, y2), want);
+}
+
+#[test]
+fn a_write_in_one_shape_is_read_in_another() {
+    let m = module(&construct("c05_tile_shapes"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = grid8(&mut run, S2, |r, c| (r * 8 + c) as f64);
+    let y = grid8(&mut run, S2, |_, _| 0.0);
+    let z = grid8(&mut run, S2, |_, _| 0.0);
+    let fine = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(16))];
+    assert_eq!(
+        run.invoke("Shaped.fine", &fine, (0, 2), &[]),
+        End::Completed(None)
+    );
+    let coarse = [Arg::Tensor(y), Arg::Tensor(z), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        run.invoke("Shaped.coarse", &coarse, (0, 2), &[]),
+        End::Completed(None)
+    );
+    let want: Vec<f64> = (0..64).map(|k| 4.0 * k as f64).collect();
+    assert_eq!(elements8(&run, z), want);
+}
+
+/// Two handlers of two shapes, the tensors stored in the default `[4, 4]`: a tile of
+/// `fine` (`[2, 2]`) is part of a stored tile, one place for each of its rows.
+const SHAPES_RACE: &str = "module shapes_race
+
+tile [4, 4]
+tile [2, 2]
+format f32
+
+program P {
+    handler fine(x: tensor<f32>, y: tensor<f32>, first: u32, tiles: u32) @on(group) @tile(2, 2) {
+        let out = sink(partition(y.tiles(first, tiles), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(first, tiles), worker.rank, group.size), block = 1) {
+            out.push(xb + xb)
+        }
+    }
+
+    handler coarse(x: tensor<f32>, y: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let out = sink(partition(y.tiles(first, tiles), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(first, tiles), worker.rank, group.size), block = 1) {
+            out.push(xb + xb)
+        }
+    }
+}
+
+// rows 0 and 1 in tiles of [2, 2]; rows 0 to 3, columns 0 to 3, in one tile of [4, 4]
+control overlap(x: tensor<f32>, y: tensor<f32>) {
+    let a = invoke(P.fine(x, y, 0, 4), on = group(0, 1))
+    let b = invoke(P.coarse(x, y, 0, 1), on = group(1, 1))
+    await a
+    await b
+}
+
+// rows 4 to 7 in tiles of [2, 2]; rows 0 to 3 in tiles of [4, 4]
+control apart(x: tensor<f32>, y: tensor<f32>) {
+    let a = invoke(P.fine(x, y, 8, 8), on = group(0, 1))
+    let b = invoke(P.coarse(x, y, 0, 2), on = group(1, 1))
+    await a
+    await b
+}
+";
+
+#[test]
+fn two_shapes_on_the_same_elements_with_no_order_race() {
+    // the build compares no views of two shapes: the run finds the race
+    let m = module(SHAPES_RACE);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let shape = TileShape { rows: 4, cols: 4 };
+    let x = grid8(&mut run, shape, |r, c| (r * 8 + c) as f64);
+    let y = grid8(&mut run, shape, |_, _| 0.0);
+    let what = invalid_what(run.control("overlap", &[Arg::Tensor(x), Arg::Tensor(y)]));
+    assert!(
+        what.starts_with("a race on tensor 1 tile 0: a write at #0 rank 0 (p0.h0 i"),
+        "{what}"
+    );
+    assert!(what.contains("and a write at #1 rank 0 (p0.h1 i"), "{what}");
+}
+
+#[test]
+fn two_shapes_on_separate_elements_do_not_race() {
+    let m = module(SHAPES_RACE);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let shape = TileShape { rows: 4, cols: 4 };
+    let x = grid8(&mut run, shape, |r, c| (r * 8 + c) as f64);
+    let y = grid8(&mut run, shape, |_, _| 0.0);
+    assert_eq!(
+        run.control("apart", &[Arg::Tensor(x), Arg::Tensor(y)]),
+        End::Completed(None)
+    );
+    let want: Vec<f64> = (0..64).map(|k| 2.0 * k as f64).collect();
+    assert_eq!(elements8(&run, y), want);
+}
+
+#[test]
+fn a_tensor_not_whole_tiles_of_a_shape_is_invalid() {
+    let m = module(&construct("c05_tile_shapes"));
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    // 6 by 6 is whole tiles of [2, 2], not of [4, 4]
+    let x = run.tensor(Tensor::zeros("x", Format::F32, 6, 6, S2));
+    let y = run.tensor(Tensor::zeros("y", Format::F32, 6, 6, S2));
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(1))];
+    assert_eq!(
+        run.invoke("Shaped.coarse", &args, (0, 1), &[]),
+        End::Invalid {
+            what: "a tensor whose padded shape is not whole tiles of [4, 4]".into(),
+            at: None,
+        }
+    );
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(9))];
+    assert_eq!(
+        run.invoke("Shaped.fine", &args, (0, 1), &[]),
+        End::Completed(None)
+    );
+}
+
+#[test]
+fn all_gather_between_shapes_copies_the_elements_written() {
+    // stored in [4, 4]: a write in tiles of [2, 2] marks parts of stored tiles, row by
+    // row, and `all_gather` copies those elements only: two islands' writes to two
+    // halves of one stored tile both reach every copy
+    let m = module(
+        "module gathered_shapes
+
+tile [4, 4]
+tile [2, 2]
+format f32
+
+requires {
+    islands >= 2
+}
+
+program G {
+    handler put(x: tensor<f32>, w: tensor<f32> @replicated, first: u32, tiles: u32) @on(group) @tile(2, 2) {
+        let out = sink(partition(w.tiles(first, tiles), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(first, tiles), worker.rank, group.size), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    handler take(w: tensor<f32> @replicated, y: tensor<f32>, tiles: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, tiles), worker.rank, group.size), block = 1)
+        for wb in stream(partition(w.tiles(0, tiles), worker.rank, group.size), block = 1) {
+            out.push(wb)
+        }
+    }
+}
+
+control spread(w: tensor<f32> @replicated) {
+    all_gather(w)
+}
+",
+    );
+    let mut run = Machine::load(&m, 2, &[], on_islands(&[1, 1], None)).expect("loads");
+    let shape = TileShape { rows: 4, cols: 4 };
+    let x = grid8(&mut run, shape, |r, c| (r * 8 + c) as f64);
+    let y = grid8(&mut run, shape, |_, _| -1.0);
+    let w = run.replicated(Tensor::zeros("w", Format::F32, 8, 8, shape));
+    // island 0 writes tiles 0 and 1 of [2, 2]: rows 0 and 1, columns 0 to 3; island 1
+    // tiles 4 and 5: rows 2 and 3, columns 0 to 3; both in stored tile 0
+    for (first, worker) in [(0, 0), (4, 1)] {
+        let put = [
+            Arg::Tensor(x),
+            Arg::Tensor(w),
+            Arg::Scalar(u32s(first)),
+            Arg::Scalar(u32s(2)),
+        ];
+        assert_eq!(
+            run.invoke("G.put", &put, (worker, 1), &[]),
+            End::Completed(None)
+        );
+    }
+    assert_eq!(
+        run.control("spread", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    // island 1 reads its copy in tiles of [4, 4]
+    let take = [Arg::Tensor(w), Arg::Tensor(y), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        run.invoke("G.take", &take, (1, 1), &[]),
+        End::Completed(None)
+    );
+    let want: Vec<f64> = (0..64)
+        .map(|k| {
+            if k / 8 < 4 && k % 8 < 4 {
+                k as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    assert_eq!(elements8(&run, y), want);
+    for island in 0..2 {
+        assert_eq!(
+            elements8(&run, run.copy(w, island).expect("a copy")),
+            want,
+            "copy {island}"
         );
     }
 }

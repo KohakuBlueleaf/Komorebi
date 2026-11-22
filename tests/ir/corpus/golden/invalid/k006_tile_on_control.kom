@@ -1,0 +1,21 @@
+// refused: `@tile` has no meaning on a control program (Module)
+module shapes
+
+tile [32, 32]
+tile [16, 16]
+format f32
+
+program P {
+    handler twice(x: tensor<f32>, n: u32) @on(group) @tile(16, 16) {
+        let part = partition(x.tiles(0, n), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb + xb)
+        }
+    }
+}
+
+control run(x: tensor<f32>) @tile(16, 16) {
+    let a = invoke(P.twice(x, 4), on = group(0, 1))
+    await a
+}

@@ -663,15 +663,17 @@ pub fn check_statement(module: &Module, s: &Statement) -> Vec<Refusal> {
         let at = Anchor::Message(crate::types::MessageId(m as u32));
         over(Limit::MessageFields, message.fields.len(), at, &mut out);
     }
-    if !s.tile_shapes.is_empty() && !s.tile_shapes.contains(&module.tile) {
-        out.push(Refusal {
-            code: TILE_NOT_COMPUTED,
-            what: format!(
-                "the {} backend does not compute on tiles of {} by {}",
-                s.backend, module.tile.rows, module.tile.cols
-            ),
-            at: Some(Anchor::Module),
-        });
+    for tile in &module.tiles {
+        if !s.tile_shapes.is_empty() && !s.tile_shapes.contains(tile) {
+            out.push(Refusal {
+                code: TILE_NOT_COMPUTED,
+                what: format!(
+                    "the {} backend does not compute on tiles of {} by {}",
+                    s.backend, tile.rows, tile.cols
+                ),
+                at: Some(Anchor::Module),
+            });
+        }
     }
     for f in &module.formats {
         if !s.formats.contains(f) {
@@ -700,7 +702,7 @@ pub fn check_load(module: &Module, backend: &dyn Backend, at_load: &LoadStatemen
                     let widest = module
                         .formats
                         .iter()
-                        .map(|f| backend.tile_bytes(*f, module.tile))
+                        .map(|f| backend.tile_bytes(*f, module.default_tile()))
                         .max()
                         .unwrap_or(0);
                     amount.checked_mul(widest)

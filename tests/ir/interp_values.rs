@@ -47,6 +47,11 @@ const DIV0: Fault = Fault::Failure(Failure::DivideByZero);
 
 /// A heap with one f32 tensor of `rows` by `cols` tiles of 2 by 2, tile `i` holding
 /// `i` in every element.
+/// The storage shape of tensor `t`: the shape the views of these tests address it in.
+fn st(heap: &Heap, t: TensorId) -> TileShape {
+    heap.get(t).unwrap().tile
+}
+
 fn numbered(rows: usize, cols: usize) -> (Heap, TensorId) {
     let mut t = Tensor::zeros("t", Format::F32, rows * 2, cols * 2, S22);
     for (i, tile) in t.tiles.iter_mut().enumerate() {
@@ -485,7 +490,7 @@ fn writing_another_format_keeps_values() {
     let a = f32s(&[fine, 0.0, 0.0, 0.0]);
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("y", Format::Bf16, 2, 2, S22));
-    let v = ops::tiles(&heap, t, 0, 1).unwrap();
+    let v = ops::tiles(&heap, t, 0, 1, st(&heap, t)).unwrap();
     ops::store(&mut heap, &v, &Block::row(vec![a])).unwrap();
     let back = ops::read(&heap, &v, 0).unwrap();
     assert_eq!(back.format, Format::Bf16);
@@ -505,11 +510,17 @@ fn writing_another_format_keeps_values() {
 #[test]
 fn tiles_view_and_view_end() {
     let (heap, t) = numbered(2, 3);
-    let v = ops::tiles(&heap, t, 2, 3).unwrap();
+    let v = ops::tiles(&heap, t, 2, 3, st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &v), vec![2, 3, 4]);
-    assert_eq!(ops::tiles(&heap, t, 4, 2).map(|v| v.len()), Ok(2));
-    assert_eq!(ops::tiles(&heap, t, 5, 2), Err(VIEW_END));
-    assert_eq!(ops::tiles(&heap, t, usize::MAX, 2), Err(VIEW_END));
+    assert_eq!(
+        ops::tiles(&heap, t, 4, 2, st(&heap, t)).map(|v| v.len()),
+        Ok(2)
+    );
+    assert_eq!(ops::tiles(&heap, t, 5, 2, st(&heap, t)), Err(VIEW_END));
+    assert_eq!(
+        ops::tiles(&heap, t, usize::MAX, 2, st(&heap, t)),
+        Err(VIEW_END)
+    );
 }
 
 #[test]
@@ -517,12 +528,15 @@ fn rectangle_walk() {
     // a grid of 3 by 4 tiles, numbered row by row
     let (heap, t) = numbered(3, 4);
     let s = |start, end, step| Steps { start, end, step };
-    let v = ops::rect(&heap, t, s(1, 3, 1), s(0, 4, 2)).unwrap();
+    let v = ops::rect(&heap, t, s(1, 3, 1), s(0, 4, 2), st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &v), vec![4, 6, 8, 10]);
-    let w = ops::rect(&heap, t, s(0, 3, 2), s(1, 4, 1)).unwrap();
+    let w = ops::rect(&heap, t, s(0, 3, 2), s(1, 4, 1), st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &w), vec![1, 2, 3, 9, 10, 11]);
-    assert_eq!(ops::rect(&heap, t, s(0, 4, 1), s(0, 1, 1)), Err(VIEW_END));
-    assert!(ops::rect(&heap, t, s(0, 2, 0), s(0, 1, 1)).is_err());
+    assert_eq!(
+        ops::rect(&heap, t, s(0, 4, 1), s(0, 1, 1), st(&heap, t)),
+        Err(VIEW_END)
+    );
+    assert!(ops::rect(&heap, t, s(0, 2, 0), s(0, 1, 1), st(&heap, t)).is_err());
 }
 
 #[test]
@@ -533,11 +547,11 @@ fn turned_rectangle() {
         end,
         step: 1,
     };
-    let v = ops::rect(&heap, t, s(0, 2), s(1, 4)).unwrap();
+    let v = ops::rect(&heap, t, s(0, 2), s(1, 4), st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &v), vec![1, 2, 3, 5, 6, 7]);
     let turned = ops::turn(&v).unwrap();
     assert_eq!(numbers_of(&heap, &turned), vec![1, 5, 2, 6, 3, 7]);
-    let run = ops::tiles(&heap, t, 0, 2).unwrap();
+    let run = ops::tiles(&heap, t, 0, 2, st(&heap, t)).unwrap();
     assert!(ops::turn(&run).is_err());
 }
 
@@ -546,16 +560,25 @@ fn items_views() {
     let mut heap = Heap::default();
     // u32 tiles of 2 by 2: 16 bytes a tile, 3 tiles: 48 bytes
     let t = heap.add(Tensor::zeros("r", Format::U32, 2, 6, S22));
-    assert_eq!(ops::items(&heap, t, None, 16).map(|v| v.len()), Ok(3));
-    assert_eq!(ops::items(&heap, t, None, 20).map(|v| v.len()), Ok(2));
     assert_eq!(
-        ops::items(&heap, t, Some((1, 2)), 16).map(|v| v.len()),
+        ops::items(&heap, t, None, 16, st(&heap, t)).map(|v| v.len()),
+        Ok(3)
+    );
+    assert_eq!(
+        ops::items(&heap, t, None, 20, st(&heap, t)).map(|v| v.len()),
         Ok(2)
     );
-    assert_eq!(ops::items(&heap, t, Some((2, 2)), 16), Err(VIEW_END));
+    assert_eq!(
+        ops::items(&heap, t, Some((1, 2)), 16, st(&heap, t)).map(|v| v.len()),
+        Ok(2)
+    );
+    assert_eq!(
+        ops::items(&heap, t, Some((2, 2)), 16, st(&heap, t)),
+        Err(VIEW_END)
+    );
     let f = heap.add(Tensor::zeros("b", Format::Bf16, 2, 2, S22));
     assert!(matches!(
-        ops::items(&heap, f, None, 16),
+        ops::items(&heap, f, None, 16, st(&heap, f)),
         Err(Fault::Undefined(_))
     ));
 }
@@ -563,7 +586,7 @@ fn items_views() {
 #[test]
 fn read_one_tile() {
     let (heap, t) = numbered(1, 4);
-    let v = ops::tiles(&heap, t, 1, 2).unwrap();
+    let v = ops::tiles(&heap, t, 1, 2, st(&heap, t)).unwrap();
     assert_eq!(values(&ops::read(&heap, &v, 1).unwrap()), vec![2.0; 4]);
     assert_eq!(ops::read(&heap, &v, 2), Err(OUT));
 }
@@ -573,13 +596,13 @@ fn words_of_one_tile() {
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("x", Format::U32, 2, 4, S22));
     heap.tensors[t.0].tiles[1] = ints(Format::U32, &[7, 8, 9, 10]);
-    let v = ops::tiles(&heap, t, 1, 1).unwrap();
+    let v = ops::tiles(&heap, t, 1, 1, st(&heap, t)).unwrap();
     assert_eq!(
         ops::words(&heap, &v),
         Ok(vec![u32s(7), u32s(8), u32s(9), u32s(10)])
     );
     let b = heap.add(Tensor::zeros("b", Format::Bf16, 2, 2, S22));
-    let bv = ops::tiles(&heap, b, 0, 1).unwrap();
+    let bv = ops::tiles(&heap, b, 0, 1, st(&heap, b)).unwrap();
     assert!(ops::words(&heap, &bv).is_err());
 }
 
@@ -599,7 +622,7 @@ fn records_of_one_tile() {
             ("child".into(), Format::U32),
         ],
     };
-    let v = ops::tiles(&heap, t, 0, 1).unwrap();
+    let v = ops::tiles(&heap, t, 0, 1, st(&heap, t)).unwrap();
     let recs = ops::records(&heap, &v, &node, 4).unwrap();
     assert_eq!(recs[0], vec![u32s(0), u32s(10), u32s(20)]);
     assert_eq!(recs[3], vec![u32s(90), u32s(100), u32s(110)]);
@@ -616,7 +639,7 @@ fn records_of_one_tile() {
             ("c".into(), Format::U8),
         ],
     };
-    let bv = ops::tiles(&bytes_heap, b, 0, 1).unwrap();
+    let bv = ops::tiles(&bytes_heap, b, 0, 1, st(&bytes_heap, b)).unwrap();
     let got = ops::records(&bytes_heap, &bv, &mixed, 1).unwrap();
     assert_eq!(
         got[0],
@@ -634,7 +657,7 @@ fn put_writes_one_item() {
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("results", Format::U32, 2, 4, S22));
     let mut hit = Member::scalars("hit", Format::U32, 4, true).unwrap();
-    let all = ops::items(&heap, t, None, 16).unwrap();
+    let all = ops::items(&heap, t, None, 16, st(&heap, t)).unwrap();
     assert_eq!(ops::put(&mut heap, &all, &hit, 1), Err(EMPTY));
     for (i, v) in [5u64, 6, 7, 1].into_iter().enumerate() {
         ops::set(&mut hit, i, Element::Scalar(u32s(v))).unwrap();
@@ -643,14 +666,14 @@ fn put_writes_one_item() {
     assert_eq!(heap.tensors[t.0].tiles[0].to_ints(), Some(vec![0; 4]));
     assert_eq!(heap.tensors[t.0].tiles[1].to_ints(), Some(vec![5, 6, 7, 1]));
     assert_eq!(ops::put(&mut heap, &all, &hit, 2), Err(OUT));
-    let wide = ops::items(&heap, t, None, 8).unwrap();
+    let wide = ops::items(&heap, t, None, 8, st(&heap, t)).unwrap();
     assert!(ops::put(&mut heap, &wide, &hit, 0).is_err());
 }
 
 #[test]
 fn partition_by_hand() {
     let (heap, t) = numbered(1, 10);
-    let v = ops::tiles(&heap, t, 0, 10).unwrap();
+    let v = ops::tiles(&heap, t, 0, 10, st(&heap, t)).unwrap();
     // 10 tiles over 4 ranks: 3, 3, 2, 2
     let parts: Vec<Vec<usize>> = (0..4)
         .map(|r| numbers_of(&heap, &ops::partition(&v, r, 4).unwrap()))
@@ -660,7 +683,7 @@ fn partition_by_hand() {
         vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7], vec![8, 9]]
     );
     // 2 tiles over 4 ranks: 1, 1, 0, 0
-    let two = ops::tiles(&heap, t, 4, 2).unwrap();
+    let two = ops::tiles(&heap, t, 4, 2, st(&heap, t)).unwrap();
     let lens: Vec<usize> = (0..4)
         .map(|r| ops::partition(&two, r, 4).unwrap().len())
         .collect();
@@ -671,7 +694,7 @@ fn partition_by_hand() {
 #[test]
 fn stream_blocks_and_ragged_end() {
     let (heap, t) = numbered(1, 5);
-    let v = ops::tiles(&heap, t, 0, 5).unwrap();
+    let v = ops::tiles(&heap, t, 0, 5, st(&heap, t)).unwrap();
     let mut s = ops::stream(&v, 2).unwrap();
     let mut seen = Vec::new();
     while let Some(block) = ops::next_block(&heap, &mut s).unwrap() {
@@ -690,8 +713,8 @@ fn stream_blocks_and_ragged_end() {
 #[test]
 fn zip_two_streams() {
     let (heap, t) = numbered(1, 6);
-    let a = ops::tiles(&heap, t, 0, 3).unwrap();
-    let b = ops::tiles(&heap, t, 3, 3).unwrap();
+    let a = ops::tiles(&heap, t, 0, 3, st(&heap, t)).unwrap();
+    let b = ops::tiles(&heap, t, 3, 3, st(&heap, t)).unwrap();
     let (sa, sb) = (ops::stream(&a, 1).unwrap(), ops::stream(&b, 1).unwrap());
     let mut z = ops::zip(vec![sa, sb]).unwrap();
     let mut pairs = Vec::new();
@@ -703,7 +726,7 @@ fn zip_two_streams() {
     }
     assert_eq!(pairs, vec![(0.0, 3.0), (1.0, 4.0), (2.0, 5.0)]);
     // streams of different lengths: out_of_range, when the zip is made
-    let c = ops::tiles(&heap, t, 0, 2).unwrap();
+    let c = ops::tiles(&heap, t, 0, 2, st(&heap, t)).unwrap();
     let (sa, sc) = (ops::stream(&a, 1).unwrap(), ops::stream(&c, 1).unwrap());
     assert_eq!(ops::zip(vec![sa, sc]), Err(OUT));
     // the same number of blocks of different sizes walk together
@@ -723,14 +746,14 @@ fn zip_two_streams() {
 #[test]
 fn sink_writes_in_order() {
     let (mut heap, t) = numbered(1, 4);
-    let v = ops::tiles(&heap, t, 1, 3).unwrap();
+    let v = ops::tiles(&heap, t, 1, 3, st(&heap, t)).unwrap();
     let mut out = ops::sink(&v, 2).unwrap();
     let seven = f32s(&[7.0; 4]);
     let block = Block::row(vec![seven.clone(), seven.clone()]);
     ops::push(&mut heap, &mut out, &block).unwrap();
     // the ragged end: a block of two, of which only the one tile named is written
     ops::push(&mut heap, &mut out, &block).unwrap();
-    let all = ops::tiles(&heap, t, 0, 4).unwrap();
+    let all = ops::tiles(&heap, t, 0, 4, st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &all), vec![0, 7, 7, 7]);
     assert_eq!(ops::push(&mut heap, &mut out, &block), Err(VIEW_END));
 }
@@ -738,11 +761,11 @@ fn sink_writes_in_order() {
 #[test]
 fn store_one_tile() {
     let (mut heap, t) = numbered(1, 3);
-    let v = ops::tiles(&heap, t, 2, 1).unwrap();
+    let v = ops::tiles(&heap, t, 2, 1, st(&heap, t)).unwrap();
     ops::store(&mut heap, &v, &Block::row(vec![f32s(&[9.0; 4])])).unwrap();
-    let all = ops::tiles(&heap, t, 0, 3).unwrap();
+    let all = ops::tiles(&heap, t, 0, 3, st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &all), vec![0, 1, 9]);
-    let two = ops::tiles(&heap, t, 0, 2).unwrap();
+    let two = ops::tiles(&heap, t, 0, 2, st(&heap, t)).unwrap();
     assert!(ops::store(&mut heap, &two, &Block::row(vec![f32s(&[1.0; 4])])).is_err());
 }
 
@@ -753,7 +776,7 @@ fn fill_fills_whole() {
     let (heap, t) = numbered(1, 4);
     let mut table = Member::tiles("table", Format::Bf16, S22, 3, false);
     assert_eq!(ops::get(&table, 0), Err(EMPTY));
-    let mut s = ops::stream(&ops::tiles(&heap, t, 1, 3).unwrap(), 1).unwrap();
+    let mut s = ops::stream(&ops::tiles(&heap, t, 1, 3, st(&heap, t)).unwrap(), 1).unwrap();
     ops::fill(&heap, &mut table, &mut s).unwrap();
     let Ok(Element::Tile(second)) = ops::get(&table, 1) else {
         panic!("a tile")
@@ -762,7 +785,7 @@ fn fill_fills_whole() {
         (second.format, values(&second)),
         (Format::Bf16, vec![2.0; 4])
     );
-    let mut short = ops::stream(&ops::tiles(&heap, t, 0, 2).unwrap(), 1).unwrap();
+    let mut short = ops::stream(&ops::tiles(&heap, t, 0, 2, st(&heap, t)).unwrap(), 1).unwrap();
     let mut other = Member::tiles("other", Format::F32, S22, 3, false);
     assert_eq!(ops::fill(&heap, &mut other, &mut short), Err(OUT));
     assert_eq!(ops::get(&other, 0), Err(EMPTY));
@@ -813,23 +836,23 @@ fn views_of(heap: &Heap, t: TensorId, items_t: TensorId) -> Vec<View> {
     let mut out = Vec::new();
     let tensor = heap.get(t).unwrap();
     let (rows, cols) = tensor.grid;
-    for first in 0..tensor.tile_count() {
-        for n in 0..=(tensor.tile_count() - first) {
-            out.push(ops::tiles(heap, t, first, n).unwrap());
+    for first in 0..tensor.tile_count(tensor.tile) {
+        for n in 0..=(tensor.tile_count(tensor.tile) - first) {
+            out.push(ops::tiles(heap, t, first, n, st(heap, t)).unwrap());
         }
     }
     for step in 1..=3 {
         for r0 in 0..rows {
             for c0 in 0..cols {
                 let s = |start, end| Steps { start, end, step };
-                let v = ops::rect(heap, t, s(r0, rows), s(c0, cols)).unwrap();
+                let v = ops::rect(heap, t, s(r0, rows), s(c0, cols), st(heap, t)).unwrap();
                 out.push(ops::turn(&v).unwrap());
                 out.push(v);
             }
         }
     }
-    out.push(ops::items(heap, items_t, None, 4).unwrap());
-    out.push(ops::items(heap, items_t, Some((3, 29)), 4).unwrap());
+    out.push(ops::items(heap, items_t, None, 4, st(heap, items_t)).unwrap());
+    out.push(ops::items(heap, items_t, Some((3, 29)), 4, st(heap, items_t)).unwrap());
     out
 }
 
@@ -889,7 +912,7 @@ fn turned_twice_is_the_same_view() {
                     end,
                     step,
                 };
-                let v = ops::rect(&heap, t, s(rows), s(cols)).unwrap();
+                let v = ops::rect(&heap, t, s(rows), s(cols), st(&heap, t)).unwrap();
                 let back = ops::turn(&ops::turn(&v).unwrap()).unwrap();
                 assert_eq!(back, v);
                 assert_eq!(numbers_of(&heap, &back), numbers_of(&heap, &v));
@@ -911,8 +934,12 @@ fn a_stream_into_a_sink_of_the_same_view_writes_the_same_tiles() {
                 end,
                 step: 1,
             };
-            let src = ops::turn(&ops::rect(&heap, t, s(rows), s(cols)).unwrap()).unwrap();
-            for v in [src, ops::tiles(&heap, t, 1, rows * cols - 1).unwrap()] {
+            let src =
+                ops::turn(&ops::rect(&heap, t, s(rows), s(cols), st(&heap, t)).unwrap()).unwrap();
+            for v in [
+                src,
+                ops::tiles(&heap, t, 1, rows * cols - 1, st(&heap, t)).unwrap(),
+            ] {
                 // in place: the view written is the view read (B8, point 12)
                 let mut input = ops::stream(&v, block).unwrap();
                 let mut out = ops::sink(&v, block).unwrap();
@@ -923,6 +950,7 @@ fn a_stream_into_a_sink_of_the_same_view_writes_the_same_tiles() {
                 // and into the same view of another tensor of the same shape
                 let other = View {
                     tensor: dst,
+                    shape: v.shape,
                     kind: v.kind.clone(),
                 };
                 let mut input = ops::stream(&v, block).unwrap();
@@ -941,7 +969,7 @@ fn words_on_more_than_one_tile_is_refused() {
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("x", Format::U32, 2, 8, S22));
     for n in 0..=4 {
-        let v = ops::tiles(&heap, t, 0, n).unwrap();
+        let v = ops::tiles(&heap, t, 0, n, st(&heap, t)).unwrap();
         let words = ops::words(&heap, &v);
         let shape = TileShape { rows: 2, cols: 2 };
         let node = RecordType {
@@ -980,12 +1008,13 @@ fn malformed_values_are_faults_not_panics() {
     assert!(ops::convert(&bad, Format::Bf16).is_err());
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("t", Format::F32, 2, 2, S22));
-    let v = ops::tiles(&heap, t, 0, 1).unwrap();
+    let v = ops::tiles(&heap, t, 0, 1, st(&heap, t)).unwrap();
     assert!(ops::store(&mut heap, &v, &Block::row(vec![bad])).is_err());
     assert!(ops::read(
         &heap,
         &View {
             tensor: TensorId(9),
+            shape: v.shape,
             kind: v.kind.clone()
         },
         0

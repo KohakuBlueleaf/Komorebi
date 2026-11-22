@@ -1340,7 +1340,7 @@ impl Checker<'_> {
         };
         match self.types.get(&(base.span.start, base.span.end)) {
             Some(Ty::Body) => self.arrived_body(cx),
-            Some(Ty::View { .. }) => cx.env.tile.map(|(rows, cols)| 4 * rows * cols),
+            Some(Ty::View { .. }) => cx.tile.map(|(rows, cols)| 4 * rows * cols),
             _ => None,
         }
     }
@@ -1690,10 +1690,7 @@ impl Checker<'_> {
                     }
                 };
                 let count = o[1].and_then(as_int);
-                let tile_bytes = match (
-                    cx.env.tile,
-                    format.and_then(Format::bytes).map(|b| b as u64),
-                ) {
+                let tile_bytes = match (cx.tile, format.and_then(Format::bytes).map(|b| b as u64)) {
                     (Some((rows, cols)), Some(width)) => Some(rows * cols * width),
                     _ => None,
                 };

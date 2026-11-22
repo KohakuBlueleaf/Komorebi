@@ -1,0 +1,10 @@
+// refused: the same tile shape declared twice (Module)
+module shapes
+
+tile [32, 32]
+tile [32, 32]
+format f32
+
+func twice(a: tile<f32>) -> tile<f32> {
+    return a + a
+}

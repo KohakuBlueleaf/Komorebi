@@ -1,0 +1,10 @@
+// refused: `@tile` takes two whole numbers, the rows and the columns (Module)
+module shapes
+
+tile [32, 32]
+tile [16, 16]
+format f32
+
+func twice(a: tile<f32>) -> tile<f32> @tile(4) {
+    return a + a
+}

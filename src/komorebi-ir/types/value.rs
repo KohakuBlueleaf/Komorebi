@@ -5,7 +5,7 @@ use std::fmt;
 
 use super::{Format, MessageId, ParamId, RecordId, ScalarType};
 
-/// The module's tile shape, in elements.
+/// A tile shape, in elements: a module has one or more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TileShape {
     /// Rows.

@@ -383,8 +383,11 @@ impl Block {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TensorId(pub usize);
 
-/// A tensor: a named array the execution context holds, addressed in tiles. Its
-/// logical shape is in elements; its tiles cover it, padded up to whole tiles.
+/// A tensor: a named array the execution context holds, addressed in tiles by the code
+/// that reads or writes it. Its logical shape is in elements; it is held in the tiles
+/// of the shape it was made with (its storage shape), which cover it, padded up to
+/// whole tiles. Code of another shape reads and writes it through `read_tile` and
+/// `write_tile`: the same elements, cut into its own tiles.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tensor {
     /// The name the execution context gave it.
@@ -419,10 +422,187 @@ impl Tensor {
         }
     }
 
-    /// The number of tiles.
-    pub fn tile_count(&self) -> usize {
-        self.tiles.len()
+    /// The padded shape, in elements: rows and columns of its stored tiles.
+    pub fn padded(&self) -> (usize, usize) {
+        (
+            self.grid.0.saturating_mul(self.tile.height()),
+            self.grid.1.saturating_mul(self.tile.width()),
+        )
     }
+
+    /// Whether the padded shape is whole tiles of `shape`.
+    pub fn whole_in(&self, shape: TileShape) -> bool {
+        let (rows, cols) = self.padded();
+        let (h, w) = (shape.height(), shape.width());
+        h > 0 && w > 0 && rows % h == 0 && cols % w == 0
+    }
+
+    /// The grid of tiles of `shape`: rows and columns of them; none of a shape the
+    /// padded shape is not whole tiles of.
+    pub fn grid_in(&self, shape: TileShape) -> (usize, usize) {
+        if !self.whole_in(shape) {
+            return (0, 0);
+        }
+        let (rows, cols) = self.padded();
+        (rows / shape.height(), cols / shape.width())
+    }
+
+    /// The number of tiles of `shape`: padded rows / R times padded columns / C.
+    pub fn tile_count(&self, shape: TileShape) -> usize {
+        let (r, c) = self.grid_in(shape);
+        r * c
+    }
+
+    /// Where element (r, c) of tile `i` of `shape` is held: its stored tile, and its
+    /// place in that tile row by row. Element (y, x) of the tensor is element
+    /// (y mod R, x mod C) of tile `(y / R) * (padded cols / C) + x / C` in `[R, C]`.
+    fn held_at(&self, shape: TileShape, i: usize, r: usize, c: usize) -> (usize, usize) {
+        let cols = self.grid_in(shape).1.max(1);
+        let y = (i / cols) * shape.height() + r;
+        let x = (i % cols) * shape.width() + c;
+        let (h, w) = (self.tile.height().max(1), self.tile.width().max(1));
+        ((y / h) * self.grid.1 + x / w, (y % h) * w + x % w)
+    }
+
+    /// Tile `i` of `shape`, its elements gathered from the stored tiles; the stored tile
+    /// itself in the storage shape. `None` past the tiles of that shape.
+    pub fn read_tile(&self, shape: TileShape, i: usize) -> Option<Tile> {
+        if shape == self.tile {
+            return self.tiles.get(i).cloned();
+        }
+        if i >= self.tile_count(shape) {
+            return None;
+        }
+        let mut out = Tile::zeros(self.format, shape);
+        for r in 0..shape.height() {
+            for c in 0..shape.width() {
+                let (t, k) = self.held_at(shape, i, r, c);
+                let from = &self.tiles.get(t)?.elements;
+                copy_element(&mut out.elements, r * shape.width() + c, from, k)?;
+            }
+        }
+        Some(out)
+    }
+
+    /// Writes tile `i` of `shape`, its elements scattered to the stored tiles: the
+    /// mirror of `read_tile`. `None` past the tiles of that shape, or for a tile of
+    /// another shape or of elements held otherwise.
+    pub fn write_tile(&mut self, shape: TileShape, i: usize, tile: &Tile) -> Option<()> {
+        if tile.shape != shape {
+            return None;
+        }
+        if shape == self.tile {
+            *self.tiles.get_mut(i)? = tile.clone();
+            return Some(());
+        }
+        if i >= self.tile_count(shape) {
+            return None;
+        }
+        for r in 0..shape.height() {
+            for c in 0..shape.width() {
+                let (t, k) = self.held_at(shape, i, r, c);
+                let to = &mut self.tiles.get_mut(t)?.elements;
+                copy_element(to, k, &tile.elements, r * shape.width() + c)?;
+            }
+        }
+        Some(())
+    }
+
+    /// The width of a place's unit: an element's bytes for a format with stated bytes,
+    /// else 1 (a place counts elements).
+    fn unit(&self) -> usize {
+        self.format.bytes().unwrap_or(1)
+    }
+
+    /// The places of the race record tile `i` of `shape` covers, in stored tiles: the
+    /// one whole tile in the storage shape; else, for each stored tile it touches, the
+    /// whole tile when it covers all of it, or one place for each row it covers.
+    pub fn places(&self, id: TensorId, shape: TileShape, i: usize) -> Vec<TensorPlace> {
+        if shape == self.tile {
+            return vec![TensorPlace::tile(id, i)];
+        }
+        let units = shape.count().saturating_mul(self.unit());
+        self.range_places(id, shape, i, 0, units)
+    }
+
+    /// The places units `lo .. hi` of tile `i` of `shape` cover, in stored tiles (a unit
+    /// is a byte for a format with stated bytes, else an element; the tile's units row
+    /// by row): in the storage shape, that range of the tile; else, for each stored tile
+    /// touched, the whole tile when the range covers all of it, or one place for each
+    /// of its rows the range covers.
+    pub fn range_places(
+        &self,
+        id: TensorId,
+        shape: TileShape,
+        i: usize,
+        lo: usize,
+        hi: usize,
+    ) -> Vec<TensorPlace> {
+        if shape == self.tile {
+            return vec![TensorPlace {
+                tensor: id.0,
+                tile: i,
+                lo,
+                hi,
+            }];
+        }
+        let u = self.unit();
+        let row = shape.width().saturating_mul(u);
+        if row == 0 || lo >= hi || i >= self.tile_count(shape) {
+            return Vec::new();
+        }
+        let cols = self.grid_in(shape).1.max(1);
+        let (h, w) = (self.tile.height().max(1), self.tile.width().max(1));
+        let stored_row = w * u;
+        let mut found: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+            std::collections::BTreeMap::new();
+        for r in lo / row..=(hi - 1) / row {
+            // this row's units, as units of the tensor's row y from its column x0
+            let (a, b) = (lo.max(r * row) - r * row, hi.min((r + 1) * row) - r * row);
+            let y = (i / cols) * shape.height() + r;
+            let x0 = (i % cols) * shape.width() * u;
+            let (mut from, end) = (x0 + a, x0 + b);
+            while from < end {
+                let column = from / stored_row;
+                let upto = end.min((column + 1) * stored_row);
+                let t = (y / h) * self.grid.1 + column;
+                let (start, row_at) = (column * stored_row, (y % h) * stored_row);
+                found
+                    .entry(t)
+                    .or_default()
+                    .push((row_at + from - start, row_at + upto - start));
+                from = upto;
+            }
+        }
+        let whole = h * stored_row;
+        let mut out = Vec::new();
+        for (t, ranges) in found {
+            let covered: usize = ranges.iter().map(|(a, b)| b - a).sum();
+            if covered >= whole {
+                out.push(TensorPlace::tile(id, t));
+            } else {
+                out.extend(ranges.into_iter().map(|(lo, hi)| TensorPlace {
+                    tensor: id.0,
+                    tile: t,
+                    lo,
+                    hi,
+                }));
+            }
+        }
+        out
+    }
+}
+
+/// Element `k` of `from` copied to element `at` of `to`, both held alike; `None`
+/// otherwise.
+fn copy_element(to: &mut Elements, at: usize, from: &Elements, k: usize) -> Option<()> {
+    match (to, from) {
+        (Elements::Int(a), Elements::Int(b)) => *a.get_mut(at)? = *b.get(k)?,
+        (Elements::F32(a), Elements::F32(b)) => *a.get_mut(at)? = *b.get(k)?,
+        (Elements::F64(a), Elements::F64(b)) => *a.get_mut(at)? = *b.get(k)?,
+        _ => return None,
+    }
+    Some(())
 }
 
 /// The tensors of one execution context.
@@ -589,6 +769,8 @@ pub enum ViewKind {
 pub struct View {
     /// The tensor it views.
     pub tensor: TensorId,
+    /// The tile shape it addresses the tensor in: that of the body that made it.
+    pub shape: TileShape,
     /// What it names.
     pub kind: ViewKind,
 }
@@ -785,17 +967,20 @@ impl fmt::Display for Fault {
 
 // ---- the place record: races (B2) ----
 
-/// A place of a tensor (B2): bytes `lo .. hi` of one tile. An access through tiles
-/// names the whole tile; an item names its bytes in each tile it lies in.
+/// A place of a tensor (B2): units `lo .. hi` of one stored tile, a unit being a byte
+/// for a format with stated bytes, else an element. An access through tiles of the
+/// storage shape names the whole tile; one through tiles of another shape, the whole
+/// tiles it covers and a range for each row it covers of the others; an item names its
+/// bytes in each tile it lies in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TensorPlace {
     /// The tensor.
     pub tensor: usize,
     /// The tile.
     pub tile: usize,
-    /// The first byte of the tile.
+    /// The first unit of the tile.
     pub lo: usize,
-    /// After the last byte; `usize::MAX` for the whole tile.
+    /// After the last unit; `usize::MAX` for the whole tile.
     pub hi: usize,
 }
 

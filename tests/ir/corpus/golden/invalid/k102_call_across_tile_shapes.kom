@@ -1,0 +1,19 @@
+// refused: a handler calls a function of another tile shape (Module)
+module shapes
+
+tile [32, 32]
+tile [16, 16]
+format f32
+
+func twice(a: tile<f32>) -> tile<f32> @tile(16, 16) {
+    return a + a
+}
+
+program P {
+    handler scale(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(twice(xb))
+        }
+    }
+}

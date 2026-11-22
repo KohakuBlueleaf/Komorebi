@@ -167,8 +167,10 @@ impl Writer {
 
     fn program(&mut self, m: &Module) {
         self.str(&m.name);
-        self.u64(m.tile.rows);
-        self.u64(m.tile.cols);
+        self.list(&m.tiles, |w, t| {
+            w.u64(t.rows);
+            w.u64(t.cols);
+        });
         self.list(&m.formats, |w, f| w.format(*f));
         self.list(&m.params, |w, p| {
             w.str(&p.name);
@@ -221,6 +223,7 @@ impl Writer {
         self.ty(&f.ret);
         self.opt(f.body.as_ref(), Writer::body);
         self.effects(&f.effects);
+        self.u32(f.tile);
     }
 
     fn program_decl(&mut self, p: &Program) {
@@ -262,6 +265,7 @@ impl Writer {
         }
         self.bool(m.export);
         self.bool(m.by_element);
+        self.u32(m.tile);
     }
 
     fn handler(&mut self, h: &Handler) {
@@ -272,6 +276,7 @@ impl Writer {
         self.bool(h.exclusive);
         self.body(&h.body);
         self.effects(&h.effects);
+        self.u32(h.tile);
     }
 
     fn run(&mut self, r: &Run) {
@@ -284,6 +289,7 @@ impl Writer {
             w.body(body);
         });
         self.effects(&r.effects);
+        self.u32(r.tile);
     }
 
     fn call_arg(&mut self, a: &CallArg) {

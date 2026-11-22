@@ -16,7 +16,7 @@ use super::Checker;
 use crate::types::ScalarType;
 
 /// The language's own undotted attributes. A dotted name is a hint and never an error.
-const KNOWN: [&str; 15] = [
+const KNOWN: [&str; 16] = [
     "on",
     "exclusive",
     "scope",
@@ -32,6 +32,7 @@ const KNOWN: [&str; 15] = [
     "dynamic",
     "peers",
     "body",
+    "tile",
 ];
 
 /// The attributes whose operands are words of the language (`@on(group)`,
@@ -433,7 +434,7 @@ impl Checker<'_> {
         let mut has_dynamic = false;
         let mut has_grid = false;
         let mut impls: HashSet<String> = HashSet::new();
-        let mut tiles = 0;
+        let lines = super::shapes::tile_lines(module);
         for item in module.items.nodes() {
             match item {
                 Item::Requires(r) => {
@@ -456,20 +457,11 @@ impl Checker<'_> {
                 Item::Tile(t) => {
                     self.holds_64(&t.rows);
                     self.holds_64(&t.cols);
-                    tiles += 1;
-                    if tiles > 1 {
-                        self.error(
-                            codes::NOT_BUILT,
-                            "several tile shapes in one module are named in the language and \
-                             not built yet"
-                                .into(),
-                            t.span,
-                        );
-                    }
                 }
                 _ => {}
             }
         }
+        self.tile_twice(module);
         for item in module.items.nodes() {
             match item {
                 Item::Tile(_) | Item::Format(_) | Item::Requires(_) => {}
@@ -503,17 +495,24 @@ impl Checker<'_> {
                 Item::Message(m) => self.message_attrs(&m.attrs),
                 Item::Record(_) => {}
                 Item::Func(f) => {
-                    self.attrs_in(&f.attrs, &[], "a func");
+                    self.attrs_in(&f.attrs, &["tile"], "a func");
+                    self.tile_args(&f.attrs, &lines);
                     self.param_attrs(&f.params);
                     self.block_attrs(&f.body);
                 }
                 Item::Combine(f) => {
-                    self.attrs_in(&f.attrs, &["commutative"], "a combine");
+                    self.attrs_in(&f.attrs, &["commutative", "tile"], "a combine");
+                    self.tile_args(&f.attrs, &lines);
                     self.param_attrs(&f.params);
                     self.block_attrs(&f.body);
                 }
                 Item::Extern(f) => {
-                    self.attrs_in(&f.attrs, &["reads", "writes", "impl"], "an extern func");
+                    self.attrs_in(
+                        &f.attrs,
+                        &["reads", "writes", "impl", "tile"],
+                        "an extern func",
+                    );
+                    self.tile_args(&f.attrs, &lines);
                     let implemented = self.implementation(&f.attrs, f.span);
                     self.param_attrs(&f.params);
                     let stated: HashSet<String> = named_args(&f.attrs, "reads")
@@ -561,7 +560,7 @@ impl Checker<'_> {
                 }
                 Item::Program(p) => {
                     for part in p.body.nodes() {
-                        self.program_item_rules(part, has_dynamic, has_grid, ix);
+                        self.program_item_rules(part, has_dynamic, has_grid, ix, &lines);
                     }
                 }
                 Item::Control(c) => {
@@ -579,12 +578,14 @@ impl Checker<'_> {
         has_dynamic: bool,
         has_grid: bool,
         ix: &Index,
+        lines: &[super::shapes::Shape],
     ) {
         match part {
             ProgramItem::Message(m) => self.message_attrs(&m.attrs),
             ProgramItem::Record(_) => {}
             ProgramItem::State(s) => {
-                self.attrs_in(&s.attrs, &["scope", "lifetime"], "a state block");
+                self.attrs_in(&s.attrs, &["scope", "lifetime", "tile"], "a state block");
+                self.tile_args(&s.attrs, lines);
                 self.attr_args(&s.attrs, &["scope", "lifetime"], ix);
                 let missing: Vec<&str> = ["scope", "lifetime"]
                     .into_iter()
@@ -606,7 +607,8 @@ impl Checker<'_> {
                 }
             }
             ProgramItem::Handler(h) => {
-                self.attrs_in(&h.attrs, &["on", "exclusive"], "a handler");
+                self.attrs_in(&h.attrs, &["on", "exclusive", "tile"], "a handler");
+                self.tile_args(&h.attrs, lines);
                 self.attr_args(&h.attrs, &["on", "exclusive"], ix);
                 self.require_attr(&h.attrs, "on", "a handler", h.span);
                 self.param_attrs(&h.params);
@@ -623,7 +625,8 @@ impl Checker<'_> {
                 }
             }
             ProgramItem::Run(r) => {
-                self.attrs_in(&r.attrs, &["dynamic", "peers"], "a run");
+                self.attrs_in(&r.attrs, &["dynamic", "peers", "tile"], "a run");
+                self.tile_args(&r.attrs, lines);
                 self.peers_form(&r.attrs);
                 self.peer_numbers(&r.attrs, ix);
                 self.require_attr(&r.attrs, "dynamic", "a run", r.span);

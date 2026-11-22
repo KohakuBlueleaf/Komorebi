@@ -197,7 +197,9 @@ impl Verifier<'_> {
     /// is the writer's own view (structurally equal instructions fed by the same
     /// arguments of the two calls), for every worker and every value of the
     /// arguments; or both views name a range of tiles the text fixes, with no
-    /// partition, the reader's inside the writer's. What is not shown so is refused.
+    /// partition, the reader's inside the writer's. Two views are compared only when
+    /// both handlers have one tile shape: a `past` between two shapes is not shown. What
+    /// is not shown so is refused.
     fn past(&self, pid: ProgramId, cid: ChainId, out: &mut Vec<Finding>) {
         let Some(prog) = self.module.programs.get(pid.0 as usize) else {
             return;
@@ -226,6 +228,7 @@ impl Verifier<'_> {
                     .enumerate()
                     .filter(|(_, a)| a.param == k as u32 && !writes(a.access));
                 for (r, read) in reads {
+                    let mut across = false;
                     let proven = chain.deps.edges.iter().any(|e| {
                         if e.reader as usize != c || e.read as usize != r || !e.past {
                             return false;
@@ -233,6 +236,10 @@ impl Verifier<'_> {
                         let Some(writer) = handler(e.writer as usize) else {
                             return false;
                         };
+                        if writer.tile != reader.tile {
+                            across = true;
+                            return false;
+                        }
                         let Some(write) = writer.effects.tensors.get(e.write as usize) else {
                             return false;
                         };
@@ -264,11 +271,16 @@ impl Verifier<'_> {
                     });
                     if !proven {
                         let owner = Owner::Chain(pid, cid);
+                        let why = if across {
+                            ": the two calls address the tensor in different tile shapes"
+                        } else {
+                            ""
+                        };
                         out.push(Finding {
                             code: PAST_UNPROVEN,
                             message: format!(
                                 "the build cannot show that every tile call {} (`{}`) reads of \
-                                 `{}` through `past` was written by an earlier call",
+                                 `{}` through `past` was written by an earlier call{why}",
                                 c + 1,
                                 reader.name,
                                 self.param_name(owner, *y)
@@ -319,8 +331,9 @@ impl Verifier<'_> {
     /// one before the other is invoked, or a path of such) that touch the same tiles
     /// of one tensor, one of them writing. The tiles of an invocation are those of all
     /// its workers: a view `partition(v, worker.rank, group.size)` covers `v`. Two
-    /// invocations on the two arms of one `if` never both run, and are no race. What the
-    /// text does not fix is left to the run: an invocation in a loop against itself on
+    /// invocations on the two arms of one `if` never both run, and are no race; nor are
+    /// two invocations of handlers of different tile shapes, whose tiles are not
+    /// compared before the run. What the text does not fix is left to the run: an invocation in a loop against itself on
     /// the next turn, and an `await` on one arm of an `if`, which counts here as an edge
     /// on every path (so the build may miss a race there, and the run finds it).
     fn races(&self, cid: ControlId, out: &mut Vec<Finding>) {
@@ -439,6 +452,9 @@ impl Verifier<'_> {
         let (Some(ha), Some(hb)) = (a.handler, b.handler) else {
             return false;
         };
+        if ha.tile != hb.tile {
+            return false;
+        }
         let tiles = |inv: &Invocation<'_>, body: &Body, view: InstId| -> Option<(u64, u64)> {
             let values = Values::with_args(body, inv.args.iter().map(|v| cv.number(*v)).collect());
             let r = values.range_of(values.made(view)?)?;

@@ -657,7 +657,7 @@ impl<'c> Cx<'c> {
         let m = &self.checked.module;
         let mut out = pg::Module {
             name: m.name.name.clone(),
-            tile: TileShape { rows: 0, cols: 0 },
+            tiles: Vec::new(),
             formats: Vec::new(),
             params: Vec::new(),
             records: Vec::new(),
@@ -697,7 +697,10 @@ impl<'c> Cx<'c> {
                         |l: &ast::IntLit| int_value(&l.text).and_then(|v| u64::try_from(v).ok());
                     match (n(&t.rows), n(&t.cols)) {
                         (Some(rows), Some(cols)) => {
-                            out.tile = TileShape { rows, cols };
+                            let shape = TileShape { rows, cols };
+                            if !out.tiles.contains(&shape) {
+                                out.tiles.push(shape);
+                            }
                             Ok(())
                         }
                         _ => refuse(t.span, "a tile shape too large"),
@@ -768,7 +771,12 @@ impl<'c> Cx<'c> {
                         Some(&f.body),
                         self.func_kind(&f.attrs, &f.params, false, combine),
                     )
-                    .map(|x| out.funcs.push(x))
+                    .map(|x| {
+                        out.funcs.push(pg::Func {
+                            tile: self.tile_of(&f.attrs),
+                            ..x
+                        })
+                    })
                 }
                 Item::Extern(f) => {
                     let id = FuncId(out.funcs.len() as u32);
@@ -776,7 +784,12 @@ impl<'c> Cx<'c> {
                     self.note_params(Owner::Func(id), &f.params);
                     let kind = self.func_kind(&f.attrs, &f.params, true, false);
                     self.func(id, &f.name, &f.params, &f.ret, f.fallback.as_ref(), kind)
-                        .map(|x| out.funcs.push(x))
+                        .map(|x| {
+                            out.funcs.push(pg::Func {
+                                tile: self.tile_of(&f.attrs),
+                                ..x
+                            })
+                        })
                 }
                 Item::Program(p) => {
                     let pid = ProgramId(out.programs.len() as u32);
@@ -814,6 +827,13 @@ impl<'c> Cx<'c> {
         out
     }
 
+    /// The place in the module's tile shapes of the shape of a declaration with
+    /// `attrs`: its `@tile`'s, else the default's.
+    fn tile_of(&self, attrs: &[Attr]) -> u32 {
+        let lines = crate::check::tile_lines(&self.checked.module);
+        crate::check::tile_index(&lines, attrs)
+    }
+
     /// The parameter at place `at`, its value as the checker's evaluator gave it.
     fn param(&self, p: &ast::Param, at: ParamId) -> Res<pg::Param> {
         match self.checked.decls.params.get(at.0 as usize) {
@@ -849,6 +869,7 @@ impl<'c> Cx<'c> {
             ret: ret_t,
             body,
             effects: Effects::default(),
+            tile: 0,
         })
     }
 
@@ -919,6 +940,7 @@ impl<'c> Cx<'c> {
                         lifetime: Lifetime::Program,
                         export: named("export"),
                         by_element: filled,
+                        tile: self.tile_of(&state.attrs),
                     });
                     Ok(())
                 }),
@@ -945,6 +967,7 @@ impl<'c> Cx<'c> {
                             exclusive: has_attr(&h.attrs, "exclusive"),
                             body,
                             effects: Effects::default(),
+                            tile: self.tile_of(&h.attrs),
                         });
                         Ok(())
                     })()
@@ -998,6 +1021,7 @@ impl<'c> Cx<'c> {
                             }),
                             on_message,
                             effects: Effects::default(),
+                            tile: self.tile_of(&r.attrs),
                         });
                         Ok(())
                     })()

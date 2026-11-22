@@ -365,10 +365,12 @@ impl<'b> Reader<'b> {
 
     fn program(&mut self) -> Read<Module> {
         let name = self.string()?;
-        let tile = TileShape {
-            rows: self.u64()?,
-            cols: self.u64()?,
-        };
+        let tiles = self.list(|r| {
+            Ok(TileShape {
+                rows: r.u64()?,
+                cols: r.u64()?,
+            })
+        })?;
         let formats = self.list(Reader::format)?;
         let params = self.list(|r| {
             Ok(Param {
@@ -405,7 +407,7 @@ impl<'b> Reader<'b> {
         let requirements = self.list(Reader::requirement)?;
         Ok(Module {
             name,
-            tile,
+            tiles,
             formats,
             params,
             records,
@@ -440,6 +442,7 @@ impl<'b> Reader<'b> {
             ret: self.ty()?,
             body: self.opt(Reader::body)?,
             effects: self.effects()?,
+            tile: self.u32()?,
         })
     }
 
@@ -494,6 +497,7 @@ impl<'b> Reader<'b> {
             lifetime,
             export: self.bool()?,
             by_element: self.bool()?,
+            tile: self.u32()?,
         })
     }
 
@@ -506,6 +510,7 @@ impl<'b> Reader<'b> {
             exclusive: self.bool()?,
             body: self.body()?,
             effects: self.effects()?,
+            tile: self.u32()?,
         })
     }
 
@@ -517,6 +522,7 @@ impl<'b> Reader<'b> {
             seed: self.body()?,
             on_message: self.list(|r| Ok((MessageId(r.u32()?), r.body()?)))?,
             effects: self.effects()?,
+            tile: self.u32()?,
         })
     }
 

@@ -28,15 +28,15 @@ the line.
 |---|---|
 | `options workers N islands A,B,... links A-B,C-D memory BYTES live N steps N` | Loads the module on `N` workers (1 if no line says), in islands of `A`, `B`, ... workers (one island if none). `links`: the pairs of islands joined (every pair if none; it needs `islands`). `memory`: the bytes of a worker's memory, which a `fit` parameter fills. `live`: the bound on a dynamic run's live messages (none if not given). `steps`: how many instructions an invocation may run on each worker before it gives up. Each word pair is optional, in any order; the line, when there is one, comes first. |
 | `load NAME VALUE:TYPE` | Gives the parameter `NAME`, bound at load, its value. Only before the first `tensor`, `invoke`, `control`, `read` or `state` line. |
-| `tensor NAME FORMAT ROWS COLS` | Makes a tensor of `ROWS` by `COLS` elements of `FORMAT`, in tiles of the module's tile, every element 0. |
+| `tensor NAME FORMAT ROWS COLS` | Makes a tensor of `ROWS` by `COLS` elements of `FORMAT`, every element 0. Its rows are padded up to a multiple of the row count of every tile shape of the module (their least common multiple), its columns likewise, so that it is whole tiles of each shape; it is stored in tiles of the module's default shape (its first `tile` line). With one shape, that shape's tiles. |
 | `... replicated` | One copy of the tensor for each island, each holding the fill at first. Written before the fill. |
 | `... fill VALUE` | Every element `VALUE`. |
-| `... fill tile+K` | Every element of tile `i` (row of tiles after row of tiles) `i + K`; `fill tile` is `fill tile+0`. |
+| `... fill tile+K` | Every element of tile `i` of the default shape (row of tiles after row of tiles) `i + K`; `fill tile` is `fill tile+0`. |
 | `... fill element+K` | Element `i`, counted row by row over the tensor's `ROWS` by `COLS`, `i + K`; an element past the tensor's edge 0. |
 | `invoke Program.name ARG... on FIRST COUNT` | Invokes the handler, chain or dynamic run on the workers `FIRST` to `FIRST + COUNT - 1` and waits for its end. |
 | `... with NAME=VALUE:TYPE ...` | Gives parameters bound at the invocation their values, by name; a parameter not given takes its declared value. |
 | `control NAME ARG...` | Runs the control program `NAME`. |
-| `read NAME` | Shows the tensor as it is now in the report; a replicated tensor copy by copy. |
+| `read NAME` | Shows the tensor as it is now in the report, in tiles of the module's default shape; a replicated tensor copy by copy. |
 | `state Program.member` | Shows the exported state member as it is now in the report, worker by worker. |
 
 An argument is a tensor's name, a scalar `VALUE:TYPE` (`5:u32`, `2.0:f32`, `-1:i32`), `true` or

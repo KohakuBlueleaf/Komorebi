@@ -229,7 +229,9 @@ impl Worker {
                 let n = count(m.count, params)?;
                 members.push(match &m.kind {
                     MemberKind::Tiles(f) => {
-                        Member::tiles(&m.name, *f, module.tile, n, m.by_element)
+                        // in the shape of its `state` block
+                        let shape = module.shape(m.tile).unwrap_or(module.default_tile());
+                        Member::tiles(&m.name, *f, shape, n, m.by_element)
                     }
                     MemberKind::Scalars(s) => Member::scalars(&m.name, s.format(), n, m.by_element)
                         .ok_or_else(|| Fault::undefined(format!("a member of {}", s.format())))?,
@@ -658,7 +660,7 @@ impl Accesses {
     }
 }
 
-/// The tiles the views of a `publish` list name, as (tensor, tile).
+/// The stored tiles the views of a `publish` list cover, as (tensor, tile), each once.
 fn published(
     cx: &Context<'_>,
     frame: &Frame,
@@ -667,11 +669,12 @@ fn published(
     let mut out = Vec::new();
     for v in list {
         let v = view(frame, *v)?;
-        out.extend(
-            ops::view_tiles(cx.heap, v)?
-                .into_iter()
-                .map(|n| (v.tensor.0, n)),
-        );
+        let numbers = ops::view_tiles(cx.heap, v)?;
+        for p in ops::tile_places(cx.heap, v, &numbers) {
+            if !out.contains(&(p.tensor, p.tile)) {
+                out.push((p.tensor, p.tile));
+            }
+        }
     }
     Ok(out)
 }
@@ -703,16 +706,11 @@ fn touch(
     Ok(())
 }
 
-/// The whole tiles of a view, as places; none for a view past its tensor, which
-/// faults where it is used.
+/// The places of the tiles of a view, in the stored tiles; none for a view past its
+/// tensor, which faults where it is used.
 fn tile_places(cx: &Context<'_>, v: &View) -> Vec<TensorPlace> {
     ops::view_tiles(cx.heap, v)
-        .map(|tiles| {
-            tiles
-                .into_iter()
-                .map(|n| TensorPlace::tile(v.tensor, n))
-                .collect()
-        })
+        .map(|tiles| ops::tile_places(cx.heap, v, &tiles))
         .unwrap_or_default()
 }
 
@@ -735,10 +733,7 @@ fn read_next(
     let Ok(tiles) = ops::next_tiles(s) else {
         return Ok(());
     };
-    let places = tiles
-        .iter()
-        .map(|n| TensorPlace::tile(s.view.tensor, *n))
-        .collect();
+    let places = ops::tile_places(cx.heap, &s.view, &tiles);
     cx.accesses.note(false, place.rank, s.view.tensor, tiles);
     touch(cx, place, at, places, false)
 }
@@ -1882,10 +1877,12 @@ fn step(
             other => return Err(Fault::undefined(format!(".T of {}", kind(other)))),
         },
         Op::Zeros => match def_ty(0) {
-            Some(Type::Tile(f)) => Value::Tile(ops::zeros(*f, module.tile)),
+            Some(Type::Tile(f)) => Value::Tile(ops::zeros(*f, module.shape_of(frame.at))),
             // a `var` of a block of one row from zeros (R48)
             Some(Type::Block(f, Count::Const(1), Count::Const(n))) => Value::Block(Block::row(
-                (0..*n).map(|_| ops::zeros(*f, module.tile)).collect(),
+                (0..*n)
+                    .map(|_| ops::zeros(*f, module.shape_of(frame.at)))
+                    .collect(),
             )),
             _ => return Err(Fault::undefined("`zeros` of what is not a tile")),
         },
@@ -1965,6 +1962,7 @@ fn step(
             tensor(frame, *t)?,
             index(frame, *first)?,
             index(frame, *n)?,
+            module.shape_of(frame.at),
         )?),
         Op::Rect {
             tensor: t,
@@ -1986,6 +1984,7 @@ fn step(
                 tensor(frame, *t)?,
                 steps(frame, rows)?,
                 steps(frame, cols)?,
+                module.shape_of(frame.at),
             )?)
         }
         Op::Turn(v) => Value::View(ops::turn(view(frame, *v)?)?),
@@ -2003,16 +2002,14 @@ fn step(
                 tensor(frame, *t)?,
                 range,
                 index(frame, *size)?,
+                module.shape_of(frame.at),
             )?)
         }
         Op::ReadTile(v, i) => {
             let (v, i) = (view(frame, *v)?, index(frame, *i)?);
             if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
                 let one: Vec<usize> = tiles.get(i).map(|t| vec![*t]).unwrap_or_default();
-                let places = one
-                    .iter()
-                    .map(|n| TensorPlace::tile(v.tensor, *n))
-                    .collect();
+                let places = ops::tile_places(cx.heap, v, &one);
                 cx.accesses.note(false, place.rank, v.tensor, one);
                 touch(cx, place, here, places, false)?;
             }
@@ -2122,11 +2119,8 @@ fn step(
             let Some(Some(Value::Sink(sink))) = frame.values.get_mut(s.0 as usize) else {
                 return Err(Fault::undefined("a push to what is not a sink"));
             };
-            let places = ops::push_tiles(sink, block.tiles.len())
-                .unwrap_or_default()
-                .into_iter()
-                .map(|n| TensorPlace::tile(sink.view.tensor, n))
-                .collect();
+            let numbers = ops::push_tiles(sink, block.tiles.len()).unwrap_or_default();
+            let places = ops::tile_places(cx.heap, &sink.view, &numbers);
             touch(cx, place, here, places, true)?;
             ops::push(cx.heap, sink, &block)?;
             return Ok(Next::Go);

@@ -117,6 +117,8 @@ pub(super) struct Cx<'e> {
     pub(super) writes: HashSet<String>,
     /// The peers of the run (`None` when it declares none).
     pub(super) peers: Option<Peers>,
+    /// The tile shape of the body (its declaration's `@tile`, else the default).
+    pub(super) tile: Option<(u64, u64)>,
 }
 
 /// The provided combinations of a reduce.
@@ -563,6 +565,7 @@ impl Checker<'_> {
             reads: HashSet::new(),
             writes: HashSet::new(),
             peers: None,
+            tile: env.tile,
         }
     }
 
@@ -576,6 +579,7 @@ impl Checker<'_> {
 
     pub(super) fn func(&mut self, env: &Env, f: &Func) {
         let mut cx = self.cx(env, Kind::Func, None);
+        cx.tile = super::shapes::shape_of(&env.tiles, &f.attrs);
         let sig = env.funcs.get(&f.name.name).cloned();
         let params: Vec<Ty> = sig.as_ref().map(|s| s.params.clone()).unwrap_or_default();
         let ret = sig.map(|s| s.ret).unwrap_or(Ty::Unknown);
@@ -641,6 +645,7 @@ impl Checker<'_> {
             return;
         };
         let mut cx = self.cx(env, Kind::Fallback, None);
+        cx.tile = super::shapes::shape_of(&env.tiles, &f.attrs);
         let sig = env.funcs.get(&f.name.name).cloned();
         let params: Vec<Ty> = sig.as_ref().map(|s| s.params.clone()).unwrap_or_default();
         cx.ret = Some(sig.map(|s| s.ret).unwrap_or(Ty::Unknown));
@@ -671,6 +676,7 @@ impl Checker<'_> {
                 ProgramItem::Handler(h) => {
                     let mut cx = self.cx(env, Kind::Handler, Some(name.clone()));
                     cx.grid = on_grid(&h.attrs);
+                    cx.tile = super::shapes::shape_of(&env.tiles, &h.attrs);
                     cx.ret = info
                         .and_then(|i| i.invocables.get(&h.name.name))
                         .and_then(|i| i.ret.clone());
@@ -744,6 +750,7 @@ impl Checker<'_> {
             };
             let mut cx = self.cx(env, kind, Some(program.to_string()));
             cx.peers = peers.clone();
+            cx.tile = super::shapes::shape_of(&env.tiles, &r.attrs);
             self.bind_params(&mut cx, &r.params, params);
             if let Some(on) = on {
                 let fields = env.message(Some(program), &on.message.name);
@@ -1683,10 +1690,9 @@ impl Checker<'_> {
                     _ => None,
                 };
                 let count = match base {
-                    Some(Ty::View { .. }) => cx
-                        .env
-                        .tile
-                        .map_or(Count::Unknown, |(r, c)| Count::Known(r * c)),
+                    Some(Ty::View { .. }) => {
+                        cx.tile.map_or(Count::Unknown, |(r, c)| Count::Known(r * c))
+                    }
                     Some(Ty::Body) => self
                         .arrived_body(cx)
                         .map_or(Count::Unknown, |b| Count::Known(b / 4)),
@@ -1714,7 +1720,7 @@ impl Checker<'_> {
             );
             return;
         }
-        if let (Count::Known(k), Some((rows, cols))) = (count, cx.env.tile) {
+        if let (Count::Known(k), Some((rows, cols))) = (count, cx.tile) {
             if k > rows * cols {
                 self.error(
                     codes::OUT_OF_RANGE,
@@ -2546,7 +2552,7 @@ impl Checker<'_> {
                 _ => None,
             },
             Ty::Records(_, Count::Known(n)) => Some(*n),
-            Ty::Words(_) => cx.env.tile.map(|(rows, cols)| rows * cols),
+            Ty::Words(_) => cx.tile.map(|(rows, cols)| rows * cols),
             _ => None,
         };
         if let (Some(end), Some(i)) = (end, as_int(at)) {
