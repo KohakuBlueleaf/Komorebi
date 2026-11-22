@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{Count, Shape, Ty};
+use super::ty::{Count, Ty};
 use crate::syntax;
 use crate::syntax::ast::{
     Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Span, Type, TypeKind,
@@ -14,13 +14,6 @@ use super::codes;
 use super::consts::Num;
 use super::index::Index;
 use super::Checker;
-
-/// Why the rows of a block are refused: a number written in the text or a module
-/// parameter bound at build (R45); one bound at load or at the invocation, or
-/// `group.size`, is not built.
-pub(super) const ROWS_BUILT: &str = "the rows of a block `[r, c]` are a number written in the \
-     text or a module parameter bound at build (one bound at load or at the invocation, or \
-     `group.size`, there is not built)";
 
 /// Where a type is written; it decides which types are allowed there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -459,9 +452,9 @@ impl Checker<'_> {
         out
     }
 
-    /// The rule of a function declared on blocks (`tile<F>[r, c]`): a `func` only
-    /// (`K010` for a `combine` or an `extern func`). Its body is typed on blocks, each
-    /// operation's shapes checked there (R45).
+    /// The rule of a function declared on blocks (`tile<F>[n]`): a `func` only (`K102`
+    /// for a `combine` or an `extern func`). Its body is written on one tile and runs for
+    /// each tile of the block.
     fn on_blocks(&mut self, name: &str, kind: FuncKind, params: &[Ty], ret: &Ty, span: Span) {
         let blocks = params.iter().chain(std::iter::once(ret));
         if !blocks.clone().any(|t| matches!(t, Ty::Block(..))) {
@@ -469,10 +462,10 @@ impl Checker<'_> {
         }
         if kind != FuncKind::Func {
             self.error(
-                codes::NOT_BUILT,
+                codes::WRONG_TYPE,
                 format!(
-                    "`{name}`: a `combine` or an `extern func` on a block of several tiles is \
-                     named in the language and not built yet"
+                    "`{name}`: a `combine` and an `extern func` are declared on tiles; a block \
+                     `tile<F>[n]` is taken by a `func`"
                 ),
                 span,
             );
@@ -619,70 +612,14 @@ impl Checker<'_> {
                 }
             }
         };
-        // `tile<F>[r, c]` (R45): r rows of c tiles, r a number the text writes or a
-        // module parameter bound at build (its value known at compile)
-        let rows = match ty.rows.as_deref().map(|r| (&r.kind, r.span)) {
-            None => Count::Known(1),
-            Some((crate::syntax::ast::ExprKind::Int(text), span)) => match parse_int(text) {
-                Some(r) if r > 0 => Count::Known(r),
-                _ => {
-                    self.error(
-                        codes::WRONG_TYPE,
-                        "a block has one row or more".into(),
-                        span,
-                    );
-                    return Ty::Unknown;
-                }
-            },
-            Some((crate::syntax::ast::ExprKind::Name(name), span)) => {
-                match env.ix.param_count(&name.name) {
-                    Some(Count::Known(r)) if r > 0 => Count::Known(r),
-                    Some(Count::Known(_)) => {
-                        self.error(
-                            codes::WRONG_TYPE,
-                            "a block has one row or more".into(),
-                            span,
-                        );
-                        return Ty::Unknown;
-                    }
-                    Some(_) => {
-                        self.error(codes::WRONG_TYPE, ROWS_BUILT.into(), span);
-                        return Ty::Unknown;
-                    }
-                    None => {
-                        self.error(
-                            codes::UNKNOWN_NAME,
-                            format!("`{}` is not a declared parameter", name.name),
-                            name.span,
-                        );
-                        return Ty::Unknown;
-                    }
-                }
-            }
-            Some((_, span)) => {
-                self.error(codes::WRONG_TYPE, ROWS_BUILT.into(), span);
-                return Ty::Unknown;
-            }
-        };
-        let shape = Shape { rows, cols: n };
-        if rows != Count::Known(1) && !matches!(place, Place::FuncParam | Place::FuncResult) {
-            self.error(
-                codes::NOT_BUILT,
-                "a block of several rows `[r, c]` other than a function's parameter or result \
-                 is named in the language and not built yet"
-                    .into(),
-                ty.span,
-            );
-            return Ty::Unknown;
-        }
         match place {
             Place::StateMember => match base {
-                Ty::Tile(f) => Ty::Block(f, shape),
+                Ty::Tile(f) => Ty::Block(f, n),
                 Ty::Unknown => Ty::Unknown,
                 other => Ty::Scalars(Box::new(other), n),
             },
             Place::FuncParam | Place::FuncResult | Place::VarOfZeros => match base {
-                Ty::Tile(f) => Ty::Block(f, shape),
+                Ty::Tile(f) => Ty::Block(f, n),
                 Ty::Unknown => Ty::Unknown,
                 _ if place == Place::VarOfZeros => {
                     self.error(

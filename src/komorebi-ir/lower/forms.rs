@@ -24,8 +24,8 @@ fn element(kind: MemberKind) -> Type {
 /// The type of one block of a stream: a tile, or a block of tiles.
 fn one_block(t: &Type) -> Option<Type> {
     match t {
-        Type::Stream(f, Count::Const(1), Count::Const(1)) => Some(Type::Tile(*f)),
-        Type::Stream(f, r, c) => Some(Type::Block(*f, *r, *c)),
+        Type::Stream(f, Count::Const(1)) => Some(Type::Tile(*f)),
+        Type::Stream(f, n) => Some(Type::Block(*f, *n)),
         _ => None,
     }
 }
@@ -320,10 +320,10 @@ impl B<'_, '_> {
             }
             OpKind::Reduce(op, axis) => {
                 let x = self.part(&p, 0)?;
-                // of a block (R45): of each of its tiles, its shape kept
+                // of a block: of each of its tiles, its count kept
                 let t = match self.ty(x) {
-                    Type::Tile(f) => Type::Reduced(f, axis, Count::ONE, Count::ONE),
-                    Type::Block(f, r, c) => Type::Reduced(f, axis, r, c),
+                    Type::Tile(f) => Type::Reduced(f, axis, Count::Const(1)),
+                    Type::Block(f, n) => Type::Reduced(f, axis, n),
                     _ => return refuse(span, "a reduction of what is not a tile"),
                 };
                 (Op::Reduce(op, x, axis), t)
@@ -331,10 +331,8 @@ impl B<'_, '_> {
             OpKind::SpreadCol | OpKind::SpreadRow => {
                 let x = self.part(&p, 0)?;
                 let t = match self.ty(x) {
-                    Type::Tile(f) | Type::Reduced(f, _, Count::Const(1), Count::Const(1)) => {
-                        Type::Tile(f)
-                    }
-                    Type::Block(f, r, c) | Type::Reduced(f, _, r, c) => Type::Block(f, r, c),
+                    Type::Tile(f) | Type::Reduced(f, _, Count::Const(1)) => Type::Tile(f),
+                    Type::Block(f, n) | Type::Reduced(f, _, n) => Type::Block(f, n),
                     _ => return refuse(span, "a spread of what is not a tile"),
                 };
                 let op = if r.kind == OpKind::SpreadCol {
@@ -351,13 +349,8 @@ impl B<'_, '_> {
             }
             OpKind::Transpose => {
                 let x = self.part(&p, 0)?;
-                // `.T` of a block of r rows of c tiles is a block of c rows of r tiles;
-                // of a tile, a tile of the same format
-                let ty = match self.ty(x) {
-                    Type::Block(f, r, c) => Type::Block(f, c, r),
-                    t => or(t),
-                };
-                (Op::Transpose(x), ty)
+                // `.T` of a block is on each of its tiles: a block of its count
+                (Op::Transpose(x), or(self.ty(x)))
             }
             OpKind::Zeros => (Op::Zeros, need_known("`zeros`")?),
             OpKind::CallFunc(f) => {
@@ -374,7 +367,7 @@ impl B<'_, '_> {
                 let Some(ret) = ret else {
                     return refuse(span, "a call of a function with no result");
                 };
-                // a function on tiles called on blocks (R45): the checker's block
+                // a function on tiles called on blocks: the checker's block
                 (Op::CallFunc(f, args), or(ret))
             }
             OpKind::Tiles => {
@@ -516,21 +509,16 @@ impl B<'_, '_> {
                     Some(_) => (self.count_part(&p, 1)?, self.part(&p, 1)?),
                     None => {
                         let one = super::body::int_const(1, Some(ScalarType::U32));
-                        (Count::ONE, self.constant(one, span))
+                        (Count::Const(1), self.constant(one, span))
                     }
-                };
-                // `block = [r, c]` (R45): the rows a part of their own, in the type only
-                let rows = match p.get(2) {
-                    Some(_) => self.count_part(&p, 2)?,
-                    None => Count::ONE,
                 };
                 let Type::View(Some(f)) = self.ty(x) else {
                     return refuse(span, "a stream or a sink of what is not a view of a format");
                 };
                 if r.kind == OpKind::Stream {
-                    (Op::Stream(x, n), Type::Stream(f, rows, count))
+                    (Op::Stream(x, n), Type::Stream(f, count))
                 } else {
-                    (Op::Sink(x, n), Type::Sink(f, rows, count))
+                    (Op::Sink(x, n), Type::Sink(f, count))
                 }
             }
             OpKind::Push => {
@@ -605,7 +593,7 @@ impl B<'_, '_> {
                 let Type::Tile(f) = self.ty(x) else {
                     return refuse(span, "`gather` of what is not a tile");
                 };
-                (Op::Gather(x), Type::Block(f, Count::ONE, Count::GroupSize))
+                (Op::Gather(x), Type::Block(f, Count::GroupSize))
             }
             OpKind::AllGather => {
                 let value = self.part(&p, 0)?;
@@ -624,7 +612,7 @@ impl B<'_, '_> {
                 let Type::Tile(f) = self.ty(value) else {
                     return refuse(span, "`all_gather` of what is not a tile");
                 };
-                let ty = Type::Block(f, Count::ONE, Count::GroupSize);
+                let ty = Type::Block(f, Count::GroupSize);
                 (Op::AllGather { value, publish }, ty)
             }
             OpKind::Broadcast(axis) => {

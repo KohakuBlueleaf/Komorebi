@@ -1,0 +1,32 @@
+// a block is n tiles: a state member of a block, a function on blocks whose body runs on each tile (a reduction and a product there too), a stream and a sink of blocks of n (Compute functions)
+module blocks
+
+tile [4, 4]
+format f32
+
+param N: u32 = 2 @bind(build)
+
+func mixed(x: tile<f32>[N], w: tile<f32>[N]) -> tile<f32>[N] {
+    return matmul(x, w) + reduce_sum(x, axis = row).col()
+}
+
+program Blocks {
+    state @scope(worker) @lifetime(program) {
+        weights: tile<f32>[N]
+    }
+
+    handler load(w: tensor<f32>) @on(group) @exclusive {
+        weights.fill(stream(w.tiles(0, N), block = N))
+    }
+
+    handler peek(y: tensor<f32>, i: u32) @on(group) {
+        store y.tiles(0, 1) <- weights[i % N]
+    }
+
+    handler apply(x: tensor<f32>, w: tensor<f32>, y: tensor<f32>, tiles: u32) @on(group) {
+        let out = sink(y.tiles(0, tiles), block = N)
+        for xb, wb in zip(stream(x.tiles(0, tiles), block = N), stream(w.tiles(0, tiles), block = N)) {
+            out.push(mixed(xb, wb))
+        }
+    }
+}

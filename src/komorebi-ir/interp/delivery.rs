@@ -160,7 +160,7 @@ pub fn meet(
                     _ => return Err(Fault::undefined("two kinds of collective at one meeting")),
                 }
             }
-            let v = Value::Block(Block::row(tiles));
+            let v = Value::Block(Block { tiles });
             Ok(if all {
                 vec![Some(v); n]
             } else {

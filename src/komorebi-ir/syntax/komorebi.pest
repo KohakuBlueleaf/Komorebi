@@ -138,7 +138,7 @@ attr_name = @{ "@" ~ ident_raw ~ ("." ~ ident_raw)* }
 // ---- Types -------------------------------------------------------------------------
 
 type_       = { tile_type | tensor_type | view_type | bool_type | scalar_type ~ array? | named_type }
-tile_type   = { kw_tile ~ "<" ~ ident ~ ">" ~ (shape | array)? }
+tile_type   = { kw_tile ~ "<" ~ ident ~ ">" ~ array? }
 tensor_type = { "tensor" ~ "<" ~ ident ~ ">" }
 view_type   = @{ "view" ~ !ident_char }
 bool_type   = @{ "bool" ~ !ident_char }
@@ -148,8 +148,6 @@ scalar_type = @{
 }
 named_type  = { ident }
 array       = { "[" ~ expr ~ "]" }
-// a block of r rows of c tiles (R45)
-shape       = { "[" ~ expr ~ "," ~ expr ~ "]" }
 
 // ---- Statements --------------------------------------------------------------------
 

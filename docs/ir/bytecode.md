@@ -24,8 +24,7 @@ A header, then three parts, in this order:
 
 A reader can hash a part, or skip the positions, without reading the others.
 
-Version 3 gave a block, a stream, a sink and a reduction's values the rows and the columns of their
-tiles (a block is a matrix of tiles): each writes its rows before its columns. Version 4 gives
+Version 3 gave a block, a stream, a sink and a reduction's values a second count. Version 4 gives
 `ForZip` its streams as a list (a count, then the values), so a `zip` walks two streams or more.
 Version 5 gives each call of a chain its part of the chain's group (R47) after its arguments:
 `Whole`, or `Part` and its two ends, each a `Count`. Version 6 gives a message its body: each
@@ -37,7 +36,9 @@ option of a message id after its message; the operation `Body` and the type `Bod
 (number 90): its view, then where its scalars come from as a `ScalarsFrom`. Version 6 also gives a
 module several tile shapes: the module writes the list of its shapes (a count, then each shape's rows
 and columns, the default first) where it wrote its one shape, and each function, state member,
-handler and run writes, last, its shape's place in that list (a u32). A reader refuses a version 5 program
+handler and run writes, last, its shape's place in that list (a u32). Version 6 takes version 3's
+second count away again: a block, a stream, a sink and a reduction's values each write their format
+(a reduction's values then its axis) and one count of tiles. A reader refuses a version 5 program
 with `K952`, naming both versions.
 
 ## How values are written

@@ -87,8 +87,7 @@ A constant expression is taken in these places:
   module parameter of any binding; another value is refused (`K209`).
 
 The "Written in" column names a lesson (T1 to T16) or the topic of the specification that writes the
-form. What the language names and the build does not have yet is listed at the end; it is refused by
-name (`K010`).
+form.
 
 ## Values and control flow
 
@@ -123,52 +122,45 @@ name (`K010`).
 | `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile; `row` or `col` | a value for each row (`axis = row`) or each column (`axis = col`): not a tile; stored, pushed, given to `matmul` or mixed with a tile, it is refused (`K116`) | T4, Compute functions |
 | `v.col()` | none | a value for each row; or a tile | spread along each row; of a tile, its column 0 spread | T4, Compute functions |
 | `w.row()` | none | a value for each column; or a tile | spread along each column; of a tile, its row 0 spread | T4, Compute functions |
-| `matmul(a, b)` | two by position | tiles; in a function on blocks, blocks `[r, k]` by `[k, c]` (`K102`) | a tile; of blocks, a block `[r, c]` | T4, T13 |
+| `matmul(a, b)` | two by position | tiles; in a function on blocks, on each tile (`K102` for operands of two counts) | a tile | T4, T13 |
 | `a.T` | none | a tile | the tile turned | T4 |
 | `zeros` | none | | a tile, or the scalars, of zeros | T4, T16 |
 | A number constant, a scalar parameter | | | a scalar | T1, T2 |
-| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`); a block of the declared shape for a parameter `tile<F>[n]` or `tile<F>[r, c]` (`K102`) | its result | T1, T8 |
+| A call of a `func`, a `combine` or an `extern func` | its parameters, by position | as declared; one tile for a parameter `tile<F>` (`K203`); a block of the declared count for a parameter `tile<F>[n]` (`K102`) | its result | T1, T8 |
 
 The function body of a `func` uses only these (`K202`). Operands of different formats may be mixed.
 
-### A function on blocks
+### Blocks and a function on blocks
 
-A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. A block is
-a matrix of tiles: `tile<F>[r, c]` is r rows of c tiles, and `tile<F>[n]` is `[1, n]`, one row of n
-tiles. Its rows are a number written in the text or a module parameter bound at build (its value
-is known at compile); one bound at load or at the invocation, or `group.size`, there is refused
-(`K102`). Its columns are a number in the text or a module parameter, the block of the
-stream the blocks come from. A block of more than one row stands only as a parameter or the result
-of a function (`K010` elsewhere).
+A block is n tiles, `tile<F>[n]`: a count, and no shape. The count after the type is one
+expression (two are not in the grammar, `K001`). A block is:
 
-A handler may hold a block of one row in a `var` of `zeros`: `var acc: tile<f32>[WIDTH] = zeros`.
-It is that invocation's own value, started at zeros. `acc += e` adds a block of its shape (`K102`
-otherwise), and `store view <- acc` writes its tiles in the view's order; a view of another count
-of tiles fails at the run. A frontend writes a field its handler fills, reads and frees in one
-invocation this way; what one invocation leaves for another is a state member. A function on
-one tile given such vars, of one shape, runs on each of their tiles and gives a block of that
-shape (`store t.tiles[0:1, c:c + WIDTH] <- gate(h, g)`); given another block in a handler it is
-`K203`.
+- the type of a state member: `table: tile<bf16>[ROOM]`;
+- the block of `stream(view, block = n)` and `sink(view, block = n)`;
+- the result of `gather` and `all_gather`, `tile<F>[group.size]`;
+- a function's parameter and result;
+- a handler's `var` of `zeros`: `var acc: tile<f32>[WIDTH] = zeros`.
 
-Its body is typed on blocks: a parameter is the block it is declared, and a tile `tile<F>` is
-`[1, 1]`. An elementwise operation (the arithmetic, the elementary functions, `where`, a
-conversion) takes operands of one shape, a scalar going to every tile, and gives that shape
-(`K102`). `matmul` takes an `[r, k]` by a `[k, c]` and gives an `[r, c]`, whose tile (i, j) is the
-sum over k, in order, of the products of the left's tile (i, k) and the right's tile (k, j); its
-result may be a tile, `[1, 1]`. A function on one tile called in it, given blocks of one shape, is
-that function on each tile; a function on blocks is given blocks of its shapes. An elementwise body
-runs on each tile of the blocks in turn; a last block that is shorter gives a shorter result. A
-function on one tile is never given a block (`K203`).
+`b[i]` is the block's tile i.
 
-A reduction along a row (`reduce_sum`, `reduce_max`, `reduce_min` with `axis = row`) runs along
-each of the block's r rows: its c tiles side by side, a row of c times the tile's width, combined in
-order from the row's first tile's first column. It gives one value for each row of each row of
-tiles, of the block's shape. `.col()` of those values spreads each row's value over every tile of
-its row of tiles, and `.row()` of a tile parameter spreads that tile's row 0 down its own tile. On
-one tile the same body keeps its meaning: the tile's own rows. This is how a row wider than one
-tile is normalised (`x - reduce_max(x, axis = row).col()`). A reduction along a column, `.col()` of
-anything else, `.row()` of anything else and `.T` in its body are refused by name (`K010`), as is a `combine` or an `extern func` on blocks. What a backend computes of a row
-is its own statement ([backends](backends.md)).
+A `func` may be declared on blocks: `func f(x: tile<bf16>[8], k: f32) -> tile<bf16>[8]`. Its body is
+written on one tile and runs for each tile of the block, in turn; a last block that is shorter
+gives a shorter result. A scalar goes to every tile. Every operation in it is on each tile, as it
+is on one tile: an elementwise operation takes operands of one count (`K102`); `matmul(a, b)` takes
+tile i of `a` with tile i of `b`, both blocks of one count, a tile beside a block refused (`K102`);
+`reduce_sum`, `reduce_max` and `reduce_min` along a row or a column, `.col()`, `.row()` and `.T`
+apply to each tile. No operation looks across the tiles of a block. A function on one tile called
+in it, given blocks of one count, is that function on each tile; a function on blocks is given
+blocks of its count. A function on one tile is never given a block (`K203`). A `combine` and an
+`extern func` are declared on tiles; one declared on a block is refused (`K102`).
+
+A handler's `var` of a block is that invocation's own value, started at zeros. `acc += e` adds a
+block of its count (`K102` otherwise), and `store view <- acc` writes its tiles in the view's order;
+a view of another count of tiles fails at the run. A frontend writes a field its handler fills,
+reads and frees in one invocation this way; what one invocation leaves for another is a state
+member. A function on one tile given such vars, of one count, runs on each of their tiles and gives
+a block of that count (`store t.tiles[0:1, c:c + WIDTH] <- gate(h, g)`); given another block in a
+handler it is `K203`.
 
 ## Views of a tensor
 
@@ -184,11 +176,11 @@ is its own statement ([backends](backends.md)).
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view)`, `stream(view, block = n)`, `stream(view, block = [r, c])` | `view` by position; `block` by name, *optional*: left out, it is 1, blocks of one tile (`stream(view)` is `stream(view, block = 1)`; `komo fmt` keeps the text as written). A `sink`'s `block` is always given | a view; a constant expression or a module parameter (`K209`); r a number written in the text or a module parameter bound at build (`K102`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1; of `[r, c]` with r above 1, the blocks `tile<F>[r, c]` of a rectangle view they divide, a row of blocks after another | T1 |
+| `stream(view)`, `stream(view, block = n)` | `view` by position; `block` by name, *optional*: left out, it is 1, blocks of one tile (`stream(view)` is `stream(view, block = 1)`; `komo fmt` keeps the text as written). A `sink`'s `block` is always given | a view; a constant expression or a module parameter, a list refused (`K209`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
 | `zip(s1, s2, ...)` | two or more by position | streams of the same number of blocks (`K115` where the compile knows each stream's tiles and block) | a block of each, together | T4 |
-| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter (`K209`); `[1, n]` is `n`, more rows `K010` | a write stream | T1 |
+| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a constant expression or a module parameter, a list refused (`K209`) | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
-| `store view <- value` | a view, a value | a view; a tile, or a block of one row; or scalars: one scalar, a state member of scalars named whole, or the words of a tile, into a view of one tile (`K102` where the text shows more), of a format with stated bytes (`K208`), of the format's scalar type (`K102`), no more than the tile's rows times columns (`K115` where the text shows the count; at the run `out_of_range`) | writes it, visible at completion; a block's tiles in the view's order; scalars, the mirror of `.words()`: the tile's first k scalars, in the order `.words()` reads them, are the k values given, every other scalar of the tile is 0, and the whole tile is written | T4 |
+| `store view <- value` | a view, a value | a view; a tile, or a block; or scalars: one scalar, a state member of scalars named whole, or the words of a tile, into a view of one tile (`K102` where the text shows more), of a format with stated bytes (`K208`), of the format's scalar type (`K102`), no more than the tile's rows times columns (`K115` where the text shows the count; at the run `out_of_range`) | writes it, visible at completion; a block's tiles in the view's order; scalars, the mirror of `.words()`: the tile's first k scalars, in the order `.words()` reads them, are the k values given, every other scalar of the tile is 0, and the whole tile is written | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |
 | `call h(args)` in a chain | its operands all by position or all by name (Operands of a call) | a handler of the chain's program that gives no result: a chain has no result, and a call of a handler that gives one is refused (`K102`) | runs `h` | T10 |
 
@@ -301,11 +293,3 @@ may address one tensor; each sees the same elements, cut into its own tiles.
 | A tensor has a padded shape in elements, fixed when the execution context makes it. An invocation of a handler of shape `[R, C]` given a tensor whose padded rows are not a multiple of R, or columns not a multiple of C, is invalid: "a tensor whose padded shape is not whole tiles of [R, C]" | At the invocation |
 | Every read and write of a tile goes through the body's shape. Element (r, c) of the tensor is element (r mod R, c mod C) of tile `(r / R) * (padded cols / C) + c / C` in shape `[R, C]`, whatever shape the tensor is held in | At the run |
 | The record of reads and writes that finds races between invocations no edge orders is exact between shapes: two accesses meet when they share an element | At the run |
-
-## Named, not built yet
-
-The language names these and the build does not have them yet. Each is refused by name (`K010`):
-
-- In a function on blocks: a reduction along a column, `.col()` of other than a reduction along a
-  row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func` on blocks.
-- A block of more than one row other than a function's parameter or result, and a `sink` of one.

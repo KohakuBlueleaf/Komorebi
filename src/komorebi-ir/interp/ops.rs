@@ -621,68 +621,7 @@ pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Reduced, Fault> {
         }
         put_at(&mut out, index(0), acc);
     }
-    Ok(Reduced {
-        axis,
-        tiles: vec![out],
-        cols: None,
-    })
-}
-
-/// A reduction along a row of a block (R43), along each of its rows of tiles (R45):
-/// each row of a row's tiles side by side, combined in order from its tile 0's first
-/// column, a value for each row.
-pub fn reduce_block(kind: Reduce, b: &Block) -> Result<Reduced, Fault> {
-    let cols = b.cols();
-    let mut tiles = Vec::with_capacity(b.rows);
-    for row in b.tiles.chunks(cols.max(1)) {
-        tiles.push(reduce_rows(kind, row)?);
-    }
-    if tiles.is_empty() {
-        return Err(Fault::undefined(
-            "a reduction along a row of an empty block",
-        ));
-    }
-    Ok(Reduced {
-        axis: Axis::Row,
-        tiles,
-        cols: Some(cols),
-    })
-}
-
-/// A reduction along a row of tiles side by side (R43): each row combined in order from
-/// tile 0's first column, a value for each row, held as a tile's reduction holds it.
-fn reduce_rows(kind: Reduce, tiles: &[Tile]) -> Result<Tile, Fault> {
-    let Some(first) = tiles.first() else {
-        return Err(Fault::undefined(
-            "a reduction along a row of an empty block",
-        ));
-    };
-    for t in tiles {
-        whole(t)?;
-    }
-    let (rows, cols) = (first.shape.height(), first.shape.width());
-    let op = match kind {
-        Reduce::Sum => Bin::Add,
-        Reduce::Max => Bin::Max,
-        Reduce::Min => Bin::Min,
-    };
-    let mut out = Tile::zeros(first.format, first.shape);
-    for r in 0..rows {
-        let mut acc: Option<Scalar> = None;
-        for t in tiles {
-            for c in 0..cols {
-                let e = elem(t, r * cols + c)?;
-                acc = Some(match acc {
-                    None => e,
-                    Some(a) => scalar_binary(op, a, e)?,
-                });
-            }
-        }
-        if let Some(acc) = acc {
-            put_at(&mut out, r * cols, acc);
-        }
-    }
-    Ok(out)
+    Ok(Reduced { axis, tile: out })
 }
 
 /// Writes `value` at flat position `i` of `tile`, held as the tile holds it.
@@ -706,21 +645,11 @@ pub enum ReducedOperand<'a> {
 }
 
 impl<'a> ReducedOperand<'a> {
-    /// Its tile for row `i` of a block's tiles (a scalar to every row).
-    fn operand(self, i: usize) -> Result<Operand<'a>, Fault> {
+    /// The tile that holds it (a scalar as it is).
+    fn operand(self) -> Operand<'a> {
         match self {
-            ReducedOperand::Reduced(r) => match r.tiles.get(i) {
-                Some(t) => Ok(Operand::Tile(t)),
-                None => Err(Fault::undefined("reduced values of blocks of other rows")),
-            },
-            ReducedOperand::Scalar(s) => Ok(Operand::Scalar(s)),
-        }
-    }
-
-    fn reduced(self) -> Option<&'a Reduced> {
-        match self {
-            ReducedOperand::Reduced(r) => Some(r),
-            ReducedOperand::Scalar(_) => None,
+            ReducedOperand::Reduced(r) => Operand::Tile(&r.tile),
+            ReducedOperand::Scalar(s) => Operand::Scalar(s),
         }
     }
 }
@@ -746,24 +675,9 @@ pub fn reduced_binary(
             "values for each row with values for each column",
         ));
     }
-    // a block's reduction: row by row of its tiles, both of one shape
-    let (ra, rb) = (a.reduced(), b.reduced());
-    let shape = |r: &Reduced| (r.tiles.len(), r.cols);
-    if let (Some(x), Some(y)) = (ra, rb) {
-        if shape(x) != shape(y) {
-            return Err(Fault::undefined("reduced values of blocks of two shapes"));
-        }
-    }
-    let first = ra
-        .or(rb)
-        .ok_or_else(|| Fault::undefined("no value for each row"))?;
-    let tiles = (0..first.tiles.len())
-        .map(|i| binary(op, a.operand(i)?, b.operand(i)?))
-        .collect::<Result<Vec<Tile>, Fault>>()?;
     Ok(Reduced {
         axis,
-        tiles,
-        cols: first.cols,
+        tile: binary(op, a.operand(), b.operand())?,
     })
 }
 
@@ -771,54 +685,22 @@ pub fn reduced_binary(
 pub fn reduced_unary(f: Unary, v: &Reduced) -> Result<Reduced, Fault> {
     Ok(Reduced {
         axis: v.axis,
-        tiles: v
-            .tiles
-            .iter()
-            .map(|t| unary(f, t))
-            .collect::<Result<_, _>>()?,
-        cols: v.cols,
+        tile: unary(f, &v.tile)?,
     })
-}
-
-/// The one tile of a tile's reduction.
-fn reduced_tile(v: &Reduced) -> Result<&Tile, Fault> {
-    match v.tiles.as_slice() {
-        [t] => Ok(t),
-        _ => Err(Fault::undefined(
-            "a block's reduced values where a tile's are asked",
-        )),
-    }
 }
 
 /// `v.col()` of a value for each row: that value spread along its row, a tile.
 pub fn col(v: &Reduced) -> Result<Tile, Fault> {
     match v.axis {
-        Axis::Row => spread_col(reduced_tile(v)?),
+        Axis::Row => spread_col(&v.tile),
         Axis::Col => Err(Fault::undefined("`.col()` of a value for each column")),
     }
-}
-
-/// `v.col()` of a block's values for each row (R43, R45): each row's value over every
-/// tile of its row of the block, the block's shape.
-pub fn col_block(v: &Reduced, cols: usize) -> Result<Block, Fault> {
-    if v.axis != Axis::Row {
-        return Err(Fault::undefined("`.col()` of a value for each column"));
-    }
-    let mut tiles = Vec::with_capacity(v.tiles.len() * cols);
-    for t in &v.tiles {
-        let spread = spread_col(t)?;
-        tiles.extend(std::iter::repeat_n(spread, cols));
-    }
-    Ok(Block {
-        tiles,
-        rows: v.tiles.len(),
-    })
 }
 
 /// `v.row()` of a value for each column: that value spread along its column, a tile.
 pub fn row(v: &Reduced) -> Result<Tile, Fault> {
     match v.axis {
-        Axis::Col => spread_row(reduced_tile(v)?),
+        Axis::Col => spread_row(&v.tile),
         Axis::Row => Err(Fault::undefined("`.row()` of a value for each row")),
     }
 }
@@ -848,31 +730,6 @@ fn spread(t: &Tile, from: impl Fn(usize) -> usize) -> Result<Tile, Fault> {
         shape: t.shape,
         elements,
     })
-}
-
-/// `matmul(a, b)` of blocks (R45): the product of the blocks as matrices of tiles, an
-/// `[r, k]` by a `[k, c]` giving an `[r, c]` whose tile (i, j) is the sum over k, in
-/// order, of the product of a's tile (i, k) and b's tile (k, j).
-pub fn matmul_blocks(a: &Block, b: &Block) -> Result<Block, Fault> {
-    let (r, k, c) = (a.rows, a.cols(), b.cols());
-    if a.tiles.len() != r * k || b.tiles.len() != b.rows * c || k != b.rows || k == 0 {
-        return Err(Fault::undefined(format!(
-            "a product of blocks [{r}, {k}] and [{}, {c}] whose shapes do not meet",
-            b.rows
-        )));
-    }
-    let mut tiles = Vec::with_capacity(r * c);
-    for i in 0..r {
-        for j in 0..c {
-            let mut acc = matmul(&a.tiles[i * k], &b.tiles[j])?;
-            for p in 1..k {
-                let term = matmul(&a.tiles[i * k + p], &b.tiles[p * c + j])?;
-                acc = binary(Bin::Add, Operand::Tile(&acc), Operand::Tile(&term))?;
-            }
-            tiles.push(acc);
-        }
-    }
-    Ok(Block { tiles, rows: r })
 }
 
 /// `matmul(a, b)`: the matrix product, each element the sum over k of a[i, k] * b[k, j]
@@ -1443,57 +1300,20 @@ pub fn partition(v: &View, rank: usize, size: usize) -> Result<View, Fault> {
 
 /// `stream(view, block = n)`: the view's blocks of n tiles, read in order.
 pub fn stream(v: &View, block: usize) -> Result<Stream, Fault> {
-    stream_blocks(v, block, 1)
-}
-
-/// `stream(view, block = [r, c])`: of r more than one (R45), the blocks of r rows of c
-/// tiles of a rectangle view, which they divide, row of blocks after row of blocks;
-/// of one row, `stream(view, block = c)`.
-pub fn stream_blocks(v: &View, block: usize, rows: usize) -> Result<Stream, Fault> {
-    if block == 0 || rows == 0 {
+    if block == 0 {
         return Err(Fault::undefined("a stream with a block of no tile"));
     }
-    let walk = tile_walk(v)?;
-    if rows > 1 {
-        let (grid_rows, grid_cols) = rect_grid(walk)?;
-        if grid_rows % rows != 0 || grid_cols % block != 0 {
-            return Err(Fault::undefined(format!(
-                "a stream of blocks [{rows}, {block}] over a rectangle of {grid_rows} x \
-                 {grid_cols} tiles they do not divide"
-            )));
-        }
-    }
+    tile_walk(v)?;
     Ok(Stream {
         view: v.clone(),
         block,
-        rows,
         next: 0,
     })
-}
-
-/// The rows and the columns of tiles of a rectangle view, as it walks them (a turned
-/// one walks its columns as rows).
-fn rect_grid(walk: &Walk) -> Result<(usize, usize), Fault> {
-    match walk {
-        Walk::Rect {
-            rows, cols, turned, ..
-        } => Ok(if *turned {
-            (cols.len(), rows.len())
-        } else {
-            (rows.len(), cols.len())
-        }),
-        _ => Err(Fault::undefined(
-            "a stream of blocks of several rows of a view that is not a rectangle",
-        )),
-    }
 }
 
 /// The stream's next block, read from the heap now, or `None` at its end. The last
 /// block holds what is left: a ragged end is one shorter block.
 pub fn next_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> {
-    if s.rows > 1 {
-        return next_rect_block(heap, s);
-    }
     let numbers = tile_walk(&s.view)?.tiles();
     if s.next >= numbers.len() {
         return Ok(None);
@@ -1508,48 +1328,12 @@ pub fn next_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> {
         }
     }
     s.next = end;
-    Ok(Some(Block::row(tiles)))
-}
-
-/// The next block of r rows of c tiles of a rectangle view (R45): block `next` of the
-/// rows of blocks, in order.
-fn next_rect_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> {
-    let walk = tile_walk(&s.view)?;
-    let (grid_rows, grid_cols) = rect_grid(walk)?;
-    let numbers = walk.tiles();
-    let across = grid_cols / s.block.max(1);
-    if s.next >= (grid_rows / s.rows.max(1)) * across {
-        return Ok(None);
-    }
-    let (bi, bj) = (s.next / across, s.next % across);
-    let tensor = heap.get(s.view.tensor)?;
-    let mut tiles = Vec::with_capacity(s.rows * s.block);
-    for r in 0..s.rows {
-        for c in 0..s.block {
-            let at = (bi * s.rows + r) * grid_cols + bj * s.block + c;
-            match numbers
-                .get(at)
-                .and_then(|&n| tensor.read_tile(s.view.shape, n))
-            {
-                Some(tile) => tiles.push(tile),
-                None => return view_end(),
-            }
-        }
-    }
-    s.next += 1;
-    Ok(Some(Block {
-        tiles,
-        rows: s.rows,
-    }))
+    Ok(Some(Block { tiles }))
 }
 
 /// How many blocks a stream yields in all.
 fn blocks_of(s: &Stream) -> Result<usize, Fault> {
     let walk = tile_walk(&s.view)?;
-    if s.rows > 1 {
-        let (grid_rows, grid_cols) = rect_grid(walk)?;
-        return Ok((grid_rows / s.rows) * (grid_cols / s.block.max(1)));
-    }
     Ok(walk.len().div_ceil(s.block.max(1)))
 }
 

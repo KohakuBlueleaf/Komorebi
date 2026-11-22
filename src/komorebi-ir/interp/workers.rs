@@ -780,10 +780,6 @@ pub struct Frame {
     arrived: Option<Value>,
     /// A call of a function on blocks: its body runs on each tile in turn.
     per_tile: Option<Box<PerTile>>,
-    /// A call of a function on blocks whose body reduces along a row (R43) or
-    /// multiplies blocks (R45): the body runs once on the whole blocks, each
-    /// elementwise operation tile by tile.
-    whole: bool,
 }
 
 /// A call of a function on blocks under way (`Func::on_blocks`): the arguments as
@@ -794,8 +790,6 @@ struct PerTile {
     args: Vec<Value>,
     at: usize,
     count: usize,
-    /// The rows of tiles of the blocks given: the result's.
-    rows: usize,
     done: Vec<Tile>,
 }
 
@@ -835,7 +829,6 @@ impl Frame {
             sending: Vec::new(),
             arrived: None,
             per_tile: None,
-            whole: false,
         })
     }
 }
@@ -977,10 +970,7 @@ impl Thread {
                                 }
                             }
                         }
-                        value = Some(Value::Block(Block {
-                            tiles: state.done,
-                            rows: state.rows,
-                        }));
+                        value = Some(Value::Block(Block { tiles: state.done }));
                     }
                     let Some(caller) = self.frames.last_mut() else {
                         return Stop::Returned(value);
@@ -1385,7 +1375,9 @@ fn reduced_operand(v: &Value) -> Result<ReducedOperand<'_>, Fault> {
 
 fn as_block(v: &Value) -> Result<Block, Fault> {
     match v {
-        Value::Tile(t) => Ok(Block::row(vec![t.clone()])),
+        Value::Tile(t) => Ok(Block {
+            tiles: vec![t.clone()],
+        }),
         Value::Block(b) => Ok(b.clone()),
         other => Err(Fault::undefined(format!(
             "{} where tiles are written",
@@ -1396,8 +1388,8 @@ fn as_block(v: &Value) -> Result<Block, Fault> {
 
 /// `a op b` on any two operands the language allows.
 pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, Fault> {
-    if let Some(shape) = block_shape(&[a, b])? {
-        return tile_by_tile(shape, |i| {
+    if let Some(n) = block_count(&[a, b])? {
+        return tile_by_tile(n, |i| {
             binary(op, &tile_at(a, i), &tile_at(b, i))?.into_tile()
         });
     }
@@ -1413,20 +1405,20 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value, Fault> {
     }
 }
 
-/// The shape of the blocks among `values` (their tiles and rows), when any is a block:
-/// in a function on blocks run whole (R43, R45), an elementwise operation then works
-/// tile by tile, on blocks of one shape.
-fn block_shape(values: &[&Value]) -> Result<Option<(usize, usize)>, Fault> {
-    let mut shapes = values.iter().filter_map(|v| match v {
-        Value::Block(b) => Some((b.tiles.len(), b.rows)),
+/// The tiles of the blocks among `values`, when any is a block (a handler's `+=` into
+/// its var of a block): an elementwise operation then works tile by tile, on blocks of
+/// one count.
+fn block_count(values: &[&Value]) -> Result<Option<usize>, Fault> {
+    let mut counts = values.iter().filter_map(|v| match v {
+        Value::Block(b) => Some(b.tiles.len()),
         _ => None,
     });
-    let Some(first) = shapes.next() else {
+    let Some(first) = counts.next() else {
         return Ok(None);
     };
-    if shapes.any(|s| s != first) {
+    if counts.any(|n| n != first) {
         return Err(Fault::undefined(
-            "an elementwise operation on blocks of two shapes",
+            "an elementwise operation on blocks of two counts",
         ));
     }
     Ok(Some(first))
@@ -1440,13 +1432,10 @@ fn tile_at(v: &Value, i: usize) -> Value {
     }
 }
 
-/// The block of `n` tiles in `rows` rows `f` gives, one an index.
-fn tile_by_tile(
-    (n, rows): (usize, usize),
-    f: impl Fn(usize) -> Result<Tile, Fault>,
-) -> Result<Value, Fault> {
+/// The block of `n` tiles `f` gives, one an index.
+fn tile_by_tile(n: usize, f: impl Fn(usize) -> Result<Tile, Fault>) -> Result<Value, Fault> {
     let tiles = (0..n).map(f).collect::<Result<Vec<Tile>, Fault>>()?;
-    Ok(Value::Block(Block { tiles, rows }))
+    Ok(Value::Block(Block { tiles }))
 }
 
 impl Value {
@@ -1460,17 +1449,6 @@ impl Value {
             ))),
         }
     }
-}
-
-/// Whether function `f`'s body reduces along a row (R43) or multiplies blocks (R45):
-/// it runs on whole blocks.
-fn runs_whole(module: &Module, f: FuncId) -> bool {
-    let body = module.funcs.get(f.0 as usize).and_then(|x| x.body.as_ref());
-    body.is_some_and(|b| {
-        b.insts
-            .iter()
-            .any(|i| matches!(i.op, Op::Reduce(_, _, Axis::Row) | Op::Matmul(..)))
-    })
 }
 
 /// The negation of a scalar: `0 - x`, wrapped on an integer.
@@ -1806,9 +1784,7 @@ fn step(
         // ---- compute on tiles ----
         Op::Unary(u, x) => match get(frame, *x)? {
             Value::Tile(t) => Value::Tile(ops::unary(unary(*u), t)?),
-            Value::Block(b) => tile_by_tile((b.tiles.len(), b.rows), |i| {
-                ops::unary(unary(*u), &b.tiles[i])
-            })?,
+            Value::Block(b) => tile_by_tile(b.tiles.len(), |i| ops::unary(unary(*u), &b.tiles[i]))?,
             Value::Reduced(r) => Value::Reduced(ops::reduced_unary(unary(*u), r)?),
             Value::Scalar(s) if *u == UnaryOp::Neg => Value::Scalar(negate(*s)?),
             other => return Err(Fault::undefined(format!("{u:?} of {}", kind(other)))),
@@ -1820,8 +1796,8 @@ fn step(
             let select = |a: &Value, b: &Value, x: &Value, y: &Value| {
                 ops::select(cmp(*c), operand(a)?, operand(b)?, operand(x)?, operand(y)?)
             };
-            match block_shape(&[a, b, x, y])? {
-                Some(shape) => tile_by_tile(shape, |i| {
+            match block_count(&[a, b, x, y])? {
+                Some(n) => tile_by_tile(n, |i| {
                     select(
                         &tile_at(a, i),
                         &tile_at(b, i),
@@ -1838,38 +1814,23 @@ fn step(
                 ReduceOp::Max => ops::Reduce::Max,
                 ReduceOp::Min => ops::Reduce::Min,
             };
-            match (get(frame, *x)?, axis) {
-                (Value::Tile(t), _) => Value::Reduced(ops::reduce(kind, t, *axis)?),
-                // along each row of the block's tiles (R43, R45)
-                (Value::Block(b), Axis::Row) => Value::Reduced(ops::reduce_block(kind, b)?),
+            match get(frame, *x)? {
+                Value::Tile(t) => Value::Reduced(ops::reduce(kind, t, *axis)?),
                 _ => return Err(Fault::undefined("a reduction of what is not a tile")),
             }
         }
         Op::SpreadCol(x) => match get(frame, *x)? {
-            // each row's value over every tile of its row of the block (R43, R45)
-            Value::Reduced(r) => match r.cols {
-                Some(cols) => Value::Block(ops::col_block(r, cols)?),
-                None => Value::Tile(ops::col(r)?),
-            },
+            Value::Reduced(r) => Value::Tile(ops::col(r)?),
             Value::Tile(t) => Value::Tile(ops::spread_col(t)?),
             other => return Err(Fault::undefined(format!(".col() of {}", kind(other)))),
         },
         Op::SpreadRow(x) => match get(frame, *x)? {
             Value::Reduced(r) => Value::Tile(ops::row(r)?),
-            // each tile's row 0 down its own tile (R43)
-            Value::Block(b) => {
-                tile_by_tile((b.tiles.len(), b.rows), |i| ops::spread_row(&b.tiles[i]))?
-            }
             Value::Tile(t) => Value::Tile(ops::spread_row(t)?),
             other => return Err(Fault::undefined(format!(".row() of {}", kind(other)))),
         },
         Op::Matmul(a, b) => match (get(frame, *a)?, get(frame, *b)?) {
             (Value::Tile(x), Value::Tile(y)) => Value::Tile(ops::matmul(x, y)?),
-            // of blocks (R45), a tile one of one row of one tile: `[1, 1]` is a tile
-            (x @ (Value::Tile(_) | Value::Block(_)), y @ (Value::Tile(_) | Value::Block(_))) => {
-                let product = ops::matmul_blocks(&as_block(x)?, &as_block(y)?)?;
-                block_value(product, def_ty(0))
-            }
             _ => return Err(Fault::undefined("`matmul` of what is not two tiles")),
         },
         Op::Transpose(x) => match get(frame, *x)? {
@@ -1878,12 +1839,12 @@ fn step(
         },
         Op::Zeros => match def_ty(0) {
             Some(Type::Tile(f)) => Value::Tile(ops::zeros(*f, module.shape_of(frame.at))),
-            // a `var` of a block of one row from zeros (R48)
-            Some(Type::Block(f, Count::Const(1), Count::Const(n))) => Value::Block(Block::row(
-                (0..*n)
+            // a `var` of a block from zeros (R48)
+            Some(Type::Block(f, Count::Const(n))) => Value::Block(Block {
+                tiles: (0..*n)
                     .map(|_| ops::zeros(*f, module.shape_of(frame.at)))
                     .collect(),
-            )),
+            }),
             _ => return Err(Fault::undefined("`zeros` of what is not a tile")),
         },
         Op::CallFunc(f, args) => {
@@ -1902,43 +1863,31 @@ fn step(
                 values.push(get(frame, *a)?.clone());
             }
             let blocks = values.iter().any(|v| matches!(v, Value::Block(_)));
-            if func.on_blocks() && runs_whole(module, *f) {
-                // a reduction along a row or a product: the body once, on the whole blocks
-                let mut callee = Frame::new(module, BodyRef::Func(*f), values)?;
-                callee.result_to = defs.first().copied();
-                callee.whole = true;
-                return Ok(Next::Call(Box::new(callee)));
-            }
             if func.on_blocks() || blocks {
-                // each tile of the blocks in turn (a one-tile function called on a
-                // function on blocks' whole blocks, too); a shorter last block, a shorter
-                // result
-                let shapes: Vec<(usize, usize)> = values
+                // each tile of the blocks in turn (a one-tile function given a handler's
+                // blocks, too); a shorter last block, a shorter result
+                let counts: Vec<usize> = values
                     .iter()
                     .filter_map(|v| match v {
-                        Value::Block(b) => Some((b.tiles.len(), b.rows)),
+                        Value::Block(b) => Some(b.tiles.len()),
                         _ => None,
                     })
                     .collect();
-                let (count, rows) = shapes.first().copied().unwrap_or((0, 1));
-                if shapes.iter().any(|&s| s != (count, rows)) {
+                let count = counts.first().copied().unwrap_or(0);
+                if counts.iter().any(|&n| n != count) {
                     return Err(Fault::undefined(format!(
-                        "`{}` given blocks of different shapes {shapes:?}",
+                        "`{}` given blocks of different counts {counts:?}",
                         func.name
                     )));
                 }
                 if count == 0 {
-                    Value::Block(Block {
-                        tiles: Vec::new(),
-                        rows,
-                    })
+                    Value::Block(Block { tiles: Vec::new() })
                 } else {
                     let state = PerTile {
                         func: *f,
                         args: values,
                         at: 0,
                         count,
-                        rows,
                         done: Vec::new(),
                     };
                     let mut callee = Frame::new(module, BodyRef::Func(*f), state.args())?;
@@ -2094,21 +2043,7 @@ fn step(
             index(frame, *r)?,
             index(frame, *s)?,
         )?),
-        Op::Stream(v, n) => {
-            // the rows of `block = [r, c]` (R45), in the stream's type: a number, or a
-            // module parameter's value; one that has none at the run is `out_of_range`
-            let rows = match def_ty(0) {
-                Some(Type::Stream(_, r, _)) => {
-                    count(*r, cx.params).map_err(|_| Fault::Failure(Failure::OutOfRange))?
-                }
-                _ => 1,
-            };
-            Value::Stream(ops::stream_blocks(
-                view(frame, *v)?,
-                index(frame, *n)?,
-                rows,
-            )?)
-        }
+        Op::Stream(v, n) => Value::Stream(ops::stream(view(frame, *v)?, index(frame, *n)?)?),
         Op::Sink(v, n) => {
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, true);

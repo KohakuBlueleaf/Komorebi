@@ -97,24 +97,17 @@ pub fn type_text(t: &Type) -> String {
         Type::Scalar(s) => s.name().into(),
         Type::Bool => "bool".into(),
         Type::Tile(f) => format!("tile<{f}>"),
-        Type::Reduced(f, a, Count::Const(1), Count::Const(1)) => {
-            format!("reduced<{f}, {}>", axis(*a))
-        }
-        Type::Reduced(f, a, r, c) => {
-            format!("reduced<{f}, {}, [{}, {}]>", axis(*a), count(r), count(c))
-        }
-        Type::Block(f, Count::Const(1), c) => format!("tile<{f}>[{}]", count(c)),
-        Type::Block(f, r, c) => format!("tile<{f}>[{}, {}]", count(r), count(c)),
+        Type::Reduced(f, a, Count::Const(1)) => format!("reduced<{f}, {}>", axis(*a)),
+        Type::Reduced(f, a, n) => format!("reduced<{f}, {}, {}>", axis(*a), count(n)),
+        Type::Block(f, n) => format!("tile<{f}>[{}]", count(n)),
         Type::Tensor(f, false) => format!("tensor<{f}>"),
         Type::Tensor(f, true) => format!("tensor<{f}> replicated"),
         Type::View(Some(f)) => format!("view<{f}>"),
         Type::View(None) => "view".into(),
         Type::Items(c) => format!("items<{}>", count(c)),
-        Type::Stream(f, Count::Const(1), c) => format!("stream<{f}, {}>", count(c)),
-        Type::Stream(f, r, c) => format!("stream<{f}, [{}, {}]>", count(r), count(c)),
+        Type::Stream(f, n) => format!("stream<{f}, {}>", count(n)),
         Type::Zip(a, b) => format!("zip<{}, {}>", type_text(a), type_text(b)),
-        Type::Sink(f, Count::Const(1), c) => format!("sink<{f}, {}>", count(c)),
-        Type::Sink(f, r, c) => format!("sink<{f}, [{}, {}]>", count(r), count(c)),
+        Type::Sink(f, n) => format!("sink<{f}, {}>", count(n)),
         Type::Words(s) => format!("words<{s}>"),
         Type::Records(r) => format!("records<R{}>", r.0),
         Type::RecordValue(r) => format!("record<R{}>", r.0),

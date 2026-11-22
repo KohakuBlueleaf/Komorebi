@@ -24,4 +24,4 @@ pub use place::{
     RecordId, RunId,
 };
 pub use scalar::ScalarType;
-pub use value::{shape_text, Axis, Count, TileShape, Type};
+pub use value::{Axis, Count, TileShape, Type};

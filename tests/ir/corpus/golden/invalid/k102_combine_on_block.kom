@@ -1,0 +1,9 @@
+// refused: a combine is declared on tiles; a block is taken by a func (Compute functions)
+module blocks
+
+tile [32, 32]
+format f32
+
+combine add(a: tile<f32>[2], b: tile<f32>[2]) -> tile<f32>[2] @commutative {
+    return a + b
+}

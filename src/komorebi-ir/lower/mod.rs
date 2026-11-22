@@ -326,13 +326,7 @@ impl<'c> Cx<'c> {
             (ast::TypeKind::Scalar(_), None) => Type::Scalar(self.scalar_type(ty)?),
             (ast::TypeKind::Bool, None) => Type::Bool,
             (ast::TypeKind::Tile { format }, None) => Type::Tile(self.format(format)?),
-            (ast::TypeKind::Tile { format }, Some(c)) => {
-                let rows = match &ty.rows {
-                    Some(r) => self.count(r)?,
-                    None => Count::Const(1),
-                };
-                Type::Block(self.format(format)?, rows, c)
-            }
+            (ast::TypeKind::Tile { format }, Some(c)) => Type::Block(self.format(format)?, c),
             (ast::TypeKind::Tensor { format }, None) => {
                 Type::Tensor(self.format(format)?, has_attr(attrs, "replicated"))
             }
@@ -869,7 +863,7 @@ impl<'c> Cx<'c> {
     ) -> Res<pg::Func> {
         let params_t = self.params(params, None)?;
         let ret_t = self.ty(ret, &[], None)?;
-        // A function on blocks: its body is typed on blocks, each parameter its own (R45).
+        // A function on blocks: its body is typed on blocks, each parameter its own.
         let body = match body {
             Some(b) => Some(self.body(BodyRef::Func(id), None, params, &params_t, None, b)?),
             None => None,

@@ -8,7 +8,7 @@ use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Til
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::{BodyRef, Module};
-use komorebi_ir::types::{Count, HandlerId, ParamId, ProgramId, RunId, Type};
+use komorebi_ir::types::{Count, HandlerId, ProgramId, RunId};
 use komorebi_ir::types::{IslandGraph, IslandRefusal};
 
 fn lesson(name: &str) -> String {
@@ -173,48 +173,6 @@ fn t3_state_stays_between_invocations_and_empty_state_fails() {
     else {
         panic!("{end:?}");
     };
-}
-
-/// A handler that counts the blocks of a stream of `x`'s tiles `[0:2, 0:2]` in blocks
-/// of `[2, 2]`, with `R` bound at load beside it.
-const ROWS: &str = "module rows
-
-tile [32, 32]
-format f32
-
-param R: u32 = 2 @bind(load)
-
-program Rows {
-    handler blocks(x: tensor<f32>) -> u32 @on(group) {
-        var walked: u32 = 0
-        for xb in stream(x.tiles[0:2, 0:2], block = [2, 2]) {
-            walked += 1
-        }
-        return walked
-    }
-}
-";
-
-#[test]
-fn a_streams_rows_bound_at_load_are_the_parameters_value() {
-    // program compile refuses rows bound at load in the text (K102), so the stream's
-    // type is given the parameter `R` by hand in the program structure
-    let mut m = module(ROWS);
-    let mut turned = 0;
-    for ty in &mut m.programs[0].handlers[0].body.values {
-        if let Type::Stream(_, rows, _) = ty {
-            *rows = Count::Param(ParamId(0));
-            turned += 1;
-        }
-    }
-    assert_eq!(turned, 1);
-    let mut run = Machine::load(&m, 1, &[("R", u32s(2))], Options::default()).expect("loads");
-    let x = tensor(&mut run, Format::F32, (2, 2), |i, _| i as f64);
-    // one block of 2 rows by 2 tiles; rows taken as 1 would give two blocks
-    assert_eq!(
-        run.invoke("Rows.blocks", &[Arg::Tensor(x)], (0, 1), &[]),
-        End::Completed(Some(u32s(1)))
-    );
 }
 
 #[test]
@@ -946,108 +904,6 @@ fn a_call_on_a_range_of_the_chain_s_group_runs_on_it_as_its_group() {
             at: None
         }
     );
-}
-
-/// Program 7's chain at small sizes (examples/ir/p7_swiglu.kom with D 2, H 4, WIDTH 2
-/// and CHUNK 2; the gate `h g + h` in place of silu, so each number is exact): `forward`
-/// as the frontend writes it, and `half`, whose up runs on rank 0 only.
-const SWIGLU_CHAIN: &str = "module swiglu
-
-tile [32, 32]
-format bf16, f32
-
-param D: u32 = 2 @bind(build)
-param H: u32 = 4 @bind(build)
-param WIDTH: u32 = 2 @bind(build)
-param CHUNK: u32 = 2 @bind(build)
-
-func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
-    return matmul(x, w)
-}
-
-func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {
-    return h * g + h
-}
-
-program SwiGLU {
-    handler up(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, hidden: tensor<bf16>) @on(group) {
-        var h: tile<f32>[WIDTH] = zeros
-        var g: tile<f32>[WIDTH] = zeros
-        let first = worker.rank * WIDTH
-        for xb, w1b, w3b in zip(stream(x.tiles[0:1, 0:D], block = CHUNK), stream(w1.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]), stream(w3.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH])) {
-            h += project(xb, w1b)
-            g += project(xb, w3b)
-        }
-        store hidden.tiles[0:1, first:first + WIDTH] <- gate(h, g)
-    }
-    handler down(hidden: tensor<bf16>, w2: tensor<bf16>, y: tensor<f32>) @on(group) {
-        var out: tile<f32>[WIDTH] = zeros
-        let first = worker.rank * WIDTH
-        for hb, wb in zip(stream(hidden.tiles[0:1, 0:H], block = CHUNK), stream(w2.tiles[0:H, first:first + WIDTH], block = [CHUNK, WIDTH])) {
-            out += project(hb, wb)
-        }
-        store y.tiles[0:1, first:first + WIDTH] <- out
-    }
-    chain forward(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, w2: tensor<bf16>, hidden: tensor<bf16>, y: tensor<f32>) @on(group) {
-        call up(x, w1, w3, hidden)
-        call down(hidden, w2, y) @on(group[0:1])
-    }
-    chain half(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, w2: tensor<bf16>, hidden: tensor<bf16>, y: tensor<f32>) @on(group) {
-        call up(x, w1, w3, hidden) @on(group[0:1])
-        call down(hidden, w2, y) @on(group[0:1])
-    }
-}
-";
-
-#[test]
-fn program_7s_chain_runs_up_then_down_on_its_part_of_the_group() {
-    let m = module(SWIGLU_CHAIN);
-    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
-    // x's tiles hold 1/32 and 2/32; W1's tile (k, j) holds j + 1, W3's 2; W2's tile
-    // (k, j) j + 1; the hidden and y start at -1
-    let x = tensor(&mut run, Format::Bf16, (1, 2), |i, _| (i + 1) as f64 / 32.0);
-    let w1 = tensor(&mut run, Format::Bf16, (2, 4), |i, _| (i % 4 + 1) as f64);
-    let w3 = tensor(&mut run, Format::Bf16, (2, 4), |_, _| 2.0);
-    let w2 = tensor(&mut run, Format::Bf16, (4, 2), |i, _| (i % 2 + 1) as f64);
-    let hidden = tensor(&mut run, Format::Bf16, (1, 4), |_, _| -1.0);
-    let y = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
-    let args = [x, w1, w3, w2, hidden, y].map(Arg::Tensor);
-    assert_eq!(
-        run.invoke("SwiGLU.forward", &args, (0, 2), &[]),
-        End::Completed(None)
-    );
-    let exact = |run: &Machine<'_>, t, i, want: f64| {
-        let got = tile_f64(run, t, i);
-        assert!(
-            got.iter().all(|v| *v == want),
-            "tile {i}: {} for {want}",
-            got[0]
-        );
-    };
-    // By hand: up on ranks 0 and 1, h's tile j 32 (1/32 + 2/32)(j + 1) = 3 (j + 1), g's
-    // 32 (3/32) 2 = 6, the gate h g + h = 21 (j + 1): the hidden 21, 42, 63, 84; down
-    // on rank 0 alone (group[0:1], a group of 1), y's tile j the sum over k of
-    // 32 hidden_k (j + 1) = 32 x 210 (j + 1): 6720 and 13440
-    for (j, want) in [21.0, 42.0, 63.0, 84.0].into_iter().enumerate() {
-        exact(&run, hidden, j, want);
-    }
-    exact(&run, y, 0, 6720.0);
-    exact(&run, y, 1, 13440.0);
-    // `half`: up on rank 0 only writes the hidden's tiles 0 and 1; down reads all four,
-    // tiles 2 and 3 as they were before the chain (-1): 32 (21 + 42 - 1 - 1)(j + 1) =
-    // 1952 (j + 1)
-    let hidden = tensor(&mut run, Format::Bf16, (1, 4), |_, _| -1.0);
-    let y = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
-    let args = [x, w1, w3, w2, hidden, y].map(Arg::Tensor);
-    assert_eq!(
-        run.invoke("SwiGLU.half", &args, (0, 2), &[]),
-        End::Completed(None)
-    );
-    for (j, want) in [21.0, 42.0, -1.0, -1.0].into_iter().enumerate() {
-        exact(&run, hidden, j, want);
-    }
-    exact(&run, y, 0, 1952.0);
-    exact(&run, y, 1, 3904.0);
 }
 
 fn scalars(run: &Machine<'_>, worker: usize, member: usize) -> Vec<Scalar> {
@@ -2743,8 +2599,8 @@ fn a_function_on_blocks_runs_on_each_tile_and_a_last_block_is_shorter() {
 
 #[test]
 fn a_function_on_blocks_calls_functions_on_blocks_of_their_shapes_and_on_tiles() {
-    // R45: in a function on blocks a function on blocks takes blocks of its shapes, and
-    // a function on tiles runs on each tile of blocks of one shape
+    // in a function on blocks a function on blocks takes blocks of its count, and a
+    // function on tiles runs on each tile of blocks of one count
     let text = |call: &str| {
         format!(
             "module blocks\n\ntile [32, 32]\nformat f32\n\n\
@@ -2756,7 +2612,7 @@ fn a_function_on_blocks_calls_functions_on_blocks_of_their_shapes_and_on_tiles()
     for call in ["twice(x)", "one(x)", "twice(one(x)) - x"] {
         komorebi_ir::check(&text(call)).unwrap_or_else(|d| panic!("{call}: {d:?}"));
     }
-    let why = "(in a function on blocks a tile is `[1, 1]` and a block is of its shape)";
+    let why = "(in a function on blocks a tile is `[1]` and a block is of its count)";
     for (call, what) in [
         ("twice(t)", why),
         ("one(t)", why),
@@ -2774,488 +2630,114 @@ fn a_function_on_blocks_calls_functions_on_blocks_of_their_shapes_and_on_tiles()
     }
 }
 
-/// A function on blocks of `n` tiles that reduces along a row (reading R43): the
-/// reduction runs along the whole block, `.col()` spreads each row's value over every
-/// tile, `.row()` spreads each tile's own row 0, `* 2.0` and `+` work tile by tile. A
-/// stream of one tile a block gives tiles: the same body, on one tile.
-fn row_form(n: usize) -> String {
-    let t = if n == 1 {
-        "tile<f32>".to_string()
-    } else {
-        format!("tile<f32>[{n}]")
-    };
-    format!(
-        "module rows
+/// The same body twice: `on_blocks` on blocks of 2 tiles, `on_tiles` on one tile; each
+/// handler runs it over the 4 tiles of `x` and `y` into `out`.
+const EACH_TILE: &str = "module each
 
-tile [32, 32]
+tile [4, 4]
 format f32
 
-func spread(x: {t}) -> {t} {{
-    return reduce_sum(x * 2.0, axis = row).col() + x.row()
-}}
-
-program Rows {{
-    handler run(a: tensor<f32>, out: tensor<f32>) @on(group) {{
-        let results = sink(out.tiles(0, 2), block = {n})
-        for x in stream(a.tiles(0, 2), block = {n}) {{
-            results.push(spread(x))
-        }}
-    }}
-}}
-"
-    )
+func on_blocks(x: tile<f32>[2], y: tile<f32>[2]) -> tile<f32>[2] {
+    return reduce_sum(x, axis = row).col() + matmul(x, y) + x.T
 }
 
-/// The two tiles of `row_form(n)` run on a tensor whose tile 0 holds r + c at row r,
-/// column c, and tile 1 holds 1: the result's two tiles, element by element.
-fn row_form_run(n: usize) -> (Vec<f64>, Vec<f64>) {
-    let m = module(&row_form(n));
-    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
-    let a = tensor(&mut run, Format::F32, (1, 2), |i, k| {
-        if i == 0 {
-            (k / 32 + k % 32) as f64
-        } else {
-            1.0
+func on_tiles(x: tile<f32>, y: tile<f32>) -> tile<f32> {
+    return reduce_sum(x, axis = row).col() + matmul(x, y) + x.T
+}
+
+program Each {
+    handler blocks(x: tensor<f32>, y: tensor<f32>, out: tensor<f32>) @on(group) {
+        let results = sink(out.tiles(0, 4), block = 2)
+        for xb, yb in zip(stream(x.tiles(0, 4), block = 2), stream(y.tiles(0, 4), block = 2)) {
+            results.push(on_blocks(xb, yb))
         }
+    }
+
+    handler tiles(x: tensor<f32>, y: tensor<f32>, out: tensor<f32>) @on(group) {
+        let results = sink(out.tiles(0, 4), block = 1)
+        for xt, yt in zip(stream(x.tiles(0, 4), block = 1), stream(y.tiles(0, 4), block = 1)) {
+            results.push(on_tiles(xt, yt))
+        }
+    }
+}
+";
+
+#[test]
+fn in_a_function_on_blocks_every_operation_is_on_each_tile() {
+    let m = module(EACH_TILE);
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    // tile i of x holds (i + 1)(k mod 4 + 1) at element k, tile i of y holds k / 4 - i
+    let x = tensor(&mut run, Format::F32, (1, 4), |i, k| {
+        ((i + 1) * (k % 4 + 1)) as f64
     });
-    let out = tensor(&mut run, Format::F32, (1, 2), |_, _| -1.0);
-    let args = [Arg::Tensor(a), Arg::Tensor(out)];
-    assert_eq!(
-        run.invoke("Rows.run", &args, (0, 1), &[]),
-        End::Completed(None)
-    );
-    (tile_f64(&run, out, 0), tile_f64(&run, out, 1))
-}
-
-#[test]
-fn a_reduction_along_a_row_in_a_function_on_blocks_runs_along_the_whole_block() {
-    // a block of 2 tiles: row r of the 64 elements side by side doubled is
-    // 2 (32 r + 496 + 32) = 64 r + 1056; tile 0 adds its row 0 (c at column c), tile 1
-    // its own (1)
-    let (first, second) = row_form_run(2);
-    for k in 0..32 * 32 {
-        let (r, c) = ((k / 32) as f64, (k % 32) as f64);
-        assert_eq!(first[k], 64.0 * r + 1056.0 + c, "tile 0, element {k}");
-        assert_eq!(second[k], 64.0 * r + 1057.0, "tile 1, element {k}");
-    }
-    // blocks of 1 tile: each tile's own rows, 2 (32 r + 496) + c and 2 x 32 + 1
-    let (first, second) = row_form_run(1);
-    for k in 0..32 * 32 {
-        let (r, c) = ((k / 32) as f64, (k % 32) as f64);
-        assert_eq!(first[k], 64.0 * r + 992.0 + c, "tile 0, element {k}");
-        assert_eq!(second[k], 65.0, "tile 1, element {k}");
-    }
-}
-
-#[test]
-fn in_a_function_on_blocks_what_works_on_a_whole_tile_but_a_row_is_not_built() {
-    // R43 builds a reduction along a row, `.col()` of its values and `.row()` of a tile
-    // parameter; a reduction along a column, `.col()` of a tile, `.row()` of another
-    // tile, `matmul` and `.T` stay named and not built (K010)
-    let body = |line: &str| {
-        format!(
-            "module rows\n\ntile [32, 32]\nformat f32\n\n\
-             func f(x: tile<f32>[2], y: tile<f32>[2]) -> tile<f32>[2] {{\n    {line}\n}}\n"
-        )
-    };
-    let built = [
-        "return reduce_max(x, axis = row).col() - x",
-        "return reduce_min(x + y, axis = row).col() * y.row()",
-    ];
-    for line in built {
-        komorebi_ir::check(&body(line)).unwrap_or_else(|d| panic!("{line}: {d:?}"));
-    }
-    let refused = [
-        (
-            "return reduce_sum(x, axis = col).row()",
-            "a reduction along a column",
-        ),
-        (
-            "return x.col()",
-            "`.col()` of other than a reduction along a row",
-        ),
-        (
-            "return (x * 2.0).row()",
-            "`.row()` of other than a tile parameter",
-        ),
-        ("return x.T", "`.T`"),
-    ];
-    for (line, what) in refused {
-        let found = komorebi_ir::check(&body(line)).expect_err(line);
-        assert!(
-            found
-                .iter()
-                .any(|d| d.code == "K010" && d.message.starts_with(what)),
-            "{line}: {found:?}"
+    let y = tensor(&mut run, Format::F32, (1, 4), |i, k| {
+        (k / 4) as f64 - i as f64
+    });
+    let by_blocks = tensor(&mut run, Format::F32, (1, 4), |_, _| -1.0);
+    let by_tiles = tensor(&mut run, Format::F32, (1, 4), |_, _| -1.0);
+    for (handler, out) in [("Each.blocks", by_blocks), ("Each.tiles", by_tiles)] {
+        let args = [x, y, out].map(Arg::Tensor);
+        assert_eq!(
+            run.invoke(handler, &args, (0, 1), &[]),
+            End::Completed(None)
         );
     }
+    for i in 0..4 {
+        let (got, want) = (tile_f64(&run, by_blocks, i), tile_f64(&run, by_tiles, i));
+        assert_eq!(got, want, "tile {i}");
+        assert!(got.iter().all(|v| *v != -1.0), "tile {i} written");
+    }
 }
 
-/// A handler that pushes `f(x, w)`, the stream of `a`'s first two tiles in blocks of
-/// `[1, 2]` zipped with the stream of the tiles `[0:2, 0:c]` of `w` in blocks of
-/// `[2, c]` (reading R45: a block is a matrix of tiles).
-fn product_of_blocks(func: &str, c: usize, out: usize) -> String {
-    format!(
-        "module product
-
-tile [32, 32]
-format f32
-
-{func}
-
-program Product {{
-    handler run(a: tensor<f32>, w: tensor<f32>, out: tensor<f32>) @on(group) {{
-        let results = sink(out.tiles(0, {out}), block = {out})
-        let rows = stream(a.tiles(0, 2), block = 2)
-        let cols = stream(w.tiles[0:2, 0:{c}], block = [2, {c}])
-        for x, y in zip(rows, cols) {{
-            results.push(f(x, y))
-        }}
-    }}
-}}
-"
-    )
-}
-
-/// `product_of_blocks` run: `a`'s tile 0 holds 1 and its tile 1 holds the element's
-/// row; `w`, a grid of 2 x `c` tiles, is `w(i, j)` at its tile (i, j), element (k, c).
-/// The result's tiles.
-fn product_run(text: &str, c: usize, out: usize, w: impl Fn(usize, usize) -> f64) -> Vec<Vec<f64>> {
-    let m = module(text);
+#[test]
+fn construct_c08_runs_a_function_on_blocks_of_n_on_each_tile() {
+    let m = module(&construct("c08_blocks"));
     let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
-    let a = tensor(&mut run, Format::F32, (1, 2), |i, k| {
-        if i == 0 {
-            1.0
-        } else {
-            (k / 32) as f64
-        }
-    });
-    let w = tensor(&mut run, Format::F32, (2, c), w);
-    let o = tensor(&mut run, Format::F32, (1, out), |_, _| -1.0);
-    let args = [Arg::Tensor(a), Arg::Tensor(w), Arg::Tensor(o)];
-    assert_eq!(
-        run.invoke("Product.run", &args, (0, 1), &[]),
-        End::Completed(None)
-    );
-    (0..out).map(|i| tile_f64(&run, o, i)).collect()
-}
-
-#[test]
-fn a_product_of_a_row_of_two_tiles_by_a_column_of_two_is_the_sum_of_the_tiles_products() {
-    let func = "func f(x: tile<f32>[1, 2], w: tile<f32>[2, 1]) -> tile<f32> {\n    \
-                return matmul(x, w)\n}";
-    // w's tile 0 holds its element's row k, its tile 1 holds 1. By hand: x0 w0 at
-    // (r, c) is the sum over k of 1 * k, 496; x1 w1 is the sum over k of r * 1, 32 r.
-    // The other pairing (x0 w1 + x1 w0) would give 32 + 496 r.
-    let w = |i: usize, k: usize| if i == 0 { (k / 32) as f64 } else { 1.0 };
-    let tiles = product_run(&product_of_blocks(func, 1, 1), 1, 1, w);
-    for (k, got) in tiles[0].iter().enumerate() {
-        let r = (k / 32) as f64;
-        assert_eq!(*got, 496.0 + 32.0 * r, "element {k}");
-    }
-}
-
-#[test]
-fn a_product_of_a_row_of_two_tiles_by_two_rows_of_three_is_a_row_of_three() {
-    let func = "func f(x: tile<f32>[1, 2], w: tile<f32>[2, 3]) -> tile<f32>[1, 3] {\n    \
-                return matmul(x, w)\n}";
-    // w's tile (0, j) holds j + 1, its tile (1, j) holds 1 (tile i of the grid is row
-    // i / 3, column i % 3). By hand, out tile j at (r, c): the sum over k of
-    // 1 * (j + 1), 32 (j + 1), and of r * 1, 32 r.
-    let w = |i: usize, _: usize| if i < 3 { (i + 1) as f64 } else { 1.0 };
-    let tiles = product_run(&product_of_blocks(func, 3, 3), 3, 3, w);
-    for (j, tile) in tiles.iter().enumerate() {
-        for (k, got) in tile.iter().enumerate() {
-            let r = (k / 32) as f64;
-            assert_eq!(
-                *got,
-                32.0 * (j + 1) as f64 + 32.0 * r,
-                "tile {j}, element {k}"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_reduction_along_a_row_of_a_block_of_two_rows_runs_along_each_row() {
-    // `f(y: [1, 2], x: [2, 2])`: x's two rows of tiles reduced along a row each and
-    // spread back, then y times that (reading R45)
-    let func = "func f(y: tile<f32>[1, 2], x: tile<f32>[2, 2]) -> tile<f32>[1, 2] {\n    \
-                return matmul(y, reduce_sum(x, axis = row).col())\n}";
-    let text = product_of_blocks(func, 2, 2);
-    // x's tiles hold 1, 2 (row 0) and 3, 4 (row 1); y's tile 0 holds 1, its tile 1
-    // the element's row. By hand: row 0 of the block sums to 32 (1 + 2) = 96 at every
-    // element of its tiles, row 1 to 32 (3 + 4) = 224. Out tile j at (r, c): the sum
-    // over k of 1 * 96 and of r * 224, 3072 + 7168 r. One reduction along the whole
-    // block (320 everywhere) would give 10240 + 10240 r.
-    let x = |i: usize, _: usize| (i + 1) as f64;
-    let tiles = product_run(&text, 2, 2, x);
-    for (j, tile) in tiles.iter().enumerate() {
-        for (k, got) in tile.iter().enumerate() {
-            let r = (k / 32) as f64;
-            assert_eq!(*got, 3072.0 + 7168.0 * r, "tile {j}, element {k}");
-        }
-    }
-}
-
-#[test]
-fn the_shapes_of_blocks_are_checked_and_their_rows_are_known_at_build() {
-    // R45: `matmul` of blocks takes the left's columns of tiles as the right's rows;
-    // the rows of a block are a number written or a module parameter bound at build
-    // (program 6); a sink of several rows is not built (K010)
-    let func = |sig: &str, body: &str| {
-        format!(
-            "module shapes\n\ntile [32, 32]\nformat f32\n\nparam n: u32 = 2 @bind(build)\n\
-             param m: u32 = 2 @bind(load)\nparam k: u32 = 2 @bind(invoke)\n\n\
-             func f({sig} {{\n    return {body}\n}}\n"
-        )
-    };
-    let built = [
-        (
-            "x: tile<f32>[1, 2], w: tile<f32>[2, 1]) -> tile<f32>",
-            "matmul(x, w)",
-        ),
-        (
-            "x: tile<f32>[2, 2], w: tile<f32>[2, 3]) -> tile<f32>[2, 3]",
-            "matmul(x, w) + 1.0",
-        ),
-        (
-            "x: tile<f32>[2, 3]) -> tile<f32>[2, 3]",
-            "reduce_sum(x, axis = row).col() * x",
-        ),
-        // rows of a parameter bound at build: its value, known at compile
-        (
-            "x: tile<f32>[n], w: tile<f32>[n, 1]) -> tile<f32>",
-            "matmul(x, w)",
-        ),
-    ];
-    for (sig, body) in built {
-        komorebi_ir::check(&func(sig, body)).unwrap_or_else(|d| panic!("{body}: {d:?}"));
-    }
-    let refused = [
-        (
-            "x: tile<f32>[1, 2], w: tile<f32>[3, 1]) -> tile<f32>",
-            "matmul(x, w)",
-            "the left's columns of tiles are the right's rows",
-        ),
-        (
-            "x: tile<f32>[2, 2], w: tile<f32>[1, 4]) -> tile<f32>[2, 2]",
-            "x + w",
-            "takes operands of one shape, element by element: [2, 2] and [4]",
-        ),
-        (
-            "x: tile<f32>[m, 2]) -> tile<f32>[m, 2]",
-            "x",
-            "a number written in the text or a module parameter bound at build",
-        ),
-        (
-            "x: tile<f32>[k, 2]) -> tile<f32>[k, 2]",
-            "x",
-            "a module parameter bound at build (one bound at load or at the invocation",
-        ),
-        (
-            "x: tile<f32>[n, 3], w: tile<f32>[2, 1]) -> tile<f32>",
-            "matmul(x, w)",
-            "the left's columns of tiles are the right's rows",
-        ),
-    ];
-    for (sig, body, what) in refused {
-        let found = komorebi_ir::check(&func(sig, body)).expect_err(body);
-        assert!(
-            found
-                .iter()
-                .any(|d| d.code == "K102" && d.message.contains(what)),
-            "{body}: {found:?}"
-        );
-    }
-    let sink = "module shapes\n\ntile [32, 32]\nformat f32\n\n\
-                program P {\n    handler run(out: tensor<f32>) @on(group) {\n        \
-                let s = sink(out.tiles(0, 4), block = [2, 2])\n    }\n}\n";
-    let found = komorebi_ir::check(sink).expect_err("a sink of two rows");
-    assert!(found.iter().any(|d| d.code == "K010"), "{found:?}");
-}
-
-#[test]
-fn program_6_sums_each_ranks_products_of_a_row_of_x_and_a_column_of_w() {
-    // Small.read as the frontend writes it (reading R45): rank r N + n reads X's row r
-    // in blocks of CHUNK and W's column n in blocks of [CHUNK, 1], and adds the
-    // products into a tile of zeros, which it stores at Y's tile call M N + rank
-    let m = module(
-        "module small
-
-tile [32, 32]
-format bf16, f32
-
-param M_TILES: u32 = 4 @bind(build)
-param K_TILES: u32 = 28 @bind(build)
-param N_TILES: u32 = 4 @bind(build)
-param CHUNK: u32 = 4 @bind(build)
-
-func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, 1]) -> tile<f32> {
-    return matmul(x, w)
-}
-
-program Small {
-    handler read(x: tensor<bf16>, w: tensor<bf16>, y: tensor<f32>, call: u32) @on(group) {
-        let r = worker.rank / N_TILES
-        let n = worker.rank % N_TILES
-        var acc: tile<f32> = zeros
-        for xb, wb in zip(stream(x.tiles[r:r + 1, 0:K_TILES], block = CHUNK), stream(w.tiles[0:K_TILES, n:n + 1], block = [CHUNK, 1])) {
-            acc += project(xb, wb)
-        }
-        store y.tiles(((call * M_TILES) * N_TILES) + worker.rank, 1) <- acc
-    }
-}
-",
-    );
-    let mut run = Machine::load(&m, 16, &[], Options::default()).expect("loads");
-    // X's tile (r, k) holds r + 1, W's tile (k, n) holds k + n; Y two calls' worth
-    let x = tensor(&mut run, Format::Bf16, (4, 28), |i, _| (i / 28 + 1) as f64);
-    let w = tensor(&mut run, Format::Bf16, (28, 4), |i, _| {
-        (i / 4 + i % 4) as f64
-    });
-    let y = tensor(&mut run, Format::F32, (8, 4), |_, _| -1.0);
+    // tile i of x holds (i + 1)(k mod 4 + 1) at element k, tile i of w holds k / 4 + i
+    let xv = |i: usize, k: usize| ((i + 1) * (k % 4 + 1)) as f64;
+    let wv = |i: usize, k: usize| (k / 4 + i) as f64;
+    let x = tensor(&mut run, Format::F32, (1, 4), xv);
+    let w = tensor(&mut run, Format::F32, (1, 4), wv);
+    let y = tensor(&mut run, Format::F32, (1, 4), |_, _| -1.0);
     let args = [
         Arg::Tensor(x),
         Arg::Tensor(w),
         Arg::Tensor(y),
-        Arg::Scalar(u32s(1)),
+        Arg::Scalar(u32s(4)),
     ];
     assert_eq!(
-        run.invoke("Small.read", &args, (0, 16), &[]),
+        run.invoke("Blocks.apply", &args, (0, 1), &[]),
         End::Completed(None)
     );
-    // By hand: each element of Y's tile (r, n) is the sum over k of 32 (r + 1)(k + n),
-    // 32 (r + 1)(378 + 28 n); call 1 writes tiles 16 to 31, call 0's stay -1
-    for rank in 0..16 {
-        let (r, n) = ((rank / 4) as f64, (rank % 4) as f64);
-        let want = 32.0 * (r + 1.0) * (378.0 + 28.0 * n);
-        let got = tile_f64(&run, y, 16 + rank);
-        assert!(
-            got.iter().all(|v| *v == want),
-            "rank {rank}: {} for {want}",
-            got[0]
-        );
-        assert!(
-            tile_f64(&run, y, rank).iter().all(|v| *v == -1.0),
-            "tile {rank}"
-        );
+    // tile by tile: matmul(x_i, w_i) + the sum of x_i's row r, at row r, column c
+    for i in 0..4 {
+        let want: Vec<f64> = (0..16)
+            .map(|k| {
+                let (r, c) = (k / 4, k % 4);
+                let product: f64 = (0..4).map(|j| xv(i, r * 4 + j) * wv(i, j * 4 + c)).sum();
+                let row: f64 = (0..4).map(|j| xv(i, r * 4 + j)).sum();
+                product + row
+            })
+            .collect();
+        assert_eq!(tile_f64(&run, y, i), want, "tile {i}");
     }
-}
-
-#[test]
-fn program_7s_down_adds_each_ranks_products_into_a_block_var_and_stores_it() {
-    // SwiGLU.down as the frontend writes it (reading R48): the field `out` the
-    // handler's var of a block of one row from zeros; rank r adds the products of the
-    // hidden's row, in blocks of [1, CHUNK], by W2's columns r WIDTH to r WIDTH +
-    // WIDTH - 1, in blocks of [CHUNK, WIDTH], and stores the var to y's row there
-    let m = module(
-        "module swiglu
-
-tile [32, 32]
-format bf16, f32
-
-param H: u32 = 6 @bind(build)
-param WIDTH: u32 = 4 @bind(build)
-param CHUNK: u32 = 2 @bind(build)
-
-func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
-    return matmul(x, w)
-}
-
-program SwiGLU {
-    handler down(hidden: tensor<bf16>, w2: tensor<bf16>, y: tensor<f32>) @on(group) {
-        var out: tile<f32>[WIDTH] = zeros
-        let first = worker.rank * WIDTH
-        for hb, wb in zip(stream(hidden.tiles[0:1, 0:H], block = CHUNK), stream(w2.tiles[0:H, first:first + WIDTH], block = [CHUNK, WIDTH])) {
-            out += project(hb, wb)
-        }
-        store y.tiles[0:1, first:first + WIDTH] <- out
-    }
-}
-",
-    );
-    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
-    // the hidden's tile (0, k) holds k + 1, W2's tile (k, j) holds j + 1; y is 1 x 8
-    let hidden = tensor(&mut run, Format::Bf16, (1, 6), |i, _| (i + 1) as f64);
-    let w2 = tensor(&mut run, Format::Bf16, (6, 8), |i, _| (i % 8 + 1) as f64);
-    let y = tensor(&mut run, Format::F32, (1, 8), |_, _| -1.0);
-    let args = [Arg::Tensor(hidden), Arg::Tensor(w2), Arg::Tensor(y)];
+    // the state member of a block of N tiles, filled from a stream of one block
+    let peeked = tensor(&mut run, Format::F32, (1, 1), |_, _| -1.0);
     assert_eq!(
-        run.invoke("SwiGLU.down", &args, (0, 2), &[]),
+        run.invoke("Blocks.load", &[Arg::Tensor(w)], (0, 1), &[]),
         End::Completed(None)
     );
-    // By hand: y's tile j at each element is the sum over k of 32 (k + 1)(j + 1),
-    // 32 x 21 (j + 1) = 672 (j + 1); ranks 0 and 1 write tiles 0-3 and 4-7
-    for j in 0..8 {
-        let want = 672.0 * (j + 1) as f64;
-        let got = tile_f64(&run, y, j);
-        assert!(
-            got.iter().all(|v| *v == want),
-            "tile {j}: {} for {want}",
-            got[0]
-        );
-    }
-}
-
-#[test]
-fn program_7s_up_zips_three_streams_and_stores_a_function_of_two_block_vars() {
-    // SwiGLU.up (reading R48): x's row by W1's and W3's columns, three streams zipped,
-    // added into two vars of a block of one row; `gate(h, g)`, the function on one
-    // tile run on each tile of the two, stored to the rectangle
-    let m = module(
-        "module swiglu
-
-tile [32, 32]
-format bf16, f32
-
-param D: u32 = 2 @bind(build)
-param WIDTH: u32 = 2 @bind(build)
-param CHUNK: u32 = 2 @bind(build)
-
-func gate(h: tile<f32>, g: tile<f32>) -> tile<f32> {
-    return h * g + h
-}
-
-func project(x: tile<bf16>[CHUNK], w: tile<bf16>[CHUNK, WIDTH]) -> tile<f32>[WIDTH] {
-    return matmul(x, w)
-}
-
-program SwiGLU {
-    handler up(x: tensor<bf16>, w1: tensor<bf16>, w3: tensor<bf16>, hidden: tensor<f32>) @on(group) {
-        var h: tile<f32>[WIDTH] = zeros
-        var g: tile<f32>[WIDTH] = zeros
-        let first = worker.rank * WIDTH
-        for xb, w1b, w3b in zip(stream(x.tiles[0:1, 0:D], block = CHUNK), stream(w1.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH]), stream(w3.tiles[0:D, first:first + WIDTH], block = [CHUNK, WIDTH])) {
-            h += project(xb, w1b)
-            g += project(xb, w3b)
-        }
-        store hidden.tiles[0:1, first:first + WIDTH] <- gate(h, g)
-    }
-}
-",
-    );
-    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
-    // x's tiles hold 1/32 and 2/32; W1's tile (k, j) holds j + 1, W3's 2
-    let x = tensor(&mut run, Format::Bf16, (1, 2), |i, _| (i + 1) as f64 / 32.0);
-    let w1 = tensor(&mut run, Format::Bf16, (2, 4), |i, _| (i % 4 + 1) as f64);
-    let w3 = tensor(&mut run, Format::Bf16, (2, 4), |_, _| 2.0);
-    let hidden = tensor(&mut run, Format::F32, (1, 4), |_, _| -1.0);
-    let args = [x, w1, w3, hidden].map(Arg::Tensor);
     assert_eq!(
-        run.invoke("SwiGLU.up", &args, (0, 2), &[]),
+        run.invoke(
+            "Blocks.peek",
+            &[Arg::Tensor(peeked), Arg::Scalar(u32s(1))],
+            (0, 1),
+            &[]
+        ),
         End::Completed(None)
     );
-    // By hand: h's tile j holds 32 (1/32 + 2/32)(j + 1) = 3 (j + 1), g's 32 (3/32) 2
-    // = 6; the gate gives h g + h = 21 (j + 1): 21, 42, 63, 84
-    for (j, want) in [21.0, 42.0, 63.0, 84.0].into_iter().enumerate() {
-        let got = tile_f64(&run, hidden, j);
-        assert!(
-            got.iter().all(|v| *v == want),
-            "tile {j}: {} for {want}",
-            got[0]
-        );
-    }
+    let want: Vec<f64> = (0..16).map(|k| wv(1, k)).collect();
+    assert_eq!(tile_f64(&run, peeked, 0), want);
 }
 
 // ---- several tile shapes in one module ----

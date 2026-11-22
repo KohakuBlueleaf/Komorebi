@@ -3,13 +3,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{Count, Lit, Shape, Ty};
+use super::ty::{Count, Lit, Ty};
 use crate::syntax::ast::{
     Arg, AssignOp, Attr, BinOp, Block, Call, Chain, Control, Expr, ExprKind, Extern, Func, Handler,
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
-use crate::types::{Axis, Failure, Format, ScalarType};
+use crate::types::{Failure, Format, ScalarType};
 
 use super::attrs::{named_args, on_grid};
 use super::codes;
@@ -602,61 +602,14 @@ impl Checker<'_> {
         let sig = env.funcs.get(&f.name.name).cloned();
         let params: Vec<Ty> = sig.as_ref().map(|s| s.params.clone()).unwrap_or_default();
         let ret = sig.map(|s| s.ret).unwrap_or(Ty::Unknown);
-        // A function declared on blocks: its body is typed on blocks (R45), each
-        // operation's shapes checked; an element-by-element body runs on each tile.
+        // A function declared on blocks: its body is written on one tile and runs for
+        // each tile of the block, every operation on each tile.
         let on_blocks = params.iter().any(|t| matches!(t, Ty::Block(..)));
         cx.ret = Some(ret);
         self.bind_params(&mut cx, &f.params, &params);
         self.on_blocks = on_blocks;
         self.block(&mut cx, &f.body);
         self.on_blocks = false;
-        if on_blocks {
-            self.whole_block_ops(&f.name.name, f.body.span);
-        }
-    }
-
-    /// `K010` for each operation in `span` (a function on blocks) that works on a whole
-    /// tile and is named in the language on a block but not built. Built: a reduction
-    /// along a row (along each row of the block, R43), `.col()` of its values, `.row()`
-    /// of a tile parameter (on its own tile), and `matmul` of blocks (R45).
-    fn whole_block_ops(&mut self, name: &str, span: Span) {
-        let operand = |r: &super::op::Resolved| r.parts.first().copied().flatten();
-        let mut found: Vec<(usize, usize, &'static str)> = self
-            .ops
-            .iter()
-            .filter(|((start, end), _)| *start >= span.start && *end <= span.end)
-            .filter_map(|(&(start, end), r)| {
-                let of = operand(r).map(|s| (s.start, s.end));
-                let what = match r.kind {
-                    OpKind::Reduce(_, Axis::Row) => return None,
-                    OpKind::Reduce(_, Axis::Col) => "a reduction along a column",
-                    OpKind::SpreadCol => match of.and_then(|k| self.types.get(&k)) {
-                        Some(Ty::Reduced(_, Axis::Row, _)) => return None,
-                        _ => "`.col()` of other than a reduction along a row",
-                    },
-                    OpKind::SpreadRow => match of.and_then(|k| self.names.get(&k)) {
-                        Some(Name::Param(_)) => return None,
-                        _ => "`.row()` of other than a tile parameter",
-                    },
-                    OpKind::Transpose => "`.T`",
-                    _ => return None,
-                };
-                Some((start, end, what))
-            })
-            .collect();
-        found.sort();
-        for (start, end, what) in found {
-            self.error(
-                codes::NOT_BUILT,
-                format!(
-                    "{what} in `{name}`, a function on blocks, is named in the language and not \
-                     built yet: a function on blocks works on each tile with elementwise \
-                     operations, reduces along each row of the block and spreads it back \
-                     with `.col()`, and multiplies blocks with `matmul`"
-                ),
-                Span { start, end },
-            );
-        }
     }
 
     pub(super) fn fallback(&mut self, env: &Env, f: &Extern) {
@@ -935,8 +888,8 @@ impl Checker<'_> {
     }
 
     /// A call's operands, in the order of the callee's parameters (`call_operands`),
-    /// checked against the parameters' types. In a function on blocks (R45) a function
-    /// on tiles takes blocks of one shape, run on each tile: that shape is given back.
+    /// checked against the parameters' types. In a function on blocks a function on
+    /// tiles takes blocks of one count, run on each tile: that count is given back.
     pub(super) fn positional_call(
         &mut self,
         cx: &mut Cx,
@@ -944,7 +897,7 @@ impl Checker<'_> {
         span: Span,
         args: &[&Expr],
         params: &[Ty],
-    ) -> Option<Shape> {
+    ) -> Option<Count> {
         if args.len() < params.len() {
             self.error(
                 codes::MISSING_OPERAND,
@@ -970,29 +923,27 @@ impl Checker<'_> {
             return None;
         }
         let on_tiles = !params.iter().any(|t| matches!(t, Ty::Block(..)));
-        let mut lifted: Option<Shape> = None;
+        let mut lifted: Option<Count> = None;
         let mut tile_given = false;
         for (arg, want) in args.iter().zip(params) {
             let ty = self.expr(cx, arg);
             tile_given |= matches!((want, &ty), (Ty::Tile(_), Ty::Tile(_)));
             match (want, &ty) {
                 // a function on tiles in a function on blocks, or in a handler on its
-                // vars of a block of one row (R48): on each tile of one shape
-                (Ty::Tile(_), Ty::Block(_, shape))
-                    if on_tiles
-                        && (self.on_blocks
-                            || shape.rows == Count::Known(1) && block_var(cx, arg)) =>
+                // vars of a block (R48): on each tile of blocks of one count
+                (Ty::Tile(_), Ty::Block(_, n))
+                    if on_tiles && (self.on_blocks || block_var(cx, arg)) =>
                 {
                     match lifted {
-                        Some(first) if !first.agrees(*shape) => self.error(
+                        Some(first) if !first.agrees(*n) => self.error(
                             codes::WRONG_TYPE,
                             format!(
-                                "`{what}` is given blocks of two shapes, {first} and {shape}: \
-                                 a function on tiles runs on each tile of blocks of one shape"
+                                "`{what}` is given blocks of two counts, {first} and {n}: a \
+                                 function on tiles runs on each tile of blocks of one count"
                             ),
                             arg.span,
                         ),
-                        _ => lifted = Some(*shape),
+                        _ => lifted = Some(*n),
                     }
                 }
                 (Ty::Tile(_), Ty::Block(..)) => self.error(
@@ -1018,12 +969,12 @@ impl Checker<'_> {
                 }
             }
         }
-        if let (Some(shape), true) = (lifted, tile_given) {
+        if let (Some(n), true) = (lifted, tile_given) {
             self.error(
                 codes::WRONG_TYPE,
                 format!(
-                    "`{what}` is given a tile beside blocks {shape}: a function on tiles runs \
-                     on each tile of blocks of one shape"
+                    "`{what}` is given a tile beside blocks {n}: a function on tiles runs on \
+                     each tile of blocks of one count"
                 ),
                 span,
             );
@@ -1040,10 +991,10 @@ impl Checker<'_> {
                 span,
             );
         } else if !ty.fits(want) {
-            // a tile against a block in a function on blocks: a tile is one shape of its own
+            // a tile against a block in a function on blocks: a tile is one count of its own
             let why = match (ty, want) {
                 (Ty::Tile(_), Ty::Block(..)) | (Ty::Block(..), Ty::Tile(_)) if self.on_blocks => {
-                    " (in a function on blocks a tile is `[1, 1]` and a block is of its shape)"
+                    " (in a function on blocks a tile is `[1]` and a block is of its count)"
                 }
                 _ => "",
             };
@@ -1544,14 +1495,7 @@ impl Checker<'_> {
                 }
             }
             let end = match &member.ty {
-                Ty::Block(
-                    _,
-                    Shape {
-                        cols: Count::Known(n),
-                        ..
-                    },
-                )
-                | Ty::Scalars(_, Count::Known(n)) => Some(*n),
+                Ty::Block(_, Count::Known(n)) | Ty::Scalars(_, Count::Known(n)) => Some(*n),
                 _ => None,
             };
             let at = index.values().next().and_then(|item| match item {
@@ -1694,8 +1638,8 @@ impl Checker<'_> {
                 }
             }
             Ty::Unknown => {}
-            // a block of one row (R48): its tiles in the view's order, as many as it holds
-            Ty::Block(f, shape) if shape.rows == Count::Known(1) => {
+            // a block (R48): its tiles in the view's order, as many as it holds
+            Ty::Block(f, n) => {
                 // both counts known at compile: the view's tiles are the block's
                 if let (
                     Ty::View {
@@ -1703,7 +1647,7 @@ impl Checker<'_> {
                         ..
                     },
                     Count::Known(c),
-                ) = (&want, shape.cols)
+                ) = (&want, *n)
                 {
                     if *t != c {
                         self.error(
@@ -2182,8 +2126,8 @@ impl Checker<'_> {
     /// a tile, a reduction's values, or `Ty::AnyNumber` for scalars only; `Some(Ty::Unknown)` after a
     /// diagnostic or an operand of unknown type; `None` when an operand is none of these.
     /// A reduction's values mixed with a tile are `K116`; an integer tile with a float
-    /// scalar or a float tile is `K117`. In a function on blocks (R45) a block is an
-    /// operand too: the tiles, blocks and reductions' values have one shape (`K102`).
+    /// scalar or a float tile is `K117`. In a function on blocks a block is an operand
+    /// too: the tiles, blocks and reductions' values have one count (`K102`).
     pub(super) fn elementwise(&mut self, what: &str, operands: &[Ty], span: Span) -> Option<Ty> {
         let mut tile: Option<Option<crate::types::Format>> = None;
         let mut axis = None;
@@ -2192,21 +2136,21 @@ impl Checker<'_> {
         let mut float_tile = false;
         let mut integer_tile = false;
         let mut unknown = false;
-        let mut shapes: Vec<Shape> = Vec::new();
+        let mut shapes: Vec<Count> = Vec::new();
         let mut block = false;
         for ty in operands {
             let ty = match ty {
-                Ty::Block(f, shape) if self.on_blocks => {
-                    shapes.push(*shape);
+                Ty::Block(f, n) if self.on_blocks => {
+                    shapes.push(*n);
                     block = true;
                     &Ty::Tile(*f)
                 }
                 Ty::Tile(_) => {
-                    shapes.push(Shape::TILE);
+                    shapes.push(Count::TILE);
                     ty
                 }
-                Ty::Reduced(_, _, shape) => {
-                    shapes.push(*shape);
+                Ty::Reduced(_, _, n) => {
+                    shapes.push(*n);
                     ty
                 }
                 _ => ty,
@@ -2266,7 +2210,7 @@ impl Checker<'_> {
         if unknown {
             return Some(Ty::Unknown);
         }
-        let shape = shapes.first().copied().unwrap_or(Shape::TILE);
+        let shape = shapes.first().copied().unwrap_or(Count::TILE);
         if let Some(other) = shapes.iter().find(|s| !s.agrees(shape)) {
             self.error(
                 codes::WRONG_TYPE,
@@ -2400,13 +2344,8 @@ impl Checker<'_> {
         match (&ty, name.name.as_str()) {
             (Ty::Unknown, _) => Ty::Unknown,
             (Ty::Tile(f), "T") => Ty::Tile(*f),
-            (Ty::Block(f, s), "T") if self.on_blocks => Ty::Block(
-                *f,
-                Shape {
-                    rows: s.cols,
-                    cols: s.rows,
-                },
-            ),
+            // in a function on blocks, on each tile of the block
+            (Ty::Block(f, n), "T") if self.on_blocks => Ty::Block(*f, *n),
             (Ty::View { format, .. }, "T") => Ty::View {
                 format: *format,
                 tiles: Count::Unknown,
@@ -2631,23 +2570,8 @@ impl Checker<'_> {
         }
         let at_ty = self.expr(cx, at);
         self.expect_fit(&at_ty, &Ty::AnyInt, at.span, "an index");
-        if let Ty::Block(_, shape) = &ty {
-            if shape.rows != Count::Known(1) {
-                self.error(
-                    codes::NOT_BUILT,
-                    format!(
-                        "a tile of a block {shape} by its index is named in the language and not \
-                         built yet"
-                    ),
-                    span,
-                );
-                return Ty::Unknown;
-            }
-        }
         let end = match &ty {
-            Ty::Block(_, Shape { cols: tiles, .. })
-            | Ty::View { tiles, .. }
-            | Ty::Scalars(_, tiles) => match tiles {
+            Ty::Block(_, tiles) | Ty::View { tiles, .. } | Ty::Scalars(_, tiles) => match tiles {
                 Count::Known(n) => Some(*n),
                 _ => None,
             },
@@ -2682,11 +2606,8 @@ impl Checker<'_> {
 }
 
 /// A block's count as a message gives it.
-fn shape_text(s: &Shape) -> String {
-    if s.rows != Count::Known(1) {
-        return format!("of shape {s}");
-    }
-    match s.cols {
+fn shape_text(n: &Count) -> String {
+    match n {
         Count::Known(n) => format!("of {n} tiles"),
         Count::GroupSize => "of `group.size` tiles".into(),
         Count::Param(_) => "of a module parameter's tiles".into(),

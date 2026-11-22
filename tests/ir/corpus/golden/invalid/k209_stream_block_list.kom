@@ -1,0 +1,14 @@
+// refused: the block of a stream is one count of tiles, not a list (Handler bodies)
+module stream_block
+
+tile [32, 32]
+format f32
+
+program Blocks {
+    handler listed(x: tensor<f32>) @on(group) {
+        var walked: u32 = 0
+        for xb in stream(x.tiles[0:2, 0:3], block = [2, 3]) {
+            walked += 1
+        }
+    }
+}

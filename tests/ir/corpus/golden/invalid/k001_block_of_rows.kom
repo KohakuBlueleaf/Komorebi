@@ -1,0 +1,9 @@
+// refused: a block is a count of tiles, one expression; two are not in the grammar (Grammar)
+module blocks
+
+tile [32, 32]
+format f32
+
+func twice(a: tile<f32>[2, 3]) -> tile<f32>[2] {
+    return a * 2.0
+}

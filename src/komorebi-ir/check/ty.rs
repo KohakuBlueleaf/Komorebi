@@ -22,50 +22,27 @@ pub enum Count {
 }
 
 impl Count {
+    /// One tile: the count of a reduction of a tile.
+    pub const TILE: Count = Count::Known(1);
+
     /// True when the count is known to be more than one.
     pub fn more_than_one(self) -> bool {
         matches!(self, Count::Known(n) if n > 1)
     }
-}
 
-/// The shape of a block: its rows and its columns of tiles (R45).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Shape {
-    /// Rows of tiles.
-    pub rows: Count,
-    /// Tiles a row.
-    pub cols: Count,
-}
-
-impl Shape {
-    /// A tile's shape: one row of one tile.
-    pub const TILE: Shape = Shape::row(Count::Known(1));
-
-    /// One row of n tiles: what `[n]` writes.
-    pub const fn row(cols: Count) -> Shape {
-        Shape {
-            rows: Count::Known(1),
-            cols,
-        }
-    }
-
-    /// Whether the two shapes may be one: equal, or either not known.
-    pub fn agrees(self, other: Shape) -> bool {
-        let one = |a: Count, b: Count| a == b || a == Count::Unknown || b == Count::Unknown;
-        one(self.rows, other.rows) && one(self.cols, other.cols)
+    /// Whether the two counts may be one: equal, or either not known.
+    pub fn agrees(self, other: Count) -> bool {
+        self == other || self == Count::Unknown || other == Count::Unknown
     }
 }
 
-impl fmt::Display for Shape {
+impl fmt::Display for Count {
+    /// As the text writes a block's count: `[n]`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let count = |c: Count| match c {
-            Count::Known(n) => n.to_string(),
-            Count::GroupSize => "group.size".to_string(),
-            _ => "n".to_string(),
-        };
-        match self.rows {
-            Count::Known(1) => write!(f, "[{}]", count(self.cols)),
-            rows => write!(f, "[{}, {}]", count(rows), count(self.cols)),
+        match self {
+            Count::Known(n) => write!(f, "[{n}]"),
+            Count::GroupSize => f.write_str("[group.size]"),
+            _ => f.write_str("[n]"),
         }
     }
 }
@@ -116,11 +93,11 @@ pub enum Ty {
     Mask,
     /// What `reduce_sum(a, axis = ...)` and its kin yield from a tile of a format: one
     /// value for each row or column; of a block, of each of its tiles, the block's
-    /// shape kept (a tile's: 1 and 1). Not a tile: `.col()` (`.row()` along columns)
+    /// count kept (a tile's: 1). Not a tile: `.col()` (`.row()` along columns)
     /// spreads it into one.
-    Reduced(Option<Format>, Axis, Shape),
-    /// `tile<F>[r, c]`: a block of r rows of c tiles (R45); `tile<F>[n]` is `[1, n]`.
-    Block(Option<Format>, Shape),
+    Reduced(Option<Format>, Axis, Count),
+    /// `tile<F>[n]`: a block of n tiles.
+    Block(Option<Format>, Count),
     /// n scalars, such as a state member `u32[4]`.
     Scalars(Box<Ty>, Count),
     /// `tensor<F>`, with one copy for each island when `replicated`.
@@ -157,7 +134,7 @@ pub enum Ty {
     /// `zip(s1, s2, ...)`: several streams walked together.
     Zip(Vec<Ty>),
     /// `sink(view, block = n)`: a write stream of blocks of n tiles of a format.
-    Sink(Option<Format>, Shape),
+    Sink(Option<Format>, Count),
     /// `broadcast(...)`, by the place of that call: its format is what its casts send.
     Broadcast((usize, usize)),
     /// `b.arrive()` of the broadcast at that place: each block and its word.
@@ -254,18 +231,18 @@ impl fmt::Display for Ty {
             Ty::Bool => f.write_str("bool"),
             Ty::Tile(fm) => write!(f, "tile<{}>", format(fm)),
             Ty::Mask => f.write_str("a comparison of tiles"),
-            Ty::Reduced(_, axis, shape) => {
+            Ty::Reduced(_, axis, n) => {
                 let axis = match axis {
                     Axis::Row => "row",
                     Axis::Col => "column",
                 };
                 write!(f, "a value for each {axis}")?;
-                if *shape != Shape::TILE {
-                    write!(f, " of a block {shape}")?;
+                if *n != Count::TILE {
+                    write!(f, " of a block {n}")?;
                 }
                 Ok(())
             }
-            Ty::Block(fm, shape) => write!(f, "tile<{}>{shape}", format(fm)),
+            Ty::Block(fm, n) => write!(f, "tile<{}>{n}", format(fm)),
             Ty::Scalars(_, _) => f.write_str("scalars"),
             Ty::Tensor { format: fm, .. } => write!(f, "tensor<{}>", format(fm)),
             Ty::TileGrid(_) => f.write_str("the tiles of a tensor"),
@@ -323,6 +300,6 @@ mod tests {
     #[test]
     fn a_tile_is_not_a_scalar() {
         assert!(!Ty::Tile(None).fits(&Ty::AnyInt));
-        assert!(!Ty::Block(None, Shape::row(Count::Known(4))).fits(&Ty::Tile(None)));
+        assert!(!Ty::Block(None, Count::Known(4)).fits(&Ty::Tile(None)));
     }
 }

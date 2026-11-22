@@ -530,7 +530,7 @@ fn writing_another_format_keeps_values() {
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("y", Format::Bf16, 2, 2, S22));
     let v = ops::tiles(&heap, t, 0, 1, st(&heap, t)).unwrap();
-    ops::store(&mut heap, &v, &Block::row(vec![a])).unwrap();
+    ops::store(&mut heap, &v, &Block { tiles: vec![a] }).unwrap();
     let back = ops::read(&heap, &v, 0).unwrap();
     assert_eq!(back.format, Format::Bf16);
     assert_eq!(values(&back)[0], fine);
@@ -788,7 +788,9 @@ fn sink_writes_in_order() {
     let v = ops::tiles(&heap, t, 1, 3, st(&heap, t)).unwrap();
     let mut out = ops::sink(&v, 2).unwrap();
     let seven = f32s(&[7.0; 4]);
-    let block = Block::row(vec![seven.clone(), seven.clone()]);
+    let block = Block {
+        tiles: vec![seven.clone(), seven.clone()],
+    };
     ops::push(&mut heap, &mut out, &block).unwrap();
     // the ragged end: a block of two, of which only the one tile named is written
     ops::push(&mut heap, &mut out, &block).unwrap();
@@ -801,11 +803,25 @@ fn sink_writes_in_order() {
 fn store_one_tile() {
     let (mut heap, t) = numbered(1, 3);
     let v = ops::tiles(&heap, t, 2, 1, st(&heap, t)).unwrap();
-    ops::store(&mut heap, &v, &Block::row(vec![f32s(&[9.0; 4])])).unwrap();
+    ops::store(
+        &mut heap,
+        &v,
+        &Block {
+            tiles: vec![f32s(&[9.0; 4])],
+        },
+    )
+    .unwrap();
     let all = ops::tiles(&heap, t, 0, 3, st(&heap, t)).unwrap();
     assert_eq!(numbers_of(&heap, &all), vec![0, 1, 9]);
     let two = ops::tiles(&heap, t, 0, 2, st(&heap, t)).unwrap();
-    assert!(ops::store(&mut heap, &two, &Block::row(vec![f32s(&[1.0; 4])])).is_err());
+    assert!(ops::store(
+        &mut heap,
+        &two,
+        &Block {
+            tiles: vec![f32s(&[1.0; 4])]
+        }
+    )
+    .is_err());
 }
 
 // ---- State ----
@@ -1048,7 +1064,7 @@ fn malformed_values_are_faults_not_panics() {
     let mut heap = Heap::default();
     let t = heap.add(Tensor::zeros("t", Format::F32, 2, 2, S22));
     let v = ops::tiles(&heap, t, 0, 1, st(&heap, t)).unwrap();
-    assert!(ops::store(&mut heap, &v, &Block::row(vec![bad])).is_err());
+    assert!(ops::store(&mut heap, &v, &Block { tiles: vec![bad] }).is_err());
     assert!(ops::read(
         &heap,
         &View {

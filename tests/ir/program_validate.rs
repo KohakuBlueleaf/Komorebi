@@ -9,8 +9,8 @@ use komorebi_ir::program::{
     Program, Run, Scope,
 };
 use komorebi_ir::types::{
-    Ability, Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Format, FuncId, MemberId, MessageId,
-    On, ParamId, Peers, ProgramId, RecordId, ReduceOp, ScalarType, TileShape, Type,
+    Ability, BinOp, CmpOp, Combiner, ConstValue, Count, Format, FuncId, MemberId, MessageId, On,
+    ParamId, Peers, ProgramId, RecordId, ScalarType, TileShape, Type,
 };
 
 const U32: Type = Type::Scalar(ScalarType::U32);
@@ -241,11 +241,8 @@ fn a_gather_yields_a_block_of_the_groups_size() {
     let tile = Type::Tile(Format::Bf16);
     let m = module(
         vec![tile.clone()],
-        Type::Block(Format::Bf16, Count::Const(1), Count::GroupSize),
-        vec![
-            tile.clone(),
-            Type::Block(Format::Bf16, Count::Const(1), Count::GroupSize),
-        ],
+        Type::Block(Format::Bf16, Count::GroupSize),
+        vec![tile.clone(), Type::Block(Format::Bf16, Count::GroupSize)],
         vec![
             inst(Op::Arg(0), &[0]),
             inst(Op::Gather(v(0)), &[1]),
@@ -255,7 +252,7 @@ fn a_gather_yields_a_block_of_the_groups_size() {
     assert_eq!(found(&m), Vec::<String>::new());
 
     let mut m = m;
-    body(&mut m).values[1] = Type::Block(Format::Bf16, Count::Const(1), Count::Const(4));
+    body(&mut m).values[1] = Type::Block(Format::Bf16, Count::Const(4));
     has(&m, "defines");
 }
 
@@ -496,8 +493,8 @@ fn float_formats_are_a_notation_integer_formats_are_not() {
 
 #[test]
 fn a_function_on_blocks_reads_its_blocks_and_its_operations_take_one_shape() {
-    let block = |r, c| Type::Block(Format::F32, Count::Const(r), Count::Const(c));
-    // `f(x: tile<f32>[3], k: f32) -> tile<f32>[3] { return x * k }`: typed on blocks (R45)
+    let block = |n| Type::Block(Format::F32, Count::Const(n));
+    // `f(x: tile<f32>[3], k: f32) -> tile<f32>[3] { return x * k }`: typed on blocks
     let make = |x: Type, values: Vec<Type>, ret: Type| {
         module(
             vec![x, F32],
@@ -511,7 +508,7 @@ fn a_function_on_blocks_reads_its_blocks_and_its_operations_take_one_shape() {
             ],
         )
     };
-    let three = block(1, 3);
+    let three = block(3);
     let m = make(
         three.clone(),
         vec![three.clone(), F32, three.clone()],
@@ -520,18 +517,14 @@ fn a_function_on_blocks_reads_its_blocks_and_its_operations_take_one_shape() {
     assert!(validate(&m).is_empty(), "{:?}", found(&m));
     // the product of another shape, a result of another, a tile read of the block
     has(
-        &make(
-            three.clone(),
-            vec![three.clone(), F32, block(1, 4)],
-            block(1, 4),
-        ),
+        &make(three.clone(), vec![three.clone(), F32, block(4)], block(4)),
         "binary operation",
     );
     has(
         &make(
             three.clone(),
             vec![three.clone(), F32, three.clone()],
-            block(1, 4),
+            block(4),
         ),
         "`return`",
     );
@@ -551,98 +544,6 @@ fn a_function_on_blocks_reads_its_blocks_and_its_operations_take_one_shape() {
     );
     m.funcs[0].kind = FuncKind::Combine { commutative: false };
     has(&m, "on blocks");
-}
-
-#[test]
-fn a_product_of_blocks_takes_the_lefts_columns_as_the_rights_rows() {
-    // `f(x: tile<bf16>[1, 2], w: tile<bf16>[2, c]) -> ... { return matmul(x, w) }` (R45)
-    let block = |r, c| Type::Block(Format::Bf16, Count::Const(r), Count::Const(c));
-    let make = |w: Type, out: Type| {
-        module(
-            vec![block(1, 2), w.clone()],
-            out.clone(),
-            vec![block(1, 2), w, out],
-            vec![
-                inst(Op::Arg(0), &[0]),
-                inst(Op::Arg(1), &[1]),
-                inst(Op::Matmul(v(0), v(1)), &[2]),
-                inst(Op::Return(Some(v(2))), &[]),
-            ],
-        )
-    };
-    let tile = Type::Tile(Format::Bf16);
-    let m = make(block(2, 1), tile.clone());
-    assert!(validate(&m).is_empty(), "{:?}", found(&m));
-    let m = make(block(2, 3), block(1, 3));
-    assert!(validate(&m).is_empty(), "{:?}", found(&m));
-    has(&make(block(3, 1), tile.clone()), "`matmul`");
-    has(&make(block(2, 3), block(1, 2)), "`matmul`");
-    // a `[1, 1]` result is a tile
-    has(&make(block(2, 1), block(1, 1)), "`matmul`");
-}
-
-#[test]
-fn a_function_on_blocks_reduces_along_a_row_and_spreads_it_back_and_nothing_else() {
-    // `f(x: tile<f32>[2]) -> tile<f32>[2]`, its body typed on blocks (R43, R45)
-    let block = Type::Block(Format::F32, Count::Const(1), Count::Const(2));
-    let tile = block.clone();
-    let rows = Type::Reduced(Format::F32, Axis::Row, Count::Const(1), Count::Const(2));
-    let make = |values: Vec<Type>, insts: Vec<Inst>| {
-        module(vec![block.clone()], block.clone(), values, insts)
-    };
-    // reduce_sum(x, axis = row).col() + x.row()
-    let m = make(
-        vec![
-            tile.clone(),
-            rows.clone(),
-            tile.clone(),
-            tile.clone(),
-            tile.clone(),
-        ],
-        vec![
-            inst(Op::Arg(0), &[0]),
-            inst(Op::Reduce(ReduceOp::Sum, v(0), Axis::Row), &[1]),
-            inst(Op::SpreadCol(v(1)), &[2]),
-            inst(Op::SpreadRow(v(0)), &[3]),
-            inst(Op::Binary(BinOp::Add, v(2), v(3)), &[4]),
-            inst(Op::Return(Some(v(4))), &[]),
-        ],
-    );
-    assert!(validate(&m).is_empty(), "{:?}", found(&m));
-    // (x * x).row(): `.row()` of other than a parameter
-    let m = make(
-        vec![tile.clone(), tile.clone(), tile.clone()],
-        vec![
-            inst(Op::Arg(0), &[0]),
-            inst(Op::Binary(BinOp::Mul, v(0), v(0)), &[1]),
-            inst(Op::SpreadRow(v(1)), &[2]),
-            inst(Op::Return(Some(v(2))), &[]),
-        ],
-    );
-    has(
-        &m,
-        "`.row()` of other than a parameter in a function on blocks",
-    );
-    // x.col() and x.T (of the block's shape turned, `[2, 1]`)
-    let turned = Type::Block(Format::F32, Count::Const(2), Count::Const(1));
-    for (op, what, ty) in [
-        (
-            Op::SpreadCol(v(0)),
-            "`.col()` of other than a reduction along a row",
-            tile.clone(),
-        ),
-        (Op::Transpose(v(0)), "`.T`", turned),
-    ] {
-        let m = make(
-            vec![tile.clone(), ty],
-            vec![
-                inst(Op::Arg(0), &[0]),
-                inst(op, &[1]),
-                inst(Op::Return(Some(v(1))), &[]),
-            ],
-        );
-        has(&m, &format!("{what} in a function on blocks"));
-    }
 }
 
 /// `valid()` with a second tile shape, `[16, 16]`, after its default.

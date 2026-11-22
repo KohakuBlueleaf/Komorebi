@@ -36,7 +36,7 @@ class Diagnostic(NamedTuple):
 
 
 class Origin(NamedTuple):
-    """Where a frontend's text came from (docs/ir/frontends.md): its files; the lines
+    """Where a frontend's text came from: its files; the lines
     its places cover, ``(file, number, line as written)``; ranges of the text, each
     ``(first line, its column, last line, its column, file, first, last)``, columns of
     characters from 1, both ends held; and the renames, ``(safe name, source name)``."""

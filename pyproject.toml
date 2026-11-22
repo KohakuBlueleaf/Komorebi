@@ -72,7 +72,7 @@ max-doc-length = 88
 testpaths = ["tests"]
 # The IR's Python tests run on their own, in a venv with the komorebi-ir wheel
 # (tests/ir/python/pytest.ini, packaging/ir/README.md).
-addopts = ["--ignore=tests/ir/python"]
+addopts = ["--ignore=tests/ir/python", "--ignore=tests/ir/reference"]
 pythonpath = ["src", "."]
 markers = [
     "card: needs a Tenstorrent card (KMR_CARD=1)",

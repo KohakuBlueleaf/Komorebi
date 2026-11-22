@@ -622,10 +622,6 @@ fn ty(t: &Type) -> Vec<Piece> {
     })];
     if let Some(count) = &t.count {
         pieces.push(text("["));
-        if let Some(rows) = &t.rows {
-            pieces.extend(expr(rows));
-            pieces.push(text(", "));
-        }
         pieces.extend(expr(count));
         pieces.push(text("]"));
     }

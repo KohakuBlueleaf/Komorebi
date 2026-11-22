@@ -669,18 +669,16 @@ impl Writer {
                 self.tag(v::TYPE, "Tile");
                 self.format(*f);
             }
-            Type::Reduced(f, a, r, c) => {
+            Type::Reduced(f, a, n) => {
                 self.tag(v::TYPE, "Reduced");
                 self.format(*f);
                 self.axis(*a);
-                self.count(r);
-                self.count(c);
+                self.count(n);
             }
-            Type::Block(f, r, c) => {
+            Type::Block(f, n) => {
                 self.tag(v::TYPE, "Block");
                 self.format(*f);
-                self.count(r);
-                self.count(c);
+                self.count(n);
             }
             Type::Tensor(f, replicated) => {
                 self.tag(v::TYPE, "Tensor");
@@ -695,22 +693,20 @@ impl Writer {
                 self.tag(v::TYPE, "Items");
                 self.count(n);
             }
-            Type::Stream(f, r, c) => {
+            Type::Stream(f, n) => {
                 self.tag(v::TYPE, "Stream");
                 self.format(*f);
-                self.count(r);
-                self.count(c);
+                self.count(n);
             }
             Type::Zip(a, b) => {
                 self.tag(v::TYPE, "Zip");
                 self.ty(a);
                 self.ty(b);
             }
-            Type::Sink(f, r, c) => {
+            Type::Sink(f, n) => {
                 self.tag(v::TYPE, "Sink");
                 self.format(*f);
-                self.count(r);
-                self.count(c);
+                self.count(n);
             }
             Type::Words(s) => {
                 self.tag(v::TYPE, "Words");

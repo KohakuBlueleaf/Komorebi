@@ -789,15 +789,16 @@ machine with no Wormhole chip.
 
 ## Komorebi IR (work in progress)
 
-`src/komorebi-ir/` is a Rust crate being built: a language for Komorebi programs (`.kom`
-files), its checker, a byte code (`.komc`) and a reference interpreter, with the command
-`komo` (`komo check`, `komo fmt`, `komo compile`, `komo run`). It is not finished and not
-released: the language still changes, some constructs it names are refused as not built,
-and nothing in the `komorebi-tt` package depends on it. The backends
-(`src/komorebi-ir/backend/`) and the frontend that writes IR from the Python classes
-(`src/komorebi/dsl/ir/`) are early reference code, not a supported path: a Python class
-is compiled as before. The pages under [docs/ir](docs/ir/operations.md) describe the
-language as it stands, and `examples/ir/` holds a few modules.
+`src/komorebi-ir/` is a Rust crate: a language for Komorebi programs (`.kom` files), its
+checker, a byte code (`.komc`) and a reference interpreter, with the command `komo`
+(`komo check`, `komo fmt`, `komo compile`, `komo run`). The language states what a program
+means and what the hardware must be able to do to run it, and never which hardware. It is
+not released, and nothing in the `komorebi-tt` package depends on it: a Python class is
+compiled as before. No backend and no frontend is part of the build yet; the ones written
+before the language was finished are kept as reference material under
+`experiments/ir/reference/`. The pages under [docs/ir](docs/ir/operations.md) describe the
+language, and `examples/ir/` holds its lessons and four applications, each run on the
+interpreter by a test.
 
 ## Limits
 

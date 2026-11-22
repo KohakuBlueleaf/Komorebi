@@ -195,9 +195,9 @@ pub struct Func {
 }
 
 impl Func {
-    /// True when the function is declared on blocks (`tile<F>[r, c]`): its body is
-    /// typed on blocks, each parameter of its own type (R45). An element-by-element
-    /// body runs on each tile: a call on blocks of m tiles runs it on each, in order.
+    /// True when the function is declared on blocks (`tile<F>[n]`): its body is typed
+    /// on blocks, each parameter of its own type, and runs on each tile: a call on
+    /// blocks of m tiles runs it on each, in order.
     pub fn on_blocks(&self) -> bool {
         self.params.iter().any(|t| matches!(t, Type::Block(..)))
     }
