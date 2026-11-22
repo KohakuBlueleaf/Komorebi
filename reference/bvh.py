@@ -51,10 +51,114 @@ def split_levels(centroid):
     return levels, perm
 
 
-def build(scene):
-    """The tree of a scene as a dict of the arrays named in KEYS."""
+SAH_BINS = 16
+SAH_LEVELS = 40  # from this level on every cut is the median cut (stack of 64)
+SAH_MAX_LEVELS = 60
+
+
+def sah_levels(p, centroid):
+    """As `split_levels`, each segment cut by the surface-area heuristic: 16 bins over
+    the segment's centroid bounds per axis, the plane of least count_left *
+    area(left) + count_right * area(right) (triangle boxes) with triangles on both
+    sides; no such plane: half by the current order; from level SAH_LEVELS on, the
+    median cut of `split_levels`."""
+    n = len(centroid)
+    tri_lo, tri_hi = p.min(axis=1), p.max(axis=1)
+    perm = np.arange(n)
+    start, count, base = np.array([0]), np.array([n]), 0
+    levels = []
+    while len(start):
+        levels.append((base, start, count))
+        segments = len(start)
+        first = np.cumsum(count) - count
+        owner = np.repeat(np.arange(segments), count)
+        pos = np.repeat(start - first, count) + np.arange(int(count.sum()))
+        c = centroid[perm[pos]]
+        lo = np.minimum.reduceat(c, first, axis=0)
+        hi = np.maximum.reduceat(c, first, axis=0)
+        if len(levels) - 1 >= SAH_LEVELS:
+            axis = np.argmax(hi - lo, axis=1)
+            key = c[np.arange(len(pos)), axis[owner]]
+            left = (count + 1) // 2
+        else:
+            key, left = sah_cut(
+                c, tri_lo[perm[pos]], tri_hi[perm[pos]], lo, hi, owner, count
+            )
+        perm[pos] = perm[pos][np.lexsort((key, owner))]
+        inner = count > 1
+        left = left[inner]
+        start = np.stack([start[inner], start[inner] + left], axis=1).ravel()
+        count = np.stack([left, count[inner] - left], axis=1).ravel()
+        base += segments
+    return levels, perm
+
+
+def box_area(lo, hi):
+    """2 (dx dy + dy dz + dz dx) of boxes (..., 3), float64."""
+    d = hi.astype(np.float64) - lo
+    return 2 * (d[..., 0] * d[..., 1] + d[..., 1] * d[..., 2] + d[..., 2] * d[..., 0])
+
+
+def sah_cut(c, b_lo, b_hi, lo, hi, owner, count):
+    """Sort key (0 left, 1 right; all 0 where no plane) of each triangle of a level and
+    the left count of each segment."""
+    segments, bins = len(count), SAH_BINS
+    best_cost = np.full(segments, np.inf)
+    best_axis = np.zeros(segments, dtype=np.int64)
+    best_plane = np.zeros(segments, dtype=np.int64)
+    best_left = np.zeros(segments, dtype=np.int64)
+    bin_of = []
+    for a in range(3):
+        extent = (hi[:, a].astype(np.float64) - lo[:, a])[owner]
+        rel = c[:, a].astype(np.float64) - lo[owner, a]
+        safe = np.where(extent > 0, extent, 1.0)
+        b = np.clip((rel * bins / safe).astype(np.int64), 0, bins - 1)
+        b[extent <= 0] = 0
+        bin_of.append(b)
+        key = owner * bins + b
+        order = np.argsort(key, kind="stable")
+        sorted_key = key[order]
+        heads = np.flatnonzero(np.r_[True, sorted_key[1:] != sorted_key[:-1]])
+        group = sorted_key[heads]
+        g_lo = np.full((segments * bins, 3), np.inf, dtype=np.float32)
+        g_hi = np.full((segments * bins, 3), -np.inf, dtype=np.float32)
+        g_lo[group] = np.minimum.reduceat(b_lo[order], heads, axis=0)
+        g_hi[group] = np.maximum.reduceat(b_hi[order], heads, axis=0)
+        g_lo, g_hi = g_lo.reshape(segments, bins, 3), g_hi.reshape(segments, bins, 3)
+        n_bin = np.bincount(key, minlength=segments * bins).reshape(segments, bins)
+        n_left = np.cumsum(n_bin, axis=1)[:, :-1]
+        n_right = count[:, None] - n_left
+        l_lo = np.minimum.accumulate(g_lo, axis=1)[:, :-1]
+        l_hi = np.maximum.accumulate(g_hi, axis=1)[:, :-1]
+        r_lo = np.minimum.accumulate(g_lo[:, ::-1], axis=1)[:, ::-1][:, 1:]
+        r_hi = np.maximum.accumulate(g_hi[:, ::-1], axis=1)[:, ::-1][:, 1:]
+        valid = (n_left > 0) & (n_right > 0)
+        with np.errstate(invalid="ignore"):
+            cost = n_left * box_area(l_lo, l_hi) + n_right * box_area(r_lo, r_hi)
+        cost = np.where(valid, cost, np.inf)
+        plane = np.argmin(cost, axis=1)
+        least = cost[np.arange(segments), plane]
+        better = least < best_cost
+        best_cost[better], best_axis[better] = least[better], a
+        best_plane[better] = plane[better]
+        best_left[better] = n_left[np.arange(segments), plane][better]
+    found = np.isfinite(best_cost)
+    b = np.choose(best_axis[owner], bin_of)
+    key = np.where(found[owner], b > best_plane[owner], False).astype(np.int64)
+    left = np.where(found, best_left, (count + 1) // 2)
+    return key, left
+
+
+def build(scene, split="median"):
+    """The tree of a scene as a dict of the arrays named in KEYS; split "median" (the
+    median cut on the longest axis) or "sah" (`sah_levels`)."""
     p, tris, centroid = triangle_arrays(scene)
-    levels, perm = split_levels(centroid)
+    if split == "median":
+        levels, perm = split_levels(centroid)
+    elif split == "sah":
+        levels, perm = sah_levels(p, centroid)
+    else:
+        raise ValueError(f"unknown split {split!r}")
     node_count = 2 * len(perm) - 1
     box = np.empty((node_count, 6), dtype=np.float32)
     nodes = np.empty((node_count, 8), dtype=np.uint32)
@@ -79,6 +183,8 @@ def build(scene):
         box[ids, 3:] = np.maximum(box[child, 3:], box[child + 1, 3:])
     nodes[:, :6] = box.view(np.uint32)
     meta = np.array([node_count, len(perm), len(levels) - 1], dtype=np.int32)
+    if split == "sah":
+        assert meta[2] <= SAH_MAX_LEVELS, f"sah tree of {meta[2]} levels"
     return {
         "nodes": nodes,
         "tris": tris[perm],

@@ -1,5 +1,6 @@
 """Running the ray tracers on a scene, saving their results, comparing any two."""
 
+import os
 import time
 from pathlib import Path
 
@@ -42,7 +43,8 @@ def ensure_tree(scene):
     native.ensure_scene(scene)
     path = data / f"{scene}_tree.npz"
     if not path.exists() or not (data / f"{scene}_tree").exists():
-        tree = bvh.build(scenes.load_scene(data / f"{scene}.npz"))
+        split = os.environ.get("KR_TREE_SPLIT", "median")
+        tree = bvh.build(scenes.load_scene(data / f"{scene}.npz"), split=split)
         bvh.export_npy(tree, data / f"{scene}_tree")  # the .npz last: the folder whole
         bvh.save_tree(path, tree)
     tree = bvh.load_tree(path)
