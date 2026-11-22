@@ -1,0 +1,12 @@
+// refused: a stream bound by let and read as a value (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+        let s = stream(x.tiles(0, 1), block = 1)
+        let t = s
+    }
+}

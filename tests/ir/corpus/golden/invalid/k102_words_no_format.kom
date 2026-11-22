@@ -1,0 +1,11 @@
+// refused: the words of a view that states no format (Types and data)
+module m
+
+tile [32, 32]
+format u32
+
+program P {
+    handler h(v: view) @on(group) {
+        let w = v.words()
+    }
+}

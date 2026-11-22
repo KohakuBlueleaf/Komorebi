@@ -1,0 +1,14 @@
+// refused: a module parameter is a scalar, not a record (Module)
+module m
+
+tile [32, 32]
+format bf16
+
+record R { a: u32 }
+
+param T: R = fit @bind(load)
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+    }
+}

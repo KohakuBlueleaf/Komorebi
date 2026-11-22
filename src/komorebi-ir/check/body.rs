@@ -325,6 +325,31 @@ fn call_part(call: &Call, chain: &[Attr], build: &HashSet<String>) -> Option<(St
     }
 }
 
+/// Where an expression is read as a value: the value of a `let`, a statement alone,
+/// or an operand that takes a value of any type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Read {
+    /// The value a `let` binds.
+    Bound,
+    /// A statement alone: an operation done for its effect is one.
+    Alone,
+    /// An operand.
+    Operand,
+}
+
+/// The name of the operation `e` (in no brackets) does, for a diagnostic: `zero` of
+/// `c.zero()`, `forward` of `forward(m, ...)`, `await` of `await h`.
+fn effect_name(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Name(n) | ExprKind::Member { name: n, .. } => n.name.clone(),
+            _ => "this".to_string(),
+        },
+        ExprKind::Await(_) => "await".to_string(),
+        _ => "this".to_string(),
+    }
+}
+
 pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
     match &expr.kind {
         ExprKind::Name(name) => Some(name),
@@ -468,6 +493,20 @@ impl Checker<'_> {
                 Item::Program(p) => self.program(env, p),
                 Item::Control(c) => self.control(env, c),
                 Item::Param(p) => {
+                    // a module parameter is a scalar (a `bool` is `K109`'s)
+                    let declared = env.params.get(&p.name.name);
+                    if !matches!(
+                        declared,
+                        None | Some(Ty::Scalar(_) | Ty::Bool | Ty::Unknown)
+                    ) {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            "a module parameter is a scalar".into(),
+                            p.ty.span,
+                        );
+                        at += 1;
+                        continue;
+                    }
                     if let crate::syntax::ast::ParamValue::Expr(value) = &p.value {
                         let before = self.diagnostics.len();
                         let mut cx = self.cx(env, Kind::Chain, None);
@@ -486,6 +525,29 @@ impl Checker<'_> {
                 }
                 _ => {}
             }
+        }
+        self.untyped_zeros();
+    }
+
+    /// `K102`: a `zeros` whose place gave it no format (R50: it has the type of its
+    /// place).
+    fn untyped_zeros(&mut self) {
+        let mut at: Vec<(usize, usize)> = self
+            .ops
+            .iter()
+            .filter(|(_, r)| r.kind == OpKind::Zeros)
+            .map(|(key, _)| *key)
+            .filter(|key| matches!(self.types.get(key), Some(Ty::Tile(None))))
+            .collect();
+        at.sort_unstable();
+        for (start, end) in at {
+            self.error(
+                codes::WRONG_TYPE,
+                "`zeros` takes its type from its place: a declared type, a parameter or a \
+                 result"
+                    .into(),
+                Span::new(start, end),
+            );
         }
     }
 
@@ -1053,6 +1115,39 @@ impl Checker<'_> {
         }
     }
 
+    /// `K102` where `e`, of type `ty`, is read as a value (`place`) and is none: an
+    /// operation that gives no value, a state member of scalars named whole, a list, a
+    /// string or a tuple, or what a `for` walks. True when reported.
+    pub(super) fn not_a_value(&mut self, cx: &Cx, e: &Expr, ty: &Ty, place: Read) -> bool {
+        let mut inner = e;
+        while let ExprKind::Paren(x) = &inner.kind {
+            inner = x;
+        }
+        let text = match (&inner.kind, ty) {
+            (_, Ty::Void) if place != Read::Alone => {
+                format!("`{}` gives no value", effect_name(inner))
+            }
+            (ExprKind::Name(n), Ty::Scalars(..))
+                if cx.lookup(&n.name).is_none() && cx.state(&n.name).is_some() =>
+            {
+                "a state member of scalars is read by index: `c[i]`".to_string()
+            }
+            (ExprKind::List(_), _) => "a list is not a value here".to_string(),
+            (ExprKind::Str(_), _) => "a string is not a value here".to_string(),
+            (ExprKind::Tuple(_), _) => "a tuple is not a value here".to_string(),
+            (_, Ty::Range(_)) => "`range(n)` is what a `for` walks, not a value".to_string(),
+            (_, Ty::Zip(_)) => "`zip(...)` is what a `for` walks, not a value".to_string(),
+            (_, Ty::Arrive(_)) => "`.arrive()` is what a `for` walks, not a value".to_string(),
+            // a stream bound by `let` is walked by a `for` later
+            (kind, Ty::Stream(..)) if place != Read::Bound || matches!(kind, ExprKind::Name(_)) => {
+                "`stream(...)` is what a `for` walks, not a value".to_string()
+            }
+            _ => return false,
+        };
+        self.error(codes::WRONG_TYPE, text, e.span);
+        true
+    }
+
     // ---- Statements ---------------------------------------------------------------
 
     pub(super) fn block(&mut self, cx: &mut Cx, block: &Block) {
@@ -1071,7 +1166,10 @@ impl Checker<'_> {
             } => {
                 names.declare(self, name);
                 self.bare_word(name, Declared::Value);
-                let got = self.expr(cx, value);
+                let mut got = self.expr(cx, value);
+                if self.not_a_value(cx, value, &got, Read::Bound) {
+                    got = Ty::Unknown;
+                }
                 let ty = match ty {
                     Some(t) => {
                         let want = self.ty(cx.env, t, Place::Local);
@@ -1112,6 +1210,16 @@ impl Checker<'_> {
                 } else {
                     Place::Local
                 };
+                // a count the text writes: a number 64 bits hold
+                if let Some(c) = ty.count.as_deref() {
+                    if matches!(&c.kind, ExprKind::Int(t) if parse_int(t).is_none()) {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            "a count is a constant expression or a module parameter".into(),
+                            c.span,
+                        );
+                    }
+                }
                 let want = self.ty(cx.env, ty, place);
                 if let (true, Ty::Block(Some(_), _)) = (zeros, &want) {
                     self.note_type(value, &want);
@@ -1189,7 +1297,8 @@ impl Checker<'_> {
                 }
             }
             Stmt::Expr(expr) => {
-                self.expr(cx, expr);
+                let ty = self.expr(cx, expr);
+                self.not_a_value(cx, expr, &ty, Read::Alone);
             }
         }
     }

@@ -160,6 +160,29 @@ fn invalid_cases_give_their_diagnostics() {
     assert!(faults.is_empty(), "{}", faults.join("\n"));
 }
 
+/// What the checker accepts, the lowering builds: no module of the corpus, clean or
+/// refused, meets a form the checker let through and the lowering refuses.
+#[test]
+fn no_clean_module_is_refused_after_the_check() {
+    let mut faults = Vec::new();
+    for sub in ["lessons", "reference", "constructs", "run_fails", "invalid"] {
+        for (path, text) in modules(sub) {
+            if let Err(diagnostics) = check(&text) {
+                for d in diagnostics {
+                    if d.message.contains("Lower does not build this yet") {
+                        faults.push(d.render(&path.display().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "the checker accepts what the lowering refuses:\n{}",
+        faults.join("\n")
+    );
+}
+
 /// Every diagnostic lies inside the text.
 fn assert_inside(text: &str) {
     let result = catch_unwind(AssertUnwindSafe(|| check(text)));

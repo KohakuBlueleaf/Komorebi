@@ -1,0 +1,12 @@
+// refused: the condition of where is one comparison of tiles, not a bool value (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(n: u32, r: tile<bf16>) @on(group) {
+        let b = n == 1
+        let t = where(b, r, r)
+    }
+}

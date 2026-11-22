@@ -1,0 +1,12 @@
+// refused: zeros where its place states no type: pushed (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(y: tensor<bf16>) @on(group) {
+        let o = sink(y.tiles(0, 1), block = 1)
+        o.push(zeros)
+    }
+}

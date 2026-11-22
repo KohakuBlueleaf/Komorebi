@@ -1,0 +1,11 @@
+// refused: the count of a var's type that 64 bits do not hold (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h() @on(group) {
+        var a: tile<bf16>[99999999999999999999999] = zeros
+    }
+}

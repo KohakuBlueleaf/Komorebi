@@ -1,0 +1,15 @@
+// refused: await of an invocation whose handler has no result, bound by let (Control programs)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler step(x: tensor<bf16>) @on(group) {
+    }
+}
+
+control c(x: tensor<bf16>) {
+    let a = invoke(P.step(x), on = group(0, 4))
+    let z = await a
+}

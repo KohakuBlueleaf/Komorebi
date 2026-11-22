@@ -4,13 +4,13 @@
 use std::collections::HashSet;
 
 use crate::syntax::ast::{
-    Attr, Block, Expr, ExprKind, GroupShape, IndexItem, Item, List, Module, ParamDecl, ParamValue,
-    ProgramItem, Requirement, Span, Stmt, TypeKind,
+    Attr, Block, Expr, ExprKind, GroupShape, IndexItem, IntLit, Item, List, Module, ParamDecl,
+    ParamValue, ProgramItem, Requirement, Span, Stmt, TypeKind,
 };
 
 use super::codes;
 use super::consts::Num;
-use super::env::{body_bytes, is_named};
+use super::env::{body_bytes, is_named, parse_int};
 use super::index::Index;
 use super::Checker;
 use crate::types::ScalarType;
@@ -284,6 +284,78 @@ impl Checker<'_> {
         }
     }
 
+    /// `K115`: a whole number the text writes in a declaration (the tile line, a
+    /// requirement) that 64 bits do not hold.
+    fn holds_64(&mut self, n: &IntLit) {
+        if parse_int(&n.text).is_none() {
+            self.error(
+                codes::OUT_OF_RANGE,
+                format!("`{}` is a whole number that 64 bits do not hold", n.text),
+                n.span,
+            );
+        }
+    }
+
+    /// An `extern func` states its implementation, `@impl("name")` (`K007`), one string
+    /// (`K004`). True when it does.
+    fn implementation(&mut self, attrs: &[Attr], span: Span) -> bool {
+        let Some(attr) = attrs.iter().find(|a| is_named(a, "impl")) else {
+            self.error(
+                codes::ATTRIBUTE_MISSING,
+                "an `extern func` states its implementation: `@impl(\"name\")`".into(),
+                span,
+            );
+            return false;
+        };
+        let one_string = match attr.args.as_ref() {
+            Some(args) if args.len() == 1 => {
+                let arg = args.values().next().expect("one operand");
+                arg.name.is_none() && matches!(arg.value.kind, ExprKind::Str(_))
+            }
+            _ => false,
+        };
+        if !one_string && !has_quoted(attr) {
+            self.error(
+                codes::ATTRIBUTE_ARGUMENT,
+                "`@impl` takes one argument, a string: `@impl(\"name\")`".into(),
+                attr.span,
+            );
+        }
+        one_string
+    }
+
+    /// `@peers(offsets = [d, ...])` or `@peers(pairs = [(s, r), ...])` (`K004`).
+    fn peers_form(&mut self, attrs: &[Attr]) {
+        for attr in attrs.iter().filter(|a| is_named(a, "peers")) {
+            if has_quoted(attr) {
+                continue;
+            }
+            let fits = match attr.args.as_ref() {
+                Some(args) if args.len() == 1 => {
+                    let arg = args.values().next().expect("one operand");
+                    let label = arg.name.as_ref().map(|n| n.name.as_str());
+                    match (label, &arg.value.kind) {
+                        (Some("offsets"), ExprKind::List(items)) => items
+                            .values()
+                            .all(|e| !matches!(e.kind, ExprKind::Tuple(_))),
+                        (Some("pairs"), ExprKind::List(items)) => items
+                            .values()
+                            .all(|e| matches!(&e.kind, ExprKind::Tuple(xs) if xs.len() == 2)),
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
+            if !fits {
+                self.error(
+                    codes::ATTRIBUTE_ARGUMENT,
+                    "`@peers` takes `offsets = [d, ...]` or `pairs = [(s, r), ...]`".into(),
+                    attr.span,
+                );
+            }
+        }
+    }
+
     /// Reports a declaration without an attribute it must carry (`K007`).
     fn require_attr(&mut self, attrs: &[Attr], name: &str, what: &str, span: Span) {
         if !attrs.iter().any(|a| is_named(a, name)) {
@@ -375,11 +447,15 @@ impl Checker<'_> {
                             Requirement::Impl { name, .. } => {
                                 impls.insert(unquote(&name.text));
                             }
+                            Requirement::LocalState { amount, .. } => self.holds_64(amount),
+                            Requirement::Islands { count, .. } => self.holds_64(count),
                             _ => {}
                         }
                     }
                 }
                 Item::Tile(t) => {
+                    self.holds_64(&t.rows);
+                    self.holds_64(&t.cols);
                     tiles += 1;
                     if tiles > 1 {
                         self.error(
@@ -438,6 +514,7 @@ impl Checker<'_> {
                 }
                 Item::Extern(f) => {
                     self.attrs_in(&f.attrs, &["reads", "writes", "impl"], "an extern func");
+                    let implemented = self.implementation(&f.attrs, f.span);
                     self.param_attrs(&f.params);
                     let stated: HashSet<String> = named_args(&f.attrs, "reads")
                         .union(&named_args(&f.attrs, "writes"))
@@ -464,7 +541,7 @@ impl Checker<'_> {
                     }
                     match &f.fallback {
                         Some(body) => self.block_attrs(body),
-                        None => {
+                        None if implemented => {
                             if let Some(name) = impl_name(&f.attrs) {
                                 if !impls.contains(&name) {
                                     self.error(
@@ -479,6 +556,7 @@ impl Checker<'_> {
                                 }
                             }
                         }
+                        None => {}
                     }
                 }
                 Item::Program(p) => {
@@ -546,6 +624,7 @@ impl Checker<'_> {
             }
             ProgramItem::Run(r) => {
                 self.attrs_in(&r.attrs, &["dynamic", "peers"], "a run");
+                self.peers_form(&r.attrs);
                 self.peer_numbers(&r.attrs, ix);
                 self.require_attr(&r.attrs, "dynamic", "a run", r.span);
                 self.param_attrs(&r.params);

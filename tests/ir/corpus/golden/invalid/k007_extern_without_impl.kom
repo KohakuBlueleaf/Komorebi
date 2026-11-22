@@ -1,0 +1,9 @@
+// refused: an extern func states its implementation with @impl (Compute functions)
+module m
+
+tile [32, 32]
+format bf16
+
+extern func f(a: tile<bf16>) -> tile<bf16> fallback {
+    return a
+}

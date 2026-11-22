@@ -1,0 +1,23 @@
+// refused: an operation that gives no value, bound by let (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+requires {
+    group = grid
+}
+
+program P {
+    handler h(x: tensor<bf16>) @on(grid[2, 2]) {
+        let b = broadcast(along = row, sender = 0)
+        if b.is_sender {
+            for xb in stream(x.tiles(0, 1), block = 1) {
+                let a = b.cast(xb)
+            }
+        } else {
+            for xb, tag in b.arrive() {
+            }
+        }
+    }
+}

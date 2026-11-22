@@ -1,0 +1,11 @@
+// refused: what a for walks, as a statement (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h(x: tensor<bf16>) @on(group) {
+        stream(x.tiles(0, 1), block = 1)
+    }
+}

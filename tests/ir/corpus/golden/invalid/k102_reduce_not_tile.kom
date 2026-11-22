@@ -1,0 +1,11 @@
+// refused: a reduction of what is not a tile (Handler bodies)
+module m
+
+tile [32, 32]
+format bf16
+
+program P {
+    handler h() @on(group) {
+        let a = reduce_sum(exp(1.0), axis = row)
+    }
+}
