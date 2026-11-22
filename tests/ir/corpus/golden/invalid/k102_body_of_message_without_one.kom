@@ -1,0 +1,29 @@
+// refused: m.body of a message whose type has no @body (Dynamic runs)
+module rays
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program Rays {
+    message Ray { id: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        seen: u32[1]
+    }
+
+    run trace(count: u32) @dynamic {
+        seed {
+            seen.zero()
+            send(Ray { id: count }, to = worker.rank)
+        }
+        on Ray(m) {
+            let w = m.body.words()
+            seen[0] = w[0]
+            consume m
+        }
+    }
+}

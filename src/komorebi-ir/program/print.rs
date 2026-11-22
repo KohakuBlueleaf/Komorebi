@@ -10,7 +10,7 @@
 //! line is its place, the values it defines with their types, then the operation with
 //! its operands in the order the operation declares them.
 
-use super::body::{Body, Inst, Op, Range, ValueId};
+use super::body::{Body, Inst, Op, Range, ScalarsFrom, ValueId};
 use super::derive::{Cause, Effects};
 use super::notes::{Anchor, HintArg, Named, Owner};
 use super::{BodyRef, CallArg, FuncKind, MemberKind, Module};
@@ -53,6 +53,14 @@ fn opt(x: &Option<ValueId>) -> String {
 
 fn values(xs: &[ValueId]) -> String {
     list(xs, v)
+}
+
+/// Where a body's words come from: a value, or a state member `s0`.
+fn from(b: &ScalarsFrom) -> String {
+    match b {
+        ScalarsFrom::Value(x) => v(x),
+        ScalarsFrom::Member(m) => format!("s{}", m.0),
+    }
 }
 
 fn count(c: &Count) -> String {
@@ -101,6 +109,7 @@ pub fn type_text(t: &Type) -> String {
         Type::Records(r) => format!("records<R{}>", r.0),
         Type::RecordValue(r) => format!("record<R{}>", r.0),
         Type::Message(m) => format!("message<m{}>", m.0),
+        Type::Body => "body".into(),
         Type::SubGroups => "subgroups".into(),
         Type::Leaders => "leaders".into(),
         Type::Broadcast(f) => format!("broadcast<{f}>"),
@@ -351,30 +360,36 @@ pub fn op_text(op: &Op) -> String {
         Send {
             message,
             to,
+            body,
             publish,
             used,
         } => format!(
-            "Send {{ message {}, to {}, publish {}, used {} }}",
+            "Send {{ message {}, to {}{}, publish {}, used {} }}",
             v(message),
             v(to),
+            body.map_or(String::new(), |b| format!(", body {}", from(&b))),
             values(publish),
             yes(*used)
         ),
         Forward {
             message,
+            as_type,
             with,
             to,
             publish,
         } => format!(
-            "Forward {{ message {}, with {}, to {}, publish {} }}",
+            "Forward {{ message {}{}, with {}, to {}, publish {} }}",
             v(message),
+            as_type.map_or(String::new(), |t| format!(", as m{}", t.0)),
             list(with, |(k, x)| format!("{k} {}", v(x))),
             v(to),
             values(publish)
         ),
         Consume(x) => format!("Consume {}", v(x)),
-        Offer(x, to) => format!("Offer {} {}", v(x), v(to)),
+        Offer(x, to, None) => format!("Offer {} {}", v(x), v(to)),
+        Offer(x, to, Some(b)) => format!("Offer {} {} body {}", v(x), v(to), from(b)),
         Field(x, k) => format!("Field {} {k}", v(x)),
+        Op::Body(x) => format!("Body {}", v(x)),
         MakeGroup(first, n) => format!("MakeGroup {} {}", opt(first), v(n)),
         Invoke {
             entry: e,
@@ -550,8 +565,12 @@ impl Printer {
             .iter()
             .enumerate()
             .map(|(i, x)| {
+                let body = match x.body {
+                    0 => String::new(),
+                    n => format!(" body {n}"),
+                };
                 format!(
-                    "m{i} {} {}{}",
+                    "m{i} {} {}{body}{}",
                     x.name,
                     fields(&x.fields),
                     program(x.program)

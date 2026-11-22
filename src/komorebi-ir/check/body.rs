@@ -2078,8 +2078,29 @@ impl Checker<'_> {
                 }
                 Ty::TileGrid(*format)
             }
+            // a bare `body` after a message is the language's (R50): the body of the
+            // message this body handles
+            (Ty::Message(m), "body") if !name.quoted => {
+                let arrived = as_name(base)
+                    .and_then(|n| cx.lookup(&n.name))
+                    .is_some_and(|l| l.binding == Name::Arrived);
+                if !arrived {
+                    return self.no_member(&format!("the message {m}"), name);
+                }
+                let decl = cx.env.message(cx.program.as_deref(), m);
+                if decl.is_some_and(|d| d.body.is_none()) {
+                    self.error(
+                        codes::WRONG_TYPE,
+                        format!("the message {m} has no body"),
+                        name.span,
+                    );
+                    return Ty::Unknown;
+                }
+                self.note_op(span, OpKind::Body, &[Some(base)]);
+                Ty::Body
+            }
             (Ty::Message(m), field) => {
-                let fields = cx.env.message(cx.program.as_deref(), m);
+                let fields = cx.env.message(cx.program.as_deref(), m).map(|d| &d.fields);
                 match fields.and_then(|f| f.iter().enumerate().find(|(_, (n, _))| n == field)) {
                     Some((at, (_, ty))) => {
                         self.note_name(name.span, Name::Field(at as u32));

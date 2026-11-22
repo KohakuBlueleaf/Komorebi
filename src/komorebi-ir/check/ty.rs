@@ -149,6 +149,8 @@ pub enum Ty {
     Record(String),
     /// A message of type M.
     Message(String),
+    /// `m.body`: the body of a message, the run of bytes that belongs to it.
+    Body,
     /// `stream(...)`: blocks of the element type, in order, from a view of a number of
     /// tiles.
     Stream(Box<Ty>, Count),
@@ -273,6 +275,7 @@ impl fmt::Display for Ty {
             Ty::Records(r, _) => write!(f, "records {r}"),
             Ty::Record(r) => write!(f, "a record {r}"),
             Ty::Message(m) => write!(f, "a message {m}"),
+            Ty::Body => f.write_str("the body of a message"),
             Ty::Stream(_, _) => f.write_str("a stream"),
             Ty::Zip(_) => f.write_str("a zip of streams"),
             Ty::Sink(_, _) => f.write_str("a sink"),

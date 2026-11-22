@@ -69,6 +69,17 @@ pub struct Range {
     pub step: Option<ValueId>,
 }
 
+/// Where the words of a message's body come from (`body = src` on a `send` or an
+/// `offer`): a value of `Type::Body` or `Type::Words(u32)`, or a state member of `u32`
+/// scalars named whole, by its id (as `Op::Put` names its source).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarsFrom {
+    /// A message's body, or the words of a tile.
+    Value(ValueId),
+    /// A state member of `u32` scalars, read whole.
+    Member(MemberId),
+}
+
 /// One operation: one for each row of the operations page, plus the structure of
 /// control flow. Operands are values of the same body.
 #[derive(Clone, Debug, PartialEq)]
@@ -296,22 +307,27 @@ pub enum Op {
     Arrived,
     /// `M { field: value, ... }`, the fields in the type's order.
     MakeMessage(MessageId, Vec<ValueId>),
-    /// `send(M { ... }, to = rank, publish = [v])`.
+    /// `send(M { ... }, to = rank, body = src, publish = [v])`.
     Send {
         /// The message.
         message: ValueId,
         /// The rank.
         to: ValueId,
+        /// `body`: the words the message's body carries, when given.
+        body: Option<ScalarsFrom>,
         /// `publish`.
         publish: Vec<ValueId>,
         /// Whether the program uses the result: an unused refusal is `send_refused`.
         used: bool,
     },
-    /// `forward(m, with = { ... }, to = rank, publish = [v])`.
+    /// `forward(m, as = T, with = { ... }, to = rank, publish = [v])`.
     Forward {
         /// The arrived message.
         message: ValueId,
-        /// The fields changed: position and value.
+        /// `as`: the message type it goes on as, when given.
+        as_type: Option<MessageId>,
+        /// The fields changed: position and value. With `as_type`, every field of
+        /// the target type, in its order.
         with: Vec<(u32, ValueId)>,
         /// The rank.
         to: ValueId,
@@ -320,10 +336,12 @@ pub enum Op {
     },
     /// `consume m`.
     Consume(ValueId),
-    /// `offer(M { ... }, to = rank)`.
-    Offer(ValueId, ValueId),
+    /// `offer(M { ... }, to = rank, body = src)`.
+    Offer(ValueId, ValueId, Option<ScalarsFrom>),
     /// `m.field`, by the field's position.
     Field(ValueId, u32),
+    /// `m.body`: the body of the arrived message.
+    Body(ValueId),
     // ---- control programs ----
     /// `group(first, count)` or `group(count)`.
     MakeGroup(Option<ValueId>, ValueId),

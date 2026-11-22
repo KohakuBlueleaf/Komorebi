@@ -35,7 +35,7 @@ mod tests {
     use super::decode::Reader;
     use super::encode::Writer;
     use super::version::{self as v, TABLES};
-    use crate::program::body::{Op, Range, ValueId};
+    use crate::program::body::{Op, Range, ScalarsFrom, ValueId};
     use crate::program::notes::HintArg;
     use crate::types::{
         Axis, BinOp, ChainId, CmpOp, Combiner, ConstValue, Count, Entry, Failure, Format, FuncId,
@@ -182,18 +182,36 @@ mod tests {
             Op::Send {
                 message: x(1),
                 to: x(2),
+                body: None,
                 publish: vec![x(3)],
                 used: true,
             },
+            Op::Send {
+                message: x(1),
+                to: x(2),
+                body: Some(ScalarsFrom::Member(MemberId(3))),
+                publish: vec![],
+                used: false,
+            },
             Op::Forward {
                 message: x(1),
+                as_type: None,
                 with: vec![(0, x(2))],
                 to: x(3),
                 publish: vec![],
             },
+            Op::Forward {
+                message: x(1),
+                as_type: Some(MessageId(2)),
+                with: vec![(0, x(2)), (1, x(3))],
+                to: x(4),
+                publish: vec![x(5)],
+            },
             Op::Consume(x(1)),
-            Op::Offer(x(1), x(2)),
+            Op::Offer(x(1), x(2), None),
+            Op::Offer(x(1), x(2), Some(ScalarsFrom::Value(x(3)))),
             Op::Field(x(1), 2),
+            Op::Body(x(1)),
             Op::MakeGroup(Some(x(1)), x(2)),
             Op::Invoke {
                 entry: Entry::Chain(ProgramId(1), ChainId(2)),
@@ -250,6 +268,7 @@ mod tests {
             Type::Records(RecordId(1)),
             Type::RecordValue(RecordId(2)),
             Type::Message(MessageId(3)),
+            Type::Body,
             Type::SubGroups,
             Type::Leaders,
             Type::Broadcast(f),

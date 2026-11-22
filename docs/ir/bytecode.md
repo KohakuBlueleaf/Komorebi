@@ -16,7 +16,7 @@ A header, then three parts, in this order:
 | Bytes | Holds |
 |---|---|
 | 4 | The magic `KOMC` |
-| 4 | The version, a u32: `4` |
+| 4 | The version, a u32: `6` |
 | 8, 8, 8 | The length in bytes of each part, S, H and P, each a u64 |
 | S | The program: everything but the notes |
 | H | The hints |
@@ -28,8 +28,12 @@ Version 3 gave a block, a stream, a sink and a reduction's values the rows and t
 tiles (a block is a matrix of tiles): each writes its rows before its columns. Version 4 gives
 `ForZip` its streams as a list (a count, then the values), so a `zip` walks two streams or more.
 Version 5 gives each call of a chain its part of the chain's group (R47) after its arguments:
-`Whole`, or `Part` and its two ends, each a `Count`. A reader refuses a version 4 program with
-`K952`, naming both versions.
+`Whole`, or `Part` and its two ends, each a `Count`. Version 6 gives a message its body: each
+message type writes the bytes of its body (a u32, `0` for none) after its fields; `Send` and `Offer`
+write where their body comes from as an option of `ScalarsFrom` (`Value` and a value, or `Member`
+and a state member), `Send` after its rank; `Forward` writes the type it goes on as (`as`) as an
+option of a message id after its message; the operation `Body` and the type `Body` are new. A reader
+refuses a version 5 program with `K952`, naming both versions.
 
 ## How values are written
 
@@ -55,8 +59,8 @@ Each part is one walk of the program structure, each list in its one order:
 
 - **S**: the module's name; the tile shape (rows, cols); the formats; the parameters (name, scalar
   type, binding); the records and the messages (name, the program it is declared in as an option,
-  the fields as name and scalar type); the functions; the programs; the control programs; the
-  requirements.
+  the fields as name and scalar type; a message then the bytes of its body); the functions; the
+  programs; the control programs; the requirements.
     - A function: name, kind (`Plain`; `Combine` and whether commutative; `Extern` with its
       implementation name, the positions it reads, the positions it writes), the parameter types,
       the result type, the body as an option, the effects.
@@ -258,6 +262,7 @@ version.
 | 85 | `IslandHops` |
 | 86 | `ReduceTo` |
 | 87 | `BroadcastFrom` |
+| 88 | `Body` |
 
 ### `Access`
 
@@ -360,6 +365,7 @@ version.
 | 19 | `Handle` |
 | 20 | `Outcome` |
 | 21 | `Reason` |
+| 22 | `Body` |
 
 ### `ConstValue`
 
@@ -390,6 +396,13 @@ version.
 |---|---|
 | 0 | `Whole` |
 | 1 | `Part` |
+
+### `ScalarsFrom`
+
+| Number | Variant |
+|---|---|
+| 0 | `Value` |
+| 1 | `Member` |
 
 ### `Peers`
 

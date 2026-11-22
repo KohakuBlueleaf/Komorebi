@@ -1,0 +1,47 @@
+// a message's body and a forward as another type (Dynamic runs)
+module bodies
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program Bodies {
+    message Ray @body(16) { id: u32 }
+    message Hit @body(16) { id: u32, sum: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        note: u32[4]
+        seen: u32[4]  @export
+    }
+
+    run trace(count: u32) @dynamic {
+        seed {
+            note.zero()
+            seen.zero()
+            for i in range(count) {
+                note[0] = i + 1
+                note[1] = worker.rank
+                send(Ray { id: i }, to = (worker.rank + 1) % group.size, body = note)
+            }
+        }
+        on Ray(m) {
+            let w = m.body.words()
+            if w[0] == m.id + 1 {
+                forward(m, as = Hit, with = { sum: w[0] + w[1] }, to = worker.rank)
+            } else {
+                consume m
+            }
+        }
+        on Hit(h) {
+            let w = h.body.words()
+            seen[0] = h.id
+            seen[1] = h.sum
+            seen[2] = w[1]
+            seen.bump(3)
+            consume h
+        }
+    }
+}

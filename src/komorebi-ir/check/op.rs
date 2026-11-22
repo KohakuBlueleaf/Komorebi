@@ -125,15 +125,19 @@ pub enum OpKind {
     Sync,
     /// `M { field: value, ... }`. Parts: the values, in the type's order of fields.
     MakeMessage(MessageId),
-    /// `send(m, to = rank, publish = [v])`. Parts: `m`, `to`, `publish`.
+    /// `send(m, to = rank, publish = [v], body = src)`. Parts: `m`, `to`, `publish`,
+    /// `body`.
     Send,
-    /// `forward(m, with = { ... }, to = rank, publish = [v])`; the fields of `with` are
-    /// resolved by name. Parts: `m`, `with`, `to`, `publish`.
+    /// `forward(m, with = { ... }, to = rank, publish = [v], as = T)`; the fields of
+    /// `with` are resolved by name, those of `T` where `as` is given, and `T` by its
+    /// name. Parts: `m`, `with`, `to`, `publish`, `as`.
     Forward,
-    /// `offer(m, to = rank)`. Parts: `m`, `to`.
+    /// `offer(m, to = rank, body = src)`. Parts: `m`, `to`, `body`.
     Offer,
     /// `m.field` of a message, by the field's position. Parts: `m`.
     Field(u32),
+    /// `m.body` of the arrived message. Parts: `m`.
+    Body,
     /// `group(first, count)` or `group(count)`. Parts: `first`, `count`.
     MakeGroup,
     /// `invoke(P.h(args), on = g, after = [a], after_end = [b])`. Parts: `on`, `after`,

@@ -301,6 +301,7 @@ fn ids_are_in_range() {
         name: "M".into(),
         program: None,
         fields: vec![("x".into(), ScalarType::U32)],
+        body: 0,
     });
     let empty = || Body {
         values: Vec::new(),

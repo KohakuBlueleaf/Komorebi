@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::program::body::{Body, InstId, Op, ValueId};
+use crate::program::body::{Body, InstId, Op, ScalarsFrom, ValueId};
 use crate::program::derive::{
     Access, Cause, ChainDeps, ChainEdge, Effects, Requirement, StateAccess, StateUse, TensorAccess,
 };
@@ -208,6 +208,14 @@ fn effects(module: &Module, calls: &[BTreeSet<u32>], bodies: &[(BodyRef, &Body)]
                 Op::Put { items, src, .. } => {
                     state(&mut out, *src, StateUse::Read);
                     access(&mut out, of(&origin, items), Access::Put);
+                }
+                // a body given from a state member reads it whole, as a `put`'s source
+                Op::Send {
+                    body: Some(ScalarsFrom::Member(m)),
+                    ..
+                }
+                | Op::Offer(_, _, Some(ScalarsFrom::Member(m))) => {
+                    state(&mut out, *m, StateUse::Read)
                 }
                 Op::Fill(m, _) | Op::ZeroState(m) => state(&mut out, *m, StateUse::FillWhole),
                 Op::StateGet(m, _) | Op::Bump(m, _) => state(&mut out, *m, StateUse::Read),

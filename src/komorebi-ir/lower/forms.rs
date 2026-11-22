@@ -9,10 +9,10 @@ use super::body::{Slot, B};
 use super::{refuse, Res};
 use crate::check::op::{OpKind, Resolved};
 use crate::check::Name;
-use crate::program::body::{Op, Range, ValueId};
+use crate::program::body::{Op, Range, ScalarsFrom, ValueId};
 use crate::program::MemberKind;
 use crate::syntax::ast::{self, ExprKind};
-use crate::types::{Count, Entry, MemberId, ScalarType, Type};
+use crate::types::{Count, Entry, MemberId, MessageId, ScalarType, Type};
 
 fn element(kind: MemberKind) -> Type {
     match kind {
@@ -99,6 +99,20 @@ impl B<'_, '_> {
                 _ => refuse(e.span, "not a list"),
             },
         }
+    }
+
+    /// The words a `body = src` operand gives: a state member named whole, by its id;
+    /// otherwise the value (a message's body, or the words of a tile).
+    fn body_part(&mut self, p: &Parts<'_>, k: usize) -> Res<Option<ScalarsFrom>> {
+        let Some(x) = p.get(k) else {
+            return Ok(None);
+        };
+        if let ExprKind::Name(n) = &x.kind {
+            if let Some(Name::State { member, .. }) = self.cx.checked.binding(n.span) {
+                return Ok(Some(ScalarsFrom::Member(MemberId(*member))));
+            }
+        }
+        Ok(Some(ScalarsFrom::Value(self.expr(x)?)))
     }
 
     /// A count the text writes in an operand: a number, or a module parameter.
@@ -196,6 +210,44 @@ impl B<'_, '_> {
             Some(Slot::Value(v)) => Ok(v),
             _ => refuse(h.span, "`await` of no handle"),
         }
+    }
+
+    /// The type `as = T` names, with `with` made every field of T in its order: the
+    /// value `with` gives, else the arrived message's field of the same name and type,
+    /// read with `Field`.
+    fn forward_as(
+        &mut self,
+        message: ValueId,
+        t: &ast::Expr,
+        with: &mut Vec<(u32, ValueId)>,
+    ) -> Res<MessageId> {
+        let target = match &t.kind {
+            ExprKind::Name(n) => match self.cx.checked.binding(n.span) {
+                Some(Name::Message(m)) => *m,
+                _ => return refuse(t.span, "a message type the checker did not resolve"),
+            },
+            _ => return refuse(t.span, "`as` that is not a message type"),
+        };
+        let Type::Message(from) = self.ty(message) else {
+            return refuse(t.span, "a forward of what is not a message");
+        };
+        let source: Vec<(String, ScalarType)> = self.cx.message_fields(from).to_vec();
+        let fields: Vec<(String, ScalarType)> = self.cx.message_fields(target).to_vec();
+        let mut all = Vec::with_capacity(fields.len());
+        for (k, (name, s)) in fields.iter().enumerate() {
+            let k = k as u32;
+            if let Some(&(_, v)) = with.iter().find(|(at, _)| *at == k) {
+                all.push((k, v));
+                continue;
+            }
+            let Some(j) = source.iter().position(|(n, t)| n == name && t == s) else {
+                return refuse(t.span, format!("no value for the field `{name}`"));
+            };
+            let v = self.emit(Op::Field(message, j as u32), Type::Scalar(*s), t.span);
+            all.push((k, v));
+        }
+        *with = all;
+        Ok(target)
     }
 
     /// The result type of what an invocation names.
@@ -390,6 +442,8 @@ impl B<'_, '_> {
                 let v = self.part(&p, 0)?;
                 let s = match self.ty(v) {
                     Type::View(f) => f.and_then(|f| f.as_scalar()),
+                    // a message's body, read as u32 scalars
+                    Type::Body => Some(ScalarType::U32),
                     _ => None,
                 };
                 let Some(s) = s else {
@@ -437,6 +491,13 @@ impl B<'_, '_> {
                     return refuse(span, "no field of that place");
                 };
                 (Op::Field(x, k), Type::Scalar(*s))
+            }
+            OpKind::Body => {
+                let x = self.part(&p, 0)?;
+                let Type::Message(_) = self.ty(x) else {
+                    return refuse(span, "the body of what is not a message");
+                };
+                (Op::Body(x), Type::Body)
             }
             OpKind::Put(src) => {
                 let items = self.part(&p, 0)?;
@@ -577,10 +638,12 @@ impl B<'_, '_> {
             OpKind::Send => {
                 let message = self.part(&p, 0)?;
                 let to = self.part(&p, 1)?;
+                let body = self.body_part(&p, 3)?;
                 let publish = self.list_part(&p, 2)?;
                 let op = Op::Send {
                     message,
                     to,
+                    body,
                     publish,
                     used,
                 };
@@ -601,10 +664,15 @@ impl B<'_, '_> {
                         with.push((k, self.expr(&f.value)?));
                     }
                 }
+                let as_type = match p.get(4) {
+                    Some(t) => Some(self.forward_as(message, t, &mut with)?),
+                    None => None,
+                };
                 let to = self.part(&p, 2)?;
                 let publish = self.list_part(&p, 3)?;
                 let op = Op::Forward {
                     message,
+                    as_type,
                     with,
                     to,
                     publish,
@@ -615,7 +683,8 @@ impl B<'_, '_> {
             OpKind::Offer => {
                 let m = self.part(&p, 0)?;
                 let to = self.part(&p, 1)?;
-                (Op::Offer(m, to), Type::Bool)
+                let body = self.body_part(&p, 2)?;
+                (Op::Offer(m, to, body), Type::Bool)
             }
             OpKind::MakeGroup => {
                 let first = self.opt_part(&p, 0)?;

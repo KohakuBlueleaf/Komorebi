@@ -8,7 +8,7 @@
 //! every cause and every derived access names something that exists; and that the
 //! notes are in their stated order.
 
-use super::body::{Body, InstId, Op, ValueId};
+use super::body::{Body, InstId, Op, ScalarsFrom, ValueId};
 use super::derive::{Cause, Effects};
 use super::notes::{Anchor, Named, Owner};
 use super::{BodyRef, CallArg, FuncKind, MemberKind, Module};
@@ -622,6 +622,63 @@ impl<'m> Validator<'m> {
             })
         };
         let message_fields = |id: MessageId| m.messages.get(id.0 as usize).map(|mm| &mm.fields);
+        let message_body = |id: MessageId| m.messages.get(id.0 as usize).map_or(0, |mm| mm.body);
+        // the bytes of the words a value gives, where the structure shows them: a
+        // message's body, the arrived message's; the words of a body or of a view, the
+        // body's or a tile's of `u32`
+        let value_bytes = |t: &Type, x: ValueId| -> Option<u64> {
+            let arrived = ctx.arrived.map(|a| message_body(a) as u64);
+            match t {
+                Type::Body => arrived,
+                Type::Words(_) => {
+                    let def = body.insts.iter().find(|inst| inst.defs.contains(&x))?;
+                    let Op::Words(v) = def.op else {
+                        return None;
+                    };
+                    match body.values.get(v.0 as usize)? {
+                        Type::Body => arrived,
+                        Type::View(_) => Some(4 * m.tile.elements()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        // `body = src` of a message of type `mm`: given only to a type with a body; a
+        // message's body, the words of `u32`, or a state member of `u32`; no more bytes
+        // than the type's body where the structure shows them
+        let body_fits = |mm: MessageId, src: &Option<ScalarsFrom>, t: Option<&Type>| {
+            let Some(src) = src else {
+                return Ok(());
+            };
+            let room = message_body(mm) as u64;
+            if room == 0 {
+                return Err(format!(
+                    "a body given to message {}, which takes none",
+                    mm.0
+                ));
+            }
+            let bytes = match (src, t) {
+                (ScalarsFrom::Value(x), Some(t @ (Type::Body | Type::Words(ScalarType::U32)))) => {
+                    value_bytes(t, *x)
+                }
+                (ScalarsFrom::Member(id), _) => match member(*id) {
+                    Some(mm) if mm.kind == MemberKind::Scalars(ScalarType::U32) => match mm.count {
+                        Count::Const(k) => Some(4 * k),
+                        _ => None,
+                    },
+                    _ => return Err("a body from a member that is not of u32 scalars".into()),
+                },
+                _ => return Err("a body from a value that is not a body or u32 words".into()),
+            };
+            match bytes {
+                Some(b) if b > room => Err(format!(
+                    "a body of {b} bytes given to message {}, which takes {room}",
+                    mm.0
+                )),
+                _ => Ok(()),
+            }
+        };
         let combiner = |c: &Combiner| match c {
             Combiner::Func(f) => {
                 matches!(m.funcs.get(f.0 as usize), Some(f) if matches!(f.kind, FuncKind::Combine { .. }))
@@ -864,6 +921,7 @@ impl<'m> Validator<'m> {
                 _ => Err("`v[i]` of a value that is not a view".into()),
             },
             Op::Words(_) => match a[0] {
+                Type::Body => exact(&[Type::Words(ScalarType::U32)]),
                 Type::View(f) => match f.and_then(Format::as_scalar) {
                     Some(s) => exact(&[Type::Words(s)]),
                     None => Err("`.words()` of a view whose format is no scalar type".into()),
@@ -1047,21 +1105,29 @@ impl<'m> Validator<'m> {
                 }
                 None => Err(format!("message {} out of range", mm.0)),
             },
-            Op::Send { publish, .. } => {
+            Op::Send {
+                body: src, publish, ..
+            } => {
+                let k = 2 + usize::from(matches!(src, Some(ScalarsFrom::Value(_))));
                 need(
                     matches!(a[0], Type::Message(_))
                         && int(1)
-                        && views(2)
-                        && publish.len() == a.len() - 2,
+                        && a.len() >= k
+                        && views(k)
+                        && publish.len() == a.len() - k,
                     "a `send` that does not fit",
                 )?;
+                if let Type::Message(mm) = a[0] {
+                    body_fits(*mm, src, a.get(2).copied())?;
+                }
                 exact(&[Type::Bool])
             }
-            Op::Forward { with, .. } => {
+            Op::Forward { as_type, with, .. } => {
                 let Type::Message(mm) = a[0] else {
                     return Err("a `forward` of a value that is not a message".into());
                 };
-                let fields = message_fields(*mm).ok_or("message out of range")?;
+                let target = as_type.unwrap_or(*mm);
+                let fields = message_fields(target).ok_or("message out of range")?;
                 let ok = with.iter().enumerate().all(|(k, (f, _))| {
                     fields
                         .get(*f as usize)
@@ -1070,19 +1136,45 @@ impl<'m> Validator<'m> {
                 need(
                     ok && int(1 + with.len()) && views(2 + with.len()) && d.is_empty(),
                     "a `forward` that does not fit",
-                )
+                )?;
+                if as_type.is_some() {
+                    // every field of the target once, in its order
+                    let each = with.len() == fields.len()
+                        && with.iter().enumerate().all(|(k, (f, _))| *f as usize == k);
+                    need(
+                        each,
+                        "a `forward` as another type that does not give each of its fields once",
+                    )?;
+                    let (from, to) = (message_body(*mm), message_body(target));
+                    need(
+                        from == 0 || to >= from,
+                        "a `forward` as another type whose body does not fit it",
+                    )?;
+                }
+                Ok(())
             }
             Op::Consume(_) => need(
                 matches!(a[0], Type::Message(_)) && d.is_empty(),
                 "`consume` of a value that is not a message",
             ),
-            Op::Offer(..) => {
+            Op::Offer(_, _, src) => {
+                let k = 2 + usize::from(matches!(src, Some(ScalarsFrom::Value(_))));
                 need(
-                    matches!(a[0], Type::Message(_)) && int(1),
+                    matches!(a[0], Type::Message(_)) && int(1) && a.len() == k,
                     "an `offer` that does not fit",
                 )?;
+                if let Type::Message(mm) = a[0] {
+                    body_fits(*mm, src, a.get(2).copied())?;
+                }
                 exact(&[Type::Bool])
             }
+            Op::Body(_) => match (a[0], ctx.arrived) {
+                (Type::Message(mm), Some(arrived)) if *mm == arrived => {
+                    need(message_body(*mm) > 0, "the body of a message that has none")?;
+                    exact(&[Type::Body])
+                }
+                _ => Err("the body of a value that is not the arrived message".into()),
+            },
             Op::Field(_, k) => match a[0] {
                 Type::Message(mm) => match message_fields(*mm).and_then(|f| f.get(*k as usize)) {
                     Some((_, s)) => exact(&[Type::Scalar(*s)]),
@@ -1428,6 +1520,7 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         | IsSender(a)
         | Consume(a)
         | Field(a, _)
+        | Body(a)
         | Await(a)
         | Outcome(a)
         | Failed(a)
@@ -1458,7 +1551,6 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         | Store(a, b)
         | BlockAt(a, b)
         | StateSet(_, a, b)
-        | Offer(a, b)
         | BroadcastFrom(a, b)
         | ReduceTo(a, b, _) => {
             v.push(*a);
@@ -1511,17 +1603,28 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         Send {
             message,
             to,
+            body,
             publish,
             ..
         } => {
             v.extend([*message, *to]);
+            if let Some(ScalarsFrom::Value(x)) = body {
+                v.push(*x);
+            }
             v.extend(publish.iter().copied());
+        }
+        Offer(a, b, body) => {
+            v.extend([*a, *b]);
+            if let Some(ScalarsFrom::Value(x)) = body {
+                v.push(*x);
+            }
         }
         Forward {
             message,
             with,
             to,
             publish,
+            ..
         } => {
             v.push(*message);
             v.extend(with.iter().map(|(_, x)| *x));

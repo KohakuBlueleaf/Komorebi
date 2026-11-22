@@ -3,7 +3,7 @@
 //! byte string. `docs/ir/bytecode.md` gives the layout field by field.
 
 use super::version::{self as v, Table};
-use crate::program::body::{Body, Op, Range};
+use crate::program::body::{Body, Op, Range, ScalarsFrom};
 use crate::program::derive::{Cause, ChainDeps, Effects, Requirement};
 use crate::program::notes::{Anchor, HintArg, Named, Owner};
 use crate::program::{
@@ -190,6 +190,7 @@ impl Writer {
                 w.str(name);
                 w.scalar(*ty);
             });
+            w.u32(r.body);
         });
         self.list(&m.funcs, Writer::func);
         self.list(&m.programs, Writer::program_decl);
@@ -599,6 +600,19 @@ impl Writer {
         }
     }
 
+    fn scalars_from(&mut self, b: &ScalarsFrom) {
+        match b {
+            ScalarsFrom::Value(x) => {
+                self.tag(v::SCALARS_FROM, "Value");
+                self.u32(x.0);
+            }
+            ScalarsFrom::Member(m) => {
+                self.tag(v::SCALARS_FROM, "Member");
+                self.u32(m.0);
+            }
+        }
+    }
+
     fn part(&mut self, p: &Option<Part>) {
         match p {
             None => self.tag(v::PART, "Whole"),
@@ -708,6 +722,7 @@ impl Writer {
                 self.tag(v::TYPE, "Message");
                 self.u32(m.0);
             }
+            Type::Body => self.tag(v::TYPE, "Body"),
             Type::SubGroups => self.tag(v::TYPE, "SubGroups"),
             Type::Leaders => self.tag(v::TYPE, "Leaders"),
             Type::Broadcast(f) => {
@@ -1096,23 +1111,27 @@ impl Writer {
             Op::Send {
                 message,
                 to,
+                body,
                 publish,
                 used,
             } => {
                 t(self, "Send");
                 self.u32(message.0);
                 self.u32(to.0);
+                self.opt(body.as_ref(), Writer::scalars_from);
                 self.values(publish);
                 self.bool(*used);
             }
             Op::Forward {
                 message,
+                as_type,
                 with,
                 to,
                 publish,
             } => {
                 t(self, "Forward");
                 self.u32(message.0);
+                self.opt(as_type.as_ref(), |w, m| w.u32(m.0));
                 self.list(with, |w, (i, x)| {
                     w.u32(*i);
                     w.u32(x.0);
@@ -1124,15 +1143,20 @@ impl Writer {
                 t(self, "Consume");
                 self.u32(x.0);
             }
-            Op::Offer(a, b) => {
+            Op::Offer(a, b, body) => {
                 t(self, "Offer");
                 self.u32(a.0);
                 self.u32(b.0);
+                self.opt(body.as_ref(), Writer::scalars_from);
             }
             Op::Field(x, i) => {
                 t(self, "Field");
                 self.u32(x.0);
                 self.u32(*i);
+            }
+            Op::Body(x) => {
+                t(self, "Body");
+                self.u32(x.0);
             }
             Op::MakeGroup(a, b) => {
                 t(self, "MakeGroup");

@@ -1,0 +1,27 @@
+// refused: a body of 32 bytes given to a message that takes 16 (Dynamic runs)
+module rays
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program Rays {
+    message Ray @body(16) { id: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        note: u32[8]
+    }
+
+    run trace(count: u32) @dynamic {
+        seed {
+            note.zero()
+            send(Ray { id: count }, to = worker.rank, body = note)
+        }
+        on Ray(m) {
+            consume m
+        }
+    }
+}

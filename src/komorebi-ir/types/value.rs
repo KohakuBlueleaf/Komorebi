@@ -78,6 +78,8 @@ pub enum Type {
     RecordValue(RecordId),
     /// A message.
     Message(MessageId),
+    /// A message's body: the run of bytes that belongs to the message that arrived.
+    Body,
     /// Sub-groups of the group: `group.split(...)`.
     SubGroups,
     /// Their leaders: `group.leaders(...)`.
@@ -151,6 +153,7 @@ impl fmt::Display for Type {
             Type::Records(r) => write!(f, "the records of type {}", r.0),
             Type::RecordValue(r) => write!(f, "a record of type {}", r.0),
             Type::Message(m) => write!(f, "a message of type {}", m.0),
+            Type::Body => f.write_str("a message's body"),
             Type::SubGroups => f.write_str("sub-groups"),
             Type::Leaders => f.write_str("the leaders of sub-groups"),
             Type::Broadcast(g) => write!(f, "a broadcast of {g} tiles"),

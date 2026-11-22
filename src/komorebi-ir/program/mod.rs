@@ -207,6 +207,8 @@ pub struct Message {
     pub program: Option<ProgramId>,
     /// Its fields, in order: a name and a scalar type.
     pub fields: Vec<(String, ScalarType)>,
+    /// The bytes of its body (`@body(n)`); 0 when it has none.
+    pub body: u32,
 }
 
 /// What a state member holds.

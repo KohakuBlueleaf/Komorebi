@@ -6,7 +6,7 @@
 
 use super::version::{self as v, Table};
 use super::Refusal;
-use crate::program::body::{Body, Inst, LocalId, Op, Range, ValueId};
+use crate::program::body::{Body, Inst, LocalId, Op, Range, ScalarsFrom, ValueId};
 use crate::program::derive::{
     Access, Cause, ChainDeps, ChainEdge, Effects, Requirement, StateAccess, StateUse, TensorAccess,
 };
@@ -389,6 +389,7 @@ impl<'b> Reader<'b> {
                 name: r.string()?,
                 program: r.opt(|r| Ok(ProgramId(r.u32()?)))?,
                 fields: r.list(|r| Ok((r.string()?, r.scalar()?)))?,
+                body: r.u32()?,
             })
         })?;
         let funcs = self.list(Reader::func)?;
@@ -840,6 +841,15 @@ impl<'b> Reader<'b> {
         }
     }
 
+    fn scalars_from(&mut self) -> Read<ScalarsFrom> {
+        let at = self.at();
+        match self.tag(v::SCALARS_FROM)? {
+            "Value" => Ok(ScalarsFrom::Value(self.value()?)),
+            "Member" => Ok(ScalarsFrom::Member(MemberId(self.u32()?))),
+            other => Err(self.unread(at, other)),
+        }
+    }
+
     fn part(&mut self) -> Read<Option<Part>> {
         let at = self.at();
         match self.tag(v::PART)? {
@@ -890,6 +900,7 @@ impl<'b> Reader<'b> {
             "Records" => Type::Records(RecordId(self.u32()?)),
             "RecordValue" => Type::RecordValue(RecordId(self.u32()?)),
             "Message" => Type::Message(MessageId(self.u32()?)),
+            "Body" => Type::Body,
             "SubGroups" => Type::SubGroups,
             "Leaders" => Type::Leaders,
             "Broadcast" => Type::Broadcast(self.format()?),
@@ -1045,18 +1056,25 @@ impl<'b> Reader<'b> {
             "Send" => Op::Send {
                 message: self.value()?,
                 to: self.value()?,
+                body: self.opt(Reader::scalars_from)?,
                 publish: self.values()?,
                 used: self.bool()?,
             },
             "Forward" => Op::Forward {
                 message: self.value()?,
+                as_type: self.opt(|r| Ok(MessageId(r.u32()?)))?,
                 with: self.list(|r| Ok((r.u32()?, r.value()?)))?,
                 to: self.value()?,
                 publish: self.values()?,
             },
             "Consume" => Op::Consume(self.value()?),
-            "Offer" => Op::Offer(self.value()?, self.value()?),
+            "Offer" => Op::Offer(
+                self.value()?,
+                self.value()?,
+                self.opt(Reader::scalars_from)?,
+            ),
             "Field" => Op::Field(self.value()?, self.u32()?),
+            "Body" => Op::Body(self.value()?),
             "MakeGroup" => Op::MakeGroup(self.opt_value()?, self.value()?),
             "Invoke" => Op::Invoke {
                 entry: self.entry()?,

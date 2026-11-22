@@ -886,7 +886,7 @@ impl<'m> Machine<'m> {
             for (rank, (worker, messages)) in group.iter_mut().zip(held).enumerate() {
                 for letter in messages {
                     let ty = match &letter.message {
-                        Value::Message(ty, _) => *ty,
+                        Value::Message(ty, ..) => *ty,
                         _ => return invalid("a letter that is not a message".into()),
                     };
                     // the send is before the body that receives it, and its

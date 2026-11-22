@@ -1,0 +1,22 @@
+// refused: as = names no message type (Dynamic runs)
+module rays
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program Rays {
+    message Ray { id: u32 }
+
+    run trace(count: u32) @dynamic {
+        seed {
+            send(Ray { id: count }, to = worker.rank)
+        }
+        on Ray(m) {
+            forward(m, as = Miss, to = worker.rank)
+        }
+    }
+}

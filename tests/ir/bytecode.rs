@@ -450,6 +450,28 @@ program P {
     assert!(loaded == module, "loaded, another module");
 }
 
+/// The corpus module of a message's body (`constructs/c01_message_body`): its bodies,
+/// a `send` with `body =`, `m.body.words()` and a `forward` with `as =` are written
+/// and read back, and the program loads.
+#[test]
+fn a_module_with_bodies_round_trips() {
+    let (_, text) = modules("constructs")
+        .into_iter()
+        .find(|(name, _)| name == "c01_message_body")
+        .expect("the construct is in the corpus");
+    let module = built(&text);
+    assert_eq!(
+        module.messages.iter().map(|m| m.body).collect::<Vec<_>>(),
+        [16, 16]
+    );
+    let bytes = encode(&module);
+    let read = decode(&bytes).expect("read back");
+    assert!(read == module, "read back, another module");
+    assert_eq!(encode(&read), bytes);
+    let loaded = komorebi_ir::api::load(&bytes).expect("loads");
+    assert!(loaded == module, "loaded, another module");
+}
+
 #[test]
 fn derived_parts_that_derive_does_not_give_are_refused() {
     let module = built(&lesson("t13_hinted"));

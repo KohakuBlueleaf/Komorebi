@@ -6,6 +6,7 @@ Programs in the Komorebi IR's text form (`.kom`), used by the tests of the `komo
 |---|---|
 | `lessons/` | The IR lessons of the tutorial, T1 to T13, T15 and T16 (T14 is host code), each exactly as the specification writes it. Every one checks clean |
 | `reference/` | The other whole modules of the specification's reference. The first line is a comment naming the topic it comes from; every one checks clean |
+| `constructs/` | Whole modules for constructs the lessons do not show; every one checks clean |
 | `invalid/` | One small module for each thing program compile refuses. Beside each `<name>.kom`, a `<name>.expect` |
 | `run_fails/` | Modules that check clean and whose run ends in a named failure. Beside each `<name>.kom`, a `<name>.expect` |
 | `lowered/` | The program structure three lessons lower to (`t01_scale`, `t09_walk`, `t11_solve`), as `program::print` writes it, one `<lesson>.txt` each. The lowering test compares them; with `KOMO_IR_BLESS` set it writes them instead |

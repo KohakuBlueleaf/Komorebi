@@ -286,18 +286,6 @@ impl Checker<'_> {
             return Ty::Unknown;
         }
         self.note_name(n.span, Name::Operation);
-        if what == "forward"
-            && args
-                .values()
-                .any(|a| a.name.as_ref().is_some_and(|n| n.name == "as" && !n.quoted))
-        {
-            self.error(
-                codes::NOT_BUILT,
-                "`as =` on a `forward` is named in the language and not built yet".into(),
-                span,
-            );
-            return Ty::Unknown;
-        }
         self.builtin(cx, what, args, span)
     }
 
@@ -682,9 +670,14 @@ impl Checker<'_> {
             }
             "send" | "offer" => {
                 let form: &[Operand] = if what == "send" {
-                    &[pos("message"), named("to"), named_opt("publish")]
+                    &[
+                        pos("message"),
+                        named("to"),
+                        named_opt("publish"),
+                        named_opt("body"),
+                    ]
                 } else {
-                    &[pos("message"), named("to")]
+                    &[pos("message"), named("to"), named_opt("body")]
                 };
                 let Some(o) = self.operands(what, span, args, form) else {
                     return Ty::Unknown;
@@ -708,6 +701,10 @@ impl Checker<'_> {
                     self.view_list(cx, o[2]);
                 } else if let Some(to) = o[1] {
                     self.offer_peer(cx, to, span);
+                }
+                let body = if what == "send" { o[3] } else { o[2] };
+                if let Some(body) = body {
+                    self.body_operand(cx, &m, body);
                 }
                 Ty::Bool
             }
@@ -904,7 +901,11 @@ impl Checker<'_> {
         ) {
             return Ty::Unknown;
         }
-        let Some(decl) = cx.env.message(cx.program.as_deref(), &name.name).cloned() else {
+        let Some(decl) = cx
+            .env
+            .message(cx.program.as_deref(), &name.name)
+            .map(|d| d.fields.clone())
+        else {
             self.error(
                 codes::UNKNOWN_NAME,
                 format!("`{}` is not a message type", name.name),
@@ -977,6 +978,7 @@ impl Checker<'_> {
             named_opt("with"),
             named("to"),
             named_opt("publish"),
+            named_opt("as"),
         ];
         let Some(o) = self.operands("forward", span, args, &form) else {
             return Ty::Unknown;
@@ -1002,16 +1004,25 @@ impl Checker<'_> {
                 }
             }
         }
+        // `as = T`: the message goes on as a T, its fields from `with` or else from the
+        // arrived message's field of the same name and type, its body unchanged
+        let target = match o[4] {
+            None => message.clone(),
+            Some(t) => match self.forward_as(cx, t, message.as_deref(), o[1], span) {
+                Some(name) => Some(name),
+                None => return Ty::Unknown,
+            },
+        };
         if let Some(with) = o[1] {
             match &with.kind {
                 ExprKind::Init { ty: None, fields } => {
-                    if let Some(m) = &message {
+                    if let Some(m) = &target {
                         self.note_type(with, &Ty::Message(m.clone()));
                     }
-                    let decl = message
+                    let decl = target
                         .as_deref()
                         .and_then(|m| cx.env.message(cx.program.as_deref(), m))
-                        .cloned();
+                        .map(|d| d.fields.clone());
                     for f in fields.values() {
                         let ty = self.expr(cx, &f.value);
                         let Some(decl) = &decl else {
@@ -1046,6 +1057,171 @@ impl Checker<'_> {
         self.operand(cx, o[2], &Ty::AnyInt, "the rank");
         self.view_list(cx, o[3]);
         Ty::Void
+    }
+
+    /// The type `as = T` of a `forward` of a message of type `from` names: a message
+    /// type visible here (`K101`); each of its fields given by `with` or taken from
+    /// `from`'s field of the same name and scalar type (`K113`); `from`'s body fits
+    /// T's (`K102`). `None` after a diagnostic that stops the forward.
+    fn forward_as(
+        &mut self,
+        cx: &Cx,
+        t: &Expr,
+        from: Option<&str>,
+        with: Option<&Expr>,
+        span: Span,
+    ) -> Option<String> {
+        let Some(n) = as_name(t) else {
+            self.error(
+                codes::WRONG_TYPE,
+                "`as` names a message type: `as = T`".into(),
+                t.span,
+            );
+            return None;
+        };
+        let Some(decl) = cx.env.message(cx.program.as_deref(), &n.name).cloned() else {
+            self.error(
+                codes::UNKNOWN_NAME,
+                format!("`{}` is not a message type", n.name),
+                n.span,
+            );
+            return None;
+        };
+        if let Some(place) = cx.env.ix.message_ref(cx.program.as_deref(), &n.name) {
+            self.note_name(n.span, Name::Message(place));
+        }
+        let Some(from_decl) = from.and_then(|m| cx.env.message(cx.program.as_deref(), m)) else {
+            return Some(n.name.clone());
+        };
+        let from = from.unwrap_or_default();
+        let given: HashSet<&str> = match with.map(|w| &w.kind) {
+            Some(ExprKind::Init { fields, .. }) => {
+                fields.values().map(|f| f.name.name.as_str()).collect()
+            }
+            _ => HashSet::new(),
+        };
+        let missing: Vec<&str> = decl
+            .fields
+            .iter()
+            .filter(|(name, ty)| {
+                !given.contains(name.as_str())
+                    && !from_decl.fields.iter().any(|(n, t)| n == name && t == ty)
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                codes::MESSAGE_FIELD_MISSING,
+                format!(
+                    "the forward as {} has no value for its field `{}`: `with` does not give \
+                     it, and {from} has no field of that name and type",
+                    n.name,
+                    missing.join("`, `")
+                ),
+                span,
+            );
+        }
+        if let Some(a) = from_decl.body {
+            if decl.body.is_none_or(|b| b < a) {
+                self.error(
+                    codes::WRONG_TYPE,
+                    format!("the body of {from} does not fit {}", n.name),
+                    span,
+                );
+            }
+        }
+        Some(n.name.clone())
+    }
+
+    /// `body = src` on a `send` or an `offer` of a message of type `target`: a
+    /// message's body, the words of a tile of `u32`, or a state member of `u32` named
+    /// whole (`K102`), given to a type with a body (`K102`); where the text shows its
+    /// bytes, no more than the type's `@body` (`K115`).
+    fn body_operand(&mut self, cx: &mut Cx, target: &Ty, e: &Expr) {
+        let ty = self.expr(cx, e);
+        let room = match target {
+            Ty::Message(m) => match cx.env.message(cx.program.as_deref(), m) {
+                Some(decl) => match decl.body {
+                    Some(room) => Some(room),
+                    None => {
+                        self.error(
+                            codes::WRONG_TYPE,
+                            format!("the message {m} takes no body"),
+                            e.span,
+                        );
+                        return;
+                    }
+                },
+                None => None,
+            },
+            _ => None,
+        };
+        let u32_ = Ty::Scalar(ScalarType::U32);
+        let member = as_name(e)
+            .filter(|n| cx.lookup(&n.name).is_none())
+            .and_then(|n| cx.member_name(&n.name))
+            .is_some();
+        let bytes = match &ty {
+            Ty::Unknown => return,
+            Ty::Body => self.arrived_body(cx),
+            Ty::Words(Some(ScalarType::U32)) => self.words_bytes(cx, e),
+            Ty::Scalars(elem, count) if member && **elem == u32_ => match count {
+                Count::Known(k) => Some(4 * k),
+                _ => None,
+            },
+            _ => {
+                self.error(
+                    codes::WRONG_TYPE,
+                    "a body is given as u32 scalars: a message's body, the words of a tile, or a \
+                     state member of u32"
+                        .into(),
+                    e.span,
+                );
+                return;
+            }
+        };
+        if let (Some(bytes), Some(room), Ty::Message(m)) = (bytes, room, target) {
+            if bytes > room {
+                self.error(
+                    codes::OUT_OF_RANGE,
+                    format!(
+                        "the body given is {bytes} bytes, and the message {m} takes {room} \
+                         (`@body({room})`)"
+                    ),
+                    e.span,
+                );
+            }
+        }
+    }
+
+    /// The bytes of the body of the message this body handles, when its type has one.
+    fn arrived_body(&self, cx: &Cx) -> Option<u64> {
+        let arrived = cx
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.values())
+            .find(|l| l.binding == Name::Arrived)?;
+        match &arrived.ty {
+            Ty::Message(m) => cx.env.message(cx.program.as_deref(), m)?.body,
+            _ => None,
+        }
+    }
+
+    /// The bytes of the words `e` gives, where the text shows them: `b.words()` of a
+    /// message's body, its body's bytes; `v.words()` of a view, the module tile's rows
+    /// times columns of `u32`. Words named by a local: not shown.
+    fn words_bytes(&self, cx: &Cx, e: &Expr) -> Option<u64> {
+        let ExprKind::Call { callee, .. } = &e.kind else {
+            return None;
+        };
+        let ExprKind::Member { base, .. } = &callee.kind else {
+            return None;
+        };
+        match self.types.get(&(base.span.start, base.span.end)) {
+            Some(Ty::Body) => self.arrived_body(cx),
+            Some(Ty::View { .. }) => cx.env.tile.map(|(rows, cols)| 4 * rows * cols),
+            _ => None,
+        }
     }
 
     pub(super) fn invoke(&mut self, cx: &mut Cx, args: &List<Arg>, span: Span) -> Ty {
@@ -1278,6 +1454,14 @@ impl Checker<'_> {
                 };
                 let size = parts[3].map_or(Count::Unknown, |b| count_of(cx, b));
                 Ty::Items(count, size)
+            }
+            // the body of a message, read as u32 scalars
+            (Ty::Body, "words") => {
+                let Some(_) = self.operands("words", span, args, &[]) else {
+                    return Ty::Unknown;
+                };
+                self.note_op(span, OpKind::Words, &[Some(base)]);
+                Ty::Words(Some(ScalarType::U32))
             }
             (Ty::View { format, tiles }, "words") => {
                 let Some(_) = self.operands("words", span, args, &[]) else {

@@ -1,7 +1,7 @@
-// refused: named in the language, not built yet; as = on a forward (Dynamic runs)
+// refused: the body of Ray does not fit Hit, whose body is smaller (Dynamic runs)
 module rays
 
-tile [32, 32]
+tile [4, 4]
 format u32
 
 requires {
@@ -9,14 +9,12 @@ requires {
 }
 
 program Rays {
-    message Ray { id: u32 }
-    message Hit { id: u32 }
+    message Ray @body(16) { id: u32 }
+    message Hit @body(8) { id: u32 }
 
     run trace(count: u32) @dynamic {
         seed {
-            for i in range(count) {
-                send(Ray { id: i }, to = worker.rank)
-            }
+            send(Ray { id: count }, to = worker.rank)
         }
         on Ray(m) {
             forward(m, as = Hit, to = worker.rank)

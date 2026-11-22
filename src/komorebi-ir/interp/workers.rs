@@ -16,7 +16,7 @@ use super::memory::{
     Stream, TensorId, TensorPlace, Tile, View, Zip,
 };
 use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
-use crate::program::body::{Body, Inst, InstId, Op, ValueId};
+use crate::program::body::{Body, Inst, InstId, Op, ScalarsFrom, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
 use crate::types::{
     Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, FuncId, MemberId, MessageId, Peers,
@@ -59,8 +59,11 @@ pub enum Value {
     /// What a collective gives a rank it does not deliver to (reading R34, Q1): any
     /// use of it is an invalid program.
     Absent,
-    /// A message of a dynamic run: its type and its fields, in the type's order.
-    Message(MessageId, Vec<Scalar>),
+    /// A message of a dynamic run: its type, its fields in the type's order, and the
+    /// words of its body (none when it has none).
+    Message(MessageId, Vec<Scalar>, Vec<u32>),
+    /// `m.body`: the words of the arrived message's body.
+    Body(Vec<u32>),
     /// `group(first, count)` in a control program: the first worker and the count.
     Group(usize, usize),
     /// What `invoke` yields in a control program: the invocation's number in the order
@@ -1053,6 +1056,81 @@ fn operand_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
         .ok_or_else(|| Fault::undefined(format!("v{} read before it is defined", v.0)))
 }
 
+/// The words a `body = src` gives, at this moment: a message's body, the words of a
+/// tile, or a state member of `u32` read whole (not filled: `empty_state`). More bytes
+/// than the message type `ty` takes: `out_of_range`.
+fn body_words(
+    module: &Module,
+    worker: &mut Worker,
+    frame: &Frame,
+    ty: MessageId,
+    src: &Option<ScalarsFrom>,
+) -> Result<Vec<u32>, Fault> {
+    let words = match src {
+        None => return Ok(Vec::new()),
+        Some(ScalarsFrom::Value(v)) => match get(frame, *v)? {
+            Value::Body(words) => words.clone(),
+            Value::Words(scalars) => scalars
+                .iter()
+                .map(|s| word_of(*s))
+                .collect::<Result<_, _>>()?,
+            other => {
+                return Err(Fault::undefined(format!(
+                    "{} where a body is read",
+                    kind(other)
+                )))
+            }
+        },
+        Some(ScalarsFrom::Member(m)) => {
+            let member = member(worker, frame.at, *m)?;
+            let mut words = Vec::with_capacity(member.len());
+            for i in 0..member.len() {
+                match ops::get(member, i)? {
+                    Element::Scalar(s) => words.push(word_of(s)?),
+                    Element::Tile(_) => {
+                        return Err(Fault::undefined("a body from a member of tiles"))
+                    }
+                }
+            }
+            words
+        }
+    };
+    let room = module
+        .messages
+        .get(ty.0 as usize)
+        .ok_or_else(|| Fault::undefined("no such message"))?
+        .body as usize;
+    if words.len() * 4 > room {
+        return Err(Failure::OutOfRange.into());
+    }
+    Ok(words)
+}
+
+/// The message `m` with the words of `src` as its body.
+fn with_body(
+    module: &Module,
+    worker: &mut Worker,
+    frame: &Frame,
+    m: Value,
+    src: &Option<ScalarsFrom>,
+) -> Result<Value, Fault> {
+    match m {
+        Value::Message(ty, fields, _) => {
+            let body = body_words(module, worker, frame, ty, src)?;
+            Ok(Value::Message(ty, fields, body))
+        }
+        other => Ok(other),
+    }
+}
+
+/// A `u32` scalar as a word of a body.
+fn word_of(s: Scalar) -> Result<u32, Fault> {
+    match s {
+        Scalar::Int(Format::U32, bits) => Ok(bits as u32),
+        _ => Err(Fault::undefined("a body's word that is not a u32")),
+    }
+}
+
 fn message_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
     match get(frame, v)? {
         m @ Value::Message(..) => Ok(m.clone()),
@@ -1201,6 +1279,7 @@ fn kind(v: &Value) -> &'static str {
         Value::Broadcast { .. } => "a broadcast",
         Value::Group(..) => "a group",
         Value::Message(..) => "a message",
+        Value::Body(_) => "a message's body",
         Value::Handle(_) => "an invocation's handle",
         Value::Outcome(_) => "an outcome",
     }
@@ -1858,6 +1937,17 @@ fn step(
             }
             Value::Tile(ops::read(cx.heap, v, i)?)
         }
+        // a message's body, read as u32 scalars
+        Op::Words(v) if matches!(get(frame, *v)?, Value::Body(_)) => {
+            let Value::Body(words) = get(frame, *v)? else {
+                return Err(Fault::undefined("the words of what is not a body"));
+            };
+            let words = words
+                .iter()
+                .map(|w| int_of(Format::U32, *w as u64))
+                .collect();
+            Value::Words(words)
+        }
         Op::Words(v) => {
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, false);
@@ -2150,23 +2240,28 @@ fn step(
             for f in fields {
                 values.push(scalar(frame, *f)?);
             }
-            Value::Message(*ty, values)
+            Value::Message(*ty, values, Vec::new())
         }
         Op::Field(m, k) => match get(frame, *m)? {
-            Value::Message(_, fields) => Value::Scalar(
+            Value::Message(_, fields, _) => Value::Scalar(
                 *fields
                     .get(*k as usize)
                     .ok_or_else(|| Fault::undefined("no such field"))?,
             ),
             other => return Err(Fault::undefined(format!("a field of {}", kind(other)))),
         },
+        Op::Body(m) => match get(frame, *m)? {
+            Value::Message(_, _, body) => Value::Body(body.clone()),
+            other => return Err(Fault::undefined(format!("the body of {}", kind(other)))),
+        },
         Op::Send {
             message,
             to,
+            body,
             used,
             publish,
         } => {
-            let m = message_of(frame, *message)?;
+            let m = with_body(module, worker, frame, message_of(frame, *message)?, body)?;
             let to = rank_to(frame, *to, place)?;
             let refused = cx.mail.bound.is_some_and(|b| cx.mail.live >= b);
             if refused && !*used {
@@ -2186,13 +2281,19 @@ fn step(
         }
         Op::Forward {
             message,
+            as_type,
             with,
             to,
             publish,
         } => {
-            let Value::Message(ty, mut fields) = message_of(frame, *message)? else {
+            let Value::Message(mut ty, mut fields, body) = message_of(frame, *message)? else {
                 return Err(Fault::undefined("`forward` of what is not a message"));
             };
+            // on as another type: the fields `with` gives, every one, and the same body
+            if let Some(target) = as_type {
+                ty = *target;
+                fields = vec![Scalar::Bool(false); with.len()];
+            }
             for (k, v) in with {
                 let x = scalar(frame, *v)?;
                 let slot = fields
@@ -2204,7 +2305,7 @@ fn step(
             let tiles = published(cx, frame, publish)?;
             let publications = cx.races.publish(place.rank, &tiles);
             cx.mail.handled += 1;
-            let m = Value::Message(ty, fields);
+            let m = Value::Message(ty, fields, body);
             let letter = cx.mail.letter(place.rank, to, m, cx.races, publications);
             cx.mail.outbox.push(letter);
             return Ok(Next::Go);
@@ -2215,8 +2316,8 @@ fn step(
             cx.mail.live = cx.mail.live.saturating_sub(1);
             return Ok(Next::Go);
         }
-        Op::Offer(message, to) => {
-            let m = message_of(frame, *message)?;
+        Op::Offer(message, to, body) => {
+            let m = with_body(module, worker, frame, message_of(frame, *message)?, body)?;
             let to = rank_to(frame, *to, place)?;
             let (from, size) = (place.rank, place.size.max(1) as u64);
             let peer = match &cx.mail.peers {

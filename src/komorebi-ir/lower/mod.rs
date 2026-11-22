@@ -87,6 +87,8 @@ struct Cx<'c> {
     params: HashMap<String, (ParamId, ScalarType, Option<ConstValue>)>,
     records: Vec<Declared>,
     messages: Vec<Declared>,
+    /// The bytes of each message type's body, by `MessageId` (0 for none).
+    message_bodies: Vec<u32>,
     funcs: HashMap<String, (FuncId, Signature)>,
     programs: HashMap<String, ProgramId>,
     program_names: Vec<ProgramNames>,
@@ -126,6 +128,12 @@ fn attr_name(attr: &Attr) -> Option<&str> {
         [one] => Some(one.name.as_str()),
         _ => None,
     }
+}
+
+/// The bytes of a message's body, from its `@body(n)` as the checker reads it; 0 when
+/// it has none.
+fn message_body(attrs: &[Attr]) -> u32 {
+    crate::check::body_bytes(attrs).map_or(0, |n| n as u32)
 }
 
 fn has_attr(attrs: &[Attr], name: &str) -> bool {
@@ -189,6 +197,7 @@ impl<'c> Cx<'c> {
             params: HashMap::new(),
             records: Vec::new(),
             messages: Vec::new(),
+            message_bodies: Vec::new(),
             funcs: HashMap::new(),
             programs: HashMap::new(),
             program_names: Vec::new(),
@@ -338,6 +347,7 @@ impl<'c> Cx<'c> {
                 Item::Message(m) => {
                     let fields = self.fields(&m.fields)?;
                     self.messages.push((None, m.name.name.clone(), fields));
+                    self.message_bodies.push(message_body(&m.attrs));
                 }
                 Item::Program(p) => {
                     let pid = ProgramId(program_index);
@@ -352,6 +362,7 @@ impl<'c> Cx<'c> {
                             ProgramItem::Message(m) => {
                                 let fields = self.fields(&m.fields)?;
                                 self.messages.push((Some(pid), m.name.name.clone(), fields));
+                                self.message_bodies.push(message_body(&m.attrs));
                             }
                             _ => {}
                         }
@@ -648,10 +659,12 @@ impl<'c> Cx<'c> {
         out.messages = self
             .messages
             .iter()
-            .map(|(p, n, f)| pg::Message {
+            .zip(&self.message_bodies)
+            .map(|((p, n, f), body)| pg::Message {
                 name: n.clone(),
                 program: *p,
                 fields: f.clone(),
+                body: *body,
             })
             .collect();
         let (mut record_at, mut message_at) = (0u32, 0u32);

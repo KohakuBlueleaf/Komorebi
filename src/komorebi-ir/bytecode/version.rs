@@ -11,7 +11,7 @@ pub const MAGIC: [u8; 4] = *b"KOMC";
 
 /// The version this build writes, and the only one it reads. Any change to the layout
 /// or to a table below is a new version.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// The bytes of the header: the magic, the version (u32), and the length of each part,
 /// S, H and P (three u64).
@@ -172,6 +172,7 @@ pub const OP: Table = &[
     (85, "IslandHops"),
     (86, "ReduceTo"),
     (87, "BroadcastFrom"),
+    (88, "Body"),
 ];
 
 /// `program::Access`.
@@ -259,6 +260,7 @@ pub const TYPE: Table = &[
     (19, "Handle"),
     (20, "Outcome"),
     (21, "Reason"),
+    (22, "Body"),
 ];
 
 /// `types::ConstValue`.
@@ -272,6 +274,9 @@ pub const ON: Table = &[(0, "Group"), (1, "Grid")];
 
 /// A chain call's `Option<program::Part>`.
 pub const PART: Table = &[(0, "Whole"), (1, "Part")];
+
+/// `program::body::ScalarsFrom`: where a message's body comes from.
+pub const SCALARS_FROM: Table = &[(0, "Value"), (1, "Member")];
 
 /// `types::Peers`.
 pub const PEERS: Table = &[(0, "None"), (1, "Offsets"), (2, "Pairs")];
@@ -424,6 +429,7 @@ pub const TABLES: &[(&str, Table)] = &[
     ("Binding", BINDING),
     ("On", ON),
     ("Part", PART),
+    ("ScalarsFrom", SCALARS_FROM),
     ("Peers", PEERS),
     ("Ability", ABILITY),
     ("Count", COUNT),

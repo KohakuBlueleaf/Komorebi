@@ -203,11 +203,14 @@ In a dynamic run only (`K503`).
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
 | `M { field: value, ... }` | every field of `M` (`K113`) | scalars | a message | T9 |
-| `send(M { ... }, to = rank, publish = [v])` | the message by position; `to` by name; `publish` *optional* | a message; an integer; views | `bool`: false when refused | T9, T15 |
-| `forward(m, with = { ... }, to = rank, publish = [v])` | `m` by position; `to` by name, always given; `with`, `publish` by name, *optional* | the arrived message; some of its fields; an integer; views | sends the same unit of work on | T9, T15 |
+| `message M @body(n) { ... }` | one, a whole number written in the text, above 0 and a multiple of 4 (`K004`) | | each `M` carries a body of up to n bytes beside its fields | Dynamic runs |
+| `send(M { ... }, to = rank, body = src, publish = [v])` | the message by position; `to` by name; `body`, `publish` by name, *optional* | a message; an integer; u32 scalars: `m.body`, the words of a tile of `u32`, or a state member of `u32` named whole, given only to a type with `@body` and no longer than it (`K102`, `K115`); views | `bool`: false when refused. Without `body`, the body is empty; a state member not filled fails `empty_state`, a body longer than the type takes `out_of_range` | T9, T15 |
+| `forward(m, as = T, with = { ... }, to = rank, publish = [v])` | `m` by position; `to` by name, always given; `as`, `with`, `publish` by name, *optional* | the arrived message; a message type (`K101`); some fields of `T` (of `m`'s type without `as`); an integer; views | sends the same unit of work on, its body unchanged. With `as`, as a `T`: each field of `T` from `with`, else from `m`'s field of the same name and scalar type (`K113`); `m`'s body fits `T`'s (`K102`) | T9, T15 |
 | `consume m` | the arrived message | | ends the unit of work | T9 |
-| `offer(M { ... }, to = rank)` | the message by position; `to` by name | a message; an integer, to a declared peer (`K502`) | `bool`: false while the peer holds the last one | Dynamic runs |
+| `offer(M { ... }, to = rank, body = src)` | the message by position; `to` by name; `body` by name, *optional* | a message; an integer, to a declared peer (`K502`); u32 scalars, as `send`'s | `bool`: false while the peer holds the last one | Dynamic runs |
 | `m.field` | none | an arrived message | the field | T9 |
+| `m.body` | none | the arrived message, of a type with `@body` (`K102`) | its body; a field named `body` is written between backticks (`K120`) | Dynamic runs |
+| `b.words()` | none | a message's body | its words, `u32` scalars, indexed `w[i]`; an index at or past the words the body holds fails `out_of_range` | Dynamic runs |
 
 ## Control programs
 
@@ -239,7 +242,6 @@ The language names these and the build does not have them yet. Each is refused b
 - `all_gather`, a collective with the participants of `all_reduce`: in a handler the group's workers,
   in a control program the islands. Its operands are not written yet.
 - A `store` of scalars.
-- A message's body: `@body(n)` on a message, `m.body`, and `as = M` on a `forward`.
 - Several tile shapes in one module.
 - In a function on blocks: a reduction along a column, `.col()` of other than a reduction along a
   row, `.row()` of other than a tile parameter, and `.T`; a `combine` or an `extern func` on blocks.

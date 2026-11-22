@@ -9,7 +9,7 @@ use crate::syntax::ast::{
 };
 
 use super::codes;
-use super::env::is_named;
+use super::env::{body_bytes, is_named};
 use super::Checker;
 
 /// The language's own undotted attributes. A dotted name is a hint and never an error.
@@ -286,14 +286,23 @@ impl Checker<'_> {
         }
     }
 
+    /// `@body(n)` on a message: one whole number written in the text, above 0 and a
+    /// multiple of 4 (`K004`).
     fn message_attrs(&mut self, attrs: &[Attr]) {
         self.attrs_in(attrs, &["body"], "a message");
-        if let Some(attr) = attrs.iter().find(|a| is_named(a, "body")) {
-            self.error(
-                codes::NOT_BUILT,
-                "a message's body (`@body`) is named in the language and not built yet".into(),
-                attr.span,
-            );
+        for attr in attrs.iter().filter(|a| is_named(a, "body")) {
+            if has_quoted(attr) {
+                continue;
+            }
+            if body_bytes(std::slice::from_ref(attr)).is_none() {
+                self.error(
+                    codes::ATTRIBUTE_ARGUMENT,
+                    "`@body` takes one argument, a whole number of bytes written in the text, \
+                     above 0 and a multiple of 4"
+                        .into(),
+                    attr.span,
+                );
+            }
         }
     }
 

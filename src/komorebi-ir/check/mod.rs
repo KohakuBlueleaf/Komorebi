@@ -24,6 +24,7 @@ use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
 use crate::types::{self as t, Failure, Format, MessageId, ParamId, RecordId, Type};
 pub use decls::Decls;
+pub(crate) use env::body_bytes;
 use index::Index;
 use op::{OpKind, Resolved};
 use ty::{Count, Ty};
@@ -297,6 +298,7 @@ fn public(ty: &Ty, program: Option<&str>, ix: &Index, casts: &Casts) -> Option<T
         Ty::Records(r, _) => Type::Records(ix.record_ref(program, r)?),
         Ty::Record(r) => Type::RecordValue(ix.record_ref(program, r)?),
         Ty::Message(m) => Type::Message(ix.message_ref(program, m)?),
+        Ty::Body => Type::Body,
         Ty::Stream(elem, _) => match &**elem {
             Ty::Tile(f) => Type::Stream((*f)?, t::Count::Const(1), t::Count::Const(1)),
             Ty::Block(f, s) => Type::Stream((*f)?, count(&s.rows)?, count(&s.cols)?),

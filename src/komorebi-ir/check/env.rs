@@ -85,11 +85,20 @@ pub(crate) struct Invocable {
     pub is_handler: bool,
 }
 
+/// A message type: its fields and the bytes of its body.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MessageInfo {
+    /// Field names and types, in order.
+    pub fields: Vec<(String, Ty)>,
+    /// The bytes of its body (`@body(n)`), when it has one.
+    pub body: Option<u64>,
+}
+
 /// What a program declares.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ProgramInfo {
-    /// Its message types: field names and types, in order.
-    pub messages: HashMap<String, Vec<(String, Ty)>>,
+    /// Its message types.
+    pub messages: HashMap<String, MessageInfo>,
     /// Its record types.
     pub records: HashMap<String, Vec<(String, Ty)>>,
     /// Its state members.
@@ -106,7 +115,7 @@ pub(crate) struct Env {
     /// The module's parameters and their types.
     pub params: HashMap<String, Ty>,
     /// The module's message types.
-    pub messages: HashMap<String, Vec<(String, Ty)>>,
+    pub messages: HashMap<String, MessageInfo>,
     /// The module's record types.
     pub records: HashMap<String, Vec<(String, Ty)>>,
     /// The module's functions.
@@ -122,8 +131,8 @@ pub(crate) struct Env {
 }
 
 impl Env {
-    /// The fields of a message type visible in `program` (its own, then the module's).
-    pub fn message(&self, program: Option<&str>, name: &str) -> Option<&Vec<(String, Ty)>> {
+    /// A message type visible in `program` (its own, then the module's).
+    pub fn message(&self, program: Option<&str>, name: &str) -> Option<&MessageInfo> {
         program
             .and_then(|p| self.programs.get(p))
             .and_then(|p| p.messages.get(name))
@@ -269,7 +278,9 @@ impl Checker<'_> {
                     names.declare(self, &m.name);
                     self.bare_word(&m.name, Declared::Type);
                     let fields = self.fields(&env, &m.fields, true);
-                    env.messages.insert(m.name.name.clone(), fields);
+                    let body = body_bytes(&m.attrs);
+                    env.messages
+                        .insert(m.name.name.clone(), MessageInfo { fields, body });
                 }
                 Item::Record(r) => {
                     names.declare(self, &r.name);
@@ -329,7 +340,9 @@ impl Checker<'_> {
                     names.declare(self, &m.name);
                     self.bare_word(&m.name, Declared::Type);
                     let fields = self.fields(env, &m.fields, true);
-                    info.messages.insert(m.name.name.clone(), fields);
+                    let body = body_bytes(&m.attrs);
+                    info.messages
+                        .insert(m.name.name.clone(), MessageInfo { fields, body });
                 }
                 ProgramItem::Record(r) => {
                     names.declare(self, &r.name);
@@ -445,6 +458,16 @@ impl Checker<'_> {
         let mut out = Vec::new();
         for f in fields.values() {
             names.declare(self, &f.name);
+            // a bare `body` after a message is the language's (R50)
+            if message && !f.name.quoted && f.name.name == "body" {
+                self.error(
+                    codes::BARE_WORD,
+                    "`body` is the language's after a message: a field of a message named \
+                     `body` is written between backticks, at its declaration and at every use"
+                        .into(),
+                    f.name.span,
+                );
+            }
             let ty = self.ty(env, &f.ty, Place::Field);
             if message
                 && f.ty.count.is_none()
@@ -699,6 +722,24 @@ fn record_bytes(fields: &List<Field>) -> Option<u64> {
         total += Format::from_name(s.name())?.bytes()? as u64;
     }
     Some(total)
+}
+
+/// The bytes of a message's body, from its `@body(n)`: n when it is one whole number
+/// written in the text, above 0 and a multiple of 4 (otherwise `K004`, and none).
+pub(crate) fn body_bytes(attrs: &[crate::syntax::ast::Attr]) -> Option<u64> {
+    let attr = attrs.iter().find(|a| is_named(a, "body"))?;
+    let args = attr.args.as_ref()?;
+    if args.len() != 1 {
+        return None;
+    }
+    let arg = args.values().next()?;
+    let crate::syntax::ast::ExprKind::Int(text) = &arg.value.kind else {
+        return None;
+    };
+    match parse_int(text) {
+        Some(n) if arg.name.is_none() && n > 0 && n % 4 == 0 => Some(n),
+        _ => None,
+    }
 }
 
 /// True for an attribute with this one undotted name.

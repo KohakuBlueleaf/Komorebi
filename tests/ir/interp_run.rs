@@ -1194,6 +1194,263 @@ fn an_offer_goes_to_a_declared_peer_only() {
     );
 }
 
+fn construct(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/ir/corpus/golden/constructs")
+        .join(format!("{name}.kom"));
+    std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} is readable", path.display()))
+}
+
+#[test]
+fn a_body_given_to_a_send_is_read_where_the_message_arrives() {
+    let m = module(&construct("c01_message_body"));
+    let mut run = Machine::load(&m, 3, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("Bodies.trace", &[Arg::Scalar(u32s(1))], (0, 3), &[]),
+        End::Completed(None)
+    );
+    // each worker's Hit came from the rank before it, whose note was [1, rank]
+    for w in 0..3 {
+        let sender = ((w + 2) % 3) as u64;
+        assert_eq!(
+            scalars(&run, w, 1),
+            [u32s(0), u32s(1 + sender), u32s(sender), u32s(1)],
+            "worker {w}"
+        );
+    }
+}
+
+#[test]
+fn a_forward_as_another_type_carries_the_fields_and_the_body() {
+    let m = module(&construct("c01_message_body"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("Bodies.trace", &[Arg::Scalar(u32s(2))], (0, 2), &[]),
+        End::Completed(None)
+    );
+    // two Rays from the other rank, each forwarded as a Hit; the last is Ray 1, whose
+    // body was [2, sender]: its id and its body's word 1 arrive in `on Hit`
+    for w in 0..2 {
+        let sender = ((w + 1) % 2) as u64;
+        let seen = scalars(&run, w, 1);
+        assert_eq!(seen[0], u32s(1), "worker {w}: the carried id");
+        assert_eq!(
+            seen[1],
+            u32s(2 + sender),
+            "worker {w}: the sum `with` gives"
+        );
+        assert_eq!(seen[2], u32s(sender), "worker {w}: the carried body");
+        assert_eq!(seen[3], u32s(2), "worker {w}: two Hits");
+    }
+}
+
+const PASS_ON: &str = "module relay
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program P {
+    message Ray @body(8) { id: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        note: u32[2]
+        seen: u32[5]  @export
+    }
+
+    run go(n: u32) @dynamic {
+        seed {
+            note.zero()
+            seen.zero()
+            note[0] = n
+            note[1] = worker.rank + 10
+            send(Ray { id: worker.rank }, to = worker.rank, body = note)
+        }
+
+        on Ray(m) {
+            let w = m.body.words()
+            let k = seen.bump(4)
+            seen[k * 2] = w[0]
+            seen[k * 2 + 1] = w[1]
+            if k == 0 {
+                send(Ray { id: m.id }, to = worker.rank, body = m.body)
+            }
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn a_body_passed_on_in_a_new_send() {
+    let m = module(PASS_ON);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("P.go", &[Arg::Scalar(u32s(7))], (0, 2), &[]),
+        End::Completed(None)
+    );
+    // the second arrival reads the words the first one carried
+    for w in 0..2u64 {
+        assert_eq!(
+            scalars(&run, w as usize, 1),
+            [u32s(7), u32s(w + 10), u32s(7), u32s(w + 10), u32s(2)],
+            "worker {w}"
+        );
+    }
+}
+
+const OFFER_BODY: &str = "module ring
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program R {
+    message Tick @body(4) { step: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        note: u32[1]
+        seen: u32[2]
+    }
+
+    run ring(gap: u32) @dynamic @peers(offsets = [1]) {
+        seed {
+            note.zero()
+            seen.zero()
+            note[0] = worker.rank + 100
+            if worker.is_leader {
+                let went = offer(Tick { step: 0 }, to = (worker.rank + gap) % group.size, body = note)
+            }
+        }
+
+        on Tick(m) {
+            let w = m.body.words()
+            seen[0] = w[0]
+            seen.bump(1)
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn an_offer_carries_a_body() {
+    let m = module(OFFER_BODY);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("R.ring", &[Arg::Scalar(u32s(1))], (0, 4), &[]),
+        End::Completed(None)
+    );
+    // the leader's offer reaches rank 1 with the leader's note
+    let seen: Vec<Vec<Scalar>> = (0..4).map(|w| scalars(&run, w, 1)).collect();
+    assert_eq!(seen[1], [u32s(100), u32s(1)]);
+    for w in [0, 2, 3] {
+        assert_eq!(seen[w], [u32s(0), u32s(0)], "worker {w}");
+    }
+}
+
+const TOO_LONG: &str = "module long
+
+tile [4, 4]
+format u32
+
+param ROOM: u32 = 8 @bind(load)
+
+requires {
+    dynamic
+}
+
+program L {
+    message Ray @body(16) { id: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        big: u32[ROOM]
+    }
+
+    run go(n: u32) @dynamic {
+        seed {
+            big.zero()
+            send(Ray { id: n }, to = worker.rank, body = big)
+        }
+
+        on Ray(m) {
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn a_body_longer_than_the_message_takes_fails_out_of_range() {
+    let m = module(TOO_LONG);
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    // eight words are 32 bytes, and a Ray takes 16
+    let End::Failed {
+        reason: Failure::OutOfRange,
+        at: Some((0, BodyRef::Seed(..), _)),
+    } = run.invoke("L.go", &[Arg::Scalar(u32s(0))], (0, 1), &[])
+    else {
+        panic!("a body longer than the message takes");
+    };
+    // four words fit
+    let mut run = Machine::load(&m, 1, &[("ROOM", u32s(4))], Options::default()).expect("loads");
+    assert_eq!(
+        run.invoke("L.go", &[Arg::Scalar(u32s(0))], (0, 1), &[]),
+        End::Completed(None)
+    );
+}
+
+const NO_WORDS: &str = "module empty
+
+tile [4, 4]
+format u32
+
+requires {
+    dynamic
+}
+
+program E {
+    message Ray @body(16) { id: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        seen: u32[1]
+    }
+
+    run go(n: u32) @dynamic {
+        seed {
+            seen.zero()
+            send(Ray { id: n }, to = worker.rank)
+        }
+
+        on Ray(m) {
+            let w = m.body.words()
+            seen[0] = w[0]
+            consume m
+        }
+    }
+}
+";
+
+#[test]
+fn a_word_past_the_bodys_end_fails_out_of_range() {
+    let m = module(NO_WORDS);
+    let mut run = Machine::load(&m, 1, &[], Options::default()).expect("loads");
+    // a send with no `body =`: the body is empty, and its word 0 is past its end
+    let End::Failed {
+        reason: Failure::OutOfRange,
+        at: Some((0, BodyRef::On(..), _)),
+    } = run.invoke("E.go", &[Arg::Scalar(u32s(0))], (0, 1), &[])
+    else {
+        panic!("a word past the body's end");
+    };
+}
+
 #[test]
 fn a_message_body_must_handle_its_message_once() {
     use komorebi_ir::program::body::Op;

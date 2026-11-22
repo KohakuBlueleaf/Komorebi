@@ -1,7 +1,7 @@
 //! The golden test of program compile's checks: every module of `invalid/` gives
 //! exactly the diagnostics its `.expect` file lists, and the lessons, the reference's
-//! modules, the modules of `run_fails/` and the fragments that are whole modules check
-//! clean.
+//! modules, the constructs, the modules of `run_fails/` and the fragments that are
+//! whole modules check clean.
 //! The whole front ends on every prefix of every lesson and on every lesson with one
 //! byte changed: diagnostics or clean, never a panic and never a hang.
 //!
@@ -100,6 +100,11 @@ fn assert_clean(sub: &str, at_least: usize) {
 #[test]
 fn lessons_check_clean() {
     assert_clean("lessons", 15);
+}
+
+#[test]
+fn constructs_check_clean() {
+    assert_clean("constructs", 1);
 }
 
 #[test]
