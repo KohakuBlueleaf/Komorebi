@@ -271,7 +271,8 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
 `<scene>_visibility.npz` beside the materials file and reused unless `--rebake`.
 
 1. **Environment.** One HDR environment map per scene (Poly Haven, CC0, the
-   `environments` table), turned about the up axis (y) by the scene's `turn`. The
+   `environments` table), turned about the up axis (y) by the scene's `turn` (the
+   sun's azimuth changes it: "Moving the sun" below). The
    sun is the brightest small region: the luminance-weighted centre of the excess
    over its surroundings inside 4 degrees of the brightest texel; its colour is that
    excess (luminance 1). The sky is the map with that cone replaced by the mean of
@@ -320,11 +321,14 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    once per lamp, each times that light's irradiance (with `n.l` and the shadow) over
    pi, only for `lit` materials with a specular colour. `emissive`: `a x
    emissive_scale`, unlit; `masked`: holes as SHADE. Background: the nearest texel of
-   the octahedral map (below) in the pixel's view direction. The frame is
+   the octahedral map (below) in the pixel's view direction turned by `-turn` about y,
+   `(x, z) -> (c x + s z, c z - s x)` with `c, s` the float32 cosine and sine of
+   `-turn` (y kept). The frame is
    `x / (1 + x)` of `exposure x colour`, then the pictures' 8-bit conversion.
-6. **Octahedral map.** `prepare` resamples the turned environment once into a
-   512 x 512 float32 RGB map of world directions (y up), saved in the lighting file
-   as `octahedral`, so the background needs no trigonometry. A direction
+6. **Octahedral map.** `prepare` resamples the environment once into a 512 x 512
+   float32 RGB map of directions in the environment's own frame (turn 0, y up), saved
+   in the lighting file as `octahedral`, so the background needs no trigonometry per
+   pixel and a new `turn` changes a number, never the map. A direction
    `d = (x, y, z)` (need not be unit) goes to `u = x / (|x| + |y| + |z|)`,
    `v = z / (|x| + |y| + |z|)`; when `y < 0` these are folded to
    `(u, v) = ((1 - |v|) sign u, (1 - |u|) sign v)` (both from the unfolded values,
@@ -332,8 +336,41 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    `floor((v + 1) / 2 x 512)`, each clamped to 511. The inverse, used to fill the map
    at texel centres `u, v = (i + 0.5) / 512 x 2 - 1`: `y = 1 - |u| - |v|`; when
    `y < 0`, `(u, v)` unfolded by the same rule; the direction is `(u, y, v)`
-   normalized, turned back by the scene's `turn` into the equirectangular map, whose
-   nearest texel is taken. The sun and sky still come from the equirectangular file.
+   normalized, whose nearest texel of the equirectangular map is taken. The sun and
+   sky still come from the equirectangular file. (Before the movable sun the map
+   was resampled turned and looked up unturned. On the Bistro exterior's own view the
+   change moved 15,536 of its 24,108 background pixels, by 7.2 of 255 on average and
+   95 at most, from nearest-texel resampling on a differently turned grid; against a
+   direct lookup of the file the mean error went from 5.9 to 5.2. No surface pixel
+   changed. Sponza and the interior, turn 0, are unchanged.)
+
+**Moving the sun.** `lights.moved(lights, scene, materials, azimuth, elevation)` takes
+the prepared lights (`lights.load`), the scene's mesh and materials, and two angles in
+degrees, and returns the lights of a sun at that place without baking visibility again.
+The angles are those of the direction toward the sun (`lights.sun_angles`): azimuth 0
+at +x, 90 at -z (a right-handed turn about +y, the sense of `turned`), elevation
+`atan2(y, sqrt(x^2 + z^2))` above the horizontal plane; the direction is
+`(cos e cos a, sin e, -cos e sin a)`. The scenes' own suns: Sponza azimuth 144.08,
+elevation 74.53; Bistro exterior azimuth -90, elevation 61.18 (the authored sun).
+
+- **Azimuth** turns the environment with the sun: `turn` grows by the change of
+  azimuth, so the map's own sun keeps the sun's azimuth. The sky's 9 coefficients per
+  colour are rotated about y (`sh_turned`: the 9 x 9 matrix taking the basis to the
+  basis at turned directions, fitted on 128 directions, exact since each band is closed
+  under rotation); they agree with projecting the turned map again to float32 rounding
+  (under 6e-8). The background follows through `turn` (step 5). The sky's irradiance on
+  a horizontal surface does not change under a turn about y, so the sun's stays.
+- **Elevation** moves the sun alone: the sky and the background do not change, so the
+  map's own sun disc stays where the map has it (a known inconsistency: the
+  background's sun and the light's sun part when the elevation moves).
+- **Both** give a new direction and a new shadow map (`sun_camera`, `shadow_map`, the
+  same rules); the bias stays `shadow_bias` texels at the new camera's distance. The
+  sun's colour and irradiance do not change. At or below the horizon (elevation <= 0)
+  the irradiance is 0 and the shadow map is a 1 x 1 map of 0 (all lit, unused).
+- At the scene's own angles `moved` returns the prepared lights: the same direction,
+  coefficients, turn and shadow map (Sponza bit for bit; the exterior's direction has
+  x = 2.95e-17 for -0 and the same shadow map). Its time is the shadow map's: about
+  4 s for Sponza, 17 s for the Bistro exterior (numpy, 8 CPUs).
 
 **Terms.** `rasterize_lighted(..., terms=...)` takes a subset of `sky`, `ambient`,
 `sun`, `shadow`, `lamps`, `specular`, `background` (default: all of them, the frame

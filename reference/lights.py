@@ -157,6 +157,15 @@ def sh_basis(d):
     )
 
 
+def sh_turned(sh, turn_deg):
+    """Coefficients sh (9, C) of a sky turned about y by turn_deg degrees (as `turned`):
+    M sh, M (9 x 9) the least-squares fit of the basis at turned directions to the basis
+    (exact: each band is closed under rotation), float64 on 128 texel directions."""
+    d = texel_directions(8, 16)[0].reshape(-1, 3)
+    m = np.linalg.lstsq(sh_basis(d), sh_basis(turned(d, turn_deg)), rcond=None)[0]
+    return (m.T @ np.asarray(sh, np.float64)).astype(np.float32)
+
+
 def sky_irradiance(sh, n):
     """Irradiance (n, 3) float32 of the sky with coefficients sh (9, 3) on unit
     normals n (n, 3): the quadratic form of Ramamoorthi and Hanrahan, in this order."""
@@ -526,7 +535,7 @@ def prepare(name, data, workers=4, rebake=False):
         sh=env["sh"],
         sun_direction=env["sun_direction"],
         sun_irradiance=sun_irradiance.astype(np.float32),
-        octahedral=octahedral_map(env["environment"], turn),
+        octahedral=octahedral_map(env["environment"], 0.0),
         turn=np.float32(turn),
         shadow_map=depth,
         shadow_camera=camera,
@@ -538,6 +547,52 @@ def prepare(name, data, workers=4, rebake=False):
     )
     counts["bytes"] = os.path.getsize(out)
     return out, counts
+
+
+def sun_angles(direction):
+    """Azimuth and elevation (degrees) of a direction toward the sun: azimuth 0 at +x,
+    90 at -z (a right-handed turn about +y, the sense of `turned`), elevation above
+    the horizontal plane (y = 0)."""
+    d = np.asarray(direction, np.float64)
+    elevation = np.degrees(np.arctan2(d[1], np.hypot(d[0], d[2])))
+    return float(np.degrees(np.arctan2(-d[2], d[0]))), float(elevation)
+
+
+def sun_direction(azimuth, elevation):
+    """The unit direction (3,) float32 toward a sun at azimuth, elevation (degrees,
+    as `sun_angles`)."""
+    a, e = np.radians(azimuth), np.radians(elevation)
+    return np.array(
+        [np.cos(e) * np.cos(a), np.sin(e), -np.cos(e) * np.sin(a)], dtype=np.float32
+    )
+
+
+def moved(lights, scene, materials, azimuth, elevation):
+    """The prepared lights (`load`) with the sun at azimuth, elevation (degrees): the
+    map turned so its own sun has that azimuth (turn, sky by `sh_turned`), the shadow
+    map rebuilt; visibility, colour and irradiance kept. Elevation <= 0: irradiance 0
+    and a 1 x 1 shadow map of 0 (all lit). README "Moving the sun"."""
+    own_azimuth, _ = sun_angles(lights["sun_direction"])
+    change = float(azimuth) - own_azimuth
+    sun = sun_direction(azimuth, elevation)
+    out = dict(lights)
+    out["turn"] = np.float32(float(lights["turn"]) + change)
+    out["sh"] = sh_turned(lights["sh"], change)
+    out["sun_direction"] = sun
+    # The bias in shadow texels at the camera's distance, as `load` made it.
+    distance = float(lights["shadow_texel"] * lights["shadow_camera"][12])
+    texels = float(lights["shadow_bias"]) * distance**2 / float(lights["shadow_texel"])
+    if elevation <= 0:
+        camera = sun_camera(scene["positions"], sun)
+        out["sun_irradiance"] = np.zeros(3, dtype=np.float32)
+        out["shadow_map"] = np.zeros((1, 1), dtype=np.float32)
+        out["shadow_camera"], out["shadow_texel"] = camera, lights["shadow_texel"]
+        return out
+    depth, camera, texel = shadow_map(scene, sun, materials)
+    out["shadow_map"], out["shadow_camera"], out["shadow_texel"] = depth, camera, texel
+    distance = float(texel * camera[12])
+    out["shadow_bias"] = F(texels * float(texel) / distance**2)
+    return out
 
 
 LIGHT_KEYS = (

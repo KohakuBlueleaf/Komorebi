@@ -668,13 +668,17 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
 
 
 def background(scene, lights):
-    """The environment's radiance (H, W, 3) in each pixel's view direction: the
-    nearest texel of the octahedral map (world directions, y up)."""
+    """The environment's radiance (H, W, 3) in each pixel's view direction turned by
+    -turn about y: the nearest texel of the octahedral map (the map's frame, y up)."""
     cam = scene["camera"]
     ys, xs = np.mgrid[0:HEIGHT, 0:WIDTH]
     sx = (xs.ravel().astype(np.float32) + F(0.5) - cam[13]) / cam[12]
     sy = (ys.ravel().astype(np.float32) + F(0.5) - cam[14]) / cam[12]
     d = (cam[9:12] + cam[3:6] * sx[:, None]) - cam[6:9] * sy[:, None]
+    angle = np.radians(-float(lights["turn"]))
+    c, s = F(np.cos(angle)), F(np.sin(angle))
+    x, z = d[:, 0], d[:, 2]
+    d = np.stack([c * x + s * z, d[:, 1], c * z - s * x], -1)
     octa = lights["octahedral"]
     row, column = light_data.octahedral_texel(d, octa.shape[0])
     return octa[row, column].reshape(HEIGHT, WIDTH, 3)
