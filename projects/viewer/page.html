@@ -5,80 +5,156 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card viewer</title>
 <style>
-  :root { color-scheme: dark; --bg: #111; --fg: #ddd; --dim: #888; --line: #333; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
-           padding: 8px 16px; border-bottom: 1px solid var(--line); }
-  select { background: #222; color: var(--fg); border: 1px solid var(--line);
-           padding: 2px 6px; }
-  #numbers { font-family: ui-monospace, monospace; color: var(--dim); }
-  #status.bad { color: #e87; }
-  #sun[hidden], #tone[hidden], #gi[hidden] { display: none; }
-  #sun input[type=range], #tone input[type=range] { width: 140px; vertical-align: middle; }
-  #size input { width: 5em; background: #222; color: var(--fg);
-                border: 1px solid var(--line); padding: 2px 4px; }
-  #size-reason { color: #e87; }
-  button { background: #222; color: var(--fg); border: 1px solid var(--line);
-           padding: 2px 8px; }
-  main { display: flex; justify-content: center; padding: 8px 16px; }
-  /* the frame at its own size, scaled down (aspect kept) to fit the window */
-  #view { display: block; max-width: 100%; max-height: calc(100vh - 110px);
-          width: auto; height: auto; object-fit: contain;
-          background: #000; cursor: grab; user-select: none; outline: none;
-          -webkit-user-drag: none; }
+  /* Three fixed columns: controls 300 px, the frame, the status 300 px. Nothing reflows:
+     every row is always present, a section that does not apply is greyed, the page
+     never scrolls down (the sidebars scroll inside) and scrolls sideways below 1180 px. */
+  :root { color-scheme: dark; --bg: #121212; --side: #1a1a1a; --fg: #e2e2e2;
+          --dim: #9c9c9c; --line: #2f2f2f; --field: #242424; --bad: #f2907f;
+          --ground: #050505; --mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.35 system-ui, sans-serif;
+         min-width: 1180px; overflow-y: hidden; }
+  #layout { display: grid; grid-template-columns: 300px minmax(580px, 1fr) 300px;
+            height: 100%; }
+  .side { background: var(--side); overflow-y: auto; overflow-x: hidden; min-height: 0; }
+  #controls { border-right: 1px solid var(--line); }
+  #status-side { border-left: 1px solid var(--line); padding: 10px 14px; }
+
+  fieldset { margin: 0; padding: 8px 14px 10px; border: 0; border-bottom: 1px solid var(--line);
+             min-width: 0; }
+  fieldset:disabled, fieldset:enabled .row:has(:disabled) { opacity: 0.4; }
+  legend, h2 { float: left; width: 100%; padding: 0; margin: 0 0 4px; font-size: 11px;
+               font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+               color: var(--dim); white-space: nowrap; }
+  legend + * { clear: both; }
+  .row { margin-top: 4px; }
+  .row > label, .row > .label { display: block; color: var(--dim); font-size: 12px;
+                                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.check > label { color: var(--fg); }
+  .line { display: flex; align-items: center; gap: 8px; }
+  select, input[type=number], button { width: 100%; height: 26px; background: var(--field);
+           color: var(--fg); border: 1px solid var(--line); border-radius: 3px;
+           padding: 0 6px; font: inherit; }
+  button { cursor: pointer; }
+  fieldset:disabled button, fieldset:disabled select, select:disabled,
+    input:disabled { cursor: default; }
+  input[type=range] { flex: 1; min-width: 0; margin: 0; height: 22px; }
+  output { flex: none; width: 64px; text-align: right; font-family: var(--mono);
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .reason { height: 18px; margin-top: 4px; color: var(--bad); white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis; }
+  .keys { margin: 0; display: grid; grid-template-columns: 74px 1fr; row-gap: 1px;
+          clear: both; }
+  .keys dt { font-family: var(--mono); color: var(--fg); white-space: nowrap; }
+  .keys dd { margin: 0; color: var(--dim); white-space: nowrap; }
+  .hint { margin: 4px 0 0; color: var(--dim); white-space: nowrap; }
+
+  /* the frame: scaled to fit, aspect kept, letterboxed on a dark ground */
+  #centre { min-width: 0; min-height: 0; overflow: hidden; background: var(--ground); }
+  #view { display: block; width: 100%; height: 100%; object-fit: contain;
+          cursor: grab; user-select: none; outline: none; -webkit-user-drag: none; }
+  #view:focus-visible { box-shadow: inset 0 0 0 1px #555; }
   #view.dragging { cursor: grabbing; }
-  footer { padding: 0 16px 8px; color: var(--dim); text-align: center; }
+
+  #status-table { width: 100%; table-layout: fixed; border-collapse: collapse; clear: both; }
+  #status-table th, #status-table td { height: 22px; padding: 0; white-space: nowrap;
+                                        overflow: hidden; text-overflow: ellipsis;
+                                        border-bottom: 1px solid #242424; }
+  #status-table th { width: 128px; text-align: left; font-weight: normal; color: var(--dim); }
+  #status-table td { text-align: right; font-family: var(--mono);
+                     font-variant-numeric: tabular-nums; }
+  #status-table td.bad, #message.bad { color: var(--bad); }
+  #message { height: 20px; margin-top: 10px; line-height: 20px; white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
 </style>
 </head>
 <body>
-<header>
-  <label>renderer <select id="renderer"></select></label>
-  <label>scene <select id="scene"></select></label>
-  <span id="sun" hidden>
-    <label>sun azimuth <input id="azimuth" type="range" min="-180" max="180" step="any"></label>
-    <label>elevation <input id="elevation" type="range" min="-10" max="90" step="any"></label>
-    <button id="reset-sun" type="button">reset sun</button>
-  </span>
-  <span id="tone" hidden>
-    <label>exposure <input id="exposure" type="range" min="-2" max="3" step="any"></label>
-    <label>saturation <input id="saturation" type="range" min="0" max="2" step="0.01"></label>
-    <label>curve <select id="curve"><option value="0">plain</option><option value="1">filmic</option></select></label>
-    <button id="reset-tone" type="button">reset tone</button>
-  </span>
-  <label id="gi" hidden><input id="indirect" type="checkbox"> indirect light</label>
-  <span id="size">
-    <label>width <input id="width" type="number" min="1" max="2048" step="1"></label>
-    <label>height <input id="height" type="number" min="1" max="1024" step="1"></label>
-    <button id="apply-size" type="button">size</button>
-    <span id="size-reason"></span>
-  </span>
-  <span id="numbers"></span>
-  <span id="status"></span>
-</header>
-<main><img id="view" alt="the card's frames" tabindex="0" draggable="false"></main>
-<footer>click the image, then: W A S D move, Q E down / up, drag to turn, shift faster</footer>
+<div id="layout">
+<aside id="controls" class="side">
+  <fieldset id="sec-renderer">
+    <legend>Renderer</legend>
+    <div class="row"><select id="renderer" aria-label="renderer"></select></div>
+  </fieldset>
+  <fieldset id="sec-scene">
+    <legend>Scene</legend>
+    <div class="row"><select id="scene" aria-label="scene"></select></div>
+  </fieldset>
+  <fieldset id="sec-frame">
+    <legend>Frame</legend>
+    <div class="row"><label for="width">width</label>
+      <input id="width" type="number" min="1" max="2048" step="1"></div>
+    <div class="row"><label for="height">height</label>
+      <input id="height" type="number" min="1" max="1024" step="1"></div>
+    <div class="row"><button id="apply-size" type="button">apply size</button></div>
+    <div id="size-reason" class="reason"></div>
+  </fieldset>
+  <fieldset id="sec-camera">
+    <legend>Camera</legend>
+    <dl class="keys">
+      <dt>W A S D</dt><dd>forward, left, back, right</dd>
+      <dt>Q E</dt><dd>down, up</dd>
+      <dt>drag</dt><dd>turn (yaw, pitch)</dd>
+      <dt>shift</dt><dd>five times faster</dd>
+    </dl>
+    <p class="hint">click the frame first</p>
+  </fieldset>
+  <fieldset id="sec-sun">
+    <legend>Sun</legend>
+    <div class="row"><label for="azimuth">azimuth</label>
+      <div class="line"><input id="azimuth" type="range" min="-180" max="180" step="any">
+        <output id="azimuth-value" for="azimuth"></output></div></div>
+    <div class="row"><label for="elevation">elevation</label>
+      <div class="line"><input id="elevation" type="range" min="-10" max="90" step="any">
+        <output id="elevation-value" for="elevation"></output></div></div>
+    <div class="row"><button id="reset-sun" type="button">reset sun</button></div>
+  </fieldset>
+  <fieldset id="sec-light">
+    <legend>Light</legend>
+    <div class="row check"><label><input id="indirect" type="checkbox"> indirect light</label></div>
+    <div class="row"><label for="bounces">passes</label>
+      <select id="bounces"><option value="0">0</option><option value="1">1</option>
+        <option value="2">2</option><option value="3">3</option></select></div>
+  </fieldset>
+  <fieldset id="sec-tone">
+    <legend>Tone</legend>
+    <div class="row"><label for="exposure">exposure</label>
+      <div class="line"><input id="exposure" type="range" min="-2" max="3" step="any">
+        <output id="exposure-value" for="exposure"></output></div></div>
+    <div class="row"><label for="saturation">saturation</label>
+      <div class="line"><input id="saturation" type="range" min="0" max="2" step="0.01">
+        <output id="saturation-value" for="saturation"></output></div></div>
+    <div class="row"><label for="curve">curve</label>
+      <select id="curve"><option value="0">plain</option><option value="1">filmic</option></select></div>
+    <div class="row"><button id="reset-tone" type="button">reset tone</button></div>
+  </fieldset>
+</aside>
+<main id="centre"><img id="view" alt="the card's frames" tabindex="0" draggable="false"></main>
+<aside id="status-side" class="side">
+  <h2>Status</h2>
+  <table id="status-table"><tbody></tbody></table>
+  <div id="message"></div>
+</aside>
+</div>
 <script>
 "use strict";
 const token = new URLSearchParams(location.search).get("token") || "";
 const q = "?token=" + encodeURIComponent(token);
-const view = document.getElementById("view");
-const rendererSelect = document.getElementById("renderer");
-const sceneSelect = document.getElementById("scene");
-const numbers = document.getElementById("numbers");
-const statusText = document.getElementById("status");
-const sunControls = document.getElementById("sun");
-const azimuthInput = document.getElementById("azimuth");
-const elevationInput = document.getElementById("elevation");
-const toneControls = document.getElementById("tone");
-const exposureInput = document.getElementById("exposure");  // log2 of the exposure
-const saturationInput = document.getElementById("saturation");
-const curveSelect = document.getElementById("curve");
-const giControl = document.getElementById("gi");
-const indirectInput = document.getElementById("indirect");
-const widthInput = document.getElementById("width");
-const heightInput = document.getElementById("height");
-const sizeReason = document.getElementById("size-reason");
+const $ = (id) => document.getElementById(id);
+const view = $("view");
+const rendererSelect = $("renderer");
+const sceneSelect = $("scene");
+const azimuthInput = $("azimuth");
+const elevationInput = $("elevation");
+const exposureInput = $("exposure");  // log2 of the exposure
+const saturationInput = $("saturation");
+const curveSelect = $("curve");
+const indirectInput = $("indirect");
+const bouncesSelect = $("bounces");
+const widthInput = $("width");
+const heightInput = $("height");
+const sizeReason = $("size-reason");
+const message = $("message");
 let sizeShown = false;    // the inputs hold the server's size once
 
 let pose = null;          // {position: [x, y, z], yaw, pitch}
@@ -88,7 +164,7 @@ let changed = false;
 let lastPost = 0;
 let posting = false;
 const held = new Set();
-let sunOwn = null;        // the scene's own sun [azimuth, elevation] (raster-lit)
+let sunOwn = null;        // the scene's own sun [azimuth, elevation] (lit renderers)
 let sunScene = -1;        // the scene the sliders are of
 let sunChanged = false;
 let lastSunPost = 0;
@@ -97,6 +173,8 @@ let toneScene = -1;       // the scene the tone controls are of
 let toneChanged = false;
 let lastTonePost = 0;
 let giScene = -1;         // the scene the indirect checkbox is of
+let bouncesScene = -1;    // the scene the passes choice is of
+let postError = "";       // the server's answer to the last refused post
 
 view.src = "/stream" + q;
 
@@ -108,12 +186,92 @@ function post(path, body) {
   });
 }
 
+// A post whose answer only matters when the server refuses it: its reason goes to the
+// message area under the status table.
+function send(path, body) {
+  post(path, body).then(async (response) => {
+    if (response.ok) { postError = ""; return; }
+    const answer = await response.json().catch(() => ({}));
+    postError = `${path}: ${answer.error || response.status}`;
+  }).catch(() => {});
+}
+
 function fill(select, values, chosen) {
   if (select.options.length !== values.length) {
     select.innerHTML = "";
     for (const value of values) select.add(new Option(value, value));
   }
   if (document.activeElement !== select && chosen) select.value = chosen;
+}
+
+// The status table: fixed rows, a dash where a value does not apply, fixed formats.
+const ROWS = [
+  ["state", "state"], ["renderer", "renderer"], ["scene", "scene"],
+  ["size", "frame size"], ["ms", "frame ms (host)"], ["fps", "frames a second"],
+  ["frame", "frame number"], ["sun", "sun az, el"], ["sun_ms", "SUN pass ms"],
+  ["field_s", "field update s"], ["exposure", "exposure"], ["saturation", "saturation"],
+  ["curve", "curve"], ["bounces", "passes"], ["indirect", "indirect"],
+];
+const cells = {}, heads = {};
+for (const [key, label] of ROWS) {
+  const row = $("status-table").tBodies[0].insertRow();
+  heads[key] = document.createElement("th");
+  heads[key].textContent = label;
+  row.appendChild(heads[key]);
+  cells[key] = row.insertCell();
+}
+const fixed = (value, digits) =>
+  value === null || value === undefined ? "-" : Number(value).toFixed(digits);
+
+function renderStatus(state) {
+  const status = state.status || "-";
+  const word = status.startsWith("error") ? "error" :
+    status.startsWith("refused") ? status.replace(":", "") : status;
+  const tone = state.tone || null;
+  const values = {
+    state: word,
+    renderer: state.renderer || "-",
+    scene: state.scene || "-",
+    size: state.size ? `${state.size[0]} x ${state.size[1]}` : "-",
+    ms: fixed(state.card_ms, 1),
+    fps: fixed(state.fps, 0),
+    frame: fixed(state.frame, 0),
+    sun: state.sun ? `${fixed(state.sun[0], 1)}, ${fixed(state.sun[1], 1)}` : "-",
+    sun_ms: fixed(state.sun_ms, 1),
+    field_s: fixed(state.field_s, 2),
+    exposure: tone ? fixed(tone[0], 2) : "-",
+    saturation: tone ? fixed(tone[1], 2) : "-",
+    curve: tone ? (tone[2] === 1 ? "filmic" : "plain") : "-",
+    bounces: fixed(state.bounces, 0),
+    indirect: state.indirect === null || state.indirect === undefined ? "-" :
+      (state.indirect ? "on" : "off"),
+  };
+  for (const [key] of ROWS) {
+    cells[key].textContent = values[key];
+    cells[key].title = values[key];
+  }
+  heads.ms.textContent = state.card_ms_label || "frame ms (host)";
+  cells.state.className = status === "running" || status === "loading" ? "" : "bad";
+  const note = status === "running" || status === "loading" ? postError : status;
+  showMessage(note, note !== "");
+}
+
+function showMessage(text, bad) {
+  message.textContent = text;
+  message.title = text;
+  message.className = bad ? "bad" : "";
+}
+
+// Which sections apply: a section that does not is disabled (greyed), never removed.
+function setSections(state) {
+  $("sec-frame").disabled = !state.size_asked || state.sizes === false;
+  $("sec-sun").disabled = state.sun_own === null || state.sun_own === undefined;
+  $("sec-tone").disabled = state.tone_own === null || state.tone_own === undefined;
+  const hasIndirect = state.indirect !== null && state.indirect !== undefined;
+  const hasBounces = state.bounces !== null && state.bounces !== undefined;
+  $("sec-light").disabled = !hasIndirect && !hasBounces;
+  indirectInput.disabled = !hasIndirect;
+  bouncesSelect.disabled = !hasBounces;
 }
 
 async function refresh() {
@@ -129,54 +287,41 @@ async function refresh() {
       pose = JSON.parse(JSON.stringify(state.first_pose));
       changed = false;
     }
-    sunOwn = state.sun_own;
-    sunControls.hidden = sunOwn === null;
+    setSections(state);
+    sunOwn = state.sun_own === undefined ? null : state.sun_own;
     if (sunOwn !== null && state.scene_serial !== sunScene) {
       sunScene = state.scene_serial;  // a new scene: its own sun on the sliders
       azimuthInput.value = state.sun[0];
       elevationInput.value = state.sun[1];
       sunChanged = false;
     }
-    toneOwn = state.tone_own;
-    toneControls.hidden = toneOwn === null;
+    toneOwn = state.tone_own === undefined ? null : state.tone_own;
     if (toneOwn !== null && state.scene_serial !== toneScene) {
       toneScene = state.scene_serial;  // a new load: the scene's tone on the controls
       showTone(state.tone);
       toneChanged = false;
     }
-    giControl.hidden = state.indirect === null;
-    if (state.indirect !== null && state.scene_serial !== giScene) {
+    if (state.indirect !== null && state.indirect !== undefined &&
+        state.scene_serial !== giScene) {
       giScene = state.scene_serial;
       indirectInput.checked = state.indirect;
     }
-    const ms = state.card_ms === null ? "-" : state.card_ms.toFixed(1);
-    let sunText = "";
-    if (state.sun) {
-      const pass = state.sun_ms === null ? "-" : state.sun_ms.toFixed(1);
-      sunText = `  sun ${state.sun[0].toFixed(1)}, ${state.sun[1].toFixed(1)}  SUN pass ms ${pass}`;
+    if (state.bounces !== null && state.bounces !== undefined &&
+        state.scene_serial !== bouncesScene) {
+      bouncesScene = state.scene_serial;
+      bouncesSelect.value = String(state.bounces);
     }
-    if (state.tone) {
-      sunText += `  exposure ${state.tone[0].toFixed(2)} saturation ${state.tone[1].toFixed(2)} ` +
-        (state.tone[2] === 1 ? "filmic" : "plain");
-    }
-    if (state.indirect !== null) sunText += state.indirect ? "  indirect on" : "  indirect off";
     if (!sizeShown && state.size_asked) {
       sizeShown = true;
       widthInput.value = state.size_asked[0];
       heightInput.value = state.size_asked[1];
     }
-    if (state.size) {
-      sunText += `  ${state.size[0]} x ${state.size[1]}` + (state.sizes === false ? " (only)" : "");
-    }
-    numbers.textContent = `${state.renderer || "-"} / ${state.scene || "-"}  ` +
-      `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}` +
-      sunText;
-    statusText.textContent = state.status;
-    statusText.className = state.status === "running" ? "" :
-      (state.status === "loading" ? "" : "bad");
+    showValues();
+    renderStatus(state);
   } catch (error) {
-    statusText.textContent = "no answer from the server";
-    statusText.className = "bad";
+    cells.state.textContent = "no answer";
+    cells.state.className = "bad";
+    showMessage("no answer from the server", true);
   }
 }
 refresh();
@@ -190,24 +335,41 @@ function offered(scene) {
 function select() {
   const names = offered(sceneSelect.value);
   const renderer = names.includes(rendererSelect.value) ? rendererSelect.value : names[0];
-  post("/select", {renderer: renderer, scene: sceneSelect.value});
+  send("/select", {renderer: renderer, scene: sceneSelect.value});
 }
 rendererSelect.addEventListener("change", select);
 sceneSelect.addEventListener("change", select);
+
+// The sliders' current values, in the boxes at their right.
+function showValues() {
+  const show = (id, value, digits) => {  // a dash while the section does not apply
+    const off = $(id).closest("fieldset").disabled;
+    $(id).textContent = !off && Number.isFinite(value) ? value.toFixed(digits) : "-";
+  };
+  show("azimuth-value", Number(azimuthInput.value), 1);
+  show("elevation-value", Number(elevationInput.value), 1);
+  show("exposure-value", 2 ** Number(exposureInput.value), 2);
+  show("saturation-value", Number(saturationInput.value), 2);
+}
+for (const input of [azimuthInput, elevationInput, exposureInput, saturationInput]) {
+  input.addEventListener("input", showValues);
+}
 
 // The sun: a slider's move posts the angles (at most 10 times a second, the newest);
 // the server applies the newest between frames (the card's SUN pass).
 azimuthInput.addEventListener("input", () => { sunChanged = true; });
 elevationInput.addEventListener("input", () => { sunChanged = true; });
-document.getElementById("reset-sun").addEventListener("click", () => {
+$("reset-sun").addEventListener("click", () => {
   if (sunOwn === null) return;
   azimuthInput.value = sunOwn[0];
   elevationInput.value = sunOwn[1];
+  showValues();
   sunChanged = true;
 });
 
 // The tone: exposure (a logarithmic slider), saturation, curve; posted as the sun is,
-// applied between frames (LIGHT's table). The indirect switch: posted on a change.
+// applied between frames (LIGHT's table). The indirect switch and the passes: posted on
+// a change.
 function showTone(tone) {
   exposureInput.value = Math.log2(tone[0]);
   saturationInput.value = tone[1];
@@ -216,28 +378,36 @@ function showTone(tone) {
 exposureInput.addEventListener("input", () => { toneChanged = true; });
 saturationInput.addEventListener("input", () => { toneChanged = true; });
 curveSelect.addEventListener("change", () => { toneChanged = true; });
-document.getElementById("reset-tone").addEventListener("click", () => {
+$("reset-tone").addEventListener("click", () => {
   if (toneOwn === null) return;
   showTone(toneOwn);
+  showValues();
   toneChanged = true;
 });
 indirectInput.addEventListener("change", () => {
-  post("/indirect", {on: indirectInput.checked, scene_serial: sceneSerial}).catch(() => {});
+  send("/indirect", {on: indirectInput.checked, scene_serial: sceneSerial});
+});
+bouncesSelect.addEventListener("change", () => {
+  send("/bounces", {bounces: Number(bouncesSelect.value), scene_serial: sceneSerial});
 });
 
 // The frame's size: posted on the button (or Enter); the server refuses a size the card's
 // grid does not take, with the reason shown here, else applies it between frames.
 async function applySize() {
-  const body = {width: Number(widthInput.value), height: Number(heightInput.value)};
+  const body = {width: Number(widthInput.value), height: Number(heightInput.value),
+                scene_serial: sceneSerial};
   try {
     const response = await post("/size", body);
     const answer = await response.json();
-    sizeReason.textContent = response.ok ? "" : "refused: " + answer.error;
+    const reason = response.ok ? "" : "refused: " + answer.error;
+    sizeReason.textContent = reason;
+    sizeReason.title = reason;
   } catch (error) {
     sizeReason.textContent = "no answer from the server";
+    sizeReason.title = "";
   }
 }
-document.getElementById("apply-size").addEventListener("click", applySize);
+$("apply-size").addEventListener("click", applySize);
 for (const input of [widthInput, heightInput]) {
   input.addEventListener("keydown", (event) => { if (event.key === "Enter") applySize(); });
 }
@@ -263,6 +433,13 @@ let shift = false;
 addEventListener("keydown", (event) => { shift = event.shiftKey; });
 addEventListener("keyup", (event) => { shift = event.shiftKey; });
 
+// The width the frame is shown at inside the letterbox (the element fills the centre).
+function shownWidth() {
+  const w = view.naturalWidth, h = view.naturalHeight;
+  if (!w || !h) return view.clientWidth;
+  return Math.min(view.clientWidth, view.clientHeight * w / h);
+}
+
 let drag = null;
 view.addEventListener("pointerdown", (event) => {
   view.focus();
@@ -272,7 +449,7 @@ view.addEventListener("pointerdown", (event) => {
 });
 view.addEventListener("pointermove", (event) => {
   if (!drag || !pose) return;
-  const turn = Math.PI / view.clientWidth;  // a whole width: half a turn
+  const turn = Math.PI / shownWidth();  // the frame's whole width: half a turn
   pose.yaw += (event.clientX - drag.x) * turn;
   pose.pitch -= (event.clientY - drag.y) * turn;
   const limit = 89 * Math.PI / 180;
@@ -304,15 +481,15 @@ function tick(now) {
   if (sunChanged && sunOwn !== null && now - lastSunPost >= 100) {
     sunChanged = false;
     lastSunPost = now;
-    post("/sun", {azimuth: Number(azimuthInput.value), elevation: Number(elevationInput.value),
-                  scene_serial: sceneSerial}).catch(() => {});
+    send("/sun", {azimuth: Number(azimuthInput.value), elevation: Number(elevationInput.value),
+                  scene_serial: sceneSerial});
   }
   if (toneChanged && toneOwn !== null && now - lastTonePost >= 100) {
     toneChanged = false;
     lastTonePost = now;
-    post("/tone", {exposure: 2 ** Number(exposureInput.value),
+    send("/tone", {exposure: 2 ** Number(exposureInput.value),
                    saturation: Number(saturationInput.value),
-                   curve: Number(curveSelect.value), scene_serial: sceneSerial}).catch(() => {});
+                   curve: Number(curveSelect.value), scene_serial: sceneSerial});
   }
   if (changed && !posting && now - lastPost >= 1000 / 30) {
     changed = false;
