@@ -27,6 +27,7 @@ namespace shade_pass {
     constexpr uint32_t kSxCorner = 21, kSxDirection = 23, kSxKind = 26;
     constexpr uint32_t kSxFresnel = 27;
     constexpr uint32_t kScratchVectors = 28;
+    constexpr uint32_t kSxIndirect = kSxSky;  // the field's I r, g, b (no sky term then)
     // glass: tau C (C where the glass is not in front), plane c's row k at kLvC + 8 c +
     // k (an even vector: its rows are 256 words in the window, as a plane's)
     constexpr uint32_t kLvC = (kLvScratch + kScratchVectors + 1) & ~1u;
@@ -37,6 +38,24 @@ namespace shade_pass {
     constexpr uint32_t kLightSource[kLvPlanes] = {0, 1, 2, 11, 3, 4, 5, 6, 7, 8, 9, 10};
     constexpr uint32_t kLt0 = 0, kNe0 = 2;                            // SFPSETCC
     constexpr uint32_t kZeroTexel = kShadeSlots * kTexPageBytes + 4;  // after the white
+    // The field (kTermIndirect) in the row scratch, its scan: corner keys, page and
+    // texel terms per axis and cell, the cell, the fractions; I at the sky's place.
+    constexpr uint32_t kSfKey = 0, kSfPage = 8, kSfTerm = 14, kSfBase = 20, kSfT = 23;
+    // its gather: an axis's texels (then sums r, g, b), weights, totals (r, g, b, axes)
+    constexpr uint32_t kSfTexel = 0, kSfNum = 0, kSfWeight = 8, kSfTotal = 16;
+    constexpr uint32_t kFieldCorners = 8;
+    // a corner's texel address in the light work's words (32 a row, 1,024 a corner)
+    constexpr uint32_t kLwField = 8192;
+    static_assert(4 * (kLwField + 1024 * kFieldCorners) <= kLightWorkBytes);
+    // a texel of direction d is 4 x 128 d bytes after direction 0's (shade.h kField*)
+    constexpr uint32_t kFieldDirectionBytes = 4 * kFieldDirectionTexels;
+    static_assert(
+        kZeroTexel + 5 * kFieldDirectionBytes < (kShadeSlots + 1) * kTexPageBytes
+    );
+    constexpr uint32_t kOutsideBits = 0xCA000000;  // -2^21: a page term off the grid
+    constexpr uint32_t kEighthBits = 0x3E000000, kEightBits = 0x41000000;  // 1/8, 8
+    constexpr uint32_t kTwoBits = 0x40000000;  // 2 (1/2: kHalfB)
+    constexpr uint32_t kOneBits = 0x3F800000, kSixtyFourBits = 0x42800000;  // 1, 64
 
     constexpr uint32_t plane_vector(uint32_t plane, uint32_t k) {
         return kLightRows * plane + k;
@@ -484,6 +503,208 @@ namespace shade_pass {
         }
     }
 
+    // Row k's field cell (indirect lookup): g = (P + n h/2 - origin) / h - 1/2 a axis
+    // (one remainder step), floor(g) at kSfBase, g - floor(g) at kSfT; all LRegs.
+    inline void field_point(uint32_t k, const uint32_t* table) {
+        TTI_SFPENCC(3, 0, 0, 10);
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            immediate(L6, table[kLtFieldShift]);
+            immediate(L7, table[kLtFieldInverse]);
+            load(L0, row_vector(k, kRvPoint + axis));
+            load(L1, plane_vector(kLvNormal + axis, k));
+            TT_SFPMAD(L1, L6, L0, L0, 0);
+            immediate(L1, table[kLtFieldOrigin + axis]);
+            sub(L0, L1, L0);
+            mul(L0, L7, L2);
+            immediate(L3, table[kLtFieldSpacing]);
+            TT_SFPMAD(L2, L3, L0, L3, kNegA);
+            TT_SFPMAD(L3, L7, L2, L2, 0);
+            TT_SFPLOADI(L3, kFloatB, kHalfB);
+            sub(L2, L3, L2);
+            floor_to(L2, L4);
+            sub(L2, L4, L2);
+            store(L4, sx_vector(kSfBase + axis));
+            store(L2, sx_vector(kSfT + axis));
+        }
+    }
+
+    // Row k's corner keys at kSfKey (c: cell + (c & 1, c >> 1 & 1, c >> 2)): (1 + page)
+    // << 10 | the voxel's direction-0 texel; 0 off the grid and on an empty pixel.
+    __attribute__((noinline)) void field_keys(uint32_t k, const uint32_t* table) {
+        field_point(k, table);
+        // per axis and cell: block = floor(i / block side), the page term block x its
+        // stride, the texel term (i - block x side) x its stride; off the grid -2^21
+        const uint32_t inverse[3] = {kEighthBits, 0x3F000000, kEighthBits};
+        const uint32_t side[3] = {kEightBits, kTwoBits, kEightBits};
+        const uint32_t page_stride[3] = {
+            kOneBits, table[kLtFieldLayer], table[kLtFieldAcross]
+        };
+        const uint32_t texel_stride[3] = {kOneBits, kSixtyFourBits, kEightBits};
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            for (uint32_t cell = 0; cell < 2; ++cell) {
+                load(L0, sx_vector(kSfBase + axis));
+                if (cell != 0) {
+                    add(L0, ONE, L0);
+                }
+                immediate(L1, inverse[axis]);
+                mul(L0, L1, L1);
+                floor_to(L1, L2);
+                immediate(L3, side[axis]);
+                TT_SFPMAD(L2, L3, L0, L3, kNegA);
+                immediate(L4, texel_stride[axis]);
+                mul(L3, L4, L3);
+                immediate(L4, page_stride[axis]);
+                mul(L2, L4, L2);
+                immediate(L5, kOutsideBits);
+                immediate(L6, table[kLtFieldDims + axis]);
+                sub(L0, L6, L6);
+                TTI_SFPNOP;
+                TT_SFPSETCC(0, L0, 0, kLt0);
+                add(L5, ZERO, L2);
+                TTI_SFPENCC(3, 0, 0, 10);
+                TT_SFPSETCC(0, L6, 0, kGte0);
+                add(L5, ZERO, L2);
+                TTI_SFPENCC(3, 0, 0, 10);
+                store(L2, sx_vector(kSfPage + 2 * axis + cell));
+                store(L3, sx_vector(kSfTerm + 2 * axis + cell));
+            }
+        }
+        immediate(L7, table[kLtFieldFirst]);
+        for (uint32_t corner = 0; corner < kFieldCorners; ++corner) {
+            const uint32_t cell[3] = {corner & 1, corner >> 1 & 1, corner >> 2};
+            load(L0, sx_vector(kSfPage + cell[0]));
+            load(L1, sx_vector(kSfPage + 2 + cell[1]));
+            add(L0, L1, L0);
+            load(L1, sx_vector(kSfPage + 4 + cell[2]));
+            add(L0, L1, L0);
+            add(L0, L7, L0);  // 1 + page, negative off the grid
+            load(L1, sx_vector(kSfTerm + cell[0]));
+            load(L2, sx_vector(kSfTerm + 2 + cell[1]));
+            add(L1, L2, L1);
+            load(L2, sx_vector(kSfTerm + 4 + cell[2]));
+            add(L1, L2, L1);
+            add(L0, MAGIC, L2);
+            add(L1, MAGIC, L3);
+            TTI_SFPNOP;
+            TT_SFPAND(0, MASK, L2, 0);
+            TT_SFPAND(0, MASK, L3, 0);
+            TT_SFPSHFT(10, 0, L2, kShiftImmediate);
+            TT_SFPOR(0, L3, L2, 0);
+            TT_SFPSETCC(0, L0, 0, kLt0);
+            add(ZERO, ZERO, L2);
+            TTI_SFPENCC(3, 0, 0, 10);
+            store(L2, sx_vector(kSfKey + corner));
+        }
+        add(ZERO, ZERO, L4);
+        load(L0, plane_vector(kLvMaterial, k));
+        TT_SFPSETCC(0, L0, 0, kLt0);
+        for (uint32_t corner = 0; corner < kFieldCorners; ++corner) {
+            store(L4, sx_vector(kSfKey + corner));
+        }
+        TTI_SFPENCC(3, 0, 0, 10);
+    }
+
+    // Row k before its texels: the cell's fractions t, the corners' trilinear weights
+    // at kSfWeight, the totals 0.
+    __attribute__((noinline)) void field_weights(uint32_t k, const uint32_t* table) {
+        field_point(k, table);
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            load(L0 + axis, sx_vector(kSfT + axis));
+            sub(ONE, L0 + axis, L3 + axis);
+        }
+        for (uint32_t corner = 0; corner < kFieldCorners; ++corner) {
+            const uint32_t x = (corner & 1) != 0 ? L0 : L3;
+            const uint32_t y = (corner >> 1 & 1) != 0 ? L1 : L4;
+            const uint32_t z = (corner >> 2) != 0 ? L2 : L5;
+            mul(x, y, L6);
+            mul(L6, z, L6);
+            store(L6, sx_vector(kSfWeight + corner));
+        }
+        add(ZERO, ZERO, L7);
+        for (uint32_t i = 0; i < 4; ++i) {
+            store(L7, sx_vector(kSfTotal + i));
+        }
+    }
+
+    // Row k, an axis's texels at kSfTexel: over corners with data, sum w code^2 a
+    // channel and sum w; where any, totals += n_a^2 / sum w x the sums, axes += n_a^2.
+    __attribute__((noinline)) void field_blend(uint32_t k, uint32_t axis) {
+        constexpr uint32_t kShift[3] = {20, 9, 0};
+        constexpr uint32_t kMask[3] = {0x7FF, 0x7FF, 0x1FF};
+        TTI_SFPENCC(3, 0, 0, 10);
+        add(ZERO, ZERO, L0);
+        add(ZERO, ZERO, L1);
+        add(ZERO, ZERO, L2);
+        add(ZERO, ZERO, L3);
+        for (uint32_t corner = 0; corner < kFieldCorners; ++corner) {
+            load(L4, sx_vector(kSfWeight + corner));
+            load(L5, sx_vector(kSfTexel + corner));
+            TT_SFPSETCC(0, L5, 0, kLt0);
+            add(L3, L4, L3);
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                // the code as a float: its bits under 1.5 x 2^23's, less 1.5 x 2^23
+                TT_SFPMOV(0, L5, L6, 0);
+                if (kShift[channel] != 0) {
+                    TT_SFPSHFT(
+                        (-static_cast<int32_t>(kShift[channel])) & 0xFFF,
+                        0,
+                        L6,
+                        kShiftImmediate
+                    );
+                }
+                immediate(L7, kMask[channel]);
+                TT_SFPAND(0, L7, L6, 0);
+                TT_SFPOR(0, MAGIC, L6, 0);
+                sub(L6, MAGIC, L6);
+                mul(L6, L6, L6);
+                TT_SFPMAD(L6, L4, L0 + channel, L0 + channel, 0);
+            }
+            TTI_SFPENCC(3, 0, 0, 10);
+        }
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            store(L0 + channel, sx_vector(kSfNum + channel));
+        }
+        recip(L3, L4, L5, L6, L7, L0);
+        load(L5, plane_vector(kLvNormal + axis, k));
+        mul(L5, L5, L5);
+        mul(L5, L4, L4);  // n_a^2 / the weights' sum
+        TTI_SFPNOP;
+        TT_SFPSETCC(0, L3, 0, kNe0);
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            load(L6, sx_vector(kSfNum + channel));
+            mul(L4, L6, L6);
+            load(L7, sx_vector(kSfTotal + channel));
+            add(L7, L6, L7);
+            store(L7, sx_vector(kSfTotal + channel));
+        }
+        load(L7, sx_vector(kSfTotal + 3));
+        add(L7, L5, L7);
+        store(L7, sx_vector(kSfTotal + 3));
+        TTI_SFPENCC(3, 0, 0, 10);
+    }
+
+    // Row k's I at kSxIndirect: the totals over the axes' sum, each channel times its
+    // (1 / max code)^2 x scale; where no axis found data, ambient.
+    __attribute__((noinline)) void field_finish(const uint32_t* table) {
+        TTI_SFPENCC(3, 0, 0, 10);
+        load(L0, sx_vector(kSfTotal + 3));
+        recip(L0, L1, L2, L3, L4, L5);
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            load(L2, sx_vector(kSfTotal + channel));
+            mul(L2, L1, L2);
+            immediate(L3, table[kLtFieldUnit + channel]);
+            mul(L2, L3, L2);
+            store(L2, sx_vector(kSxIndirect + channel));
+        }
+        TTI_SFPNOP;
+        TT_SFPSETCC(0, L0, 0, kEq0);
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            immediate(L2, table[kLtChannel * channel + kLtAmbient]);
+            store(L2, sx_vector(kSxIndirect + channel));
+        }
+        TTI_SFPENCC(3, 0, 0, 10);
+    }
+
     // A command's numbers from the table, and its mode (kLight*, LIGHT's a9).
     struct LightNumbers {
         const uint32_t* table;
@@ -555,20 +776,23 @@ namespace shade_pass {
             store(L2, sx_vector(kSxShadow));
             lap(kLightProfShadow);
         }
+        const bool field = (terms & kTermIndirect) != 0;  // I at kSxIndirect: no sky
         load(L0, plane_vector(kLvNormal, k));
         load(L1, plane_vector(kLvNormal + 1, k));
         load(L2, plane_vector(kLvNormal + 2, k));
-        mul(L0, L0, L3);
-        TT_SFPMAD(L1, L1, L3, L3, kNegA);
-        store(L3, sx_vector(kSxSky));
-        mul(L2, L2, L3);
-        store(L3, sx_vector(kSxSky + 1));
-        mul(L0, L1, L3);
-        store(L3, sx_vector(kSxSky + 2));
-        mul(L0, L2, L3);
-        store(L3, sx_vector(kSxSky + 3));
-        mul(L1, L2, L3);
-        store(L3, sx_vector(kSxSky + 4));
+        if (!field) {
+            mul(L0, L0, L3);
+            TT_SFPMAD(L1, L1, L3, L3, kNegA);
+            store(L3, sx_vector(kSxSky));
+            mul(L2, L2, L3);
+            store(L3, sx_vector(kSxSky + 1));
+            mul(L0, L1, L3);
+            store(L3, sx_vector(kSxSky + 2));
+            mul(L0, L2, L3);
+            store(L3, sx_vector(kSxSky + 3));
+            mul(L1, L2, L3);
+            store(L3, sx_vector(kSxSky + 4));
+        }
         immediate(L4, table[kLtSunDirection]);
         mul(L0, L4, L3);
         immediate(L4, table[kLtSunDirection + 1]);
@@ -648,27 +872,31 @@ namespace shade_pass {
         }
         for (uint32_t channel = 0; channel < 3; ++channel) {
             const uint32_t* sky = table + kLtChannel * channel;
-            load(L0, plane_vector(kLvNormal, k));
-            load(L1, plane_vector(kLvNormal + 1, k));
-            load(L2, plane_vector(kLvNormal + 2, k));
-            immediate(L3, sky[kLtSky]);
-            // K0 + KZ z z + KX (x x - y y) + (x y, x z, y z terms) + (x, y, z terms)
-            constexpr uint32_t kScratchOf[5] = {1, 0, 2, 3, 4};
-            for (uint32_t term = 0; term < 5; ++term) {
-                immediate(L4, sky[kLtSky + 1 + term]);
-                load(L5, sx_vector(kSxSky + kScratchOf[term]));
-                TT_SFPMAD(L5, L4, L3, L3, 0);
+            if (field) {  // E = I + sun + lamps
+                load(L3, sx_vector(kSxIndirect + channel));
+            } else {
+                load(L0, plane_vector(kLvNormal, k));
+                load(L1, plane_vector(kLvNormal + 1, k));
+                load(L2, plane_vector(kLvNormal + 2, k));
+                immediate(L3, sky[kLtSky]);
+                // K0 + KZ z z + KX (x x - y y) + (x y, x z, y z terms) + (x, y, z)
+                constexpr uint32_t kScratchOf[5] = {1, 0, 2, 3, 4};
+                for (uint32_t term = 0; term < 5; ++term) {
+                    immediate(L4, sky[kLtSky + 1 + term]);
+                    load(L5, sx_vector(kSxSky + kScratchOf[term]));
+                    TT_SFPMAD(L5, L4, L3, L3, 0);
+                }
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    immediate(L4, sky[kLtSky + 6 + axis]);
+                    TT_SFPMAD(L0 + axis, L4, L3, L3, 0);
+                }
+                TTI_SFPNOP;
+                at_least_zero(L3, L4);
+                load(L5, plane_vector(kLvVisibility, k));
+                mul(L3, L5, L3);
+                immediate(L4, sky[kLtAmbient]);
+                add(L3, L4, L3);
             }
-            for (uint32_t axis = 0; axis < 3; ++axis) {
-                immediate(L4, sky[kLtSky + 6 + axis]);
-                TT_SFPMAD(L0 + axis, L4, L3, L3, 0);
-            }
-            TTI_SFPNOP;
-            at_least_zero(L3, L4);
-            load(L5, plane_vector(kLvVisibility, k));
-            mul(L3, L5, L3);
-            immediate(L4, sky[kLtAmbient]);
-            add(L3, L4, L3);
             immediate(L4, sky[kLtSun]);
             load(L5, sx_vector(kSxSun));
             TT_SFPMAD(L4, L5, L3, L3, 0);
@@ -863,10 +1091,16 @@ namespace shade_pass {
             succeeded && (numbers.terms & (kTermShadow | kTermBackground)) != 0
         );
         const bool pointed = (numbers.terms & (kTermLamps | kTermSpecular)) != 0;
+        const bool field = succeeded && (numbers.terms & kTermIndirect) != 0;
         const uint32_t page_limit = succeeded ? table[kLtPages] : 0;
         const uint32_t* cam = table + kLtCamera;
         const uint32_t slots_address = write_ptr(kCbShadeSlots);
-        *reinterpret_cast<volatile uint32_t*>(slots_address + kZeroTexel) = 0;
+        // the zero texel of each field direction's place (a key of 0)
+        for (uint32_t direction = 0; direction < 6; ++direction) {
+            *reinterpret_cast<volatile uint32_t*>(
+                slots_address + kZeroTexel + kFieldDirectionBytes * direction
+            ) = 0;
+        }
         uint32_t* shade_work = reinterpret_cast<uint32_t*>(write_ptr(kCbShadeWork));
         Pages pages;
         pages.keys = shade_work + 1024;
@@ -876,7 +1110,8 @@ namespace shade_pass {
             pages.keys[i] = 0;
         }
         uint32_t* work = reinterpret_cast<uint32_t*>(write_ptr(kCbLightWork));
-        uint32_t* index = work + kLwIndex;  // kLightKeys x 1,024 texel addresses
+        uint32_t* index = work + kLwIndex;        // kLightKeys x 1,024 texel addresses
+        uint32_t* field_index = work + kLwField;  // the field's corners' addresses
         const uint32_t* slots = reinterpret_cast<const uint32_t*>(slots_address);
         const size_t vl = __riscv_vsetvl_e32m8(32);
         if (succeeded) {
@@ -892,7 +1127,7 @@ namespace shade_pass {
             recip(L0, L1, L2, L3, L4, L5);
             store(L1, kLvInvF);
         }
-        PassCounts counts;
+        PassCounts counts, field_counts;
         while (succeeded) {
             uint32_t mark = km::wall();
             const uint32_t answer = front(kCbIn, 1);
@@ -936,6 +1171,7 @@ namespace shade_pass {
             sub(L0, L1, L0);
             over_focal(L0, L2, L3, L4, cam[12]);
             store(L2, kLvXTerm);
+            const uint32_t item_field_pages = field_counts.pages;
             for (
                 uint32_t quarter = 0; quarter < 32 / kLightRows && succeeded; ++quarter
             ) {
@@ -1042,6 +1278,101 @@ namespace shade_pass {
                         return true;
                     };
                 };
+                // the field: a row's corner keys (the vector unit), their texel
+                // addresses (direction 0's; the zero texel where a key is 0)
+                auto field_scan = [&](uint32_t row) -> bool {
+                    const uint32_t keyed_at = km::wall();
+                    field_keys(row - row0, table);
+                    tensix_sync();
+                    values[kLightProfFieldKeys] += km::wall() - keyed_at;
+                    for (uint32_t corner = 0; corner < kFieldCorners; ++corner) {
+                        if (row_addresses(
+                            pages,
+                            from_window(sx_vector(kSfKey + corner), vl),
+                            kNoTags,
+                            field_index + 1024 * corner + 32 * row,
+                            page_limit,
+                            kZeroTexel,
+                            false,
+                            true,
+                            vl
+                        ) < 0) {
+                            return false;
+                        }
+                    }
+                    return true;
+                };
+                // each row: weights, per axis the eight texels of the direction its
+                // normal faces (128 d texels on) and their blend, I, the colour
+                static_assert(kFieldDirectionBytes == 1u << 9);
+                auto field_rows = [&](uint32_t pass_first, uint32_t pass_end)
+                                      __attribute__((noinline)) -> bool {
+                    for (uint32_t r = pass_first; r < pass_end; ++r) {
+                        const uint32_t k = r - row0;
+                        uint32_t at = km::wall();
+                        field_weights(k, table);
+                        for (uint32_t axis = 0; axis < 3; ++axis) {
+                            tensix_sync();  // the vector unit is done with the texels
+                            uint32_t now = km::wall();
+                            values[kLightProfFieldBlend] += now - at;
+                            at = now;
+                            const vuint32m8_t offset = (
+                                __riscv_vadd_vx_u32m8(
+                                    __riscv_vsll_vx_u32m8(
+                                        __riscv_vsrl_vx_u32m8(
+                                            from_window(
+                                                plane_vector(kLvNormal + axis, k), vl
+                                            ),
+                                            31,
+                                            vl
+                                        ),
+                                        9,
+                                        vl
+                                    ),
+                                    2 * axis * kFieldDirectionBytes,
+                                    vl
+                                )
+                            );
+                            for (
+                                uint32_t corner = 0; corner < kFieldCorners; ++corner
+                            ) {
+                                to_window(
+                                    sx_vector(kSfTexel + corner),
+                                    __riscv_vluxei32_v_u32m8(
+                                        slots,
+                                        __riscv_vadd_vv_u32m8(
+                                            __riscv_vle32_v_u32m8(
+                                                field_index + 1024 * corner + 32 * r, vl
+                                            ),
+                                            offset,
+                                            vl
+                                        ),
+                                        vl
+                                    ),
+                                    vl
+                                );
+                            }
+                            asm volatile("" ::: "memory");
+                            pass_k::setup_pass::order(
+                                word(sx_vector(kSfTexel + kFieldCorners - 1)) + 62
+                            );
+                            now = km::wall();
+                            values[kLightProfFieldGather] += now - at;
+                            at = now;
+                            field_blend(k, axis);
+                        }
+                        field_finish(table);
+                        tensix_sync();
+                        values[kLightProfFieldBlend] += km::wall() - at;
+                        if (glass) {
+                            light_row<true>(k, numbers, values);
+                        } else {
+                            light_row(k, numbers, values);
+                        }
+                        values[kLightProfRows]++;
+                    }
+                    return true;
+                };
                 if (glass && !in_front) {  // C toned, no light
                     tone_rows(first - row0, end - row0, table);
                     tensix_sync();
@@ -1086,6 +1417,13 @@ namespace shade_pass {
                         ) {
                             return false;
                         }
+                        if (field) {  // the field at the glass point, then the colour
+                            return (
+                                page_passes(
+                                    first, end, pages, field_counts, field_scan, field_rows
+                                )
+                            );
+                        }
                         for (uint32_t r = first; r < end; ++r) {
                             light_row<true>(r - row0, numbers, values);
                             values[kLightProfRows]++;
@@ -1093,6 +1431,34 @@ namespace shade_pass {
                         return true;
                     };
                     if (!glass_quarter()) {
+                        succeeded = false;
+                        break;
+                    }
+                } else if (field) {
+                    // keys and the point; the shadow's and background's texels; then
+                    // the field's pages, texels and each row's colour
+                    for (uint32_t r = first; r < end; ++r) {
+                        light_keys(r - row0, table, numerator(r), numbers.terms);
+                    }
+                    tensix_sync();
+                    now = km::wall();
+                    values[kLightProfKeys] += now - mark;
+                    if (
+                        (
+                            keyed &&
+                            !page_passes(
+                                first,
+                                end,
+                                pages,
+                                counts,
+                                scan_taps(0, kLightKeys),
+                                gather_taps(0, kLightKeys)
+                            )
+                        ) ||
+                        !page_passes(
+                            first, end, pages, field_counts, field_scan, field_rows
+                        )
+                    ) {
                         succeeded = false;
                         break;
                     }
@@ -1190,6 +1556,13 @@ namespace shade_pass {
             if (!succeeded) {
                 break;
             }
+            if (
+                field_counts.pages - item_field_pages > values[kLightProfFieldItemPages]
+            ) {
+                values[kLightProfFieldItemPages] = (
+                    field_counts.pages - item_field_pages
+                );
+            }
             // popped five pages at a time, as pushed (light_reader.hpp)
             for (
                 uint32_t popped = 0; popped < item_pages && succeeded; popped += kPlanes
@@ -1206,6 +1579,11 @@ namespace shade_pass {
         values[kLightProfWaitPages] = counts.wait;
         values[kLightProfPasses] = counts.passes;
         values[kLightProfPages] = counts.pages;
+        // the field's scan less its keys (field_scan times both)
+        values[kLightProfFieldScan] = field_counts.scan - values[kLightProfFieldKeys];
+        values[kLightProfFieldWait] = field_counts.wait;
+        values[kLightProfFieldPasses] = field_counts.passes;
+        values[kLightProfFieldPages] = field_counts.pages;
         // the reader's end, the table back, the unpack thread's end
         if (reserve(kCbShadeAsk, 1)) {
             const uint32_t ask = write_ptr(kCbShadeAsk);

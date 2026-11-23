@@ -39,6 +39,11 @@ SKY_GRID = 256
 FIELD_RADIUS = 1.5
 FIELD_SHIFT = 0.5
 FILL_REACH = 2.0
+# The field as the card holds it (pack_field): a texel a (voxel, direction), bit 31 has
+# data, then red, green, blue codes of these bits at these shifts.
+PACK_HAS = 1 << 31
+PACK_BITS = (11, 11, 9)
+PACK_SHIFTS = (20, 9, 0)
 DIRECTIONS = np.array(
     [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=F
 )
@@ -753,10 +758,45 @@ def signature(lights):
     return b"".join(np.asarray(a, F).tobytes() for a in small)
 
 
+def pack_field(values, has):
+    """The field as 32-bit texels (nv, 6) uint32 and its scale: bit 31 where the
+    (voxel, d) has data, then per channel (PACK_SHIFTS, PACK_BITS) the code
+    round(sqrt(v / scale) x (2^bits - 1)), v clamped at 0; the scale is the field's
+    largest value (float32; 1 when none is above 0)."""
+    v = np.maximum(np.asarray(values, np.float64), 0.0)
+    top = float(np.float32(v.max(initial=0.0)))
+    scale = np.float32(top if top > 0 else 1.0)
+    texels = np.where(has, np.uint32(PACK_HAS), np.uint32(0)).astype(np.uint32)
+    for c, (bits, shift) in enumerate(zip(PACK_BITS, PACK_SHIFTS)):
+        most = (1 << bits) - 1
+        code = np.minimum(np.rint(np.sqrt(v[..., c] / float(scale)) * most), most)
+        texels |= np.where(has, code.astype(np.uint32) << np.uint32(shift), 0).astype(
+            np.uint32
+        )
+    return texels, scale
+
+
+def unpack_field(texels, scale):
+    """The values (nv, 6, 3) float32 and has (nv, 6) of pack_field's texels, as the
+    card decodes them: c = code x F(1 / (2^bits - 1)), v = (c c) scale; 0 without data.
+    """
+    texels = np.asarray(texels, np.uint32)
+    has = (texels >> np.uint32(31)) != 0
+    out = np.zeros(texels.shape + (3,), F)
+    for c, (bits, shift) in enumerate(zip(PACK_BITS, PACK_SHIFTS)):
+        most = (1 << bits) - 1
+        code = ((texels >> np.uint32(shift)) & np.uint32(most)).astype(F)
+        unit = code * F(1.0 / most)
+        out[..., c] = np.where(has, (unit * unit) * F(scale), F(0))
+    return out, has
+
+
 def field_for(lights):
     """The model and the field's values (nv, 6, 3) for the lights (`lights["indirect"]`
     names the file): E1 + E2 + the element's own sky irradiance, through the field's
-    weights; recomputed when the lights change (`lights.moved`), never the files."""
+    weights; recomputed when the lights change (`lights.moved`), never the files. With
+    `lights["indirect_packed"]` true, the values as the card holds them (pack_field,
+    then unpack_field)."""
     if "indirect" not in lights:
         raise ValueError(
             "the term `indirect` needs the scene's indirect file: write it with "
@@ -765,12 +805,16 @@ def field_for(lights):
     model = load_model(lights["indirect"])
     key = (signature(lights), id(lights["shadow_map"]), id(lights["octahedral"]))
     cache = model.setdefault("cache", [])
+    values = None
     for entry in cache:
         if entry[0] == key and entry[1] is lights["shadow_map"]:
-            return model, entry[2]
-    light = element_light(lights, model)
-    values = field_values(model, (light["e1"] + light["e2"]) + light["sky"])
-    cache[:] = cache[-3:] + [(key, lights["shadow_map"], values)]
+            values = entry[2]
+    if values is None:
+        light = element_light(lights, model)
+        values = field_values(model, (light["e1"] + light["e2"]) + light["sky"])
+        cache[:] = cache[-3:] + [(key, lights["shadow_map"], values)]
+    if lights.get("indirect_packed"):
+        values, _ = unpack_field(*pack_field(values, model["field_has"]))
     return model, values
 
 

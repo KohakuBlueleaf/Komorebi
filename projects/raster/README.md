@@ -895,6 +895,73 @@ out of line, the rest in the page scan), the card frame the same. Along `--sun-p
 --frames 200` (17:28): every word 0; interior frame median 17.82 ms, worst 20.34, SUN
 pass 26.50 / 31.25; exterior 27.56 / 37.60, SUN pass 45.23 / 61.06.
 
+### Indirect light (`live.py --light --indirect`)
+
+The reference's term `indirect` (`reference/indirect.py`): a voxel field of irradiance,
+6 directional colours a voxel, looked up at P + n h/2 with trilinear weights over the 8
+voxels around it, renormalised over those with data, the three directions n faces
+blended by n_a^2; where no voxel has data, the ambient. With it E = I + sun + lamps
+(I in place of sky x visibility + ambient). Without `--indirect` nothing changes.
+
+What the card does. LIGHT, when the frame's terms carry `kTermIndirect`: for each row
+of a tile quarter, the 8 corner voxels' keys (`field_keys`: block and texel of each
+corner, off-grid corners none), a page pass of their pages after the shadow's
+(`row_addresses` and `page_passes`, the same scan, slots and reader as the shadow map,
+pages of the same light pages tensor), then per row and axis the 8 texels of the
+direction the normal faces gathered by the vector unit, decoded and blended on the
+SFPU (`field_blend`: sum w code^2 and sum w over the corners with data, the axis's
+share n_a^2 / sum w), I = sum / axes x unit (`field_finish`), and the row's colour
+(`light_row`) in the same callback. The glass command's own light uses the same lookup
+at the glass point.
+
+The field as texels (`indirect.pack_field`): one 32-bit word a (voxel, direction): bit
+31 has data, red 11 bits, green 11, blue 9, each round(sqrt(v / scale) (2^b - 1)),
+scale the field's largest value. Pages: a 4 KB page is a block of 8 x 2 x 8 voxels (x,
+y up, z) x 6 directions (texel = d 128 + (y 8 + z) 8 + x), blocks in x, then z, then y,
+dense over the field's box, after the shadow and background pages. LIGHT's table words
+640 to 656: origin, h/2, h, 1/h, dims, blocks across and a layer, first page, unit =
+scale / (2^b - 1)^2, scale, page count.
+
+What the host still does. The field itself (`indirect.field_for`: sources from the
+lights and the shadow map, the transport applied twice) at the load and after every sun
+change; it packs the field, writes its pages into the light pages (`Session.write`
+through the host channel) and the table with the sun region. After a SUN pass the
+field is made with the card's own shadow map, read back (equal to the reference's map,
+check B of the sun). The reference checks against `rasterize_lighted` on the packed
+field (`lights["indirect_packed"]`).
+
+Packing alone (host, 22:57 to 22:59): the largest 8-bit change of the reference's frame
+from the float field to the packed is 1 (Sponza overview 31,029 pixels, close 30,497,
+Bistro interior overview 26,401 by 1, none by more).
+
+Card 1, 2026-11-23, AICLK 1,350 MHz, `--frames 20 --push --light --indirect
+--check-light`, frames 0, 10, 19, at most; "under 8": pixels whose lookup found fewer
+than 8 voxels with data:
+
+| scene | field pages | C over 2 / 4 / 8 % | outside the band over 4 % | under 8: pixels, over 4 % |
+|---|---:|---|---:|---|
+| Sponza overview (23:09) | 1,330 | 0.077 / 0.027 / 0.013 | 0.0004 | 146,676, 0.033 |
+| Sponza close (23:12) | 1,330 | 0.059 / 0.025 / 0.012 | 0.0005 | 144,189, 0.024 |
+| Bistro interior overview (23:11) | 4,046 | 0.0063 / 0.0023 / 0.0005 | 0.0023 | 181,711, 0.0028 |
+| Sponza overview, sun 90, 74.53 (23:13) | 1,330 | 0.074 / 0.012 / 0.0025 | 0.0003 | 146,676, 0.016 |
+
+Every check `ok`, every word 0. The pixels over 4 are where they were without the
+field: the shadow-edge band (Sponza) and the glass in front (interior, 0.15 % over 4
+among 5,910 pixels, as before).
+
+Costs, ms and cycles a tile (medians; without: `--light` 23:14 to 23:17):
+
+| scene | | LIGHT | LIGHT cycles a tile | field keys / scan / wait / gather / blend | field pages read a frame (most a tile) | card frame | host frame |
+|---|---|---:|---:|---|---:|---:|---:|
+| Sponza overview | without | 1.67 | 228,481 | - | - | 11.69 | 13.14 |
+| Sponza overview | with | 3.94 | 554,559 | 40,635 / 105,820 / 4,355 / 118,376 / 67,756 | 11,100 (30) | 14.00 | 14.74 |
+| Bistro interior overview | without | 3.16 (0.84) | 275,381 | - | - | 17.68 | 18.94 |
+| Bistro interior overview | with | 5.86 (1.12) | 563,760 | 35,928 / 93,572 / 4,082 / 104,682 / 60,719 | 13,589 (43) | 20.36 | 21.49 |
+
+The field's update on the host after a sun change (Sponza, 23:13): 2.66 s (shadow map
+read 0.006, field 2.656, pages and table written 0.002), 5,455,872 bytes. At the load:
+Sponza 2.6 to 2.8 s, Bistro interior 13.9 s (the transport's first read included).
+
 ## The interactive loop
 
 `live.py` loads the scene and the frame program once, with the thread built to serve

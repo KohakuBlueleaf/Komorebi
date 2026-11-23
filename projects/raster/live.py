@@ -163,7 +163,7 @@ def light_profile(profile, lamps=0):
     """LIGHT's profile pages (cores, 64 words) as totals: tiles, rows, pages read,
     passes; the pack thread's cycles a tile by part (the colour's: shadow filter,
     lamps, the sun's specular term, the rest), and a lamp's cycles a tile."""
-    totals = profile[:, : SH["kLightProfTotal"] + 1].sum(axis=0)
+    totals = profile[:, : SH["kLightProfWords"]].sum(axis=0)
     tiles = max(int(totals[SH["kLightProfTiles"]]), 1)
     parts = {
         "wait": "kLightProfWait",
@@ -177,6 +177,11 @@ def light_profile(profile, lamps=0):
         "specular": "kLightProfSpecular",
         "rest": "kLightProfMath",
         "out": "kLightProfOut",
+        "field_keys": "kLightProfFieldKeys",
+        "field_scan": "kLightProfFieldScan",
+        "field_wait_pages": "kLightProfFieldWait",
+        "field_gather": "kLightProfFieldGather",
+        "field_blend": "kLightProfFieldBlend",
         "total": "kLightProfTotal",
     }
     lamp_cycles = float(totals[SH["kLightProfLamps"]]) / tiles / max(lamps, 1)
@@ -185,6 +190,9 @@ def light_profile(profile, lamps=0):
         "rows": int(totals[SH["kLightProfRows"]]),
         "pages_read": int(totals[SH["kLightProfPages"]]),
         "passes": int(totals[SH["kLightProfPasses"]]),
+        "field_pages_read": int(totals[SH["kLightProfFieldPages"]]),
+        "field_passes": int(totals[SH["kLightProfFieldPasses"]]),
+        "field_item_pages_max": int(profile[:, SH["kLightProfFieldItemPages"]].max()),
         "cycles_a_lamp_a_tile": round(lamp_cycles, 1) if lamps else None,
         "cycles_per_tile": {
             key: round(float(totals[SH[name]]) / tiles, 1)
@@ -314,10 +322,10 @@ def times_rows(raw, frames):
 
 
 class Loop:
-    """The scene loaded in `session`, the thread's program running: a FRAME
-    command a camera (`frame`), the image read or pushed; `materials`: shaded
-    (masked and glass layers), `lights`: lit (surfaces, LIGHT's table; `set_sun`).
-    Fills upload_s, load_s, sun_lists."""
+    """The scene loaded in `session`, the thread's program running: a FRAME command a
+    camera (`frame`), the image read or pushed; `materials`: shaded (masked and glass),
+    `lights`: lit (surfaces, LIGHT's table; `set_sun`); term `indirect`: the field, at
+    the load and after a sun change. Fills upload_s, load_s, sun_lists, field_update."""
 
     def __init__(
         self,
@@ -340,6 +348,15 @@ class Loop:
         )
         self.sun = None  # (azimuth, elevation) once set_sun moved it
         self.box = None if lights is None else light.scene_box(scene)
+        self.field = self.field_update = None  # the term indirect: field_of's
+        if lights is not None and "indirect" in terms:
+            self.field = light.field_of(lights)
+            self.shadow = lights["shadow_map"]  # the map the field was made with
+            report["field"] = {
+                "s": round(self.field["seconds"], 3),
+                "pages": len(self.field["pages"]),
+                "scale": float(self.field["scale"]),
+            }
         sun_need = {}
         if lights is not None:
             started = time.perf_counter()
@@ -374,7 +391,7 @@ class Loop:
         if lights is not None:
             report["list_slots"] = slots
             self.surface = light.surface_tensors(
-                session, workers, lights, materials, terms
+                session, workers, lights, materials, terms, field=self.field
             )
             self.light_profile = self.surface["profile"]
         self.masked = self.glass = self.glass_surface = None
@@ -425,7 +442,7 @@ class Loop:
         if self.surface is not None:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
             words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
-            sun = light.sun_region(lights, materials, terms)
+            sun = light.sun_region(lights, materials, terms, self.field)
         glass_words = None  # frame.h RF_G_*, in area 0
         for name, prefix in (("masked", "RF_W_M_"), ("glass", "RF_G_")):
             layer = getattr(self, name)
@@ -513,7 +530,7 @@ class Loop:
         The command's word (None: no pass), the host's ms, the lights (no map)."""
         began = time.perf_counter()
         lights = light.sun_lights(self.lights, self.box, azimuth, elevation)
-        region = light.sun_region(lights, self.materials, self.terms)
+        region = light.sun_region(lights, self.materials, self.terms, self.field)
         self.running.thread.write("sun", region)
         word = None
         if elevation > 0:
@@ -522,7 +539,36 @@ class Loop:
             )
             word = event.result if event.kind == "done" else f"{event.kind}"
         self.sun = (float(azimuth), float(elevation))
+        if self.field is not None and word in (0, None):
+            self.update_field(lights, word == 0)
         return word, (time.perf_counter() - began) * 1e3, lights
+
+    def update_field(self, lights, rendered):
+        """The field for `lights` (sun_lights') with the card's shadow map (read back
+        when the SUN pass `rendered` one, else the last), its pages written into the
+        light pages and the scale with the sun region; field_update: the host's
+        seconds by part and the bytes written."""
+        began = time.perf_counter()
+        if rendered:
+            self.shadow = self.shadow_map()
+        read = time.perf_counter()
+        self.field = light.field_of({**lights, "shadow_map": self.shadow})
+        computed = time.perf_counter()
+        pages = self.field["pages"]
+        first = light.light_pages_first(self.lights)
+        self.session.write(
+            self.surface["pages"], pages.view(np.uint8).reshape(len(pages), -1), first
+        )
+        region = light.sun_region(lights, self.materials, self.terms, self.field)
+        self.running.thread.write("sun", region)
+        ended = time.perf_counter()
+        self.field_update = {
+            "s": round(ended - began, 3),
+            "shadow_read_s": round(read - began, 3),
+            "field_s": round(computed - read, 3),
+            "write_s": round(ended - computed, 3),
+            "bytes": int(pages.nbytes + region.nbytes),
+        }
 
     def shadow_map(self):
         """The card's shadow map (side x side float32 1/z) from the light pages."""
@@ -545,6 +591,11 @@ def loop(args):
     materials = shade.load(args.scene) if args.shade else None
     lights = light_data.load(args.scene, native.data_dir()) if args.light else None
     terms = tuple(args.light_terms.split(","))
+    if args.indirect:
+        if not args.light:
+            raise SystemExit("--indirect lights a lit frame: it needs --light")
+        terms += ("indirect",)
+        lights = {**lights, "indirect_packed": True}  # the reference from the packed
     report = {
         "scene": args.scene,
         "frames": args.frames,
@@ -588,6 +639,8 @@ def loop(args):
                     "host_ms": round(host_ms, 3),
                 }
             )
+            if live.field_update is not None:
+                passes_run[-1]["field_update"] = live.field_update
             if word not in (0, None):
                 card.log(f"SUN before frame {index}: word {word}")
             return word
@@ -930,6 +983,11 @@ def main():
         "--check-light",
         action="store_true",
         help="lit: the checked frames against the reference's lit frame (its terms)",
+    )
+    parser.add_argument(
+        "--indirect",
+        action="store_true",
+        help="lit: indirect light from the field (the reference's term indirect)",
     )
     parser.add_argument(
         "--light-terms",

@@ -5,12 +5,13 @@ checks of the surface planes and of the lit frame against the reference."""
 import argparse
 import json
 import sys
+import time
 
 import numpy as np
 
 from projects.raster import card, card_thread, lists, run, shade
+from reference import indirect, native, png, raster
 from reference import lights as light_data
-from reference import native, png, raster
 
 F32 = np.float32
 RSQRT_MAGIC = 0x5F3759DF  # 1 / sqrt(x) estimate from the bits, then Newton steps
@@ -142,6 +143,7 @@ CARD_TERMS = {
     "lamps": "kTermLamps",
     "specular": "kTermSpecular",
     "background": "kTermBackground",
+    "indirect": "kTermIndirect",
 }
 PAGE = 32  # a light page: 32 x 32 values of a map (as a texture page)
 
@@ -150,7 +152,7 @@ def term_bits(terms):
     """The table's kLtTerms word of a set of the reference's terms (must hold
     BASE_TERMS; the sun's shadow only with the sun)."""
     terms = set(terms)
-    unknown = terms - set(raster.TERMS)
+    unknown = terms - set(raster.TERMS) - {"indirect"}
     if unknown or not set(BASE_TERMS) <= terms:
         raise ValueError(
             f"the card's terms: {BASE_TERMS} and any of {list(CARD_TERMS)}"
@@ -168,22 +170,103 @@ def map_pages(values):
     return np.ascontiguousarray(blocks.reshape(-1, PAGE * PAGE).view(np.uint32))
 
 
-def light_pages(lights):
+def light_pages(lights, field=None):
     """LIGHT's pages: the shadow map's 1/z, then the background map's red, green and
-    blue planes, each a map_pages; and each map's first page."""
+    blue planes, each a map_pages; with `field` (field_of) its pages after them; and
+    each part's first page."""
     shadow = lights["shadow_map"].astype(F32)
     octa = lights["octahedral"].astype(F32)
     if shadow.shape[0] % PAGE or octa.shape[0] % PAGE:
         raise ValueError("a light map's side is not a multiple of 32")
     parts = [map_pages(shadow)] + [map_pages(octa[:, :, c]) for c in range(3)]
     first = {"shadow": 0, "octahedral": len(parts[0])}
+    if field is not None:
+        first["field"] = sum(len(part) for part in parts)
+        parts.append(field["pages"])
     return np.concatenate(parts), first
 
 
-def light_table(lights, materials, terms=raster.TERMS):
+def light_pages_first(lights):
+    """The field's first page in light_pages: after the shadow and background maps."""
+    shadow, octa = lights["shadow_map"].shape[0], lights["octahedral"].shape[0]
+    return (shadow // PAGE) ** 2 + 3 * (octa // PAGE) ** 2
+
+
+FIELD_BLOCK = np.array([SH["kFieldBlockX"], SH["kFieldBlockY"], SH["kFieldBlockZ"]])
+FIELD_DIRECTION = SH["kFieldDirectionTexels"]
+
+
+def field_layout(model):
+    """The field's dense pages (kernels/shade.h kField*): its blocks along x, y, z
+    (FIELD_BLOCK voxels each, the grid padded to whole blocks) and their count, a page
+    a block."""
+    blocks = -(-np.asarray(model["field_dims"], dtype=np.int64) // FIELD_BLOCK)
+    return blocks, int(np.prod(blocks))
+
+
+def field_pages(model, texels):
+    """The field's texels (voxels, 6) (indirect.pack_field) as its pages (pages, 1024)
+    uint32: blocks in x, then z, then y; in a block's page the texel of voxel (x, y, z)
+    and direction d at d x 128 + (y x 8 + z) x 8 + x; 0 (no data) elsewhere."""
+    blocks, count = field_layout(model)
+    dims = tuple(int(d) for d in model["field_dims"])
+    voxel = np.stack(np.unravel_index(model["field_keys"], dims), -1)
+    block, inside = voxel // FIELD_BLOCK, voxel % FIELD_BLOCK
+    page = (block[:, 1] * blocks[2] + block[:, 2]) * blocks[0] + block[:, 0]
+    across = inside[:, 1] * FIELD_BLOCK[2] + inside[:, 2]
+    local = across * FIELD_BLOCK[0] + inside[:, 0]
+    pages = np.zeros((count, PAGE * PAGE), dtype=np.uint32)
+    direction = np.arange(6) * FIELD_DIRECTION
+    pages[page[:, None], direction[None, :] + local[:, None]] = texels
+    return pages
+
+
+def field_of(lights):
+    """The field for `lights` (lights["indirect"] names the scene's file) as the card
+    holds it: the reference's values (indirect.field_for, sources, two applies, the
+    field's weights) packed (indirect.pack_field) into field_pages. A dict: model,
+    pages, scale, seconds."""
+    started = time.perf_counter()
+    model, values = indirect.field_for({**lights, "indirect_packed": False})
+    texels, scale = indirect.pack_field(values, model["field_has"])
+    return {
+        "model": model,
+        "pages": field_pages(model, texels),
+        "scale": scale,
+        "seconds": time.perf_counter() - started,
+    }
+
+
+def field_words(words, field, first):
+    """The field's words of LIGHT's table (kernels/shade.h kLtField*) into `words`:
+    the grid, the pages' layout from light page `first` on, the decoding's units."""
+
+    def put(at, values):
+        values = np.atleast_1d(np.asarray(values, dtype=F32))
+        words[at : at + len(values)] = values.view(np.uint32)
+
+    model = field["model"]
+    spacing = F32(model["field_spacing"])
+    blocks, count = field_layout(model)
+    put(SH["kLtFieldOrigin"], model["field_origin"])
+    put(SH["kLtFieldShift"], F32(indirect.FIELD_SHIFT) * spacing)
+    put(SH["kLtFieldSpacing"], spacing)
+    put(SH["kLtFieldInverse"], F32(1) / spacing)
+    put(SH["kLtFieldDims"], model["field_dims"])
+    put(SH["kLtFieldAcross"], blocks[0])
+    put(SH["kLtFieldLayer"], blocks[0] * blocks[2])
+    put(SH["kLtFieldFirst"], 1 + first)
+    units = [F32(1) / F32((1 << bits) - 1) for bits in indirect.PACK_BITS]
+    put(SH["kLtFieldUnit"], [(unit * unit) * F32(field["scale"]) for unit in units])
+    put(SH["kLtFieldScale"], field["scale"])
+    words[SH["kLtFieldPages"]] = count
+
+
+def light_table(lights, materials, terms=raster.TERMS, field=None):
     """LIGHT's table (kernels/shade.h kLt*): per channel the sky's products, ambient,
     the sun; the sun's direction, exposure, background, 1 / pi, terms, exponent bits,
-    lamps; the shadow texel, bias, camera; the turn; the maps' pages; each lamp."""
+    lamps; the shadow texel, bias, camera; the turn; the maps' pages; each lamp; with
+    the term `indirect` the field's words (`field`: field_of)."""
     words = np.zeros(SH["kLightTableBytes"] // 4, dtype=np.uint32)
 
     def put(at, values):
@@ -248,6 +331,11 @@ def light_table(lights, materials, terms=raster.TERMS):
         put(SH[f"kLt{name}Side"], side)
     put(SH["kLtOctaLast"], lights["octahedral"].shape[0] - 1)
     words[SH["kLtOctaChannel"]] = (lights["octahedral"].shape[0] // PAGE) ** 2 << 10
+    if "indirect" in terms:
+        if field is None:
+            raise ValueError("the term indirect needs the field (light.field_of)")
+        field_words(words, field, pages)
+        pages += field_layout(field["model"])[1]
     words[SH["kLtPages"]] = pages
     # the glass's reflection (glass_over): its share, F0 and 1 - F0
     put(SH["kLtReflection"], lights.get("reflection", 0.0))
@@ -327,10 +415,10 @@ def quadrant_cameras(camera, side):
     ]
 
 
-def sun_region(lights, materials, terms=raster.TERMS):
+def sun_region(lights, materials, terms=raster.TERMS, field=None):
     """The frame thread's sun region (thread/frame.h RF_R_SUN): the sun's camera of each
     quadrant of the shadow map as COUNT's and SETUP's camera page, the quadrants a side,
-    then LIGHT's table (light_table)."""
+    then LIGHT's table (light_table; `field` with the term indirect)."""
     words = np.zeros(card_thread.F["RF_SUN_BYTES"] // 4, dtype=np.uint32)
     side = light_data.shadow_side(lights)
     cameras = quadrant_cameras(lights["shadow_camera"], side)
@@ -341,7 +429,9 @@ def sun_region(lights, materials, terms=raster.TERMS):
         )
     words[card_thread.F["RF_SUN_ACROSS_AT"] // 4] = side // light_data.FILL_SIDE
     at = card_thread.F["RF_SUN_TABLE_AT"] // 4
-    words[at : at + SH["kLightTableBytes"] // 4] = light_table(lights, materials, terms)
+    words[at : at + SH["kLightTableBytes"] // 4] = light_table(
+        lights, materials, terms, field
+    )
     return words
 
 
@@ -478,15 +568,18 @@ def frame_tensors(session):
 
 
 def surface_tensors(
-    session, workers, lights, materials, terms=raster.TERMS, shared=None
+    session, workers, lights, materials, terms=raster.TERMS, shared=None, field=None
 ):
     """The surface's two frames, LIGHT's table, pages and profile tensor, and
     the directory (a page a worker; shade.h kDirFrame, kSurface*). `shared` (glass):
-    another surface's table and pages, its own frames and profile."""
+    another surface's table and pages, its own frames and profile; `field` (the term
+    indirect): the field's words and pages (field_of)."""
     frames = [frame_tensors(session), frame_tensors(session)]
     if shared is None:
-        table = card.tensor(session, light_table(lights, materials, terms)[None, :])
-        pages = card.tensor(session, light_pages(lights)[0])
+        table = card.tensor(
+            session, light_table(lights, materials, terms, field)[None, :]
+        )
+        pages = card.tensor(session, light_pages(lights, field)[0])
     else:
         table, pages = shared["table"], shared["pages"]
     profile = card.tensor(session, np.zeros((workers, SH["kShadeProfBytes"] // 4)))
@@ -673,6 +766,34 @@ def shadow_band(view, lights, lit):
     return band & (tri >= 0)
 
 
+def field_sparse(view, lights, lit):
+    """The pixels whose field lookup (indirect.lookup at the reference's point and
+    normal of `lit`, the surface behind any glass) found fewer than 8 of its voxels
+    with data in a direction the normal faces."""
+    model, _ = indirect.field_for(lights)
+    tri = lit["tri"]
+    ys, xs = np.nonzero(tri >= 0)
+    px, py = xs.astype(F32) + F32(0.5), ys.astype(F32) + F32(0.5)
+    position = raster.world_points(view["camera"], px, py, lit["depth"][ys, xs])
+    n = lit["parts"]["normal"][ys, xs].astype(F32)
+    h, origin, dims = model["field_spacing"], model["field_origin"], model["field_dims"]
+    keys, has = model["field_keys"], model["field_has"]
+    g = ((position + n * (F32(indirect.FIELD_SHIFT) * h)) - origin) / h - F32(0.5)
+    base = np.floor(g).astype(np.int64)
+    found = np.zeros(len(n), dtype=np.int64)
+    for corner in np.ndindex(2, 2, 2):
+        key = indirect.voxel_keys(base + np.array(corner), dims)
+        at = np.minimum(np.searchsorted(keys, key), len(keys) - 1)
+        ok = (keys[at] == key) & (key >= 0)
+        faced = np.zeros(len(n), dtype=bool)
+        for axis in range(3):
+            faced |= has[at, 2 * axis + (n[:, axis] < 0)]
+        found += ok & faced
+    sparse = np.zeros(tri.shape, dtype=bool)
+    sparse[ys, xs] = found < 8
+    return sparse
+
+
 def light_check(view, materials, lights, got, terms=raster.TERMS):
     """Check C: the card's 8-bit picture against light_reference's by png's rule:
     shares of pixels off by more than 2, 4, 8 in a channel, later pieces apart; with
@@ -701,19 +822,21 @@ def light_check(view, materials, lights, got, terms=raster.TERMS):
             float((error[glass] > limit).sum() / max(int(glass.sum()), 1)), 6
         )
     report["glass_in_front"]["max_error"] = int(error[glass].max(initial=0))
+    parts = []
     if "shadow" in terms:
         band = shadow_band(view, lights, lit)
-        for name, chosen in (
-            ("band", checked & band),
-            ("outside_band", checked & ~band),
-        ):
-            part = {"pixels": int(chosen.sum())}
-            for limit in (2, 4, 8):
-                part[f"over_{limit}"] = int((error[chosen] > limit).sum())
-                part[f"share_over_{limit}"] = round(
-                    float((error[chosen] > limit).sum() / max(int(chosen.sum()), 1)), 6
-                )
-            report[name] = part
+        parts += [("band", checked & band), ("outside_band", checked & ~band)]
+    if "indirect" in terms:
+        sparse = field_sparse(view, lights, lit)
+        parts += [("field_under_8", checked & sparse), ("field_8", checked & ~sparse)]
+    for name, chosen in parts:
+        part = {"pixels": int(chosen.sum())}
+        for limit in (2, 4, 8):
+            part[f"over_{limit}"] = int((error[chosen] > limit).sum())
+            part[f"share_over_{limit}"] = round(
+                float((error[chosen] > limit).sum() / max(int(chosen.sum()), 1)), 6
+            )
+        report[name] = part
     report["ok"] = report["share_over_4"] < 0.01
     return report, want
 

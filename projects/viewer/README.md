@@ -13,7 +13,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 | file | what it is |
 |---|---|
 | `server.py` | the web server (Python's `http.server` only) and the render loop, on the main thread, that owns the card's session |
-| `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file), `RasterLit` (`--light`, offered on scenes with a materials and a lighting file) and `Raytrace`: `open(scene)`, `frame(camera_words) -> (image, card_ms)`, `close()`, on the `Loop` class of each project's `live.py` |
+| `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file), `RasterLit` (`--light`, offered on scenes with a materials and a lighting file), `RasterGi` (`--light --indirect`, offered where the scene also has an indirect file) and `Raytrace`: `open(scene)`, `frame(camera_words) -> (image, card_ms)`, `close()`, on the `Loop` class of each project's `live.py` |
 | `page.html` | the page: the stream, the numbers, the selects and the controls; no external files |
 | `check.py` | the check without a browser |
 
@@ -30,7 +30,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 
 ```
 python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
-    [--renderer raster|raster-textured|raster-lit|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview]
+    [--renderer raster|raster-textured|raster-lit|raster-gi|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview]
 ```
 
 The server binds only the address `--host` gives. Open
@@ -97,6 +97,14 @@ below the horizon), and the header shows the sun and the last SUN pass's ms. Car
 2026-11-23 03:53, `check.py`: the sun moved to the own azimuth + 90 at elevation 40 changed
 the frame and `/state` named it on all three scenes; SUN pass 8.6 ms (Sponza), 10.3
 (Bistro interior), 21.5 (Bistro exterior), host side included.
+
+raster-gi has the same sliders; its sun change also remakes the indirect field on the
+host and writes its pages (`Loop.update_field`) before the next frame. Card 1,
+2026-11-23 23:19 to 23:23, `check.py` (`ok`, every case): the sun change took 1,639 ms
+(Sponza) and 3,402 ms (Bistro interior) in the render loop, the first frame with the new
+sun came 1.7 and 3.5 s after the post (`follow_s`); frame ms (host) 14.9 and 23.6.
+`check.py` waits up to 60 s for that frame, and does not ask raster-gi for Bistro
+exterior (no indirect file).
 
 ## Checking it
 

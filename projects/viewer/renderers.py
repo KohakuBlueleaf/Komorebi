@@ -1,7 +1,7 @@
 """The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
-(1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--push
---shade`; RasterLit: `--push --light`, `set_sun(az, el)` -> ms (the SUN pass); Raytrace:
-`--show`. Each opens its own card session, owned by the thread calling them."""
+(1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--shade`;
+RasterLit: `--light`, `set_sun(az, el)` -> ms (the SUN pass); RasterGi: `--light
+--indirect`; Raytrace: `--show`. Each opens its own card session, on its thread."""
 
 import argparse
 import contextlib
@@ -16,8 +16,8 @@ from projects.raster import shade as raster_shade
 from projects.raytrace import card as raytrace_card
 from projects.raytrace import frame as raytrace_frame
 from projects.raytrace import live as raytrace_live
+from reference import indirect, native, public, raster
 from reference import lights as light_data
-from reference import native, public
 
 SIDE = 1024
 LIST_SLOTS_TIMES = 4  # the triangle lists: four times card_thread's default slots
@@ -71,6 +71,8 @@ class Raster(Renderer):
         """The lights the loop is loaded with (None: not lit)."""
         return None
 
+    terms = raster.TERMS  # the lit loop's terms
+
     def open(self, scene_name):
         self.close()
         scene, _ = raster_run.load(scene_name)
@@ -88,6 +90,7 @@ class Raster(Renderer):
                 {},
                 materials,
                 lights,
+                self.terms,
             )
             self.stack.callback(self.live.stop)
         except BaseException:
@@ -158,6 +161,21 @@ class RasterLit(RasterTextured):
         return ms
 
 
+class RasterGi(RasterLit):
+    """projects/raster/live.py's `--push --light --indirect` path: LIGHT with the
+    field's indirect light; a sun change remakes the field on the host."""
+
+    name = "raster-gi"
+    terms = raster.TERMS + ("indirect",)
+
+    @staticmethod
+    def offered(scene_name):
+        return (
+            RasterLit.offered(scene_name)
+            and indirect.model_path(scene_name, native.data_dir()).exists()
+        )
+
+
 class Raytrace(Renderer):
     """projects/raytrace/live.py's `--show` path."""
 
@@ -202,7 +220,7 @@ class Raytrace(Renderer):
 
 RENDERERS = {
     renderer.name: renderer
-    for renderer in (Raster, RasterTextured, RasterLit, Raytrace)
+    for renderer in (Raster, RasterTextured, RasterLit, RasterGi, Raytrace)
 }
 
 

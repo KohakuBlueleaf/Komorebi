@@ -173,12 +173,36 @@ constexpr uint32_t kLampInvRadius = 8;
 constexpr uint32_t kLampSize2 = 9;
 constexpr uint32_t kLampsMax = 32;
 static_assert(4 * (kLtLamp + kLampWords * kLampsMax) <= kLightTableBytes);
+// Indirect light (kTermIndirect; light.py field_words), floats: the field's grid, its
+// pages (blocks across x, a y layer's blocks, 1 + first light page), the decode
+constexpr uint32_t kLtFieldOrigin = 640;
+constexpr uint32_t kLtFieldShift = 643;    // h / 2
+constexpr uint32_t kLtFieldSpacing = 644;  // h
+constexpr uint32_t kLtFieldInverse = 645;  // 1 / h
+constexpr uint32_t kLtFieldDims = 646;     // voxels a side
+constexpr uint32_t kLtFieldAcross = 649;
+constexpr uint32_t kLtFieldLayer = 650;
+constexpr uint32_t kLtFieldFirst = 651;
+constexpr uint32_t kLtFieldUnit = 652;   // a channel: (1 / max code)^2 x the scale
+constexpr uint32_t kLtFieldScale = 655;  // the scale (the host's record)
+constexpr uint32_t kLtFieldPages = 656;  // int: the field's pages
+static_assert(kLtFieldOrigin >= kLtLamp + kLampWords * kLampsMax);
+static_assert(4 * (kLtFieldPages + 1) <= kLightTableBytes);
+// A field page: 8 x 2 x 8 voxels (x, y, z), texel d 128 + (y 8 + z) 8 + x, d +x -x +y
+// -y +z -z; blocks in x, z, y. Texel: bit 31 data, r 20-30, g 9-19, b 0-8 (pack_field).
+constexpr uint32_t kFieldBlockX = 8;
+constexpr uint32_t kFieldBlockY = 2;
+constexpr uint32_t kFieldBlockZ = 8;
+constexpr uint32_t kFieldDirectionTexels = 128;
+static_assert(kFieldBlockX * kFieldBlockY * kFieldBlockZ == kFieldDirectionTexels);
+static_assert(6 * kFieldDirectionTexels * 4 <= kTexPageBytes);
 // The terms past part A's (sky, ambient, the sun): its shadow, the lamps, the specular
-// term, the background map (without: FILL's background).
+// term, the background map (without: FILL's background), the indirect light (field).
 constexpr uint32_t kTermShadow = 1;
 constexpr uint32_t kTermLamps = 2;
 constexpr uint32_t kTermSpecular = 4;
 constexpr uint32_t kTermBackground = 8;
+constexpr uint32_t kTermIndirect = 16;
 // LIGHT's reader: an item's word in kCbIn (first_row | end_row << 8, kShadeAskEnd: the
 // end; then its tile) and its planes: the surface's ten, the frame's 1/z, material word
 constexpr uint32_t kLightItemPlanes = 12;
@@ -248,7 +272,17 @@ constexpr uint32_t kLightProfTotal = 15;
 // not in the total's parts: kLightGlass's quarter tiles with glass in front (the
 // others only toned)
 constexpr uint32_t kLightProfGlassQuarters = 16;
-constexpr uint32_t kLightProfWords = 17;
+// the field (kTermIndirect), parts of the total: keys, scan, wait, gather (texels to
+// Dst), blend; then its pages, passes and the most pages one item read (not summed)
+constexpr uint32_t kLightProfFieldKeys = 17;
+constexpr uint32_t kLightProfFieldScan = 18;
+constexpr uint32_t kLightProfFieldWait = 19;
+constexpr uint32_t kLightProfFieldGather = 20;
+constexpr uint32_t kLightProfFieldBlend = 21;
+constexpr uint32_t kLightProfFieldPages = 22;
+constexpr uint32_t kLightProfFieldPasses = 23;
+constexpr uint32_t kLightProfFieldItemPages = 24;
+constexpr uint32_t kLightProfWords = 25;
 
 // Gave-up places (the writer's word): a wait of the unpack or pack thread, a bad
 // header or table, the reader's loop.

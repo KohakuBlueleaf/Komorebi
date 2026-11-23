@@ -121,3 +121,24 @@ def test_the_hierarchical_apply_equals_the_dense_one():
     y = indirect.apply(blocks, weights, x)
     exact = matrix.astype(np.float64) @ x
     assert np.linalg.norm(y - exact) / np.linalg.norm(exact) < 1e-2
+
+
+def test_the_packed_field_keeps_has_and_the_values_to_their_codes():
+    rng = np.random.default_rng(5)
+    values = (rng.random((40, 6, 3)) ** 3 * 7.0).astype(F)
+    values[0, 0] = [7.5, 0.0, -1e-3]  # the largest red; a negative clamped at 0
+    has = rng.random((40, 6)) < 0.7
+    has[0, 0] = True
+    texels, scale = indirect.pack_field(values, has)
+    assert texels.dtype == np.uint32 and scale == F(7.5)
+    np.testing.assert_array_equal((texels >> 31) != 0, has)
+    got, got_has = indirect.unpack_field(texels, scale)
+    np.testing.assert_array_equal(got_has, has)
+    assert (got[~has] == 0).all()
+    assert got[0, 0, 0] == F(7.5) and got[0, 0, 1] == 0 and got[0, 0, 2] == 0
+    # a code is the nearest of sqrt(v / scale) x (2^bits - 1): half a step of the root
+    for c, bits in enumerate(indirect.PACK_BITS):
+        most = (1 << bits) - 1
+        root = np.sqrt(np.maximum(values[..., c][has], 0) / scale)
+        back = np.sqrt(got[..., c][has] / scale)
+        assert np.abs(root - back).max() <= 0.5 / most + 1e-6

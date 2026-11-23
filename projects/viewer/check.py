@@ -17,11 +17,14 @@ from PIL import Image
 
 SIDE = 1024
 # each renderer must offer Bistro exterior (2.83 M triangles, 1 GB of texture pages)
+# but raster-gi, offered where the scene has an indirect file (Bistro exterior: none)
 EXTERIOR = "bistro_exterior_overview"
+NO_EXTERIOR = ("raster-gi",)
 POSES = 20
 POSE_GAP_S = 0.1
 OPEN_TIMEOUT_S = 1800.0  # a scene's first open builds its tree, lists and kernels
 AFTER_S = 2.0  # frames read after the last pose (and after the sun's move)
+FOLLOW_S = 60.0  # the sun's move: at most this for /state to show it and a frame after
 SUN_TURN = (
     90.0  # the sun's move: its azimuth turned by this, its elevation SUN_ELEVATION
 )
@@ -195,6 +198,17 @@ def sun_case(base, token, state, reader):
         },
         token,
     )[1]["taken"]
+    posted = time.monotonic()
+    follow_s = None  # until /state shows the sun and a frame came after it
+    while time.monotonic() - posted < FOLLOW_S:
+        now = json.loads(get(f"{base}/state?token={token}")[1])
+        shown = now["sun"] is not None and abs(now["sun"][0] - azimuth) < 1e-6
+        if shown and follow_s is None:
+            follow_s, count_shown = time.monotonic() - posted, len(reader.frames)
+        if follow_s is not None and len(reader.frames) > count_shown:
+            follow_s = time.monotonic() - posted
+            break
+        time.sleep(0.05)
     time.sleep(AFTER_S)
     now = json.loads(get(f"{base}/state?token={token}")[1])
     after = reader.frames[-1] if len(reader.frames) > count else None
@@ -214,6 +228,7 @@ def sun_case(base, token, state, reader):
         "taken": taken,
         "state_sun": now["sun"],
         "sun_ms": now["sun_ms"],
+        "follow_s": None if follow_s is None else round(follow_s, 2),
         "frames_after": len(reader.frames) - count,
         "frame_changed": bool(changed),
         "status": now["status"],
@@ -243,7 +258,9 @@ def main():
     state = json.loads(get(f"{base}/state?token={token}")[1])
     offers = state["offers"]
     report["offers"] = offers
-    report["exterior_offered"] = all(EXTERIOR in offers[name] for name in offers)
+    report["exterior_offered"] = all(
+        EXTERIOR in offers[name] for name in offers if name not in NO_EXTERIOR
+    )
     report["refused"] = {  # a renderer selected on a scene it is not offered on: 400
         f"{renderer}/{scene}": status_of(
             lambda renderer=renderer, scene=scene: post(
