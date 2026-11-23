@@ -111,10 +111,22 @@ Requests: `GET /` the page; `GET /stream` the frames; `POST /pose`
 "scene_serial": n}`, raster-lit); `GET /state` (the numbers, the status, the renderers
 and scenes offered, the scene box's diagonal, the scene's first pose; raster-lit: `sun`,
 `sun_own`, `sun_ms`; raster-lit and raster-gi: `tone`, `tone_own`; raster-gi:
-`indirect`); `POST /tone` (`{"exposure": e, "saturation": s, "curve": 0 or 1,
+`indirect`, `bounces` (the passes in force; null for the other renderers) and `field_s`
+(the seconds the last update of the field took on the host, a sun change's or a
+count's; null before the first)); `POST /tone` (`{"exposure": e, "saturation": s, "curve": 0 or 1,
 "scene_serial": n}`, raster-lit and raster-gi: exposure clamped to 0.25 to 8,
 saturation to 0 to 2); `POST /indirect` (`{"on": true or false, "scene_serial": n}`,
-raster-gi).
+raster-gi); `POST /bounces` (`{"bounces": n, "scene_serial": s}`, n 0 to 3, raster-gi;
+400 with `{"error": reason}` out of range or when the renderer has no indirect light).
+
+The passes (raster-gi): the select "passes" starts at the scene's count (its `lighting`
+entry's `bounces`, default 2); a change posts it, and the render loop applies the newest
+between frames (`Loop.set_bounces`: the field remade on the host with that count and its
+pages written, as after a sun change); a later sun change keeps the count. For the other
+renderers the select is disabled and shows a dash. Card 1, 2026-11-24 05:30 to 05:34, `check.py` (`ok`, every case): passes 0 shown
+with a changed frame after it in 0.21 s (Sponza) and 0.26 s (Bistro interior), `field_s`
+0.147 and 0.161; passes 4 refused "bounces is 0 to 3, not 4"; the other renderers refused
+"<renderer> has no indirect light".
 
 The sun (raster-lit): two sliders, azimuth and elevation, start at the scene's own sun;
 "reset sun" puts them back. A move posts the angles (at most ten times a second); the
@@ -157,8 +169,9 @@ short path, reads the frames from `/stream`, and reports the frames received, th
 decode to the size `/state` reports, that the first and the last differ, and the frame ms (with its
 label) and frames a second `/state` showed; and that requests without the token get 403. One JSON line with
 `ok`. A lit renderer also moves the sun and posts the tone exposure 2, saturation 1.15,
-filmic; raster-gi then switches the indirect light off: each must change the frame and
-show in `/state`. Each case also posts 2048 x 1024 (64 x 32 = 2,048 tiles: 400 with the
+filmic; raster-gi then posts passes 4 (400 with the reason) and 0, then switches the
+indirect light off: each must change the frame and show in `/state` (and `field_s` after
+the passes); the other renderers must refuse a passes post with 400. Each case also posts 2048 x 1024 (64 x 32 = 2,048 tiles: 400 with the
 reason), then on a rasterizer 1024 x 576 (`/state` and a frame of that size must follow)
 and the start's size again; the ray tracer must refuse 1024 x 576 with 400.
 

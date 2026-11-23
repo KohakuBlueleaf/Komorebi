@@ -699,10 +699,11 @@ def lamp_irradiance(lights, position, normal):
     return out
 
 
-def element_light(lights, model):
+def element_light(lights, model, bounces=light_data.BOUNCES):
     """For the current lights each element's sky irradiance (transfer row x sky),
     L0 = emission x emissive_scale + albedo / pi (sun with the shadow map's lookup + the
-    lamps + sky), E1 = M L0, E2 = M (albedo / pi E1); the hierarchical apply, float32.
+    lamps + sky) and the `bounces` passes E1 = M L0, E_k = M (albedo / pi E_(k-1))
+    (`passes`); the hierarchical apply, float32.
     """
     p, n = model["position"], model["normal"]
     sun = light_data.sun_shadow(lights, p, n) * np.maximum(
@@ -715,9 +716,22 @@ def element_light(lights, model):
     scale = F(lights["emissive_scale"])
     l0 = model["emission"] * scale + model["albedo"] * F(1 / np.pi) * direct
     l0 = np.where(model["real"][:, None], l0, F(0)).astype(F)
-    e1 = apply(model["blocks"], model["weights"], l0)
-    e2 = apply(model["blocks"], model["weights"], model["albedo"] * F(1 / np.pi) * e1)
-    return {"sky": sky, "direct": direct, "l0": l0, "e1": e1, "e2": e2}
+    passes = []
+    for _ in range(light_data.bounce_count(bounces)):
+        x = l0 if not passes else model["albedo"] * F(1 / np.pi) * passes[-1]
+        passes.append(apply(model["blocks"], model["weights"], x))
+    return {"sky": sky, "direct": direct, "l0": l0, "passes": passes}
+
+
+def field_source(light):
+    """What the field holds per element for `element_light`'s result: E1 + ... +
+    E_bounces + the element's own sky irradiance (with no pass, the sky alone)."""
+    if not light["passes"]:
+        return light["sky"]
+    total = light["passes"][0]
+    for e in light["passes"][1:]:
+        total = total + e
+    return total + light["sky"]
 
 
 def model_path(name, data):
@@ -793,25 +807,27 @@ def unpack_field(texels, scale):
 
 def field_for(lights):
     """The model and the field's values (nv, 6, 3) for the lights (`lights["indirect"]`
-    names the file): E1 + E2 + the element's own sky irradiance, through the field's
-    weights; recomputed when the lights change (`lights.moved`), never the files. With
-    `lights["indirect_packed"]` true, the values as the card holds them (pack_field,
-    then unpack_field)."""
+    names the file): E1 + ... + E_bounces (`lights["bounces"]`, default 2) + each
+    element's own sky irradiance, through the field's weights; remade when the lights or
+    the count change, never the files. `lights["indirect_packed"]`: as the card holds
+    them (pack_field, then unpack_field)."""
     if "indirect" not in lights:
         raise ValueError(
             "the term `indirect` needs the scene's indirect file: write it with "
             "python -m reference.public indirect <scene> (lights.load finds it)"
         )
+    bounces = light_data.bounce_count(lights.get("bounces", light_data.BOUNCES))
     model = load_model(lights["indirect"])
     key = (signature(lights), id(lights["shadow_map"]), id(lights["octahedral"]))
+    key += (bounces,)
     cache = model.setdefault("cache", [])
     values = None
     for entry in cache:
         if entry[0] == key and entry[1] is lights["shadow_map"]:
             values = entry[2]
     if values is None:
-        light = element_light(lights, model)
-        values = field_values(model, (light["e1"] + light["e2"]) + light["sky"])
+        light = element_light(lights, model, bounces)
+        values = field_values(model, field_source(light))
         cache[:] = cache[-3:] + [(key, lights["shadow_map"], values)]
     if lights.get("indirect_packed"):
         values, _ = unpack_field(*pack_field(values, model["field_has"]))

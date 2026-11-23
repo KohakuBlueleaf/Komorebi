@@ -1,6 +1,7 @@
 """The viewer checked without a browser: every renderer on its scenes, poses, frames,
-sun, tone, switch, a frame size changed and refused (README.md "check.py"), 403
-without the token. One JSON line, exit 1 unless `ok`. --url URL --token T"""
+sun, tone, passes changed and refused, switch, a frame size changed and refused
+(README.md "check.py"), 403 without the token. One JSON line, exit 1 unless `ok`.
+--url URL --token T"""
 
 import argparse
 import io
@@ -30,6 +31,8 @@ SUN_TURN = (
 )
 SUN_ELEVATION = 40.0
 TONE = (2.0, 1.15, 1)  # the tone posted: exposure, saturation, filmic
+BOUNCES = 0  # the passes posted to a renderer with indirect light (the scene's: 2)
+BOUNCES_REFUSED = 4  # out of range: refused (400, its reason)
 
 
 def get(url, timeout=10.0):
@@ -144,7 +147,7 @@ def run_case(base, token, renderer, scene):
             card_ms.append(now["card_ms"])
         fps.append(now["fps"])
     time.sleep(AFTER_S)
-    sun = tone = switch = None
+    sun = tone = switch = passes = None
     size = size_case(base, token, state, reader)
     if state.get("sun_own"):
         sun = sun_case(base, token, state, reader)
@@ -152,6 +155,7 @@ def run_case(base, token, renderer, scene):
         tone = knob_case(
             base, token, state, reader, "/tone", tone_body(), "tone", list(TONE)
         )
+    passes = bounces_case(base, token, state, reader)  # before the switch turns it off
     if state.get("indirect") is not None:
         switch = knob_case(
             base, token, state, reader, "/indirect", {"on": False}, "indirect", False
@@ -181,6 +185,7 @@ def run_case(base, token, renderer, scene):
         stream_error=reader.error,
     )
     knobs = {"size": size, "sun": sun, "tone": tone, "indirect": switch}
+    knobs["bounces"] = passes
     case.update({name: knob for name, knob in knobs.items() if knob is not None})
     case["ok"] = bool(
         taken == POSES
@@ -188,7 +193,9 @@ def run_case(base, token, renderer, scene):
         and sizes == {tuple(state["size"])}
         and differ
         and reader.error is None
-        and all(knob is None or knob["ok"] for knob in (size, sun, tone, switch))
+        and all(
+            knob is None or knob["ok"] for knob in (size, sun, tone, switch, passes)
+        )
     )
     return case
 
@@ -303,6 +310,46 @@ def knob_case(base, token, state, reader, path, body, key, want):
     }
 
 
+def bounces_case(base, token, state, reader):
+    """The passes: without indirect light any /bounces is refused (400, its reason);
+    with it BOUNCES_REFUSED is refused (400, its reason), then BOUNCES is taken as a
+    knob (knob_case: the frame changes, /state's `bounces` follows) and /state shows the
+    field's update seconds."""
+
+    def refused(bounces):
+        body = {"bounces": bounces, "scene_serial": state["scene_serial"]}
+        try:
+            code, answer = post(f"{base}/bounces", body, token)
+        except urllib.error.HTTPError as error:
+            code, answer = error.code, json.loads(error.read())
+        return {"code": code, "answer": answer}
+
+    if state.get("bounces") is None:
+        case = {"refused": refused(BOUNCES)}
+        reason = str(case["refused"]["answer"].get("error", ""))
+        case["ok"] = case["refused"]["code"] == 400 and "no indirect light" in reason
+        return case
+    case = {"own": state["bounces"], "refused": refused(BOUNCES_REFUSED)}
+    reason = str(case["refused"]["answer"].get("error", ""))
+    refused_ok = case["refused"]["code"] == 400 and "bounces is 0 to 3" in reason
+    case.update(
+        knob_case(
+            base,
+            token,
+            state,
+            reader,
+            "/bounces",
+            {"bounces": BOUNCES},
+            "bounces",
+            BOUNCES,
+        )
+    )
+    now = json.loads(get(f"{base}/state?token={token}")[1])
+    case["field_s"] = now["field_s"]
+    case["ok"] = bool(case["ok"] and refused_ok and now["field_s"] is not None)
+    return case
+
+
 def sun_case(base, token, state, reader):
     """The sun moved (SUN_TURN, SUN_ELEVATION) after the poses: the newest frame before
     and after against each other, and the angles and the SUN pass's ms /state shows."""
@@ -373,6 +420,7 @@ def main():
             "sun": status_of(lambda: post(f"{base}/sun", {}, None)),
             "tone": status_of(lambda: post(f"{base}/tone", {}, None)),
             "indirect": status_of(lambda: post(f"{base}/indirect", {}, None)),
+            "bounces": status_of(lambda: post(f"{base}/bounces", {}, None)),
         }
     }
     page_status, page = get(f"{base}/?token={token}")

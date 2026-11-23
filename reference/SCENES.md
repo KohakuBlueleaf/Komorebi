@@ -247,6 +247,7 @@ A scene's `lighting` entry holds its numbers:
 | `reflection` (optional) | the factor of the environment's radiance a glass surface reflects ("Glass" in the raster reference README), default 0; `lights.load` does not read it yet: set it in the lights |
 | `sun` (optional) | an authored sun, `{"direction"` it shines along`, "colour"}`; the map is turned so its sun's azimuth matches, and `turn` is not used |
 | `elements` (optional) | surface elements sampled for the indirect light (`python -m reference.public indirect`), default 50,000 |
+| `bounces` (optional) | the indirect light's bounce passes summed, 0 to 3, default 2 (0: only each element's own sky; raster reference README, "Indirect light"); a caller may override `lights["bounces"]` |
 
 Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,
 0.33, 0.30 (the courtyard's sky visibility per vertex is low, so bounced light is most

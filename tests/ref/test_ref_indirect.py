@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from reference import bvh, indirect, native
+from reference import lights as light_data
 
 F = np.float32
 needs_cxx = pytest.mark.skipif(native.find_cxx() is None, reason="no C++ compiler")
@@ -142,3 +143,84 @@ def test_the_packed_field_keeps_has_and_the_values_to_their_codes():
         root = np.sqrt(np.maximum(values[..., c][has], 0) / scale)
         back = np.sqrt(got[..., c][has] / scale)
         assert np.abs(root - back).max() <= 0.5 / most + 1e-6
+
+
+def bounce_model_and_lights(path):
+    """A hand-made indirect model (the closed box's elements in a cluster tree's order,
+    a small transport, random sky transfer rows, a field) under `path` in indirect's
+    models, and lights lighting it: a sun with nothing in its shadow map, a grey sky."""
+    mesh, elements = closed_box(cells=4)
+    tree = indirect.cluster_tree(elements["position"], leaf_units=1)
+    order = tree["perm"]
+    p = elements["position"][order].astype(np.float64)
+    r2 = ((p[:, None] - p[None]) ** 2).sum(-1)
+    matrix = (0.3 / len(p) * 100.0 / (100.0 + r2)).astype(F)
+    np.fill_diagonal(matrix, 0)
+    blocks, weights = indirect.hierarchical(matrix, tree, log=lambda _: None)
+    rng = np.random.default_rng(7)
+    count = len(p)
+    model = {
+        "position": elements["position"][order],
+        "normal": elements["normal"][order],
+        "real": np.ones(count, bool),
+        "albedo": rng.uniform(0.2, 0.9, (count, 3)).astype(F),
+        "emission": np.zeros((count, 3), F),
+        "transfer": rng.uniform(0, 0.2, (count, indirect.SKY_TERMS)).astype(F),
+        "blocks": blocks,
+        "weights": weights,
+    }
+    model |= indirect.build_field(model["position"], model["normal"], 2.5)
+    indirect._MODELS[path] = model
+    sun = np.array([0.3, 0.8, 0.5], F) / np.linalg.norm([0.3, 0.8, 0.5]).astype(F)
+    lights = {
+        "indirect": path,
+        "sun_direction": sun,
+        "sun_irradiance": F([3, 2, 1]),
+        "turn": F(0),
+        "octahedral": np.full((128, 128, 3), 0.5, F),
+        "lamp_position": np.zeros((0, 3), F),
+        "lamp_colour": np.zeros((0, 3), F),
+        "lamp_intensity": np.zeros(0, F),
+        "size": 1.0,
+        "radius": 1.0,
+        "emissive_scale": 1.0,
+        "shadow_map": np.zeros((1, 1), F),
+        "shadow_camera": light_data.sun_camera(mesh["positions"], sun, 1),
+        "shadow_texel": F(0.01),
+        "shadow_bias": F(0),
+    }
+    return model, lights
+
+
+def test_the_bounce_count_sums_that_many_passes(tmp_path):
+    model, lights = bounce_model_and_lights(str(tmp_path / "box_indirect.npz"))
+    light = indirect.element_light(lights, model, 0)
+    sky, l0 = light["sky"], light["l0"]
+    assert light["passes"] == [] and np.isfinite(sky).all() and sky.any()
+    e1 = indirect.apply(model["blocks"], model["weights"], l0)
+    a = model["albedo"] * F(1 / np.pi)
+    e2 = indirect.apply(model["blocks"], model["weights"], a * e1)
+    e3 = indirect.apply(model["blocks"], model["weights"], a * e2)
+    assert e3.any()
+    want = {
+        0: indirect.field_values(model, sky),
+        1: indirect.field_values(model, e1 + sky),
+        2: indirect.field_values(model, (e1 + e2) + sky),  # today's sum
+        3: indirect.field_values(model, ((e1 + e2) + e3) + sky),
+    }
+    for count, values in want.items():
+        _, got = indirect.field_for({**lights, "bounces": count})
+        np.testing.assert_array_equal(got, values)
+    _, default = indirect.field_for(lights)  # no count: 2, bit for bit
+    np.testing.assert_array_equal(default, want[2])
+    assert not np.array_equal(want[3], want[2]) and not np.array_equal(want[1], want[0])
+
+
+def test_a_bounce_count_outside_0_to_3_is_refused(tmp_path):
+    _, lights = bounce_model_and_lights(str(tmp_path / "box_indirect.npz"))
+    for bad in (4, -1, 1.5, True, "2"):
+        with pytest.raises(ValueError, match="bounces"):
+            light_data.bounce_count(bad)
+        with pytest.raises(ValueError, match="bounces"):
+            indirect.field_for({**lights, "bounces": bad})
+    assert [light_data.bounce_count(n) for n in (0, 1, 2, 3)] == [0, 1, 2, 3]

@@ -615,6 +615,19 @@ class Loop:
         self.running.thread.write("sun", self.region(self.lit))
         return (time.perf_counter() - began) * 1e3
 
+    def set_bounces(self, bounces):
+        """The indirect light's bounce passes (0 to 3, lights.bounce_count): the field
+        recomputed on the host with that count and written between frames (update_field,
+        as after a sun change); a later sun change keeps it. Returns the host's ms."""
+        if self.field is None:
+            raise ValueError("the bounce passes need a frame loaded with --indirect")
+        bounces = light_data.bounce_count(bounces)
+        began = time.perf_counter()
+        self.lights = {**self.lights, "bounces": bounces}
+        self.lit = {**self.lit, "bounces": bounces}
+        self.update_field(self.lit, False)
+        return (time.perf_counter() - began) * 1e3
+
     def set_sun(self, azimuth, elevation):
         """The sun at `azimuth`, `elevation` (degrees): light.sun_lights into the sun
         region, then above the horizon the SUN command (the next frame's shadow map).
@@ -711,6 +724,8 @@ def loop(args):
         raise SystemExit("--exposure, --saturation and --curve tone a lit frame")
     if args.indirect_switch and not args.indirect:
         raise SystemExit("--indirect-switch flips the field of an --indirect frame")
+    if args.bounces is not None and not args.indirect:
+        raise SystemExit("--bounces sets the passes of an --indirect frame's field")
     if toned:  # set_tone before the first frame; the reference with the same numbers
         tone = live_tone(lights, args)
         lights = {**lights, **tone}
@@ -740,6 +755,14 @@ def loop(args):
         sun_got = None
         if toned:
             report["tone"]["host_ms"] = round(live.set_tone(**tone), 3)
+        if args.bounces is not None:  # set_bounces before the first frame
+            host_ms = live.set_bounces(args.bounces)
+            lights = {**lights, "bounces": args.bounces}  # the reference's the same
+            report["bounces"] = {
+                "n": args.bounces,
+                "host_ms": round(host_ms, 3),
+                "field_update": live.field_update,
+            }
 
         def move_sun(azimuth, elevation, index):
             word, host_ms, _ = live.set_sun(azimuth, elevation)
@@ -1147,6 +1170,13 @@ def main():
         choices=(0, 1),
         default=None,
         help="lit: the tone curve, 0 x / (1 + x), 1 filmic (default the scene's)",
+    )
+    parser.add_argument(
+        "--bounces",
+        type=int,
+        choices=range(4),
+        default=None,
+        help="with --indirect: the field's bounce passes 0 to 3 (default the scene's)",
     )
     parser.add_argument(
         "--indirect-switch",

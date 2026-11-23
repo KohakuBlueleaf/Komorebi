@@ -534,7 +534,11 @@ python -m reference.public indirect sponza      # <scene>_indirect.npz and <scen
 3. **The sources.** For the current lights each element's outgoing light is
    `L0 = emission x emissive_scale + albedo / pi (sun + lamps + sky)`: the sun with the
    shadow map's lookup as a pixel has it, the lamps without shadows, the sky of item 4.
-   Two bounces: `E1 = M L0`, `E2 = M (albedo / pi E1)`, `E = E1 + E2`.
+   The bounce passes: `E1 = M L0`, `E_k = M (albedo / pi E_(k-1))`, `E = E1 + ... +
+   E_b`, b = `lights["bounces"]` (the `lighting` entry's `bounces`, default 2; 0 to 3,
+   anything else refused). With 0 the field holds only each element's own sky
+   irradiance: a frame is direct light only (the sun, the lamps, the sky with its
+   visibility). With the default every frame is the earlier one bit for bit.
 4. **The sky** by 25 spherical harmonics (bands 0 to 4): each element has a transfer row
    `T_k = pi / 256 sum Y_k(w)` over those of 256 cosine rays (seed 51) from `p + eps n`
    that escape; its sky irradiance is `max(0, T c)`, `c` (25 x 3) the least-squares fit,
@@ -559,7 +563,26 @@ python -m reference.public indirect sponza      # <scene>_indirect.npz and <scen
 7. **Lights.** `lights.load` gives the path of `<scene>_indirect.npz` as
    `lights["indirect"]` when the file exists; without it the term is refused with a
    message naming the command. After `lights.moved` the sources and the field's values
-   are recomputed (item 3) on the next frame; no file is rebuilt.
+   are recomputed (item 3) on the next frame; no file is rebuilt. `lights["bounces"]`
+   (`load`: the entry's, default 2) may be overridden in the dictionary; a new count
+   remakes the field's values the same way.
+
+The count (host, one process on 8 CPUs, 2026-11-24 02:53 to 02:56): the field's values
+for the lights (`projects/raster/light.field_of`: sources, the passes, the field's
+weights, packing; best of 3) and the mean of the frame's `indirect` part (luminance, `a /
+pi I`, over the visible pixels of the view's own camera at 1,024 x 1,024):
+
+| bounces | Sponza overview: field s, mean | Bistro interior overview: field s, mean |
+|---:|---|---|
+| 0 | 0.164, 0.00611 | 0.147, 0.00085 |
+| 1 | 0.624, 0.01188 | 0.918, 0.00736 |
+| 2 | 1.127, 0.01324 | 1.689, 0.00820 |
+| 3 | 1.607, 0.01348 | 2.448, 0.00831 |
+
+Each pass adds one apply of the transport (0.48 s Sponza, 0.77 s Bistro interior). The
+first pass adds 0.94 times the sky's part on Sponza and 7.6 times on the Bistro
+interior (lit through its windows and by its lamps); the second 0.24 and 0.13 of the
+first's, the third 0.18 and 0.13 of the second's (1.8 % and 1.3 % of the total).
 
 `indirect.truth` (not part of `rasterize_lighted`) gathers the truth per pixel: 256
 cosine rays about the pixel's normal from its point moved `eps` along the triangle's

@@ -1,7 +1,7 @@
 """The loops behind one interface: `open(scene, size)`, `frame(camera)` -> (image (H, W,
 4), ms), `set_size(size)`, `close()`; the camera of 1,024 x 1,024, sized here. Raster,
--Textured, -Lit (`set_sun`, `set_tone`), -Gi (`set_indirect`); Raytrace: 1,024 only.
-Each its own card session and thread (README.md)."""
+-Textured, -Lit (`set_sun`, `set_tone`), -Gi (`set_indirect`, `set_bounces`); Raytrace:
+1,024 only. Each its own card session and thread (README.md)."""
 
 import argparse
 import contextlib
@@ -54,6 +54,7 @@ class Renderer:
     sun_own = None  # a lit renderer: the scene's own sun (azimuth, elevation)
     tone_own = None  # a lit renderer: the scene's tone (exposure, saturation, curve)
     indirect = None  # raster-gi: the indirect switch (True: on)
+    bounces = None  # raster-gi: the field's bounce passes in force (0 to 3)
     sizes = True  # takes a frame size (set_size)
 
     @staticmethod
@@ -73,6 +74,11 @@ class Renderer:
         """The size this renderer renders for `size` asked: its own when it takes
         none."""
         return check_size(size) if self.sizes else (SIDE, SIDE)
+
+    def field_s(self):
+        """Seconds the last update of the indirect light's field took on the host (None
+        before the first, or without the field)."""
+        return None
 
     def close(self):
         """Stops the loop's program and closes the session (also after a failure)."""
@@ -220,9 +226,21 @@ class RasterGi(RasterLit):
     terms = raster.TERMS + ("indirect",)
 
     def open(self, scene_name, size=(SIDE, SIDE)):
-        self.indirect = None
+        self.indirect = self.bounces = None
         super().open(scene_name, size)
         self.indirect = True
+        self.bounces = int(self.live.lights.get("bounces", light_data.BOUNCES))
+
+    def set_bounces(self, bounces):
+        """The field's bounce passes (0 to 3): the field recomputed on the host and
+        written, applied to the next frame (no reload). Returns the host's ms."""
+        ms = self.live.set_bounces(bounces)
+        self.bounces = int(bounces)
+        return ms
+
+    def field_s(self):
+        update = self.live.field_update
+        return None if update is None else update["s"]
 
     def set_indirect(self, on):
         """The indirect switch (off: lit as without the field), applied to the next

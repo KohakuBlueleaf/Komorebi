@@ -113,7 +113,8 @@
     <legend>Light</legend>
     <div class="row check"><label><input id="indirect" type="checkbox"> indirect light</label></div>
     <div class="row"><label for="bounces">passes</label>
-      <select id="bounces"><option value="0">0</option><option value="1">1</option>
+      <select id="bounces"><option value="" hidden>-</option>
+        <option value="0">0</option><option value="1">1</option>
         <option value="2">2</option><option value="3">3</option></select></div>
   </fieldset>
   <fieldset id="sec-tone">
@@ -310,6 +311,9 @@ async function refresh() {
         state.scene_serial !== bouncesScene) {
       bouncesScene = state.scene_serial;
       bouncesSelect.value = String(state.bounces);
+    } else if (state.bounces === null || state.bounces === undefined) {
+      bouncesScene = -1;  // none in force: a dash; the next load shows its count
+      bouncesSelect.value = "";
     }
     if (!sizeShown && state.size_asked) {
       sizeShown = true;

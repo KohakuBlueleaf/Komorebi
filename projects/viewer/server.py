@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image
 
 from projects.viewer import renderers
+from reference import lights as light_data
 
 HERE = Path(__file__).resolve().parent
 SCENES = (
@@ -132,6 +133,12 @@ def parse_indirect(body):
     return on
 
 
+def parse_bounces(body):
+    """The bounce passes from the page's JSON: `bounces`, a whole number 0 to 3
+    (lights.bounce_count); else ValueError with the reason."""
+    return light_data.bounce_count(body["bounces"])
+
+
 def parse_size(body):
     """A frame size from the page's JSON: width and height, integers on the card's grid
     (renderers.check_size); else ValueError with the reason."""
@@ -197,6 +204,11 @@ class Viewer:
         self.indirect_pending = None
         self.indirect_serial = 0
         self.indirect = None
+        # the bounce passes (raster-gi), as the switch; the last field update's seconds
+        self.bounces_pending = None
+        self.bounces_serial = 0
+        self.bounces = None
+        self.field_s = None
         # the frame's size: the one asked (a load takes it), the newest posted not yet
         # applied and its serial, the frames' (the renderer's), the last change's ms
         self.size_asked = size
@@ -244,6 +256,22 @@ class Viewer:
                 return False
             self.indirect_pending = on
             self.indirect_serial += 1
+            self.changed.notify_all()
+            return True
+
+    def set_bounces(self, bounces, scene_serial):
+        """The bounce passes from the page (parse_bounces'), for the scene it was posted
+        in: the newest waits; ValueError with the reason when the renderer has no
+        indirect light."""
+        with self.lock:
+            if self.loaded[0] is None:
+                raise ValueError("no renderer is loaded yet")
+            if self.bounces is None:
+                raise ValueError(f"{self.loaded[0]} has no indirect light")
+            if scene_serial != self.scene_serial:
+                return False
+            self.bounces_pending = bounces
+            self.bounces_serial += 1
             self.changed.notify_all()
             return True
 
@@ -301,6 +329,8 @@ class Viewer:
                 "tone": None if self.tone is None else list(self.tone),
                 "tone_own": None if self.tone_own is None else list(self.tone_own),
                 "indirect": self.indirect,
+                "bounces": self.bounces,
+                "field_s": None if self.field_s is None else round(self.field_s, 3),
                 "size": None if self.size is None else list(self.size),
                 "size_asked": list(self.size_asked),
                 "size_ms": None if self.size_ms is None else round(self.size_ms, 3),
@@ -327,7 +357,7 @@ class Viewer:
     def render_loop(self):
         renderer = None
         failed = 0  # the selection that failed: wait for a new one
-        # (selection, pose, sun, tone, switch, size serials) of the last frame
+        # (selection, pose, sun, tone, switch, size, passes serials) of the last frame
         rendered = None
         last_frame = 0.0
         try:
@@ -352,6 +382,8 @@ class Viewer:
                         self.tone_pending = None
                         switch_serial = self.indirect_serial
                         switch, self.indirect_pending = self.indirect_pending, None
+                        bounces_serial = self.bounces_serial
+                        bounces, self.bounces_pending = self.bounces_pending, None
                         size_serial = self.size_serial
                         size, self.size_pending = self.size_pending, None
                     refused = None
@@ -376,6 +408,12 @@ class Viewer:
                         renderer.set_indirect(switch)
                         with self.lock:
                             self.indirect = renderer.indirect
+                    if bounces is not None and renderer.bounces is not None:
+                        renderer.set_bounces(bounces)  # the field, between frames
+                    if renderer.bounces is not None:  # its passes; a sun's update too
+                        with self.lock:
+                            self.bounces = renderer.bounces
+                            self.field_s = renderer.field_s()
                     camera = (
                         renderer.scene["camera"]
                         if own
@@ -403,6 +441,7 @@ class Viewer:
                         tone_serial,
                         switch_serial,
                         size_serial,
+                        bounces_serial,
                     )
                     last_frame = time.monotonic()
                 except Exception as error:  # noqa: BLE001 - shown on the page, closed
@@ -429,6 +468,7 @@ class Viewer:
             self.tone_serial,
             self.indirect_serial,
             self.size_serial,
+            self.bounces_serial,
         )
         return serials != rendered or time.monotonic() - last_frame >= KEEP_ALIVE_S
 
@@ -442,6 +482,7 @@ class Viewer:
             self.sun = self.sun_own = self.sun_ms = self.sun_pending = None
             self.tone = self.tone_own = self.tone_pending = None
             self.indirect = self.indirect_pending = None
+            self.bounces = self.bounces_pending = self.field_s = None
             self.size = self.size_ms = self.size_pending = None
             size = self.size_asked
         name, scene = selected
@@ -463,6 +504,7 @@ class Viewer:
             self.sun = self.sun_own = renderer.sun_own  # a new load: the scene's sun
             self.tone = self.tone_own = renderer.tone_own  # and its tone
             self.indirect = renderer.indirect  # raster-gi: on
+            self.bounces = renderer.bounces  # raster-gi: the scene's passes
             self.size = renderer.size  # the size asked, or the renderer's only one
         log(f"opened {name} on {scene} at {renderer.size[0]} x {renderer.size[1]}")
         return renderer
@@ -548,6 +590,11 @@ def handler_class(viewer, token, page):
                 elif url.path == "/indirect":
                     taken = viewer.set_indirect(
                         parse_indirect(body), int(body.get("scene_serial", -1))
+                    )
+                    self.reply_json(200, {"taken": taken})
+                elif url.path == "/bounces":
+                    taken = viewer.set_bounces(
+                        parse_bounces(body), int(body.get("scene_serial", -1))
                     )
                     self.reply_json(200, {"taken": taken})
                 elif url.path == "/size":

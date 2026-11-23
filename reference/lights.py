@@ -35,6 +35,9 @@ SHADOW_SIDE = 2048
 FILL_SIDE = scenes.WIDTH
 SUN_DISTANCE = 1000.0
 OCTA_SIDE = 2048  # the background's octahedral map, side in texels (`sky_side`)
+# Indirect light: the bounce passes summed (a `lighting` entry's `bounces`), at most.
+BOUNCES = 2
+MOST_BOUNCES = 3
 _BAKE = {}
 
 
@@ -652,12 +655,24 @@ LIGHT_KEYS = (
 )
 
 
+def bounce_count(value):
+    """A number of bounce passes: a whole number 0 to MOST_BOUNCES; else ValueError
+    with the reason."""
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(
+            f"bounces is a whole number 0 to {MOST_BOUNCES}, not {value!r}"
+        )
+    if not 0 <= int(value) <= MOST_BOUNCES:
+        raise ValueError(f"bounces is 0 to {MOST_BOUNCES}, not {int(value)}")
+    return int(value)
+
+
 def load(name, data):
     """The lights of a scene (or of a view's scene): the arrays of LIGHT_KEYS, the
     shadow map's side (`shadow_side`), the table's numbers (`reflection`: 0 without it;
-    the tone step's `saturation` and `curve`: 1 and 0 without them), the shadow bias
-    as 1/z (shadow_bias texels at the sun camera's distance) and `indirect`, the path
-    of <scene>_indirect.npz when there is one. Missing file: error."""
+    the tone step's `saturation` and `curve`: 1 and 0 without them; `bounces`: 2), the
+    shadow bias as 1/z (shadow_bias texels at the sun camera's distance) and `indirect`,
+    the path of <scene>_indirect.npz when there is one. Missing file: error."""
     if public.is_view(name):
         name = public.views()[name][0]
     path = lighting_path(name, data)
@@ -680,6 +695,7 @@ def load(name, data):
     numbers["reflection"] = entry.get("reflection", 0.0)
     numbers["saturation"] = entry.get("saturation", 1.0)
     numbers["curve"] = int(entry.get("curve", raster.CURVE_PLAIN))
+    numbers["bounces"] = bounce_count(entry.get("bounces", BOUNCES))
     found = public.public_dir(data) / f"{name}_indirect.npz"
     if found.exists():
         numbers["indirect"] = str(found)

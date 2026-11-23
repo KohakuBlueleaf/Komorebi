@@ -1008,6 +1008,32 @@ Card 1, 2026-11-24, AICLK 1,350 MHz, `--frames 20 --push --light --check-light`
   74,977 against 66,065 (with the field 80,291 against 71,978); about 7,400 to 8,900
   cycles a tile, 0.05 ms of LIGHT on Sponza (1.727 against 1.675 ms).
 
+### The bounce passes (`--bounces N`)
+
+The field sums N bounce passes, 0 to 3 (the reference's `lights["bounces"]`, the scene's
+`lighting` entry's `bounces`, default 2; its README, "Indirect light"); with 0 it holds
+only each element's own sky irradiance, so the frame is direct light only.
+`Loop.set_bounces(n)` remakes the field on the host with that count and writes its pages
+and the table between frames, as after a sun change (`update_field`, with the last
+shadow map); a later sun change keeps the count. The kernels do not change. `--bounces
+N` (with `--indirect`) calls it before frame 0 and gives the reference the same count.
+
+Card 1, 2026-11-24, `--frames 20 --push --light --indirect --check-light`, frames 0, 10,
+19, the worst share over 2 / 4 / 8 % of the three; every check `ok`, every word 0:
+
+- Default count (05:20 to 05:22): Sponza 0.077 / 0.027 / 0.013, Bistro interior 0.0063 /
+  0.0023 / 0.0005, as before.
+- `--bounces 0, 1, 2, 3 --curve 1 --exposure 2 --saturation 1.15` (05:22 to 05:28):
+  Sponza 0.46 / 0.12 / 0.035, 0.34 / 0.092 / 0.031, 0.33 / 0.088 / 0.030, 0.32 / 0.088 /
+  0.030; Bistro interior 0.013 / 0.0062 / 0.0022, 0.012 / 0.0065 / 0.0022, 0.0125 /
+  0.0064 / 0.0022, 0.0124 / 0.0065 / 0.0021.
+- 1,280 x 720, `--bounces 3` (05:28 to 05:29): Sponza 0.090 / 0.031 / 0.013, Bistro
+  interior 0.0067 / 0.0021 / 0.0003.
+- The field's update before frame 0 (host, `field_update["field_s"]`; count 2 is the
+  load's own field, found in the reference's cache, 0.02 s): for 0, 1, 3 Sponza 0.150,
+  0.652, 1.628 s, Bistro interior 0.145, 0.908, 2.429 s. Frame times unchanged
+  (host 14.7 to 14.8 ms Sponza, 21.4 Bistro interior).
+
 ## The interactive loop
 
 `live.py` loads the scene and the frame program once, with the thread built to serve

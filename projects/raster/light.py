@@ -223,8 +223,8 @@ def field_pages(model, texels):
 
 def field_of(lights):
     """The field for `lights` (lights["indirect"] names the scene's file) as the card
-    holds it: the reference's values (indirect.field_for, sources, two applies, the
-    field's weights) packed (indirect.pack_field) into field_pages. A dict: model,
+    holds it: the reference's values (indirect.field_for, sources, the bounce passes,
+    the field's weights) packed (indirect.pack_field) into field_pages. A dict: model,
     pages, scale, seconds."""
     started = time.perf_counter()
     model, values = indirect.field_for({**lights, "indirect_packed": False})
