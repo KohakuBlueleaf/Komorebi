@@ -275,9 +275,9 @@ def scene_box(scene):
 
 def sun_lights(lights, scene, azimuth, elevation):
     """lights.moved's numbers from the loaded `lights` without its shadow map (the card
-    renders it): turn, sh_turned, direction, sun_camera, texel, bias; elevation <= 0:
-    irradiance 0. The shadow map stays the loaded array (its shape only is used);
-    `scene` may be scene_box's."""
+    renders it): turn, sh_turned, direction, sun_camera at the map's side, texel, bias;
+    elevation <= 0: irradiance 0. The shadow map stays the loaded array (its shape only
+    is used); `scene` may be scene_box's."""
     own_azimuth, _ = light_data.sun_angles(lights["sun_direction"])
     change = float(azimuth) - own_azimuth
     sun = light_data.sun_direction(azimuth, elevation)
@@ -288,7 +288,7 @@ def sun_lights(lights, scene, azimuth, elevation):
     distance = float(lights["shadow_texel"] * lights["shadow_camera"][12])
     texels = float(lights["shadow_bias"]) * distance**2 / float(lights["shadow_texel"])
     positions = scene["positions"]
-    camera = light_data.sun_camera(positions, sun)
+    camera = light_data.sun_camera(positions, sun, light_data.shadow_side(lights))
     out["shadow_camera"] = camera
     if elevation <= 0:
         out["sun_irradiance"] = np.zeros(3, dtype=np.float32)
@@ -310,22 +310,42 @@ def sun_path(azimuth, step):
     return float(azimuth + SUN_PATH_STEP * step), float(middle + swing * np.sin(angle))
 
 
+def quadrant_cameras(camera, side):
+    """The sun's cameras of a shadow map of `side` from its camera: (side / 1,024)^2
+    lights.quadrant_camera, quadrant (i, j) the (j n + i)-th."""
+    across, most = side // light_data.FILL_SIDE, card_thread.F["RF_SUN_ACROSS_MAX"]
+    if side % light_data.FILL_SIDE or not 1 <= across <= most:
+        raise ValueError(f"a shadow map of side {side}: the card's are 1,024 or 2,048")
+    return [
+        light_data.quadrant_camera(camera, i, j)
+        for j in range(across)
+        for i in range(across)
+    ]
+
+
 def sun_region(lights, materials, terms=raster.TERMS):
-    """The frame thread's sun region (thread/frame.h RF_R_SUN): the sun's camera as
-    COUNT's and SETUP's camera page, then LIGHT's table (light_table)."""
+    """The frame thread's sun region (thread/frame.h RF_R_SUN): the sun's camera of each
+    quadrant of the shadow map as COUNT's and SETUP's camera page, the quadrants a side,
+    then LIGHT's table (light_table)."""
     words = np.zeros(card_thread.F["RF_SUN_BYTES"] // 4, dtype=np.uint32)
-    words[: SH["kCamWordsShade"]] = np.asarray(lights["shadow_camera"], dtype=F32).view(
-        np.uint32
-    )
+    side = light_data.shadow_side(lights)
+    cameras = quadrant_cameras(lights["shadow_camera"], side)
+    step = card_thread.F["RF_SUN_CAMERA_BYTES"] // 4
+    for quadrant, camera in enumerate(cameras):
+        words[step * quadrant : step * quadrant + SH["kCamWordsShade"]] = camera.view(
+            np.uint32
+        )
+    words[card_thread.F["RF_SUN_ACROSS_AT"] // 4] = side // light_data.FILL_SIDE
     at = card_thread.F["RF_SUN_TABLE_AT"] // 4
     words[at : at + SH["kLightTableBytes"] // 4] = light_table(lights, materials, terms)
     return words
 
 
-def sun_entries(scene, keeps, suns):
-    """The most list entries each layer (each mask of `keeps`) makes in the sun's view
-    over `suns` ((azimuth, elevation)): raster.setup's box, bin_triangles' tiles, zero
-    areas counted too (an upper bound). A list, one number a mask."""
+def sun_entries(scene, keeps, suns, side=light_data.SHADOW_SIDE):
+    """The most list entries each layer (each mask of `keeps`) makes in one of the sun's
+    views (a quadrant of a shadow map of `side`) over `suns` ((azimuth, elevation)):
+    raster.setup's box, bin_triangles' tiles, zero areas counted too (an upper bound).
+    A list, one number a mask."""
     box = scene_box(scene)
     most = [0] * len(keeps)
     half, tile = F32(0.5), raster.TILE
@@ -343,20 +363,21 @@ def sun_entries(scene, keeps, suns):
 
     for azimuth, elevation in suns:
         sun = light_data.sun_direction(azimuth, elevation)
-        camera = light_data.sun_camera(box["positions"], sun)
-        xc, yc, zc = raster.camera_space({**scene, "camera": camera})
-        x, y, _ = raster.to_screen(camera, xc, yc, zc)
-        x0 = np.clip(np.ceil(lowest(x) - half), 0, raster.WIDTH)
-        x1 = np.clip(np.floor(highest(x) - half), -1, raster.WIDTH - 1)
-        y0 = np.clip(np.ceil(lowest(y) - half), 0, raster.HEIGHT)
-        y1 = np.clip(np.floor(highest(y) - half), -1, raster.HEIGHT - 1)
-        tiles = np.where(
-            (x0 <= x1) & (y0 <= y1),
-            (x1 // tile - x0 // tile + 1) * (y1 // tile - y0 // tile + 1),
-            0,
-        )
-        for index, keep in enumerate(keeps):
-            most[index] = max(most[index], int(tiles[keep].sum()))
+        view = light_data.sun_camera(box["positions"], sun, side)
+        for camera in quadrant_cameras(view, side):
+            xc, yc, zc = raster.camera_space({**scene, "camera": camera})
+            x, y, _ = raster.to_screen(camera, xc, yc, zc)
+            x0 = np.clip(np.ceil(lowest(x) - half), 0, raster.WIDTH)
+            x1 = np.clip(np.floor(highest(x) - half), -1, raster.WIDTH - 1)
+            y0 = np.clip(np.ceil(lowest(y) - half), 0, raster.HEIGHT)
+            y1 = np.clip(np.floor(highest(y) - half), -1, raster.HEIGHT - 1)
+            tiles = np.where(
+                (x0 <= x1) & (y0 <= y1),
+                (x1 // tile - x0 // tile + 1) * (y1 // tile - y0 // tile + 1),
+                0,
+            )
+            for index, keep in enumerate(keeps):
+                most[index] = max(most[index], int(tiles[keep].sum()))
     return most
 
 
@@ -369,30 +390,40 @@ def shadow_of_pages(pages):
 
 
 def sun_check(view, materials, lights, got):
-    """Check B: the card's shadow map `got` against rasterize_shaded at `lights`'
-    shadow camera (lights.moved's): texels over 1e-5 relative apart and texels empty on
-    one side only, by the reference's layer; later pieces of cut triangles apart."""
-    camera = lights["shadow_camera"]
-    sun_view = {
-        "positions": view["positions"],
-        "indices": view["indices"],
-        "colors": np.zeros((len(view["positions"]), 3), dtype=np.float32),
-        "camera": camera,
-        "light": np.zeros(3, dtype=np.float32),
-    }
-    shaded = raster.rasterize_shaded(sun_view, materials)
-    want, tri = shaded["depth"], shaded["tri"]
+    """Check B: the card's shadow map `got` against rasterize_shaded at each quadrant's
+    camera of `lights`' shadow camera (lights.moved's): texels over 1e-5 relative apart
+    and texels empty on one side only, by the reference's layer and by quadrant; later
+    pieces of cut triangles apart."""
+    side = light_data.shadow_side(lights)
+    fill = light_data.FILL_SIDE
+    want = np.zeros((side, side), dtype=F32)
+    tri = np.full((side, side), -1, dtype=np.int32)
+    masked_tri = np.full((side, side), -1, dtype=np.int32)
+    later = np.zeros((side, side), dtype=bool)
+    corner = {**materials, "light": lights["visibility"][view["indices"]]}
+    cameras = quadrant_cameras(lights["shadow_camera"], side)
+    for quadrant, camera in enumerate(cameras):
+        sun_view = {
+            "positions": view["positions"],
+            "indices": view["indices"],
+            "colors": np.zeros((len(view["positions"]), 3), dtype=np.float32),
+            "camera": camera,
+            "light": np.zeros(3, dtype=np.float32),
+        }
+        shaded = raster.rasterize_shaded(sun_view, materials)
+        j, i = divmod(quadrant, side // fill)
+        place = (slice(fill * j, fill * (j + 1)), slice(fill * i, fill * (i + 1)))
+        want[place], tri[place] = shaded["depth"], shaded["tri"]
+        masked_tri[place] = shaded["masked"]["tri"]
+        owner = raster.setup(sun_view)["tri"]
+        if (owner[1:] == owner[:-1]).any():
+            later[place] = shade.later_pieces(sun_view, corner, shaded["tri"])
     report = {
+        "side": side,
         "reference_equals_moved": bool(
             np.array_equal(want.view(np.uint32), lights["shadow_map"].view(np.uint32))
-        )
+        ),
     }
-    owner = raster.setup(sun_view)["tri"]
-    later = np.zeros(want.shape, dtype=bool)
-    if (owner[1:] == owner[:-1]).any():
-        corner = {**materials, "light": lights["visibility"][view["indices"]]}
-        later = shade.later_pieces(sun_view, corner, tri)
-    masked_tri = shaded["masked"]["tri"]
     taken_masked = (masked_tri >= 0) & (tri == masked_tri)
     with np.errstate(all="ignore"):
         relative = np.abs(got.astype(np.float64) - want) / np.abs(
@@ -419,6 +450,16 @@ def sun_check(view, materials, lights, got):
             "share_one_empty": round(float((one_empty & chosen).sum() / count), 7),
         }
     report["max_relative"] = float(relative[both & ~later].max(initial=0))
+    quadrant_of = (np.arange(side) // fill)[:, None] * (side // fill) + (
+        np.arange(side) // fill
+    )[None, :]
+    report["by_quadrant"] = [
+        {
+            "differ_over_1e-5": int((differs & ~later & (quadrant_of == q)).sum()),
+            "one_empty": int((one_empty & ~later & (quadrant_of == q)).sum()),
+        }
+        for q in range(len(cameras))
+    ]
     return report
 
 

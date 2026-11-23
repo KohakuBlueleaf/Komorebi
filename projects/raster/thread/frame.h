@@ -17,6 +17,7 @@
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
 #define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
+#define RF_TILES_ACROSS 32u       /* the frame's tiles a row (kShowTilesAcross) */
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -53,8 +54,10 @@
 #define RF_P_SHADE 2
 #define RF_AREA_BYTES 49152u
 #define RF_AREA_MASKED 1u /* added to the area of a frame's masked layer */
-#define RF_AREA_SUN 2u    /* a SUN command's opaque layer */
-#define RF_AREAS 4u
+/* a SUN command's opaque layer of quadrant q (its masked layer: + RF_AREA_MASKED) */
+#define RF_AREA_SUN 2u
+#define RF_AREAS_A_QUADRANT 2u /* RF_AREA_SUN + RF_AREAS_A_QUADRANT q */
+#define RF_AREAS (RF_AREA_SUN + RF_AREAS_A_QUADRANT * RF_SUN_QUADRANTS_MAX)
 #define RF_CAMERA_BYTES (RF_AREAS * RF_AREA_BYTES)
 #define RF_MAX_CORES 248u
 
@@ -122,8 +125,12 @@
 #define RF_R_SUN_TIMES 9 /* serving: a row per SUN command, the last RF_TIMES_ROWS */
 #define RF_REGIONS 10u
 
-/* The sun region: the sun's camera (16 numbers, COUNT's and SETUP's camera page in a
- * SUN command), LIGHT's table (kernels/shade.h kLightTableBytes; LIGHT's a1) */
+/* The sun region: a camera page a quadrant of the shadow map ((i, j) the (j n + i)-th),
+ * n the quadrants a side, then LIGHT's table (kernels/shade.h; LIGHT's a1) */
+#define RF_SUN_CAMERA_BYTES 64u
+#define RF_SUN_ACROSS_MAX 2u
+#define RF_SUN_QUADRANTS_MAX 4u /* RF_SUN_ACROSS_MAX squared */
+#define RF_SUN_ACROSS_AT 256u
 #define RF_SUN_TABLE_AT 4096u
 #define RF_SUN_BYTES 8192u
 
@@ -163,6 +170,8 @@
 #define RF_S_NUMBER 26 /* SUN commands served before it */
 #define RF_S_CODE 27   /* its answer */
 #define RF_S_FRAMES 28 /* FRAME commands served before it */
+/* the quadrants rendered (1 or 4); the times above are sums */
+#define RF_S_QUADRANTS 29
 
 /* Result words: what the middle pass found, and the timer ticks of each part */
 #define RF_O_SLOTS 0

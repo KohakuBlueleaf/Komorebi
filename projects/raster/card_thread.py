@@ -46,6 +46,7 @@ F["RF_W_SURFACE"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_W_SUN_PAGES"] = F["RF_W_SURFACE"] + 1
 F["RF_WORDS"] = F["RF_W_SUN_PAGES"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
+F["RF_AREAS"] = F["RF_AREA_SUN"] + F["RF_AREAS_A_QUADRANT"] * F["RF_SUN_QUADRANTS_MAX"]
 F["RF_CAMERA_BYTES"] = F["RF_AREAS"] * F["RF_AREA_BYTES"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
@@ -102,6 +103,14 @@ def same_numbers():
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
         "RF_HANDLER_LIGHT": SH["kHandlerLight"],
         "RF_SHOW_RAW": SHOW["kShowRaw"],
+        "RF_TILES_ACROSS": SHOW["kShowTilesAcross"],
+        "kShowTilesAcross": (SHOW["kShowTilesAcross"], raster.TILES_X),
+        "RF_SUN_QUADRANTS_MAX": F["RF_SUN_ACROSS_MAX"] ** 2,
+        "RF_SUN_CAMERA_BYTES": 4 * SH["kCamWordsShade"],
+        "RF_SUN_ACROSS_AT after the cameras": (
+            max(F["RF_SUN_ACROSS_AT"], F["RF_SUN_QUADRANTS_MAX"] * 64),
+            F["RF_SUN_ACROSS_AT"],
+        ),
         "RF_SUN_TABLE_AT + table": (
             F["RF_SUN_TABLE_AT"] + SH["kLightTableBytes"],
             F["RF_SUN_BYTES"],

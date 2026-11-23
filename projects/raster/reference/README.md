@@ -290,9 +290,13 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    the scene's `eps` along its area-weighted normal, that leave the scene without a
    hit, traced with the reference ray tracer (`raytrace.trace`, any hit). It takes
    the place of the light term at the corners, so the `light/z` plane interpolates it.
-3. **Sun shadow.** The 1/z at 1024 x 1024 from a camera 1000 scene radii away along
-   the sun's direction, aimed at the centre of the scene's box, its frame covering the
-   box, with SHADE's two FILLs and holes: a texel takes the masked layer's 1/z where
+3. **Sun shadow.** The 1/z at `shadow_side` x `shadow_side` (the entry's, default
+   2,048, saved with the map) from a camera 1000 scene radii away along the sun's
+   direction, aimed at the centre of the scene's box, its frame covering the box
+   (`sun_camera(..., side)`: focal and principal point scale with the side). A side of
+   2,048 is four renders at FILL's 1,024 x 1,024: quadrant (i, j) uses that camera with
+   its principal point moved by (-1024 i, -1024 j) (`quadrant_camera`), so its pixel
+   (x, y) is texel (x + 1024 i, y + 1024 j). Each render has SHADE's two FILLs and holes: a texel takes the masked layer's 1/z where
    it is nearer and not a hole, else the other layer's, so plants and chains cast the
    shadow of their leaves, not of their quads. A pixel's point, moved along its
    lighting normal `n` (step 5: the normal map's where there is one, else the
@@ -373,8 +377,9 @@ elevation 74.53; Bistro exterior azimuth -90, elevation 61.18 (the authored sun)
   the irradiance is 0 and the shadow map is a 1 x 1 map of 0 (all lit, unused).
 - At the scene's own angles `moved` returns the prepared lights: the same direction,
   coefficients, turn and shadow map (Sponza bit for bit; the exterior's direction has
-  x = 2.95e-17 for -0 and the same shadow map). Its time is the shadow map's: about
-  4 s for Sponza, 17 s for the Bistro exterior (numpy, 8 CPUs).
+  x = 2.95e-17 for -0 and the same shadow map; Sponza at side 2,048 checked again bit
+  for bit). Its time is the shadow map's: about 10 s for Sponza, 43 s for the Bistro
+  exterior at side 2,048, 4 s and 17 s at 1,024 (numpy, 8 CPUs).
 
 **Terms.** `rasterize_lighted(..., terms=...)` takes a subset of `sky`, `ambient`,
 `sun`, `shadow`, `lamps`, `specular`, `background` (default: all of them, the frame
@@ -395,6 +400,17 @@ Everything per pixel is float32. Not part of it: shadows from lamps, bounced lig
 (`ambient` stands in for it).
 Visibility per vertex is coarse on large triangles: Sponza's courtyard floor is a few
 triangles whose 23 vertices lie under the arcades, so it gets no sky light.
-A shadow texel is 4.5 units on Sponza; on a wall the sun grazes (n.s 0.12 to 0.24) it
-stretches to about 19 to 37 units, so shadow edges there are steps. A turn of the sun
-by 0.01 degrees moves about 3 % of Sponza's surface pixels by more than 8 of 255.
+A shadow texel is 2.25 units on Sponza at side 2,048 (4.5 at 1,024); on a wall the sun
+grazes (n.s 0.12 to 0.24) it stretches to about 9 to 19 units (19 to 37), so shadow
+edges there are still steps. Turning Sponza's sun by 0.01 / 0.05 / 0.2 degrees changes
+10.4 / 10.5 / 11.9 % of its default view's surface pixels by more than 8 of 255 at side
+2,048, 11.3 / 11.0 / 13.1 % at 1,024; outside the pixels within 2 of a shadow edge in
+both frames 2.2 / 1.6 / 2.1 % against 3.1 / 2.2 / 2.7 % (host, 2026-11-23 16:04). The
+larger map sharpens the edges but does not settle them: most of the change is at the
+edges and in the speckle of the bias's comparisons, which a turn re-rolls.
+The quadrants agree with the 2,048 view: a quadrant's 1/z against a float64
+evaluation of the triangle's plane on the 2,048 view's texel ray, 3,000 triangles,
+median relative error 6.7e-7 (Sponza; 2.9e-6 for the 1,024 map against its own view);
+across a quadrant border one triangle's 1/z steps by up to 6e-5 relative (inside a
+quadrant one float32 unit), the two renders' own plane rounding, and no seam shows in a
+picture of the map.

@@ -285,16 +285,16 @@ def figures(values):
     }
 
 
-def sun_slots(scene, materials, angles):
-    """Each layer's list entries in the sun's view, the most over the scene's own sun
-    (`angles`) and SUN_SAMPLES around it (light.sun_entries), and the slots that take
-    them: {layer: (entries, slots)}; a sun beyond them ends its SUN command with the
-    result word RF_LISTS_SMALL, never an overrun."""
+def sun_slots(scene, materials, angles, side):
+    """Each layer's list entries in a sun's view (a quadrant of a map of `side`), the
+    most over the scene's own sun (`angles`) and SUN_SAMPLES around it (sun_entries),
+    and the slots that take them: {layer: (entries, slots)}; a sun beyond them ends its
+    SUN command with the result word RF_LISTS_SMALL, never an overrun."""
     masked = materials["kind"][materials["material"]] == raster.MASKED
     suns = [angles] + [(angles[0] + turn, el) for turn, el in SUN_SAMPLES]
     layers = [(name, keep) for name, keep in (("opaque", ~masked), ("masked", masked))]
     layers = [(name, keep) for name, keep in layers if keep.any()]
-    most = light.sun_entries(scene, [keep for _, keep in layers], suns)
+    most = light.sun_entries(scene, [keep for _, keep in layers], suns, side)
     return {
         name: (entries, int(np.ceil(SUN_LIST_MARGIN * entries)) + 65536)
         for (name, _), entries in zip(layers, most)
@@ -342,7 +342,8 @@ class Loop:
         if lights is not None:
             started = time.perf_counter()
             angles = light_data.sun_angles(lights["sun_direction"])
-            sun_need = sun_slots(scene, materials, angles)
+            side = light_data.shadow_side(lights)
+            sun_need = sun_slots(scene, materials, angles, side)
             report["sun_lists"] = {
                 "entries": {name: need[0] for name, need in sun_need.items()},
                 "s": round(time.perf_counter() - started, 3),
@@ -499,7 +500,7 @@ class Loop:
         return word, (time.perf_counter() - began) * 1e3, lights
 
     def shadow_map(self):
-        """The card's shadow map (1024 x 1024 float32 1/z) from the light pages."""
+        """The card's shadow map (side x side float32 1/z) from the light pages."""
         side = self.lights["shadow_map"].shape[0]
         (pages,) = self.session.read(
             self.surface["pages"], first=0, pages=(side // light.PAGE) ** 2
@@ -837,6 +838,8 @@ def sun_report(passes_run, rows, ticks_ms):
     }
     report["heavy_tiles_max"] = int(rows[:, F["RF_O_HEAVY"]].max())
     report["codes"] = rows[:, F["RF_S_CODE"]].tolist()
+    report["quadrants"] = sorted(set(rows[:, F["RF_S_QUADRANTS"]].tolist()))
+    report["total_ms_first"] = round(float(rows[0, F["RF_S_TOTAL"]] * ticks_ms), 4)
     return report
 
 

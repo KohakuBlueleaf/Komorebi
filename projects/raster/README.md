@@ -529,11 +529,12 @@ Without `--light` SHADE runs its old path unchanged and gives the textured frame
   background's turn, the maps' page numbers, up to 32 lamps; the reader adds the
   camera), which the reader takes from the frame thread's sun region (LIGHT's a1), so
   that the host can rewrite it between frames ("The sun" below).
-- **Shadow and background as pages.** The shadow map (1024 x 1024 float32 1/z) and the
+- **Shadow and background as pages.** The shadow map (float32 1/z, its side from the
+  lighting file: 1,024 or 2,048) and the
   octahedral map (its side from the lighting file: 512 x 512 or 2,048 x 2,048, one map per
   channel) are uploaded as pages of 32 x 32 values, pages row by row
-  (`light.light_pages`: 1,024 + 3 x 256 or 3 x 4,096 pages; LIGHT's table carries the
-  sides and page counts). Per pixel the
+  (`light.light_pages`: 1,024 or 4,096 + 3 x 256 or 3 x 4,096 pages; LIGHT's table
+  carries the sides and page counts). Per pixel the
   vector unit forms the four texel keys: the point moved one shadow texel along `n`
   into the sun's camera, its 1/z there, the 2 x 2 filter's corner and fractions (a tap
   outside the map gets key 0, a texel of 1/z 0: lit); an empty pixel's keys are the
@@ -650,12 +651,13 @@ angles its table equals the loaded one word for word (Sponza, Bistro interior), 
 exterior but for four words of 3e-17 against -0 (the reference's note).
 
 `Loop.set_sun(azimuth, elevation)` writes the region and submits **SUN** to the thread
-(`serve_sun`), which renders the shadow map with the frame's own stages: each layer's
+(`serve_sun`), which renders the shadow map with the frame's own stages, once a
+quadrant (below; side 1,024: once): each layer's
 COUNT to FILL from the sun region's camera, each layer's ranges and costs in its own
 area of the camera's region (`RF_AREA_SUN`; the first pass on equal partitions), the masked layer's lit SHADE (its merge
 leaves the merged 1/z in the opaque layer's frame: leaves cast the shadow of their
 leaves), then SHOW in a raw mode (`kShowRaw`: plane 0 word for word, rows from the top)
-into the first 1,024 pages of the light pages tensor, the layout LIGHT fetches. The eye's
+into the quadrant's pages of the light pages tensor, the layout LIGHT fetches. The eye's
 frame and surface tensors are its scratch; the next FRAME writes them again. At or
 below the horizon there is no pass and the sun's irradiance is 0. Check A (host):
 SETUP's and FILL's float32 arithmetic at the sun's camera (1,000 scene radii away, 1/z
@@ -672,7 +674,21 @@ reference's map at every covered texel bit for bit.
   never an overrun; heavy tiles past 256 and items past 2,048 have their words too.
 - **The ring.** SUN adds no item size: FILL's items (5 pages) and SHADE's (5 a part, 10
   merging, pushed five at a time) keep `kCbOut` (15) and the plane ring (20) at
-  multiples of five, and SHOW's raw items are its own 3 pages in `kCbShow`.
+  multiples of five, and SHOW's raw items are its own 3 pages in `kCbShow`. The four
+  quadrant passes are four of these passes: no item changed.
+- **A 2,048 map: four quadrants** (the lighting entry's `shadow_side`, default 2,048; the
+  reference's step 3). The sun region holds a camera page a quadrant (64 bytes apart,
+  quadrant (i, j) the (j n + i)-th; `light.quadrant_cameras`: the 2,048 camera with
+  its principal point moved by (-1024 i, -1024 j)) and n, the quadrants a side (1 or 2,
+  `RF_SUN_ACROSS_AT`); SUN runs the pass above once a quadrant. The 4,096 shadow pages
+  are one 64 x 64 grid row by row, the map's own `map_pages` layout, so LIGHT's lookup
+  did not change (its table already carries the side, the pages a row and the first
+  page); SHOW raw writes a tile at row r, column c to page a5 + r a6 + c (a5 the
+  quadrant's first page, 32 i + 2,048 j; a6 64). Each quadrant has its own cost history
+  (two areas a quadrant: `RF_AREAS` 4 to 10, the camera region 196,608 to 491,520
+  bytes), so a first SUN pass deals all four on equal partitions. The lists hold the
+  most entries of one quadrant over the sampled suns. Side 1,024 (an entry with
+  `shadow_side` 1024) is one quadrant and gives the earlier map bit for bit.
 
 Card 1, 2026-11-23 03:24 to 03:36, AICLK 1,350 MHz, `live.py --scene <s> --frames 20
 --push --light --check-light --check-sun --sun=AZ,EL` (one SUN pass, then 20 frames; ms
@@ -702,6 +718,44 @@ worst 15.08; exterior SUN pass 18.41 / 20.39 (host 19.34 / 21.59), frame 32.27 /
 Limits: the pass is the eye's frame cost again; the elevation moves the light's sun, not the
 background's sun disc (the reference's known inconsistency); the lists are sized from
 sampled suns, so a far other sun may need `--list-slots`.
+
+**At side 2,048** (four quadrants). Card 1, 2026-11-23 15:46 to 16:04, AICLK 1,350 MHz,
+the same command with the lighting files at side 2,048 (side 1,024 from files with
+`shadow_side` 1024, rebuilt: their maps equal the earlier ones bit for bit). One SUN
+pass, the first (each quadrant on equal partitions); ms; check B by quadrant:
+
+| scene | sun (az, el) | side | SUN pass | opaque | masked | merge | copy | B: texels over 1e-5 / one side empty, each quadrant | C over 2 / 4 / 8 % |
+|---|---|---|---:|---:|---:|---:|---:|---|---|
+| Sponza | own | 1,024 | 6.60 | 4.84 | 1.20 | 0.45 | 0.12 | 0 / 0 | 0.016 / 0.012 / 0.009 |
+| Sponza | own | 2,048 | 20.47 | 14.49 | 4.32 | 1.14 | 0.51 | 0 / 0 | 0.052 / 0.022 / 0.013 |
+| Sponza | 90, 74.53 | 2,048 | 17.17 | 10.81 | 4.48 | 1.37 | 0.51 | 0 / 0 | 0.045 / 0.012 / 0.010 |
+| Sponza | 144.08, 25 | 2,048 | 17.39 | 12.05 | 3.98 | 0.85 | 0.50 | 0 / 0 | 0.009 / 0.002 / 0.001 |
+| Bistro exterior | own | 1,024 | 18.42 | 10.91 | 5.88 | 1.48 | 0.15 | 0 / 0 | 0.053 / 0.022 / 0.018 |
+| Bistro exterior | own | 2,048 | 61.69 | 39.90 | 17.24 | 3.86 | 0.69 | 0 / 0 | 0.424 / 0.069 / 0.028 |
+| Bistro exterior | 90, 61.18 | 2,048 | 61.20 | 39.29 | 17.34 | 3.86 | 0.71 | 0 / 0 | 0.145 / 0.036 / 0.018 |
+| Bistro exterior | -90, 25 | 2,048 | 58.73 | 35.53 | 18.31 | 4.14 | 0.75 | 0 / 0 | 0.442 / 0.127 / 0.049 |
+| Bistro interior | own | 1,024 | 8.00 | 6.29 | 1.11 | 0.44 | 0.15 | 0 / 0 | 0.0033 / 0.0014 / 0.0003 |
+| Bistro interior | own | 2,048 | 29.92 | 23.82 | 4.24 | 1.23 | 0.63 | 0 / 0 | 0.0033 / 0.0014 / 0.0003 |
+| Bistro interior | 90, 74.53 | 2,048 | 35.54 | 29.47 | 4.16 | 1.34 | 0.57 | 0 / 0 | 0.0032 / 0.0013 / 0.0003 |
+| Bistro interior | 144.08, 25 | 2,048 | 28.14 | 22.08 | 4.09 | 1.26 | 0.70 | 0 / 0 | 0.0081 / 0.0059 / 0.0045 |
+
+Every check C is `ok`. At 2,048 more pixels in the shadow-edge band differ (exterior's
+own sun: 0.97 % of the band over 2 against 0.11 % at 1,024; outside the band 0.001 %
+at both): the bias is three texels, now half the 1/z, so the card's and numpy's
+roundings flip a tap more often. The lit frame (fixed sun, 16:09 to 16:11, against
+1,024 at 15:46 to 15:58): card frame Sponza 11.69 ms (11.55), interior 15.14 (15.09),
+exterior 24.45 (24.38); LIGHT 1.63 (1.50), 2.25 (2.19), 1.64 (1.57) ms, its cycles a
+tile 222,641 (211,081), 268,414 (262,244), 215,114 (205,502), all of the difference in
+the page scan (Sponza 64,822 against 53,468); pages read a frame 12,610 (9,281), 12,567
+(9,844), 10,827 (7,978). Along `--sun-path 10 --frames 200` (16:03 to 16:04), every
+word 0: Sponza SUN pass median 17.04 ms, worst 19.43 (the first; host 17.86 / 20.63),
+against 5.23 / 6.28 at 1,024; frame median 11.65, worst 13.81; exterior 45.36 / 61.33
+(host 46.28 / 62.74) against 13.67 / 18.02, frame 24.77 / 34.17. The exterior's pass
+parts (medians): COUNT 8.52, middle pass 4.44, SETUP 17.80, FILL 9.71 against 2.45,
+1.17, 4.47, 3.86: four passes cost four times one, the middle pass's thread work
+included. The viewer (`projects/viewer/check.py` on card 1, 16:06 to 16:09): every
+case `ok`; the sun moved on each lit scene, the state's SUN pass 21.6 ms (Sponza),
+30.5 (interior), 59.2 (exterior).
 
 ### What was sped up (2026-11-23)
 

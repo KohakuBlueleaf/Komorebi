@@ -58,6 +58,29 @@ def test_floor_under_a_box_is_shadowed_and_lit_beside_it():
     assert outside[0] == 1
 
 
+def test_quadrant_pixel_is_the_2048_views_texel():
+    rng = np.random.default_rng(4)
+    positions = rng.uniform(-50, 50, size=(500, 3)).astype(F)
+    sun = np.array([0.3, 0.8, -0.52])
+    sun = (sun / np.linalg.norm(sun)).astype(F)
+    view = lights.sun_camera(positions, sun, 2048)
+    small = lights.sun_camera(positions, sun, 1024)
+    assert view[12] == 2 * small[12] and (view[13:15] == 2 * small[13:15]).all()
+    big = raster.to_screen(
+        view, *raster.camera_space({"positions": positions, "camera": view})
+    )
+    for i in (0, 1):
+        for j in (0, 1):
+            camera = lights.quadrant_camera(view, i, j)
+            x, y, w = raster.to_screen(
+                camera, *raster.camera_space({"positions": positions, "camera": camera})
+            )
+            np.testing.assert_array_equal(w, big[2])
+            # the same point, moved by the quadrant's corner (float32 rounding apart)
+            np.testing.assert_allclose(x, big[0] - 1024 * i, rtol=0, atol=1e-3)
+            np.testing.assert_allclose(y, big[1] - 1024 * j, rtol=0, atol=1e-3)
+
+
 def test_authored_lights_replace_the_emissive_groups():
     positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=F)
     scene = {"positions": positions, "indices": np.array([[0, 1, 2]], np.int32)}

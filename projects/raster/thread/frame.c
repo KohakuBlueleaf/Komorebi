@@ -223,9 +223,17 @@ static uint32_t area_camera(frame_t* frame, void* const* regions, uint32_t range
         return frame->camera;
     }
     const uint32_t at = frame->area * RF_AREA_BYTES;
-    const uint32_t from = frame->area >= RF_AREA_SUN ? RF_R_SUN : RF_R_CAMERA;
-    kmx_invalidate_at(from, 0, 64); /* the host's camera, or the sun's */
-    const volatile uint32_t* source = (const volatile uint32_t*)regions[from];
+    const uint32_t sun = frame->area >= RF_AREA_SUN;
+    const uint32_t from = sun ? RF_R_SUN : RF_R_CAMERA;
+    /* the host's camera, or the sun's camera of the area's quadrant */
+    const uint32_t from_at = (
+        sun
+            ? RF_SUN_CAMERA_BYTES * ((frame->area - RF_AREA_SUN) / RF_AREAS_A_QUADRANT)
+            : 0
+    );
+    kmx_invalidate_at(from, from_at, 64);
+    const volatile uint32_t*
+        source = ((const volatile uint32_t*)regions[from] + from_at / 4);
     volatile uint32_t* page = (volatile uint32_t*)regions[RF_R_CAMERA] + at / 4;
     for (uint32_t i = 0; i < 16; i++) {
         page[i] = source[i];
@@ -614,17 +622,26 @@ int kmx_main(int core) {
 }
 
 #ifdef RF_SERVE
-/* SHOW: the frame's colour into the display (kernels/show.h); `raw`: its 1/z plane into
- * the light pages' shadow map. 0, or the code to report. */
-static uint32_t show(frame_t* frame, uint32_t raw) {
+/* SHOW: the frame's colour into the display (kernels/show.h); `raw`: its 1/z into the
+ * shadow map of `across` quadrants a side as quadrant j n + i. 0, or the code. */
+static uint32_t show(frame_t* frame, uint32_t raw, uint32_t across, uint32_t quadrant) {
     km_command_t command;
     new_command(&command, RF_HANDLER_SHOW, frame);
     command.a0 = frame->words[RF_W_DIR]; /* directory_address */
     /* display_address, profile_address (raw: the shadow map's pages, none) */
     command.a1 = raw ? frame->words[RF_W_SUN_PAGES] : frame->words[RF_W_DISPLAY];
     command.a2 = raw ? 0 : frame->words[RF_W_SHOWPROF];
-    command.a3 = RF_DISPLAY_PAGES; /* display_pages: a page a tile either way */
+    /* display_pages: a page a tile; raw: the map's, across x across frames */
+    command.a3 = raw ? across * across * RF_DISPLAY_PAGES : RF_DISPLAY_PAGES;
     command.a4 = raw ? RF_SHOW_RAW : 0;
+    if (raw) { /* the quadrant's first page, the map's pages a row (show.h kShowRaw) */
+        const uint32_t row_pages = across * RF_TILES_ACROSS;
+        command.a5 = (
+            quadrant / across * RF_TILES_ACROSS * row_pages +
+            quadrant % across * RF_TILES_ACROSS
+        );
+        command.a6 = row_pages;
+    }
     if (kmx_block(&command, RF_R_SHOW, 0, RF_SHOW_TABLE_BYTES) != KMX_OK) {
         return RF_BAD_ARGS;
     }
@@ -755,7 +772,7 @@ static uint32_t serve_frame(const km_command_t* command) {
     uint32_t show_ticks = 0;
     if (code == 0) {
         const uint64_t show_started = kmx_time();
-        code = show(frame, 0);
+        code = show(frame, 0, 1, 0);
         show_ticks = (uint32_t)(kmx_time() - show_started);
     }
     uint32_t push_ticks = 0;
@@ -788,8 +805,8 @@ static uint32_t serve_frame(const km_command_t* command) {
     return code;
 }
 
-/* SUN: each layer's frame from the sun's camera, the masked SHADE's merge, SHOW's raw
- * copy of the merged 1/z into the shadow map (README "The sun"); a sun times row. */
+/* SUN, per quadrant of the shadow map: the layers' frames, the masked merge, SHOW's raw
+ * copy into its pages (README "The sun"); a times row, its parts summed. */
 static uint32_t serve_sun(void) {
     frame_t* frame = &g_frame;
     const uint32_t* words = frame->words;
@@ -800,38 +817,53 @@ static uint32_t serve_sun(void) {
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
         frame->result[i] = 0;
     }
+    kmx_invalidate_at(RF_R_SUN, RF_SUN_ACROSS_AT, 64);
+    const uint32_t across = (
+        ((const volatile uint32_t*)g_regions[RF_R_SUN])[RF_SUN_ACROSS_AT / 4]
+    );
+    uint32_t code = across == 0 || across > RF_SUN_ACROSS_MAX ? RF_BAD_ARGS : 0;
     work_t* work = (work_t*)g_regions[RF_R_WORK];
-    frame->camera = frame->address[RF_R_SUN];
-    frame->words = g_sun_words;
-    frame->area = RF_AREA_SUN;
-    uint32_t code = frame_once(frame, work, g_regions);
-    const uint64_t opaque_ended = kmx_time();
-    if (code == 0 && words[RF_W_M_MESH]) {
-        frame->words = g_masked_words;
-        frame->area = RF_AREA_SUN + RF_AREA_MASKED;
+    uint32_t opaque_ticks = 0, masked_ticks = 0, merge_ticks = 0, copy_ticks = 0;
+    uint32_t quadrant = 0;
+    for (; code == 0 && quadrant < across * across; quadrant++) {
+        uint64_t mark = kmx_time();
+        frame->camera = frame->address[RF_R_SUN] + RF_SUN_CAMERA_BYTES * quadrant;
+        frame->words = g_sun_words;
+        frame->area = RF_AREA_SUN + RF_AREAS_A_QUADRANT * quadrant;
         code = frame_once(frame, work, g_regions);
+        opaque_ticks += elapsed(&mark);
+        if (code == 0 && words[RF_W_M_MESH]) {
+            frame->words = g_masked_words;
+            frame->area += RF_AREA_MASKED;
+            code = frame_once(frame, work, g_regions);
+        }
+        frame->area = 0;
+        frame->words = words;
+        masked_ticks += elapsed(&mark);
+        if (code == 0 && words[RF_W_M_MESH]) {
+            code = (
+                shade(frame, words[RF_W_M_DIR], words[RF_W_M_LISTS], words[RF_W_DIR])
+            );
+        }
+        merge_ticks += elapsed(&mark);
+        if (code == 0) {
+            code = show(frame, 1, across, quadrant);
+        }
+        copy_ticks += elapsed(&mark);
     }
     frame->area = 0;
     frame->words = words;
-    const uint64_t masked_ended = kmx_time();
-    if (code == 0 && words[RF_W_M_MESH]) {
-        code = shade(frame, words[RF_W_M_DIR], words[RF_W_M_LISTS], words[RF_W_DIR]);
-    }
-    const uint64_t merged = kmx_time();
-    if (code == 0) {
-        code = show(frame, 1);
-    }
     frame->camera = frame->address[RF_R_CAMERA];
-    const uint64_t copied = kmx_time();
     const uint32_t row = (g_suns % RF_TIMES_ROWS) * RF_TIMES_ROW_WORDS;
     volatile uint32_t* times = (volatile uint32_t*)g_regions[RF_R_SUN_TIMES] + row;
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
         times[i] = frame->result[i];
     }
-    times[RF_S_OPAQUE] = (uint32_t)(opaque_ended - started);
-    times[RF_S_MASKED] = (uint32_t)(masked_ended - opaque_ended);
-    times[RF_S_MERGE] = (uint32_t)(merged - masked_ended);
-    times[RF_S_COPY] = (uint32_t)(copied - merged);
+    times[RF_S_OPAQUE] = opaque_ticks;
+    times[RF_S_MASKED] = masked_ticks;
+    times[RF_S_MERGE] = merge_ticks;
+    times[RF_S_COPY] = copy_ticks;
+    times[RF_S_QUADRANTS] = quadrant;
     times[RF_S_NUMBER] = g_suns;
     times[RF_S_CODE] = code;
     times[RF_S_FRAMES] = g_served;

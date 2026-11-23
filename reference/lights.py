@@ -28,8 +28,11 @@ C1, C2, C3, C4, C5 = (F(c) for c in (0.429043, 0.511664, 0.743125, 0.886227, 0.2
 VIS_RAYS = 64
 VIS_SEED = 11
 VIS_CHUNK = raytrace.CHUNK // VIS_RAYS
-# Shadow map: its side (FILL's frame) and the sun camera's distance in scene radii.
-SHADOW_SIDE = scenes.WIDTH
+# Shadow map: its default side (a `lighting` entry's `shadow_side`), FILL's frame (a
+# side beyond it is rendered in quadrants of this side) and the sun camera's distance
+# in scene radii.
+SHADOW_SIDE = 2048
+FILL_SIDE = scenes.WIDTH
 SUN_DISTANCE = 1000.0
 OCTA_SIDE = 2048  # the background's octahedral map, side in texels (`sky_side`)
 _BAKE = {}
@@ -348,9 +351,10 @@ def find_lamps(scene, materials, merge_distance, lamp_scale):
     )
 
 
-def sun_camera(positions, sun):
+def sun_camera(positions, sun, side=SHADOW_SIDE):
     """A camera (16,) float32 far along the sun's direction (SUN_DISTANCE radii of
-    the scene's box) looking at its centre, whose square frame covers the box."""
+    the scene's box) looking at its centre, whose square frame of side x side covers
+    the box."""
     lo, hi = positions.min(0).astype(np.float64), positions.max(0).astype(np.float64)
     centre, radius = (lo + hi) / 2, np.linalg.norm(hi - lo) / 2
     distance = SUN_DISTANCE * radius
@@ -361,28 +365,46 @@ def sun_camera(positions, sun):
     up = np.cross(fwd, right)
     box = np.stack(np.meshgrid(*zip(lo, hi), indexing="ij"), -1).reshape(-1, 3)
     half = np.abs(np.stack([(box - centre) @ right, (box - centre) @ up])).max()
-    focal = (SHADOW_SIDE / 2) * (distance - radius) / half
+    focal = (side / 2) * (distance - radius) / half
     eye = centre - fwd * distance
-    tail = [focal, SHADOW_SIDE / 2, SHADOW_SIDE / 2, distance - 2 * radius]
+    tail = [focal, side / 2, side / 2, distance - 2 * radius]
     return np.concatenate([eye, right, up, fwd, tail]).astype(np.float32)
 
 
-def shadow_map(scene, sun, materials=None):
+def quadrant_camera(camera, i, j):
+    """The camera (16,) float32 of quadrant (i, j) of a view `camera` whose side is a
+    multiple of FILL_SIDE: the principal point moved by (-FILL_SIDE i, -FILL_SIDE j),
+    so its pixel (x, y) is the view's texel (x + FILL_SIDE i, y + FILL_SIDE j)."""
+    out = np.array(camera, dtype=np.float32)
+    out[13] = out[13] - F(FILL_SIDE * i)
+    out[14] = out[14] - F(FILL_SIDE * j)
+    return out
+
+
+def shadow_map(scene, sun, materials=None, side=SHADOW_SIDE):
     """The 1/z (side, side) of the scene from the sun's camera, the camera, and a
     shadow texel's world size at the scene's centre. With materials, the two layers
-    and holes of `rasterize_shaded` (leaves cast their own shadow); else one FILL."""
-    camera = sun_camera(scene["positions"], sun)
-    view = {
-        "positions": scene["positions"],
-        "indices": scene["indices"],
-        "colors": np.zeros((len(scene["positions"]), 3), dtype=np.float32),
-        "camera": camera,
-        "light": np.zeros(3, dtype=np.float32),
-    }
-    if materials is None:
-        depth = raster.rasterize(view)["depth"]
-    else:
-        depth = raster.rasterize_shaded(view, materials)["depth"]
+    and holes of `rasterize_shaded` (leaves cast their own shadow); else one FILL. A
+    side beyond FILL_SIDE: (side / FILL_SIDE)^2 renders, one a quadrant_camera."""
+    if side % FILL_SIDE:
+        raise ValueError(f"a shadow map's side {side} is not a multiple of {FILL_SIDE}")
+    camera = sun_camera(scene["positions"], sun, side)
+    depth = np.empty((side, side), dtype=np.float32)
+    for j in range(side // FILL_SIDE):
+        for i in range(side // FILL_SIDE):
+            view = {
+                "positions": scene["positions"],
+                "indices": scene["indices"],
+                "colors": np.zeros((len(scene["positions"]), 3), dtype=np.float32),
+                "camera": quadrant_camera(camera, i, j),
+                "light": np.zeros(3, dtype=np.float32),
+            }
+            if materials is None:
+                part = raster.rasterize(view)["depth"]
+            else:
+                part = raster.rasterize_shaded(view, materials)["depth"]
+            rows, columns = (slice(FILL_SIDE * k, FILL_SIDE * (k + 1)) for k in (j, i))
+            depth[rows, columns] = part
     distance = np.linalg.norm(
         camera[0:3].astype(np.float64)
         - (scene["positions"].min(0) + scene["positions"].max(0)) / 2
@@ -488,10 +510,11 @@ def scene_sun(entry, env_path):
     return env, turn
 
 
-def prepare(name, data, workers=4, rebake=False):
+def prepare(name, data, workers=4, rebake=False, shadow_side=None):
     """Fetches the scene's environment map, bakes visibility (kept in
-    <scene>_visibility.npz; rebake to trace again), lamps and the shadow map, and
-    writes <scene>_lighting.npz. Returns its path and counts."""
+    <scene>_visibility.npz; rebake to trace again), lamps and the shadow map (its side
+    the entry's `shadow_side`, or `shadow_side` when given), and writes
+    <scene>_lighting.npz. Returns its path and counts."""
     entry = public.table()[name]["lighting"]
     (env_path,) = public.fetch_environment(entry["environment"], data)
     mesh, _ = public.load_mesh(name, data)
@@ -523,7 +546,12 @@ def prepare(name, data, workers=4, rebake=False):
         F(entry["sun_to_sky"]) * (horizontal @ LUMINANCE.astype(np.float32))
     ) * env["sun_colour"]
     started = time.perf_counter()
-    depth, camera, texel = shadow_map(mesh, env["sun_direction"], materials)
+    if shadow_side is None:
+        shadow_side = entry.get("shadow_side", SHADOW_SIDE)
+    counts["shadow_side"] = shadow_side = int(shadow_side)
+    depth, camera, texel = shadow_map(
+        mesh, env["sun_direction"], materials, shadow_side
+    )
     counts["shadow_seconds"] = time.perf_counter() - started
     position, colour, intensity, lamps = scene_lamps(entry, mesh, materials)
     counts |= lamps
@@ -539,6 +567,7 @@ def prepare(name, data, workers=4, rebake=False):
         octahedral=octahedral_map(env["environment"], 0.0, side),
         turn=np.float32(turn),
         shadow_map=depth,
+        shadow_side=np.int32(shadow_side),
         shadow_camera=camera,
         shadow_texel=texel,
         lamp_position=position,
@@ -571,8 +600,9 @@ def sun_direction(azimuth, elevation):
 def moved(lights, scene, materials, azimuth, elevation):
     """The prepared lights (`load`) with the sun at azimuth, elevation (degrees): the
     map turned so its own sun has that azimuth (turn, sky by `sh_turned`), the shadow
-    map rebuilt; visibility, colour and irradiance kept. Elevation <= 0: irradiance 0
-    and a 1 x 1 shadow map of 0 (all lit). README "Moving the sun"."""
+    map rebuilt at its side (`shadow_side`); visibility, colour and irradiance kept.
+    Elevation <= 0: irradiance 0 and a 1 x 1 shadow map of 0 (all lit). README "Moving
+    the sun"."""
     own_azimuth, _ = sun_angles(lights["sun_direction"])
     change = float(azimuth) - own_azimuth
     sun = sun_direction(azimuth, elevation)
@@ -583,17 +613,27 @@ def moved(lights, scene, materials, azimuth, elevation):
     # The bias in shadow texels at the camera's distance, as `load` made it.
     distance = float(lights["shadow_texel"] * lights["shadow_camera"][12])
     texels = float(lights["shadow_bias"]) * distance**2 / float(lights["shadow_texel"])
+    side = shadow_side(lights)
+    out["shadow_side"] = np.int32(side)
     if elevation <= 0:
-        camera = sun_camera(scene["positions"], sun)
+        camera = sun_camera(scene["positions"], sun, side)
         out["sun_irradiance"] = np.zeros(3, dtype=np.float32)
         out["shadow_map"] = np.zeros((1, 1), dtype=np.float32)
         out["shadow_camera"], out["shadow_texel"] = camera, lights["shadow_texel"]
         return out
-    depth, camera, texel = shadow_map(scene, sun, materials)
+    depth, camera, texel = shadow_map(scene, sun, materials, side)
     out["shadow_map"], out["shadow_camera"], out["shadow_texel"] = depth, camera, texel
     distance = float(texel * camera[12])
     out["shadow_bias"] = F(texels * float(texel) / distance**2)
     return out
+
+
+def shadow_side(lights):
+    """The shadow map's side of prepared lights: their `shadow_side`, else (lights of
+    an older file, or made by hand) the map's."""
+    if "shadow_side" in lights:
+        return int(lights["shadow_side"])
+    return int(lights["shadow_map"].shape[0])
 
 
 LIGHT_KEYS = (
@@ -613,9 +653,10 @@ LIGHT_KEYS = (
 
 
 def load(name, data):
-    """The lights of a scene (or of a view's scene): the arrays of LIGHT_KEYS and the
-    table's per-scene numbers; the shadow bias as 1/z (shadow_bias texels at the
-    sun camera's distance). Missing file: an error naming the command."""
+    """The lights of a scene (or of a view's scene): the arrays of LIGHT_KEYS, the
+    shadow map's side (`shadow_side`; a file without it: the map's) and the table's
+    per-scene numbers; the shadow bias as 1/z (shadow_bias texels at the sun camera's
+    distance). Missing file: an error naming the command."""
     if public.is_view(name):
         name = public.views()[name][0]
     path = lighting_path(name, data)
@@ -626,6 +667,9 @@ def load(name, data):
         )
     with np.load(path) as f:
         lights = {k: f[k] for k in LIGHT_KEYS}
+        lights["shadow_side"] = np.int32(
+            f["shadow_side"] if "shadow_side" in f.files else len(f["shadow_map"])
+        )
     entry = public.table()[name]["lighting"]
     distance = float(lights["shadow_texel"] * lights["shadow_camera"][12])
     bias = entry["shadow_bias"] * float(lights["shadow_texel"]) / distance**2
