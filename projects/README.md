@@ -22,6 +22,9 @@ rather than staying in the project.
 - [transport](transport/README.md): a light-transport matrix stored as a hierarchical
   (block low-rank) matrix, applied on all 120 cores as one command, each core's blocks
   told by a table of entries, checked against the host's emulation of the same numbers.
+- [upscale](upscale/README.md): a small super-resolution network (seven 3 x 3
+  convolutions, 32 channels) taking a 512 x 512 frame to 1,024 x 1,024 as one chain
+  command, each convolution nine tile products, checked against the host's emulation.
 - [attention](attention/README.md): scaled dot-product attention on broadcasts of cores,
   K / V multicast down each broadcast, Kohaku-TT's flash compute body, checked against float64.
 - [decode](decode/README.md): an LLM decode step, Qwen3-1.7B's 28 layers on the K split
