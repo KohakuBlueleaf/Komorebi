@@ -30,6 +30,10 @@ SCENES = (
     "sponza_overview",
     "bistro_interior_overview",
     "bistro_exterior_overview",
+    "breakfast_room_overview",
+    "salle_de_bain_overview",
+    "modern_hall_overview",
+    "modern_living_room_overview",
 )
 OFFERS = renderers.offers(SCENES)  # {renderer: the scenes it is offered on}
 KEEP_ALIVE_S = 1.0  # a frame a second when no pose comes

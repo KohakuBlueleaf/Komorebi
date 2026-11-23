@@ -246,6 +246,11 @@ class Raytrace(Renderer):
     time_label = "frame ms (card)"
     sizes = False  # its frame is SIDE x SIDE
 
+    @staticmethod
+    def offered(scene_name):
+        """True when the scene's box tree is saved (building one takes minutes)."""
+        return (native.data_dir() / f"{scene_name}_tree.npz").exists()
+
     def open(self, scene_name, size=(SIDE, SIDE)):
         self.close()
         tiny = scene_name == "tiny"

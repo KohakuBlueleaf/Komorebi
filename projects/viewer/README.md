@@ -30,9 +30,13 @@ the server encodes it as JPEG and sends it down the page's stream.
 
 ```
 python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
-    [--renderer raster|raster-textured|raster-lit|raster-gi|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview] \
+    [--renderer raster|raster-textured|raster-lit|raster-gi|raytrace] [--scene NAME] \
     [--size WxH]
 ```
+
+`NAME` is one of the server's scenes: `tiny`, `sponza_overview`,
+`bistro_interior_overview`, `bistro_exterior_overview`, `breakfast_room_overview`,
+`salle_de_bain_overview`, `modern_hall_overview`, `modern_living_room_overview`.
 
 `--size` is the frame's size at the start, 1280x720 by default; a size the rasterizer's
 card grid does not take stops the server with the reason.
