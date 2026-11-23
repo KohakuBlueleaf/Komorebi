@@ -145,10 +145,10 @@ class SetupPasses(km.Program, compute=PASSES, defines=PASS_HELPERS):
                 const uint32_t head = page_words[0], words = head & ~kOutLast;
                 for (uint32_t i = 0; i < words && i < kOutWords; ++i) {
                     const uint32_t box_word = page_words[1 + i];
-                    const uint32_t first_tile_x = box_word & 0x1F;
-                    const uint32_t last_tile_x = box_word >> 5 & 0x1F;
-                    const uint32_t first_row = box_word >> 10 & 0x3FF;
-                    const uint32_t last_row = box_word >> 20 & 0x3FF;
+                    const uint32_t first_tile_x = box_word & 0x3F;
+                    const uint32_t last_tile_x = box_word >> 6 & 0x3F;
+                    const uint32_t first_row = box_word >> 12 & 0x3FF;
+                    const uint32_t last_row = box_word >> 22 & 0x3FF;
                     for (
                         uint32_t tile_y = first_row >> 5; tile_y <= last_row >> 5;
                         ++tile_y
@@ -278,10 +278,10 @@ class SetupPasses(km.Program, compute=PASSES, defines=PASS_HELPERS):
                 const uint32_t head = page_words[0], entries = head & ~kOutLast;
                 for (uint32_t i = 0; i < entries && i < kOutEntries && succeeded; ++i) {
                     const uint32_t box_word = page_words[1 + i];
-                    const uint32_t first_tile_x = box_word & 0x1F;
-                    const uint32_t last_tile_x = box_word >> 5 & 0x1F;
-                    const uint32_t first_row = box_word >> 10 & 0x3FF;
-                    const uint32_t last_row = box_word >> 20 & 0x3FF;
+                    const uint32_t first_tile_x = box_word & 0x3F;
+                    const uint32_t last_tile_x = box_word >> 6 & 0x3F;
+                    const uint32_t first_row = box_word >> 12 & 0x3FF;
+                    const uint32_t last_row = box_word >> 22 & 0x3FF;
                     for (
                         uint32_t tile_y = first_row >> 5;
                         tile_y <= last_row >> 5 && succeeded;

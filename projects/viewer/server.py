@@ -1,7 +1,7 @@
 """A web viewer: the card renders, a browser steers. The main thread owns the card's
 session and renders a frame for the latest pose the page posts; the frames go out as
 a multipart JPEG stream, and every request carries the token. Needs Pillow.
-python -m projects.viewer.server --host HOST --port PORT --token TOKEN"""
+python -m projects.viewer.server --host HOST --port PORT --token TOKEN [--size WxH]"""
 
 import argparse
 import collections
@@ -39,6 +39,7 @@ TOKEN_HEADER = "X-Token"
 PITCH_LIMIT = math.radians(89.0)
 EXPOSURE_RANGE = (0.25, 8.0)  # the tone's exposure slider (logarithmic)
 SATURATION_RANGE = (0.0, 2.0)
+SIZE = (1280, 720)  # the frame's size at the start (--size)
 
 
 def log(message):
@@ -127,6 +128,15 @@ def parse_indirect(body):
     return on
 
 
+def parse_size(body):
+    """A frame size from the page's JSON: width and height, integers on the card's grid
+    (renderers.check_size); else ValueError with the reason."""
+    width, height = body["width"], body["height"]
+    if not all(isinstance(n, int) and not isinstance(n, bool) for n in (width, height)):
+        raise ValueError("a size is a whole width and height in pixels")
+    return renderers.check_size((width, height))
+
+
 def diagonal(scene):
     """The diagonal of the scene's box."""
     positions = np.asarray(scene["positions"], dtype=np.float64)
@@ -147,7 +157,7 @@ class Viewer:
     everything; `changed` is notified on a new pose, a selection or the stop; `framed`
     on a new frame."""
 
-    def __init__(self, renderer, scene):
+    def __init__(self, renderer, scene, size=SIZE):
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         self.framed = threading.Condition(self.lock)
@@ -183,6 +193,13 @@ class Viewer:
         self.indirect_pending = None
         self.indirect_serial = 0
         self.indirect = None
+        # the frame's size: the one asked (a load takes it), the newest posted not yet
+        # applied and its serial, the frames' (the renderer's), the last change's ms
+        self.size_asked = size
+        self.size_pending = None
+        self.size_serial = 0
+        self.size = None
+        self.size_ms = None
 
     # Requests
 
@@ -226,6 +243,22 @@ class Viewer:
             self.changed.notify_all()
             return True
 
+    def set_size(self, size):
+        """A frame size from the page (parse_size's): asked from now on (a load takes
+        it), applied between frames; False, and not asked, when the loaded renderer
+        renders one size only."""
+        with self.lock:
+            if (
+                self.loaded[0] is not None
+                and not renderers.RENDERERS[self.loaded[0]].sizes
+            ):
+                return False
+            self.size_asked = size
+            self.size_pending = size
+            self.size_serial += 1
+            self.changed.notify_all()
+            return True
+
     def select(self, renderer, scene):
         with self.lock:
             self.selected = (renderer, scene)
@@ -264,6 +297,14 @@ class Viewer:
                 "tone": None if self.tone is None else list(self.tone),
                 "tone_own": None if self.tone_own is None else list(self.tone_own),
                 "indirect": self.indirect,
+                "size": None if self.size is None else list(self.size),
+                "size_asked": list(self.size_asked),
+                "size_ms": None if self.size_ms is None else round(self.size_ms, 3),
+                "sizes": (
+                    None
+                    if self.loaded[0] is None
+                    else renderers.RENDERERS[self.loaded[0]].sizes
+                ),
             }
 
     def next_jpeg(self, after, timeout):
@@ -282,9 +323,8 @@ class Viewer:
     def render_loop(self):
         renderer = None
         failed = 0  # the selection that failed: wait for a new one
-        rendered = (
-            None  # (selection, pose, sun, tone, switch serials) of the last frame
-        )
+        # (selection, pose, sun, tone, switch, size serials) of the last frame
+        rendered = None
         last_frame = 0.0
         try:
             while True:
@@ -308,7 +348,14 @@ class Viewer:
                         self.tone_pending = None
                         switch_serial = self.indirect_serial
                         switch, self.indirect_pending = self.indirect_pending, None
+                        size_serial = self.size_serial
+                        size, self.size_pending = self.size_pending, None
                     refused = None
+                    if size is not None and renderer.sizes and size != renderer.size:
+                        # the frame's size: the grid word, between frames
+                        size_ms = renderer.set_size(size)
+                        with self.lock:
+                            self.size, self.size_ms = renderer.size, size_ms
                     if sun is not None and renderer.sun_own is not None:
                         try:  # the SUN pass, between frames
                             sun_ms = renderer.set_sun(*sun)
@@ -351,6 +398,7 @@ class Viewer:
                         sun_serial,
                         tone_serial,
                         switch_serial,
+                        size_serial,
                     )
                     last_frame = time.monotonic()
                 except Exception as error:  # noqa: BLE001 - shown on the page, closed
@@ -376,6 +424,7 @@ class Viewer:
             self.sun_serial,
             self.tone_serial,
             self.indirect_serial,
+            self.size_serial,
         )
         return serials != rendered or time.monotonic() - last_frame >= KEEP_ALIVE_S
 
@@ -389,11 +438,13 @@ class Viewer:
             self.sun = self.sun_own = self.sun_ms = self.sun_pending = None
             self.tone = self.tone_own = self.tone_pending = None
             self.indirect = self.indirect_pending = None
+            self.size = self.size_ms = self.size_pending = None
+            size = self.size_asked
         name, scene = selected
         log(f"open {name} on {scene}")
         renderer = renderers.RENDERERS[name]()
         try:
-            renderer.open(scene)
+            renderer.open(scene, size)
         except BaseException:
             renderer.close()
             raise
@@ -408,7 +459,8 @@ class Viewer:
             self.sun = self.sun_own = renderer.sun_own  # a new load: the scene's sun
             self.tone = self.tone_own = renderer.tone_own  # and its tone
             self.indirect = renderer.indirect  # raster-gi: on
-        log(f"opened {name} on {scene}")
+            self.size = renderer.size  # the size asked, or the renderer's only one
+        log(f"opened {name} on {scene} at {renderer.size[0]} x {renderer.size[1]}")
         return renderer
 
     def close(self, renderer):
@@ -494,6 +546,14 @@ def handler_class(viewer, token, page):
                         parse_indirect(body), int(body.get("scene_serial", -1))
                     )
                     self.reply_json(200, {"taken": taken})
+                elif url.path == "/size":
+                    taken = viewer.set_size(parse_size(body))
+                    if not taken:
+                        raise ValueError(
+                            f"{viewer.state()['renderer']} renders "
+                            f"{renderers.SIDE} x {renderers.SIDE} only"
+                        )
+                    self.reply_json(200, {"taken": taken})
                 elif url.path == "/select":
                     renderer, scene = body["renderer"], body["scene"]
                     if renderer not in renderers.RENDERERS or scene not in SCENES:
@@ -544,11 +604,20 @@ def main():
         "--renderer", choices=list(renderers.RENDERERS), default="raster"
     )
     parser.add_argument("--scene", choices=list(SCENES), default="tiny")
+    parser.add_argument(
+        "--size",
+        default=f"{SIZE[0]}x{SIZE[1]}",
+        help="the frame's WxH at the start (the rasterizer's card grid)",
+    )
     args = parser.parse_args()
+    try:
+        size = renderers.check_size(args.size.lower().split("x"))
+    except ValueError as error:
+        parser.error(f"--size {args.size}: {error}")
     page = (HERE / "page.html").read_bytes()
     if not renderers.RENDERERS[args.renderer].offered(args.scene):
         parser.error(f"{args.renderer} is not offered on {args.scene}")
-    viewer = Viewer(args.renderer, args.scene)
+    viewer = Viewer(args.renderer, args.scene, size)
     server = ThreadingHTTPServer(
         (args.host, args.port), handler_class(viewer, args.token, page)
     )

@@ -13,6 +13,9 @@ import numpy as np
 from reference import rng
 
 WIDTH = HEIGHT = 1024
+# A frame of any size (`frame_grid`): tiles of TILE x TILE pixels, at most MAX_TILES.
+TILE = 32
+MAX_TILES = 1024
 # Names of the scenes used by the benchmarks and the triangle count aimed at.
 PRESETS = {"tiny": 300, "s10k": 10_000, "s100k": 100_000, "s1m": 1_000_000}
 TINY_SPHERES = 5
@@ -132,6 +135,50 @@ def make_camera(half):
     focal = (WIDTH / 2) / TAN_HALF_FOV
     camera = np.concatenate([eye, right, up, fwd, [focal, WIDTH / 2, HEIGHT / 2, 0.05]])
     return camera.astype(np.float32)
+
+
+def frame_grid(size):
+    """The grid (TX, TY) of a frame of size (W, H) pixels: ceil(W / TILE) by
+    ceil(H / TILE) tiles, each at least 1 and TX TY at most MAX_TILES; ValueError
+    with the reason otherwise. The frame rendered is TILE TX by TILE TY (padded), the
+    picture its top-left W by H."""
+    width, height = (int(n) for n in size)
+    if width < 1 or height < 1:
+        raise ValueError(f"a frame of {width} x {height} pixels: both must be >= 1")
+    across, down = -(-width // TILE), -(-height // TILE)
+    if across * down > MAX_TILES:
+        raise ValueError(
+            f"a frame of {width} x {height} pixels is {across} x {down} = "
+            f"{across * down} tiles of {TILE} x {TILE}: at most {MAX_TILES}"
+        )
+    return across, down
+
+
+def frame_size(scene):
+    """A scene's frame size (W, H): its `size` entry, else (WIDTH, HEIGHT)."""
+    width, height = scene.get("size", (WIDTH, HEIGHT))
+    return int(width), int(height)
+
+
+def sized_camera(camera, size):
+    """The camera (16,) float32 of a view at frame size (W, H), from its camera at
+    WIDTH x HEIGHT: the principal point at the picture's centre (W / 2, H / 2), the
+    focal length scaled by max(W, H) / WIDTH, so the view's field of view spans the
+    larger side (at WIDTH x HEIGHT the camera itself, bit for bit)."""
+    width, height = (int(n) for n in size)
+    frame_grid((width, height))
+    out = np.array(camera, dtype=np.float32)
+    out[12] = np.float32(np.float64(out[12]) * max(width, height) / WIDTH)
+    out[13], out[14] = np.float32(width / 2), np.float32(height / 2)
+    return out
+
+
+def with_size(view, size):
+    """The view (a scene dict whose camera is its WIDTH x HEIGHT camera) at frame size
+    (W, H): its `size` entry and `sized_camera`."""
+    width, height = (int(n) for n in size)
+    camera = sized_camera(view["camera"], (width, height))
+    return {**view, "size": (width, height), "camera": camera}
 
 
 def make_scene(n_triangles, spheres=None, seed=1):

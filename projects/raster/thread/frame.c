@@ -33,12 +33,16 @@ typedef struct {
     /* the camera page COUNT, SETUP, SHADE read (a SUN command: the sun region's) */
     uint32_t camera;
     uint32_t area; /* the area of the camera's region this layer's frame uses */
+    /* the grid word of the commands (frame.h RF_GRID_*; a SUN command: the sun's), its
+     * tiles, and the camera region's bytes (the eye's grid word in it, RF_GRID_AT) */
+    uint32_t grid, tiles;
+    uint64_t camera_bytes;
 } frame_t;
 
 /* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
 typedef struct {
     const uint32_t* counters;
-    uint32_t cores, workers, item_count;
+    uint32_t cores, workers, item_count, tiles;
     work_t* work;
 } part_t;
 
@@ -49,9 +53,41 @@ static void costs_part(int core, void* arg) {
         part->counters,
         part->cores,
         &part->work->scratch,
-        RM_TILES * quarter / 4,
-        RM_TILES * (quarter + 1) / 4
+        part->tiles * quarter / 4,
+        part->tiles * (quarter + 1) / 4
     );
+}
+
+/* The tiles of a grid word (frame.h RF_GRID_*), or 0 when it is not one. */
+static uint32_t grid_tiles(uint32_t grid) {
+    const uint32_t across = grid & 0xFFu, down = grid >> 8 & 0xFFu;
+    if (grid == 0) {
+        return RF_GRID_DEFAULT * RF_GRID_DEFAULT;
+    }
+    if (
+        grid >> 16 || across == 0 || down == 0 || across > RF_GRID_ACROSS_MAX ||
+        down > RF_GRID_DOWN_MAX || across * down > RM_TILES
+    ) {
+        return 0;
+    }
+    return across * down;
+}
+
+/* The commands' grid: the eye's word from the camera's region (when it holds one),
+ * else 32 x 32. 0, or the code to report. */
+static uint32_t eye_grid(frame_t* frame, void* const* regions) {
+    uint32_t grid = 0;
+    if (frame->camera_bytes >= RF_GRID_AT + 64u) {
+        kmx_invalidate_at(RF_R_CAMERA, RF_GRID_AT, 64);
+        grid = ((const volatile uint32_t*)regions[RF_R_CAMERA])[RF_GRID_AT / 4];
+    }
+    const uint32_t tiles = grid_tiles(grid);
+    if (tiles == 0) {
+        return RF_BAD_GRID;
+    }
+    frame->grid = grid;
+    frame->tiles = tiles;
+    return 0;
 }
 
 static void sort_part(int core, void* arg) {
@@ -89,9 +125,9 @@ static void new_command(km_command_t* command, uint32_t handler, const frame_t* 
                                                                     ->a6 = command
                                                                                ->a7 = 0
     );
-    command->a9 = frame->words[RF_W_SPROF]; /* profile_address */
-    command->a5 = frame->words[RF_W_CORES]; /* cores */
-    command->a8 = frame->bank_plus_one;     /* bank */
+    command->a9 = frame->words[RF_W_SPROF];                /* profile_address */
+    command->a5 = frame->words[RF_W_CORES];                /* cores */
+    command->a8 = frame->bank_plus_one | frame->grid << 8; /* bank, grid */
 }
 
 /* Submits `command`: 0 with its handle, or the code to report. */
@@ -298,12 +334,13 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     part.counters = sums; /* the totals, as one core's counters */
     part.cores = 1;
     part.workers = workers;
+    part.tiles = frame->tiles;
     part.work = work;
     if (kmx_parallel(costs_part, &part) != KMX_OK) {
         return RF_PARALLEL;
     }
     const uint32_t heavy_count = (
-        rm_pick(&work->scratch, workers, work->heavy, work->bands)
+        rm_pick(&work->scratch, workers, work->heavy, work->bands, frame->tiles)
     );
     frame->result[RF_O_HEAVY] = heavy_count;
     if (heavy_count > RF_HIST_MAX) {
@@ -361,7 +398,8 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         &work->scratch,
         work->items,
         &item_count,
-        work->tile_item
+        work->tile_item,
+        frame->tiles
     )) {
         return RF_NO_LAYOUT;
     }
@@ -636,6 +674,9 @@ int kmx_main(int core) {
             return finish(RF_BAD_ARGS, frame);
         }
         frame->address[i] = (uint32_t)arguments->region[i].offset;
+        if (i == (int)RF_R_CAMERA) {
+            frame->camera_bytes = bytes;
+        }
     }
     frame->camera = frame->address[RF_R_CAMERA];
     if (
@@ -643,6 +684,9 @@ int kmx_main(int core) {
         frame->words[RF_W_FRAMES] > RF_FRAME_MAX
     ) {
         return finish(RF_BAD_ARGS, frame);
+    }
+    if (eye_grid(frame, regions)) {
+        return finish(RF_BAD_GRID, frame);
     }
     work_t* work = (work_t*)regions[RF_R_WORK];
     /* lines an earlier image left dirty would be written over what the cores write */
@@ -689,11 +733,12 @@ static uint32_t show(frame_t* frame, uint32_t raw, uint32_t across, uint32_t qua
     /* display_pages: a page a tile; raw: the map's, across x across frames */
     command.a3 = raw ? across * across * RF_DISPLAY_PAGES : RF_DISPLAY_PAGES;
     command.a4 = raw ? RF_SHOW_RAW : 0;
+    /* a8 becomes the block's word (kmx_block): SHOW takes no grid (show.h) */
     if (raw) { /* the quadrant's first page, the map's pages a row (show.h kShowRaw) */
-        const uint32_t row_pages = across * RF_TILES_ACROSS;
+        const uint32_t row_pages = across * RF_SUN_TILES_ACROSS;
         command.a5 = (
-            quadrant / across * RF_TILES_ACROSS * row_pages +
-            quadrant % across * RF_TILES_ACROSS
+            quadrant / across * RF_SUN_TILES_ACROSS * row_pages +
+            quadrant % across * RF_SUN_TILES_ACROSS
         );
         command.a6 = row_pages;
     }
@@ -816,7 +861,10 @@ static uint32_t serve_frame(const km_command_t* command) {
         frame->result[i] = 0;
     }
     work_t* work = (work_t*)g_regions[RF_R_WORK];
-    uint32_t code = frame_once(frame, work, g_regions);
+    uint32_t code = eye_grid(frame, g_regions); /* a size may change between frames */
+    if (code == 0) {
+        code = frame_once(frame, work, g_regions);
+    }
     const uint64_t opaque_ended = kmx_time();
     uint32_t masked_ticks = 0, glass_ticks = 0;
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {
@@ -946,6 +994,10 @@ static uint32_t serve_sun(void) {
     work_t* work = (work_t*)g_regions[RF_R_WORK];
     uint32_t opaque_ticks = 0, masked_ticks = 0, merge_ticks = 0, copy_ticks = 0;
     uint32_t quadrant = 0;
+    /* the sun's own grid for its passes, as its camera; the eye's again after */
+    const uint32_t eye = frame->grid, eye_tiles = frame->tiles;
+    frame->grid = RF_SUN_GRID;
+    frame->tiles = grid_tiles(RF_SUN_GRID);
     for (; code == 0 && quadrant < across * across; quadrant++) {
         uint64_t mark = kmx_time();
         frame->camera = frame->address[RF_R_SUN] + RF_SUN_CAMERA_BYTES * quadrant;
@@ -983,6 +1035,8 @@ static uint32_t serve_sun(void) {
     frame->area = 0;
     frame->words = words;
     frame->camera = frame->address[RF_R_CAMERA];
+    frame->grid = eye;
+    frame->tiles = eye_tiles;
     const uint32_t row = (g_suns % RF_TIMES_ROWS) * RF_TIMES_ROW_WORDS;
     volatile uint32_t* times = (volatile uint32_t*)g_regions[RF_R_SUN_TIMES] + row;
     for (uint32_t i = 0; i < RF_OUT_WORDS; i++) {

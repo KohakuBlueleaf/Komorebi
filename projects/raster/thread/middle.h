@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#define RM_TILES 1024u
-#define RM_GROUPS 16u /* 2-row groups of a tile */
+#define RM_TILES 1024u /* the tables' tiles; a frame's grid has at most these */
+#define RM_GROUPS 16u  /* 2-row groups of a tile */
 #define RM_MAX_BANDS 16u
 #define RM_MAX_HEAVY 256u /* tiles cut into bands; more: rm_middle rejects */
 /* All bands number at most about 2 * fill cores / RM_SPLIT (1,503 at 248 cores)
@@ -80,10 +80,14 @@ void rm_costs(
     uint32_t end_tile
 );
 
-/* The tiles to cut, ascending, and their bands: returns how many; the first
- * RM_MAX_HEAVY of them are written. */
+/* The tiles to cut among tiles [0, tiles) (the frame's grid), ascending, and their
+ * bands: returns how many; the first RM_MAX_HEAVY of them are written. */
 uint32_t rm_pick(
-    rm_scratch* scratch, uint32_t fill_cores, uint32_t* heavy, uint32_t* bands
+    rm_scratch* scratch,
+    uint32_t fill_cores,
+    uint32_t* heavy,
+    uint32_t* bands,
+    uint32_t tiles
 );
 
 /* Zeroes the directory pages of fill cores [first_core, end_core). */
@@ -98,8 +102,8 @@ void rm_hist(
     rm_scratch* scratch
 );
 
-/* rm_layout in parts: the items in tile order (0: more than RM_MAX_ITEMS or heavy
- * tiles), then the items to cores in scratch->owner (0: no or too many cores). */
+/* rm_layout in parts: the items of tiles [0, tiles) in tile order (0: too many), then
+ * the items to cores in scratch->owner (0: no or too many cores). */
 uint32_t rm_items(
     const uint32_t* heavy,
     const uint32_t* bands,
@@ -107,7 +111,8 @@ uint32_t rm_items(
     rm_scratch* scratch,
     rm_item* items,
     uint32_t* items_found,
-    uint32_t* tile_item
+    uint32_t* tile_item,
+    uint32_t tiles
 );
 uint32_t rm_assign(uint32_t fill_cores, rm_scratch* scratch, uint32_t items_found);
 /* rm_assign in parts: items [first, end) by falling cost (stable), two sorted

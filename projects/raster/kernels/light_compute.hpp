@@ -1238,7 +1238,8 @@ namespace shade_pass {
                 get_local_cb_interface(kCbShadePlanes).fifo_limit << 4
             );
             const uint32_t size = get_local_cb_interface(kCbShadePlanes).fifo_size << 4;
-            const uint32_t tile_x = tile % 32, tile_y = tile / 32;
+            const uint32_t across = grid_of(command.a8).across;  // grid.h
+            const uint32_t tile_x = tile % across, tile_y = tile / across;
             TTI_SFPENCC(3, 0, 0, 10);
             load(L0, kLvLane);
             immediate(L1, pass_k::float_bits(32 * tile_x));

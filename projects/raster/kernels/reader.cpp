@@ -35,6 +35,7 @@ struct Spread {
     uint32_t cycles = 0;
     uint32_t wait = 0;
     uint32_t records = 0;
+    uint32_t across = kGridDefault;  // the grid's tiles a row (grid.h)
 };
 
 // Spread record `index` (in list order): an even one into a free spread page here, an
@@ -84,7 +85,7 @@ bool spread_page(const km::Reader& reader, Spread& spread, uint32_t page) {
             spread.left--;
         } else if (words[0] == kMarkTile) {
             spread.left = words[kHdrCount];
-            spread.top = static_cast<int32_t>(32 * (words[kHdrTile] / 32));
+            spread.top = static_cast<int32_t>(32 * (words[kHdrTile] / spread.across));
             spread.first_row = static_cast<int32_t>(words[kHdrRow0]);
             spread.end_row = static_cast<int32_t>(words[kHdrRow1]);
         } else {
@@ -120,6 +121,7 @@ void fill_reader_command(const km::Reader& reader, const km_command_t& command) 
     uint32_t wait = 0, read = 0;
 #ifdef RASTER_SPREAD
     Spread spread;
+    spread.across = grid_of(command.a8).across;
     const bool spreads = km::handler(command) == kHandlerFill;
 #endif
     for (uint32_t page = 0; page < pages; ++page) {

@@ -13,7 +13,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 | file | what it is |
 |---|---|
 | `server.py` | the web server (Python's `http.server` only) and the render loop, on the main thread, that owns the card's session |
-| `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file), `RasterLit` (`--light`, offered on scenes with a materials and a lighting file), `RasterGi` (`--light --indirect`, offered where the scene also has an indirect file) and `Raytrace`: `open(scene)`, `frame(camera_words) -> (image, card_ms)`, `close()`, on the `Loop` class of each project's `live.py` |
+| `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file), `RasterLit` (`--light`, offered on scenes with a materials and a lighting file), `RasterGi` (`--light --indirect`, offered where the scene also has an indirect file) and `Raytrace`: `open(scene, size)`, `frame(camera_words) -> (image, card_ms)`, `set_size(size)`, `close()`, on the `Loop` class of each project's `live.py` |
 | `page.html` | the page: the stream, the numbers, the selects and the controls; no external files |
 | `check.py` | the check without a browser |
 
@@ -30,8 +30,12 @@ the server encodes it as JPEG and sends it down the page's stream.
 
 ```
 python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
-    [--renderer raster|raster-textured|raster-lit|raster-gi|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview]
+    [--renderer raster|raster-textured|raster-lit|raster-gi|raytrace] [--scene tiny|sponza_overview|bistro_interior_overview|bistro_exterior_overview] \
+    [--size WxH]
 ```
+
+`--size` is the frame's size at the start, 1280x720 by default; a size the rasterizer's
+card grid does not take stops the server with the reason.
 
 The server binds only the address `--host` gives. Open
 `http://HOST:PORT/?token=TOKEN`: every request carries the token (the query `?token=`
@@ -51,6 +55,12 @@ public scene takes a while, and the page shows `loading` meanwhile.
   `running`, `refused: N` (the card's result word; the last good image stays), or
   `error: ...` (the renderer is closed; choose a renderer or scene again).
 - Two selects: renderer and scene. A new scene starts at its own camera.
+- Width and height inputs and a **size** button (or Enter): the frame's size, applied
+  between frames with no reload. A size the card's grid does not take (more than 1,024
+  tiles of 32 x 32, more than 2,048 wide or 1,024 high) is refused and the reason shown
+  beside the inputs. The numbers line shows the frames' size; the image is shown at its
+  own size, scaled down (aspect kept) to fit the window. The ray tracer renders 1,024 x
+  1,024 only (`(only)` after the size); a size posted to it is refused.
 - Click the image, then: **W A S D** move forward / left / back / right along the
   view, **Q E** down / up, **drag** with the mouse to turn (yaw, pitch), **shift**
   moves five times faster. The step is a tenth of the scene box's diagonal a second.
@@ -68,7 +78,16 @@ public scene takes a while, and the page shows `loading` meanwhile.
   numbers from it as `reference/scenes.py` lays them out (right = y x forward, up =
   forward x right); the focal length, the centre and the near distance stay the scene's
   own. The first pose is the scene's own camera, and while the pose is that one the
-  scene's camera is used as it is.
+  scene's camera is used as it is. A rasterizer sizes the camera to the frame
+  (`scenes.sized_camera`: centre at `(W / 2, H / 2)`, focal length times
+  `max(W, H) / 1024`).
+- The frame's size: a load takes the size asked last; `POST /size` (`{"width": w,
+  "height": h}`) checks it against `card_thread.card_grid` (400 with `{"error":
+  reason}` when refused, also when the loaded renderer is the ray tracer) and the
+  render thread applies it before the next frame (`Loop.set_size`: the grid word into
+  the camera's region, 0.2 to 0.5 ms on the host). `/state` has `size` (the frames'),
+  `size_asked`, `size_ms` (the last change's host ms) and `sizes` (false: one size
+  only).
 - `Raster`: the triangle lists are sized at four times `live.py`'s default slots; a
   frame whose result word is not 0 (lists too small for the moved camera) raises
   `FrameRefused` and the page shows `refused: N`. Its number, `frame ms (host)`, is
@@ -131,8 +150,19 @@ python -m projects.viewer.check --url http://HOST:PORT --token TOKEN
 
 For each renderer and scene: selects it, waits for `running`, posts 20 poses along a
 short path, reads the frames from `/stream`, and reports the frames received, that they
-decode to 1024 x 1024, that the first and the last differ, and the frame ms (with its
+decode to the size `/state` reports, that the first and the last differ, and the frame ms (with its
 label) and frames a second `/state` showed; and that requests without the token get 403. One JSON line with
 `ok`. A lit renderer also moves the sun and posts the tone exposure 2, saturation 1.15,
 filmic; raster-gi then switches the indirect light off: each must change the frame and
-show in `/state`.
+show in `/state`. Each case also posts 2048 x 1024 (64 x 32 = 2,048 tiles: 400 with the
+reason), then on a rasterizer 1024 x 576 (`/state` and a frame of that size must follow)
+and the start's size again; the ray tracer must refuse 1024 x 576 with 400.
+
+Card 1, 2026-11-24 01:52 to 01:56, server `--size 1280x720` (default) on 127.0.0.1:8766,
+`check.py` `ok`, every case: the rasterizers' frames 1,280 x 720 on every scene, the size
+change shown with a 1,024 x 576 frame after it in 0.05 to 0.11 s (`size_ms` 0.20 to
+0.47), back to 1,280 x 720 after; the refused size 400 "a frame of 2048 x 1024 pixels is
+64 x 32 = 2048 tiles of 32 x 32: at most 1024"; the ray tracer 1,024 x 1,024, 1024 x 576
+refused "raytrace renders 1024 x 1024 only". Host frame ms medians at 1,280 x 720
+(`/state`): raster 3.6 (tiny), 6.1 (Sponza), 10.6 (interior), 20.2 (exterior);
+raster-lit 12.2, 21.4, 32.8; raster-gi 14.2, 23.9.

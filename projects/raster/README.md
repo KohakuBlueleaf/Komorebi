@@ -1042,6 +1042,62 @@ the view; frames 0, 100 and 199 equal the reference rasterizer's 8-bit image of 
 they hold ends its frame with the result word 6 (`--list-slots` makes them larger; the
 masked layer's lists grow by the same factor).
 
+### The frame's size (`live.py --size WxH`)
+
+A frame of `W x H` pixels is a grid of `TX = ceil(W / 32)` by `TY = ceil(H / 32)` tiles,
+`TX x TY` at most 1,024 (`reference/scenes.py` `frame_grid`); the card renders the padded
+frame `32 TX x 32 TY` and the host shows and compares its top-left `W x H`. The card also
+needs `TX` at most 64 and `TY` at most 32 (SETUP's box word: 6 bits of tile column, 10 of
+pixel row), so `W` up to 2,048 and `H` up to 1,024 (`card_thread.card_grid`; a size past
+either is refused with the reason). The camera: principal point `(W / 2, H / 2)`, focal
+length times `max(W, H) / 1024` (`scenes.sized_camera`, used by the reference, `live.py`
+and the viewer). 1,024 x 1,024 is the default and the same as before: grid word 0, every
+command word as before, the reference bit for bit.
+
+The grid travels as a word: the host writes `TX | TY << 8` (0 for 32 x 32) at `RF_GRID_AT`
+of the camera's region, the thread reads it at every `FRAME` and hands it to every command
+in `a8` above the bank (`kernels/grid.h`, `kernels/README.md`): COUNT and SETUP clip to the
+padded frame and number a tile `ty TX + tx`, the middle pass lays out `TX x TY` tiles (the
+tiles past them get no items), FILL, SHADE and LIGHT take a tile's row and column from it.
+SHOW takes none (its `a8` is its block's word): a tile's page is its number, so the display
+is `TX x TY` pages and the host untiles and crops. The SUN pass sets the sun's own grid
+(word 0, 32 x 32 a quadrant) for its passes and the eye's again after. Since the word is
+read at every frame, `Loop.set_size` changes the size between frames with no reload: one
+4-byte write, 0.17 to 0.20 ms on the host (Sponza, plain and lit, 1,024 x 1,024 to
+1,280 x 720 to 512 x 512 to 1,024 x 576 and back, each frame checked, card 1, 01:47).
+The push still moves the whole 1,024-page display (a transfer has no page range); the
+host-binned `run.py` path stays 1,024 x 1,024.
+
+Card 1, 2026-11-24 01:14 to 01:58, AICLK 1,350 MHz, `live.py --push --size S`, 20 frames,
+frames 0, 10, 19 checked: vertex colours 0 pixels differ at every size on Sponza and the
+Bistro interior (and the exterior at 1,280 x 720); `--shade --check-shade`, `--light
+--check-light` and `--light --indirect --check-light` all `ok`, shares (the most of the
+three frames): shaded over 2 at most 0.0012 % (Sponza) and 0.0059 % (interior), lit over
+4 at most 0.024 % and 0.0025 %, with indirect 0.031 % and 0.0027 %. Card frame ms
+(COUNT / middle / SETUP / FILL), host ms median and frames a second:
+
+| scene | size | grid | colours: card frame | COUNT / middle / SETUP / FILL | SHOW | host | fps | shaded frame | lit frame (SHADE / LIGHT) | lit fps | indirect frame | fps |
+|---|---|---|---:|---|---:|---:|---:|---:|---|---:|---:|---:|
+| Sponza | 1,024 x 1,024 | 32 x 32 | 4.80 | 0.70 / 0.35 / 0.91 / 1.59 | 0.80 | 5.51 | 181.6 | 10.46 | 11.74 (4.21 / 1.68) | 80.7 | 14.05 | 67.6 |
+| Sponza | 1,280 x 720 | 40 x 23 | 4.55 | 0.62 / 0.44 / 0.82 / 1.34 | 0.79 | 5.37 | 186.2 | 9.38 | 10.59 (3.65 / 1.45) | 86.8 | 12.62 | 74.1 |
+| Sponza | 1,024 x 576 | 32 x 18 | 3.88 | 0.58 / 0.38 / 0.82 / 1.02 | 0.54 | 4.33 | 230.9 | 7.34 | 8.49 (2.98 / 1.09) | 111.9 | 10.01 | 95.6 |
+| Sponza | 512 x 512 | 16 x 16 | 3.44 | 0.58 / 0.39 / 0.76 / 0.75 | 0.35 | 3.67 | 272.3 | 6.18 | 7.01 (2.13 / 0.78) | 134.2 | 7.99 | 121.2 |
+| Bistro interior | 1,024 x 1,024 | 32 x 32 | 7.74 | 1.59 / 0.57 / 2.10 / 2.11 | 0.83 | 8.43 | 118.7 | 15.03 | 17.74 (4.72 / 3.16) | 54.0 | 20.47 | 46.9 |
+| Bistro interior | 1,280 x 720 | 40 x 23 | 8.10 | 1.68 / 0.52 / 2.18 / 2.39 | 0.78 | 9.03 | 110.7 | 15.88 | 18.27 (4.93 / 3.16) | 52.5 | 20.88 | 45.8 |
+| Bistro interior | 1,024 x 576 | 32 x 18 | 7.02 | 1.58 / 0.43 / 2.02 / 1.88 | 0.56 | 7.46 | 134.0 | 13.26 | 14.90 (3.78 / 2.30) | 65.2 | 16.80 | 58.0 |
+| Bistro interior | 512 x 512 | 16 x 16 | 5.32 | 1.24 / 0.36 / 1.78 / 1.06 | 0.36 | 5.55 | 180.1 | 9.10 | 10.14 (2.13 / 1.36) | 96.4 | 11.35 | 86.4 |
+| Bistro exterior | 1,280 x 720 | 40 x 23 | 12.45 | | | 13.38 | 74.8 | 25.84 | 25.64 | 37.6 | (no indirect file) | |
+
+The per-triangle passes (COUNT, SETUP) barely follow the size: the mesh is the same, and
+the wider field of 1,280 x 720 keeps most of it in view; FILL, SHOW, SHADE and LIGHT go
+with the pixels. At 1,024 x 1,024 against the tree before this change (the same card and
+command, 02:18): Bistro interior lit 17.74 against 17.69 ms, Sponza lit with a SUN pass
+11.73 against 11.70, check shares equal. The SUN pass at 1,280 x 720 (`--check-sun
+--sun=90,40`, 01:43): check B 0 texels apart and 0 empty on one side on Sponza and the
+exterior, check C ok; along `--sun-path 10 --frames 200` on Sponza (01:47) every frame's
+and pass's word 0, pass median 17.09 ms (worst 19.47), frame 10.65 (12.52), 86.7 frames a
+second.
+
 ## Results
 
 The whole frame runs on the card: the table of the previous section (settled frame,

@@ -16,7 +16,7 @@ import komorebi as km
 from komorebi.bench import power
 from komorebi.program.thread import BANK_OF_CLUSTER, TIMER_HZ
 from projects.raster import card, card_passes, lists, passes, run
-from reference import raster
+from reference import raster, scenes
 
 THREAD = lists.HERE / "thread"
 KERNELS = lists.HERE / "kernels"
@@ -46,6 +46,7 @@ F["RF_W_SURFACE"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_W_SUN_PAGES"] = F["RF_W_SURFACE"] + 1
 F["RF_WORDS"] = F["RF_W_SUN_PAGES"] + 1
 F["RF_GLASS_WORDS_AT"] = F["RF_PROFILES_AT"] + 64
+F["RF_GRID_AT"] = F["RF_GLASS_WORDS_AT"] + 128
 F["RF_G_SURFACE"] = F["RF_G_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_G_WORDS"] = F["RF_G_SURFACE"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
@@ -58,6 +59,10 @@ S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
 SHOW = {
     name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHOW_H.read_text())
+}
+GRID_H = KERNELS / "grid.h"
+GRID = {
+    name: int(value, 0) for name, value in lists.CONSTEXPR.findall(GRID_H.read_text())
 }
 SHADE_H = KERNELS / "shade.h"
 SH = {
@@ -118,8 +123,15 @@ def same_numbers():
         "RF_LIGHT_LINEAR": SH["kLightLinear"],
         "RF_LIGHT_GLASS": SH["kLightGlass"],
         "RF_SHOW_RAW": SHOW["kShowRaw"],
-        "RF_TILES_ACROSS": SHOW["kShowTilesAcross"],
-        "kShowTilesAcross": (SHOW["kShowTilesAcross"], raster.TILES_X),
+        "RF_GRID_DEFAULT": GRID["kGridDefault"],
+        "RF_GRID_ACROSS_MAX": GRID["kGridAcrossMax"],
+        "RF_GRID_DOWN_MAX": GRID["kGridDownMax"],
+        "RF_SUN_TILES_ACROSS": GRID["kGridDefault"],
+        "kGridDefault": (GRID["kGridDefault"], raster.TILES_X),
+        "RF_GRID_AT + 64 <= RF_AREA_BYTES": (
+            min(F["RF_GRID_AT"] + 64, F["RF_AREA_BYTES"]),
+            F["RF_GRID_AT"] + 64,
+        ),
         "RF_SUN_QUADRANTS_MAX": F["RF_SUN_ACROSS_MAX"] ** 2,
         "RF_SUN_CAMERA_BYTES": 4 * SH["kCamWordsShade"],
         "RF_SUN_ACROSS_AT after the cameras": (
@@ -153,13 +165,39 @@ def same_numbers():
     return {name: pair for name, pair in pairs.items() if pair[0] != pair[1]}
 
 
+def card_grid(size):
+    """The grid (TX, TY) of a frame of size (W, H) on the card: scenes.frame_grid's
+    rule, and TX at most kGridAcrossMax, TY at most kGridDownMax (SETUP's box word,
+    kernels/grid.h); ValueError with the reason otherwise."""
+    across, down = scenes.frame_grid(size)
+    most_across, most_down = GRID["kGridAcrossMax"], GRID["kGridDownMax"]
+    if across > most_across or down > most_down:
+        width, height = (int(n) for n in size)
+        raise ValueError(
+            f"a frame of {width} x {height} pixels is {across} x {down} tiles: the "
+            f"card takes at most {most_across} tiles a row ({32 * most_across} pixels) "
+            f"and {most_down} rows of tiles ({32 * most_down} pixels)"
+        )
+    return across, down
+
+
+def grid_word(size):
+    """The frame's grid word (frame.h RF_GRID_AT; kernels/grid.h): TX | TY << 8, 0 for
+    the default 32 x 32 (every command as before)."""
+    across, down = card_grid(size)
+    if (across, down) == (GRID["kGridDefault"], GRID["kGridDefault"]):
+        return 0
+    return across | down << 8
+
+
 def camera_region(scene, profiles=None, glass=None):
     """The camera's numbers, then room for COUNT's and SETUP's ranges and costs (an area
     per layer and camera, frame.h RF_AREAS); at RF_PROFILES_AT `profiles` (live.py: the
     masked and glass layers' profile tensors), at RF_GLASS_WORDS_AT `glass` (the glass
-    layer's words, frame.h RF_G_*), else 0."""
+    layer's words, frame.h RF_G_*), else 0; at RF_GRID_AT the scene's grid word."""
     region = np.zeros((1, F["RF_CAMERA_BYTES"] // 4), dtype=np.uint32)
     region[0, : S["kCamWords"]] = card_passes.camera_page(scene)[0]
+    region[0, F["RF_GRID_AT"] // 4] = grid_word(scenes.frame_size(scene))
     for at, values in (
         (F["RF_PROFILES_AT"], profiles),
         (F["RF_GLASS_WORDS_AT"], glass),

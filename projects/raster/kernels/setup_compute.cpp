@@ -386,7 +386,8 @@ namespace {
         Out out;
         bool succeeded = true;
         bool weighted = false;  // SETUP on a shaded frame (setup.h kShadeAddrAt)
-        uint32_t kept_count = 0, clipped = 0;  // the profile's counts
+        Grid grid = {kGridDefault, kGridDefault};  // the frame's (a8, grid.h)
+        uint32_t kept_count = 0, clipped = 0;      // the profile's counts
         uint32_t block_cost = 0;  // COUNT: the block's predicted cost (setup.h kCostBlock)
         // COUNT with ranges: the costs summed after j x blocks / kCostKnots blocks
         uint32_t* knots = nullptr;
@@ -407,19 +408,20 @@ namespace {
         void record(const uint32_t* words, const Box& box, uint32_t triangle) {
             if (
                 box.first_column < 0 || box.first_row < 0 ||
-                box.last_column >= static_cast<int32_t>(kWidth) ||
-                box.last_row >= static_cast<int32_t>(kHeight)
+                box.last_column >= static_cast<int32_t>(32 * grid.across) ||
+                box.last_row >= static_cast<int32_t>(32 * grid.down)
             ) {
                 give_up(kGaveBadBox, triangle & 0xFFFF);
                 succeeded = false;
                 return;
             }
-            // the writer counts it (COUNT) or sends it to every item it reaches (SETUP)
+            // the writer counts it (COUNT) or sends it to every item it reaches
+            // (SETUP); tile columns in 6 bits each, pixel rows in 10 (grid.h)
             const uint32_t box_word = (
                 static_cast<uint32_t>(box.first_column >> 5) |
-                static_cast<uint32_t>(box.last_column >> 5) << 5 |
-                static_cast<uint32_t>(box.first_row) << 10 |
-                static_cast<uint32_t>(box.last_row) << 20
+                static_cast<uint32_t>(box.last_column >> 5) << 6 |
+                static_cast<uint32_t>(box.first_row) << 12 |
+                static_cast<uint32_t>(box.last_row) << 22
             );
             if (knots != nullptr) {
                 block_cost += (
@@ -477,7 +479,7 @@ namespace {
             setup_pass::order(
                 setup_pass::word(setup_pass::kSlotColour + 8) + 2 * (piece_count - 1)
             );
-            setup_pass::triangles(handler == kHandlerSetup, weighted);
+            setup_pass::triangles(handler == kHandlerSetup, weighted, grid);
             ckernel::tensix_sync();
             setup_pass::records_out(records);
             const volatile uint32_t* areas = (
@@ -660,6 +662,10 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
     uint32_t mail = 0, vector_cycles = 0, scalar_cycles = 0;
     setup_pass::setup();
     Pass pass{compute, handler};
+    pass.grid = grid_of(command.a8);
+    if (pass.grid.across > kGridAcrossMax || pass.grid.down > kGridDownMax) {
+        pass.grid = {kGridDefault, kGridDefault};  // never: the thread refuses it
+    }
     uint32_t* work = cb_ptr(kCbWork);
     for (uint32_t page = 0; page < pages; ++page) {
         const uint32_t asked = km::wall();
@@ -704,7 +710,7 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
         const uint32_t vector_started = km::wall();
         setup_pass::block_in(mesh_words);
         setup_pass::camera_space();
-        setup_pass::triangles(handler != kHandlerCount, pass.weighted);
+        setup_pass::triangles(handler != kHandlerCount, pass.weighted, pass.grid);
         const uint32_t first_triangle = 32 * (first_block + page - 1);
         if (handler != kHandlerLanes) {
             setup_pass::finish_lanes(

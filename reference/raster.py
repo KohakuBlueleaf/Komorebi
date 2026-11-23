@@ -12,9 +12,10 @@ import importlib
 import numpy as np
 
 from reference import lights as light_data
-from reference.scenes import HEIGHT, WIDTH
+from reference import scenes
+from reference.scenes import HEIGHT, TILE, WIDTH
 
-TILE = 32
+# The default frame's grid (a scene's `size` entry chooses another: `grid`).
 TILES_X = WIDTH // TILE
 TILES_Y = HEIGHT // TILE
 BACKGROUND = np.array([0.05, 0.05, 0.08], dtype=np.float32)
@@ -41,6 +42,18 @@ FILMIC = (F(2.51), F(0.03), F(2.43), F(0.59), F(0.14))
 TEXEL_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
 TEXEL_UNIT = (np.arange(256) / 255.0).astype(np.float32)
 TEXEL_SIGNED = (np.arange(256) * 2.0 / 255.0 - 1.0).astype(np.float32)
+
+
+def grid(scene):
+    """The scene's frame grid (TX, TY) (scenes.frame_grid of its size): the frame
+    rendered is TILE TX by TILE TY pixels."""
+    return scenes.frame_grid(scenes.frame_size(scene))
+
+
+def picture(image, scene):
+    """The picture of a rendered (padded) frame's image: its top-left W by H."""
+    width, height = scenes.frame_size(scene)
+    return image[:height, :width]
 
 
 def camera_space(scene):
@@ -140,12 +153,14 @@ def setup(scene, extra=None):
     lo_y = np.minimum(np.minimum(y[:, 0], y[:, 1]), y[:, 2])
     hi_y = np.maximum(np.maximum(y[:, 0], y[:, 1]), y[:, 2])
     half = F(0.5)
-    ix0 = np.minimum(np.maximum(np.ceil(lo_x - half), F(0)), F(WIDTH)).astype(np.int64)
-    ix1 = np.maximum(np.minimum(np.floor(hi_x - half), F(WIDTH - 1)), F(-1)).astype(
+    across, down = grid(scene)
+    width, height = TILE * across, TILE * down  # the padded frame
+    ix0 = np.minimum(np.maximum(np.ceil(lo_x - half), F(0)), F(width)).astype(np.int64)
+    ix1 = np.maximum(np.minimum(np.floor(hi_x - half), F(width - 1)), F(-1)).astype(
         np.int64
     )
-    iy0 = np.minimum(np.maximum(np.ceil(lo_y - half), F(0)), F(HEIGHT)).astype(np.int64)
-    iy1 = np.maximum(np.minimum(np.floor(hi_y - half), F(HEIGHT - 1)), F(-1)).astype(
+    iy0 = np.minimum(np.maximum(np.ceil(lo_y - half), F(0)), F(height)).astype(np.int64)
+    iy1 = np.maximum(np.minimum(np.floor(hi_y - half), F(height - 1)), F(-1)).astype(
         np.int64
     )
     cand &= (ix0 <= ix1) & (iy0 <= iy1)
@@ -187,8 +202,9 @@ def setup(scene, extra=None):
     return records
 
 
-def bin_triangles(records):
-    """Tile lists: (counts per tile, offsets (tiles + 1), record numbers by tile)."""
+def bin_triangles(records, tiles_x=TILES_X, tiles_y=TILES_Y):
+    """Tile lists: (counts per tile, offsets (tiles + 1), record numbers by tile);
+    tile ty tiles_x + tx of a grid of tiles_x by tiles_y."""
     box = records["box"]
     tx0, tx1 = box[:, 0] // TILE, box[:, 1] // TILE
     ty0, ty1 = box[:, 2] // TILE, box[:, 3] // TILE
@@ -198,9 +214,9 @@ def bin_triangles(records):
     rec = np.repeat(np.arange(len(box)), per_tri)
     start = np.cumsum(per_tri) - per_tri
     local = np.arange(total) - np.repeat(start, per_tri)
-    tile = (ty0[rec] + local // nx[rec]) * TILES_X + tx0[rec] + local % nx[rec]
+    tile = (ty0[rec] + local // nx[rec]) * tiles_x + tx0[rec] + local % nx[rec]
     order = np.argsort(tile, kind="stable")
-    counts = np.bincount(tile, minlength=TILES_X * TILES_Y).astype(np.int32)
+    counts = np.bincount(tile, minlength=tiles_x * tiles_y).astype(np.int32)
     offsets = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
     return counts, offsets, rec[order].astype(np.int32)
 
@@ -246,14 +262,16 @@ def fill_tile(records, members, tx, ty):
 
 
 def rasterize(scene):
-    """Colour (H, W, 3), 1/z (H, W), triangle index (H, W, -1 = none), tile counts."""
+    """Colour (H, W, 3), 1/z (H, W), triangle index (H, W, -1 = none), tile counts
+    (TY, TX), of the padded frame (`grid`: H = TILE TY, W = TILE TX; `picture`)."""
+    across, down = grid(scene)
     records = setup(scene)
-    counts, offsets, members = bin_triangles(records)
-    colour = np.empty((HEIGHT, WIDTH, 3), dtype=np.float32)
-    depth = np.empty((HEIGHT, WIDTH), dtype=np.float32)
-    tri = np.empty((HEIGHT, WIDTH), dtype=np.int32)
-    for t in range(TILES_X * TILES_Y):
-        ty, tx = divmod(t, TILES_X)
+    counts, offsets, members = bin_triangles(records, across, down)
+    colour = np.empty((TILE * down, TILE * across, 3), dtype=np.float32)
+    depth = np.empty((TILE * down, TILE * across), dtype=np.float32)
+    tri = np.empty((TILE * down, TILE * across), dtype=np.int32)
+    for t in range(across * down):
+        ty, tx = divmod(t, across)
         c, d, win = fill_tile(records, members[offsets[t] : offsets[t + 1]], tx, ty)
         ys, xs = slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE)
         colour[ys, xs], depth[ys, xs] = c, d
@@ -264,7 +282,7 @@ def rasterize(scene):
         "colour": colour,
         "depth": depth,
         "tri": tri,
-        "tile_counts": counts.reshape(TILES_Y, TILES_X),
+        "tile_counts": counts.reshape(down, across),
     }
 
 
@@ -286,11 +304,12 @@ def fill_layers(scene, materials, glass=True):
     masked = rasterize(layer_scene(scene, kind == MASKED))
     if glass and clear.any():
         return opaque, masked, rasterize(layer_scene(scene, clear))
+    shape = opaque["depth"].shape
     empty = {
-        "colour": np.broadcast_to(BACKGROUND, (HEIGHT, WIDTH, 3)).copy(),
-        "depth": np.zeros((HEIGHT, WIDTH), dtype=np.float32),
-        "tri": np.full((HEIGHT, WIDTH), -1, dtype=np.int32),
-        "tile_counts": np.zeros((TILES_Y, TILES_X), dtype=np.int32),
+        "colour": np.broadcast_to(BACKGROUND, shape + (3,)).copy(),
+        "depth": np.zeros(shape, dtype=np.float32),
+        "tri": np.full(shape, -1, dtype=np.int32),
+        "tile_counts": np.zeros_like(opaque["tile_counts"]),
     }
     return opaque, masked, empty
 
@@ -730,13 +749,15 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
 
 def background(scene, lights):
     """The environment's radiance (H, W, 3) in each pixel's view direction
-    (environment_radiance)."""
+    (environment_radiance), over the padded frame (`grid`)."""
     cam = scene["camera"]
-    ys, xs = np.mgrid[0:HEIGHT, 0:WIDTH]
+    across, down = grid(scene)
+    height, width = TILE * down, TILE * across
+    ys, xs = np.mgrid[0:height, 0:width]
     sx = (xs.ravel().astype(np.float32) + F(0.5) - cam[13]) / cam[12]
     sy = (ys.ravel().astype(np.float32) + F(0.5) - cam[14]) / cam[12]
     d = (cam[9:12] + cam[3:6] * sx[:, None]) - cam[6:9] * sy[:, None]
-    return environment_radiance(lights, d).reshape(HEIGHT, WIDTH, 3)
+    return environment_radiance(lights, d).reshape(height, width, 3)
 
 
 def environment_radiance(lights, d):

@@ -9,13 +9,14 @@
 
 namespace {
 
-    // A kept triangle's tile columns and rows, as the pack thread packs them.
+    // A kept triangle's tile columns and rows, as the pack thread packs them (tile
+    // columns 6 bits each, pixel rows 10).
     struct BoxWord {
         uint32_t first_tile_x, last_tile_x, first_row, last_row;
     };
 
     inline BoxWord box_of(uint32_t word) {
-        return {word & 31, word >> 5 & 31, word >> 10 & 1023, word >> 20 & 1023};
+        return {word & 63, word >> 6 & 63, word >> 12 & 1023, word >> 22 & 1023};
     }
 
     // Records the first give-up of this core's writer and asks the run to stop.
@@ -47,7 +48,7 @@ namespace {
         const uint32_t items_region_address = command.a0;
         const uint32_t directory_address = command.a1, cores = command.a5;
         const uint32_t fill_cores = command.a6, lists_address = command.a7;
-        const uint32_t bank = command.a8;
+        const uint32_t bank = bank_word(command.a8);
         const uint32_t space = get_write_ptr(kCbHist);
         noc_async_read(
             setup_pass::noc_address(bank, items_region_address, 0, 0, 0),
@@ -199,7 +200,8 @@ namespace {
         Flushed flushed
     ) {
         const uint32_t counters_address = command.a1, blocks_word = command.a2;
-        const uint32_t camera_address = command.a3, bank = command.a8;
+        const uint32_t camera_address = command.a3, bank = bank_word(command.a8);
+        const uint32_t across = grid_of(command.a8).across;  // tile ty TX + tx
         volatile tt_l1_ptr uint32_t* counters = km::l1(get_read_ptr(kCbCount));
         volatile tt_l1_ptr uint32_t* histogram_words = km::l1(get_read_ptr(kCbHist));
         volatile tt_l1_ptr uint16_t*
@@ -240,7 +242,7 @@ namespace {
                         uint32_t tile_x = box.first_tile_x; tile_x <= box.last_tile_x;
                         ++tile_x
                     ) {
-                        const uint32_t tile = kTilesX * tile_y + tile_x;
+                        const uint32_t tile = across * tile_y + tile_x;
                         counters[tile] += 1;
                         counters[kTiles + tile] += last_row - first_row + 1;
                         volatile tt_l1_ptr uint16_t*
@@ -303,6 +305,7 @@ namespace {
     ) {
         const uint32_t lists_address = command.a1;
         const uint32_t list_slots = command.a6 & ~kSetupPrefix;
+        const uint32_t across = grid_of(command.a8).across;  // tile ty TX + tx
         if (!writer.wait_front(kCbSlots, 1, 4) || !writer.wait_front(kCbItems, 1, 4)) {
             return true;
         }
@@ -350,7 +353,7 @@ namespace {
                         tile_x <= box.last_tile_x && succeeded;
                         ++tile_x
                     ) {
-                        const uint32_t tile = kTilesX * tile_y + tile_x;
+                        const uint32_t tile = across * tile_y + tile_x;
                         const uint32_t first = items[tile] & 0xFFFF;
                         const uint32_t item_count = items[tile] >> 16;
                         if (first + item_count > kSlotsBytes / 4) {
@@ -467,7 +470,7 @@ bool setup_writer_pass(
     const km::Writer& writer, const km_command_t& command, WriterProfile& profile
 ) {
     const uint32_t handler = km::handler(command);
-    const uint32_t cores = command.a5, bank = command.a8;
+    const uint32_t cores = command.a5, bank = bank_word(command.a8);
     auto flushed = [&] {
         return writer.poll(
             [] {

@@ -320,17 +320,22 @@ def later_pieces(view, materials, tri):
 
 
 def check(view, materials, got, to_srgb8):
-    """The card's 8-bit image `got` (H, W, >= 3) against the reference's shaded frame
-    of `view` on as_shaded(materials): pixels differing by more than 2 in a channel;
-    `share` over those not on later_pieces (counted apart), also over the frame.
-    Returns (report, compared reference image, true reference image)."""
+    """The card's 8-bit image `got` (H, W, >= 3) against the reference's shaded picture
+    of `view` on as_shaded(materials): pixels over 2 apart in a channel; `share` over
+    those not on later_pieces, also the frame's. Returns (report, compared reference
+    image, true reference image)."""
+
+    def crop(image):
+        return raster.picture(image, view)
+
     shaded = raster.rasterize_shaded(view, as_shaded(materials))
-    want = to_srgb8(shaded["colour"])
-    true = to_srgb8(raster.rasterize_shaded(view, materials)["colour"])
+    want = to_srgb8(crop(shaded["colour"]))
+    true = to_srgb8(crop(raster.rasterize_shaded(view, materials)["colour"]))
     error = np.abs(got[..., :3].astype(np.int16) - want.astype(np.int16)).max(axis=2)
     over = error > 2
     tri = shaded["tri"]
-    apart = later_pieces(view, materials, tri)
+    apart = crop(later_pieces(view, materials, tri))
+    tri = crop(tri)
     kind = np.where(tri >= 0, materials["kind"][materials["material"]][tri], -1)
     names = {-1: "background", raster.FLAT: "flat", raster.TEXTURED: "textured"}
     names.update(
@@ -339,10 +344,12 @@ def check(view, materials, got, to_srgb8):
     checked = ~apart
     # the glass in front (a kind of its own), its later pieces apart too
     front = shaded["front"]
-    glass_apart = np.zeros_like(front)
+    glass_apart = np.zeros_like(crop(front))
     if front.any():
         glass_tri = np.where(front, shaded["glass"]["tri"], -1)
-        glass_apart = later_pieces(view, materials, glass_tri)
+        glass_apart = crop(later_pieces(view, materials, glass_tri))
+    front = crop(front)
+    if front.any():
         kind = np.where(front, raster.TRANSPARENT, kind)
         names[raster.TRANSPARENT] = "glass_in_front"
         checked = checked & ~glass_apart

@@ -22,7 +22,7 @@ inline uint32_t show_byte(
 }
 
 // a3: the display's pages; an item's page at or past them gives up. A tile's page is
-// its number; raw, a5 + its row a6 + its column (show.h kShowRaw).
+// its number (any grid); raw, a5 + its row a6 + its column of 32 x 32 (show.h).
 bool show_writer_command(const km::Writer& writer, const km_command_t& command) {
     const uint32_t directory_address = command.a0, display_address = command.a1;
     const uint32_t profile_address = command.a2, display_pages = command.a3;
@@ -40,7 +40,7 @@ bool show_writer_command(const km::Writer& writer, const km_command_t& command) 
     const km::Block block = writer.block(command);
     const bool raw = command.a4 == kShowRaw;  // plane 0's words, no conversion
     const uint32_t first_page = raw ? command.a5 : 0;
-    const uint32_t across = raw ? command.a6 : kShowTilesAcross;
+    const uint32_t across = raw ? command.a6 : kGridDefault;
     if (
         (!raw && block.bytes < 4 * kShowTableWords) || tensor_pages == 0 ||
         tensor_pages % kPlanes != 0 || items > kDirMaxItems
@@ -77,7 +77,7 @@ bool show_writer_command(const km::Writer& writer, const km_command_t& command) 
         const uint32_t id = directory[kDirIds + item];
         const uint32_t tile = id & kItemSlot;
         const uint32_t page = (
-            first_page + tile / kShowTilesAcross * across + tile % kShowTilesAcross
+            first_page + tile / kGridDefault * across + tile % kGridDefault
         );
         if ((tile * kPlanes) / tensor_pages >= kDirFrameMax || page >= display_pages) {
             writer.gave_up(

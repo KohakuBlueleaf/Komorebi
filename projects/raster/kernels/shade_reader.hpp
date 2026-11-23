@@ -129,7 +129,7 @@ void shade_reader_command(const km::Reader& reader, const km_command_t& command)
     if (lit) {  // the camera after the table's words (a5 in the bank a8 - 1)
         noc_async_read_barrier();
         noc_async_read(
-            get_noc_addr_from_bank_id<true>(command.a8 - 1, command.a5),
+            get_noc_addr_from_bank_id<true>(bank_word(command.a8) - 1, command.a5),
             get_write_ptr(kCbShadeTable) + 4 * kTabCamera,
             4 * kCamWordsShade
         );

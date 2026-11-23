@@ -21,6 +21,8 @@
 #endif
 #endif
 
+#include "grid.h"  // before the namespaces: one copy for all of them
+
 #define RASTER_NO_ENTRY
 
 namespace fill_k {

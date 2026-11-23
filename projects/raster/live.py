@@ -1,7 +1,7 @@
 """The thread-driven frame as a loop: a FRAME command a camera, the image read
 back or (`--push`) pushed; `--shade` (masked and glass layers), `--light` (LIGHT
-twice with glass; `--sun AZ,EL`, `--sun-path N`: SUN). One JSON line; exit 1 unless
-ok."""
+twice with glass; `--sun AZ,EL`, `--sun-path N`: SUN); `--size WxH` the frame's size
+(default 1024x1024). One JSON line; exit 1 unless ok."""
 
 import argparse
 import json
@@ -17,14 +17,13 @@ from komorebi.program.thread import TIMER_HZ
 from projects.raster import card, card_thread, light, lists, passes, run, shade
 from projects.raytrace import framegraph
 from reference import lights as light_data
-from reference import native, png, raster
+from reference import native, png, raster, scenes
 
 F, SHOW, SH, S = card_thread.F, card_thread.SHOW, card_thread.SH, card_thread.S
 CLUSTER = card_thread.CLUSTER
 TILE = 32
 PUSH_TIMEOUT_S = 2.0  # a frame's wait for the push's sequence words
 PUSH_SPIN_S = 20e-3  # its looks without a pause: longer than a frame
-WIDE = raster.TILES_X  # tiles a row
 # The lists sized for the sun's view too: its entries at the scene's own sun and at
 # these (azimuth offset, elevation) suns, times the margin, plus card_thread's 65,536.
 SUN_SAMPLES = [
@@ -99,19 +98,34 @@ def table_check(table):
     return int((show_bytes(table, values) != png.to_srgb8(values)).sum())
 
 
-def untile(pages, image):
-    """The display's pages (tile = ty * 32 + tx; 32 rows of 32 pixels of 4 bytes) into
-    `image` (1024, 1024, 4): one reshape and one transpose."""
-    image.reshape(WIDE, TILE, WIDE, TILE, 4)[...] = pages.reshape(
-        WIDE, WIDE, TILE, TILE, 4
-    ).transpose(0, 2, 1, 3, 4)
+def untile(pages, image, grid=(raster.TILES_X, raster.TILES_Y)):
+    """The display's pages (tile = ty TX + tx of `grid` (TX, TY); 32 rows of 32 pixels
+    of 4 bytes) into `image` (32 TY, 32 TX, 4), the padded frame: one reshape and one
+    transpose."""
+    across, down = grid
+    image.reshape(down, TILE, across, TILE, 4)[...] = (
+        pages[: across * down]
+        .reshape(down, across, TILE, TILE, 4)
+        .transpose(0, 2, 1, 3, 4)
+    )
     return image
 
 
+def parse_size(text):
+    """--size's "WxH" as (W, H), on the card's grid (card_thread.card_grid); exits with
+    the reason otherwise."""
+    try:
+        width, height = (int(part) for part in text.lower().split("x"))
+        card_thread.card_grid((width, height))
+    except ValueError as error:
+        raise SystemExit(f"--size {text}: {error}") from None
+    return width, height
+
+
 def expected(view):
-    """The reference's 8-bit image of a camera: numpy's colour by png's rule, alpha
-    255."""
-    colour = raster.rasterize(view)["colour"]
+    """The reference's 8-bit picture of a camera: numpy's colour by png's rule, alpha
+    255 (the padded frame's top-left W x H)."""
+    colour = raster.picture(raster.rasterize(view)["colour"], view)
     image = np.full(colour.shape[:2] + (4,), 255, dtype=np.uint8)
     image[..., :3] = png.to_srgb8(colour)
     return image
@@ -334,8 +348,8 @@ def times_rows(raw, frames):
 class Loop:
     """The scene loaded in `session`, the thread's program running: a FRAME command a
     camera (`frame`); `materials`: shaded, `lights`: lit (LIGHT's table; `set_sun`,
-    `set_tone`); term `indirect`: the field, remade after a sun change, its switch
-    `set_indirect`. Fills upload_s, load_s, sun_lists, field_update."""
+    `set_tone`); term `indirect`: the field, its switch `set_indirect`; the size the
+    scene's (`size`), `set_size` between frames. Fills upload_s, load_s, ..."""
 
     def __init__(
         self,
@@ -356,6 +370,9 @@ class Loop:
             lights,
             terms,
         )
+        self.size = scenes.frame_size(scene)  # (W, H), set_size
+        self.grid = card_thread.card_grid(self.size)  # (TX, TY)
+        self.padded = None  # the padded frame's picture when it is larger than W x H
         self.sun = None  # (azimuth, elevation) once set_sun moved it
         self.lit = lights  # the lights LIGHT's table is of (set_sun's once moved)
         self.tone = None if lights is None else tone_of(lights)
@@ -498,11 +515,38 @@ class Loop:
             running.thread.write("push", push_words)
         self.pages = np.empty((lists.TILES, SHOW["kShowPageBytes"]), dtype=np.uint8)
 
+    def set_size(self, size):
+        """The frame's size (W, H) for the next frame (card_thread.card_grid's rule,
+        ValueError with the reason otherwise): the grid word into the camera's region
+        (frame.h RF_GRID_AT), nothing reloaded; the next frame's camera is the caller's
+        (scenes.sized_camera). Returns the host's ms."""
+        began = time.perf_counter()
+        width, height = (int(n) for n in size)
+        grid = card_thread.card_grid((width, height))
+        word = np.array([card_thread.grid_word((width, height))], dtype=np.uint32)
+        self.running.thread.write("camera", word, F["RF_GRID_AT"])
+        self.size, self.grid = (width, height), grid
+        self.padded = None
+        return (time.perf_counter() - began) * 1e3
+
+    def picture(self, pages, image):
+        """The display's pages into `image` (H, W, 4): straight when the padded frame
+        is W x H, else through the padded frame, cropped."""
+        width, height = self.size
+        across, down = self.grid
+        if (32 * across, 32 * down) == (width, height):
+            return untile(pages, image, self.grid)
+        if self.padded is None:
+            self.padded = np.empty((32 * down, 32 * across, 4), dtype=np.uint8)
+        untile(pages, self.padded, self.grid)
+        image[...] = self.padded[:height, :width]
+        return image
+
     def frame(self, camera, image):
-        """One FRAME command for `camera` (16 float32), its 8-bit picture into `image`
-        (1024, 1024, 4). Returns its event, the times (s) began, camera written,
-        commanded, read and ended, and the event's wait after the image (ms; None
-        without the push)."""
+        """One FRAME command for `camera` (16 float32, the frame's size's), its 8-bit
+        picture into `image` (H, W, 4). Returns its event, the times (s) began, camera
+        written, commanded, read and ended, and the event's wait after the image (ms;
+        None without the push)."""
         running, transfer = self.running, self.transfer
         camera = np.asarray(camera, dtype=np.float32).view(np.uint32)
         collect = None
@@ -516,7 +560,7 @@ class Loop:
             commanded = time.perf_counter()
             self.session.read(self.display, out=self.pages)
             read = time.perf_counter()
-            untile(self.pages, image)
+            self.picture(self.pages, image)
         else:
             key = transfer.arm()
             running.thread.write("camera", camera)
@@ -528,7 +572,7 @@ class Loop:
             arrived = transfer.wait(PUSH_TIMEOUT_S, PUSH_SPIN_S)
             commanded = read = time.perf_counter()
             if arrived:
-                untile(transfer.data, image)
+                self.picture(transfer.data, image)
         ended = time.perf_counter()
         if transfer is not None:  # FRAME's event, after the image (its word)
             event = running.wait(handle, timeout=10.0)
@@ -633,7 +677,10 @@ class Loop:
 
 def loop(args):
     scene, _ = run.load(args.scene)
-    views = framegraph.cameras(scene, args.frames)
+    size = parse_size(args.size)
+    views = [
+        scenes.with_size(view, size) for view in framegraph.cameras(scene, args.frames)
+    ]
     table = show_table()
     args.shade = args.shade or args.light
     materials = shade.load(args.scene) if args.shade else None
@@ -650,6 +697,8 @@ def loop(args):
         "path": "push" if args.push else "read",
         "shaded": bool(args.shade),
         "lit": bool(args.light),
+        "size": list(size),
+        "grid": list(card_thread.card_grid(size)),
     }
     if args.light:
         report["light_terms"] = list(terms)
@@ -678,7 +727,7 @@ def loop(args):
     with km.Session(log=card.log) as session:
         live = Loop(
             session,
-            scene,
+            scenes.with_size(scene, size),
             args.push,
             args.list_slots,
             table,
@@ -712,7 +761,7 @@ def loop(args):
             word = move_sun(*sun_set, 0)
             if args.check_sun and word == 0:
                 sun_got = live.shadow_map()
-        image = np.empty((raster.HEIGHT, raster.WIDTH, 4), dtype=np.uint8)
+        image = np.empty((size[1], size[0], 4), dtype=np.uint8)
         host, camera_ms, command_ms, read_ms, words_back = [], [], [], [], []
         collect_ms = []
         own = light_data.sun_angles(lights["sun_direction"]) if args.light else None
@@ -741,11 +790,11 @@ def loop(args):
                 kept[index] = image.copy()
             if index in surfaces and word == 0:  # the planes before the next frame
                 surface_got[index] = light.read_surface(
-                    session, live.uploaded["frame"], live.surface
+                    session, live.uploaded["frame"], live.surface, live.grid
                 )
                 if live.glass_surface is not None:
                     glass_surface_got[index] = light.read_surface(
-                        session, live.glass["frame"], live.glass_surface
+                        session, live.glass["frame"], live.glass_surface, live.grid
                     )
             if word != 0:
                 card.log(f"frame {index}: {event.kind}, word {word}")
@@ -1043,6 +1092,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--scene", default="tiny")
     parser.add_argument("--frames", type=int, default=200)
+    parser.add_argument(
+        "--size",
+        default="1024x1024",
+        help="the frame's WxH in pixels (scenes.frame_grid; the card's grid at most)",
+    )
     parser.add_argument(
         "--push", action="store_true", help="the display pushed inside FRAME"
     )

@@ -173,8 +173,9 @@ namespace {
 #endif
     }
 
-    // False: an output item did not fit (recorded); the list is abandoned.
-    bool fill_list(fill::ProfileCounters& counters) {
+    // False: an output item did not fit (recorded); the list is abandoned. `across`:
+    // the grid's tiles a row (grid.h).
+    bool fill_list(fill::ProfileCounters& counters, uint32_t across) {
         constexpr uint32_t background[3] = {0x3D4CCCCD, 0x3D4CCCCD, 0x3DA3D70A};
         Pages input;
         const uint32_t started = fill::wall();
@@ -195,7 +196,7 @@ namespace {
                 input.end();
                 return false;
             }
-            const uint32_t tile_x = tile % 32, tile_y = tile / 32;
+            const uint32_t tile_x = tile % across, tile_y = tile / across;
             uint32_t before = fill::wall();
             fill::init_tile(tile_x, tile_y, background);
             uint32_t after = fill::wall();
@@ -576,7 +577,7 @@ void fill_compute_command(const km_command_t& command) {
     bool filled;
     if (handler == kHandlerFill) {
         fill::edges(true);
-        filled = fill_list(counters);
+        filled = fill_list(counters, grid_of(command.a8).across);
     } else {
         filled = arith_list(counters);
     }

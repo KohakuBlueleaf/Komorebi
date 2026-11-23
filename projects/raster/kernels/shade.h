@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include "grid.h"
+
 // SHADE: a0 directory, a1 lists, a2 texture pages, a3 table, a4 profile, a6 the
 // opaque directory (else 0; a0, a1 the masked or glass layer's), a9 kShade* bits.
 constexpr uint32_t kHandlerShade = 5;  // lit: a7 the surface directory, a5 camera, a8 bank

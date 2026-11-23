@@ -1054,7 +1054,7 @@ void shade_compute_command(const km_command_t& command) {
         now = km::wall();
         values[kShadeProfDivide] += now - mark;
         mark = now;
-        const uint32_t tile_y = tile / 32;
+        const uint32_t tile_y = tile / grid_of(command.a8).across;
         for (uint32_t record_index = 0; record_index < records; ++record_index) {
             const volatile uint32_t* record = list.next();
             if (record == nullptr) {

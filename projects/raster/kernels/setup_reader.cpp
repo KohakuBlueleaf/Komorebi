@@ -18,7 +18,7 @@ namespace {
         Arrived arrived,
         uint32_t& shade_address
     ) {
-        const uint32_t items_address = command.a7, bank = command.a8;
+        const uint32_t items_address = command.a7, bank = bank_word(command.a8);
         const uint32_t space = get_write_ptr(kCbHist);
         constexpr uint32_t kRead = kHprefixAddrAt - kBaseAt +
             64;  // base words, address
@@ -120,7 +120,7 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
     const uint32_t mesh_address = command.a0, blocks_word = command.a2;
     const uint32_t camera_address = command.a3, slots_address = command.a4;
     const uint32_t list_slots = command.a6, items_address = command.a7;
-    const uint32_t bank = command.a8, profile_address = command.a9;
+    const uint32_t bank = bank_word(command.a8), profile_address = command.a9;
     const uint32_t started = km::wall();
     uint32_t wait = 0, read = 0, bytes = 0, shade_address = 0;
     auto reserve = [&](uint32_t cb) {

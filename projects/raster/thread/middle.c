@@ -84,10 +84,14 @@ void rm_costs(
 }
 
 uint32_t rm_pick(
-    rm_scratch* scratch, uint32_t fill_cores, uint32_t* heavy, uint32_t* bands
+    rm_scratch* scratch,
+    uint32_t fill_cores,
+    uint32_t* heavy,
+    uint32_t* bands,
+    uint32_t tiles
 ) {
     uint64_t total_cost = 0, max = 0;
-    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+    for (uint32_t tile = 0; tile < tiles; tile++) {
         total_cost += scratch->tile_cost[tile];
         max = scratch->tile_cost[tile] > max ? scratch->tile_cost[tile] : max;
     }
@@ -97,7 +101,7 @@ uint32_t rm_pick(
     }
     const double target = RM_SPLIT * mean;
     uint32_t heavy_found = 0;
-    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+    for (uint32_t tile = 0; tile < tiles; tile++) {
         const double ratio = (double)scratch->tile_cost[tile] / target;
         uint32_t tile_bands = (uint32_t)ratio;
         tile_bands += (double)tile_bands < ratio;
@@ -122,7 +126,7 @@ uint32_t rm_heavy(
     uint32_t* bands
 ) {
     rm_costs(counters, setup_cores, scratch, 0, RM_TILES);
-    return rm_pick(scratch, fill_cores, heavy, bands);
+    return rm_pick(scratch, fill_cores, heavy, bands, RM_TILES);
 }
 
 void rm_clear(uint32_t* directory, uint32_t first_core, uint32_t end_core) {
@@ -213,9 +217,10 @@ uint32_t rm_items(
     rm_scratch* scratch,
     rm_item* items,
     uint32_t* items_found,
-    uint32_t* tile_item
+    uint32_t* tile_item,
+    uint32_t tiles
 ) {
-    if (heavy_count > RM_MAX_HEAVY) {
+    if (heavy_count > RM_MAX_HEAVY || tiles > RM_TILES) {
         return 0;
     }
     for (uint32_t tile = 0; tile < RM_TILES; tile++) {
@@ -226,7 +231,7 @@ uint32_t rm_items(
     }
     /* items in tile order, with their entries and costs */
     uint32_t item_count = 0;
-    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+    for (uint32_t tile = 0; tile < tiles; tile++) {
         tile_item[tile] = item_count;
         const int32_t heavy_index = scratch->heavy_of[tile];
         if (heavy_index < 0) {
@@ -240,7 +245,7 @@ uint32_t rm_items(
         const uint64_t* ends = starts + RM_GROUPS;
         uint32_t bounds[RM_MAX_BANDS + 1];
         const uint32_t band_total = cut(starts, ends, bands[heavy_index], bounds);
-        if (item_count + band_total + RM_TILES - 1 - tile > RM_MAX_ITEMS) {
+        if (item_count + band_total + tiles - 1 - tile > RM_MAX_ITEMS) {
             return 0;
         }
         for (uint32_t band = 0; band < band_total; band++) {
@@ -264,7 +269,9 @@ uint32_t rm_items(
             );
         }
     }
-    tile_item[RM_TILES] = item_count;
+    for (uint32_t tile = tiles; tile <= RM_TILES; tile++) {
+        tile_item[tile] = item_count; /* beyond the grid: no items */
+    }
     *items_found = item_count;
     return 1;
 }
@@ -338,10 +345,10 @@ uint32_t rm_layout(
     rm_mark* marks,
     uint32_t* marks_written
 ) {
-    if (
-        !rm_items(heavy, bands, heavy_count, scratch, items, items_found, tile_item) ||
-        !rm_assign(fill_cores, scratch, *items_found)
-    ) {
+    if (!rm_items(
+        heavy, bands, heavy_count, scratch, items, items_found, tile_item, RM_TILES
+    ) ||
+        !rm_assign(fill_cores, scratch, *items_found)) {
         return 0;
     }
     const uint32_t item_count = *items_found;

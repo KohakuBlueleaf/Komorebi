@@ -41,6 +41,22 @@ root in float64, and every random number comes from one 32-bit hash of (index, s
 seed), so the files are the same on every host. Nothing is shipped: the scenes are
 generated.
 
+### The frame's size
+
+The frame is 1,024 x 1,024 unless the scene dict has a `size` entry `(W, H)`
+(`scenes.with_size(view, size)` adds it and sizes the camera). The rule
+(`scenes.frame_grid`): the grid is `TX = ceil(W / 32)` by `TY = ceil(H / 32)` tiles,
+each at least 1 and `TX x TY` at most 1,024 (else `ValueError` with the reason).
+`rasterize`, `rasterize_shaded` and `rasterize_lighted` render the padded frame
+`32 TX x 32 TY` (setup's box clipped to it, `bin_triangles` on the grid,
+`tile_counts` `(TY, TX)`); `raster.picture(image, scene)` is its top-left `W x H`, what
+is shown and compared. The camera (`scenes.sized_camera`): principal point at
+`(W / 2, H / 2)`, focal length times `max(W, H) / 1024`, so the field of view spans the
+larger side. At 1,024 x 1,024 every array is the same as without the entry, bit for bit
+(sha256 of every output of `rasterize`, `rasterize_shaded` and `rasterize_lighted` on
+`tiny`, the Sponza and Bistro interior overviews, 2026-11-24). The sun's shadow map
+keeps its own 32 x 32 grids: `lights.shadow_map` builds its views without `size`.
+
 Public demo scenes (Crytek Sponza, the conference room, the Amazon Lumberyard Bistro, San
 Miguel) are downloaded and converted by `python -m reference.public fetch`; see
 [SCENES.md](SCENES.md) for the list, the attribution each one asks for and how they are

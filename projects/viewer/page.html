@@ -16,10 +16,15 @@
   #status.bad { color: #e87; }
   #sun[hidden], #tone[hidden], #gi[hidden] { display: none; }
   #sun input[type=range], #tone input[type=range] { width: 140px; vertical-align: middle; }
+  #size input { width: 5em; background: #222; color: var(--fg);
+                border: 1px solid var(--line); padding: 2px 4px; }
+  #size-reason { color: #e87; }
   button { background: #222; color: var(--fg); border: 1px solid var(--line);
            padding: 2px 8px; }
   main { display: flex; justify-content: center; padding: 8px 16px; }
-  #view { width: min(100%, 1024px, calc(100vh - 110px)); aspect-ratio: 1;
+  /* the frame at its own size, scaled down (aspect kept) to fit the window */
+  #view { display: block; max-width: 100%; max-height: calc(100vh - 110px);
+          width: auto; height: auto; object-fit: contain;
           background: #000; cursor: grab; user-select: none; outline: none;
           -webkit-user-drag: none; }
   #view.dragging { cursor: grabbing; }
@@ -42,6 +47,12 @@
     <button id="reset-tone" type="button">reset tone</button>
   </span>
   <label id="gi" hidden><input id="indirect" type="checkbox"> indirect light</label>
+  <span id="size">
+    <label>width <input id="width" type="number" min="1" max="2048" step="1"></label>
+    <label>height <input id="height" type="number" min="1" max="1024" step="1"></label>
+    <button id="apply-size" type="button">size</button>
+    <span id="size-reason"></span>
+  </span>
   <span id="numbers"></span>
   <span id="status"></span>
 </header>
@@ -65,6 +76,10 @@ const saturationInput = document.getElementById("saturation");
 const curveSelect = document.getElementById("curve");
 const giControl = document.getElementById("gi");
 const indirectInput = document.getElementById("indirect");
+const widthInput = document.getElementById("width");
+const heightInput = document.getElementById("height");
+const sizeReason = document.getElementById("size-reason");
+let sizeShown = false;    // the inputs hold the server's size once
 
 let pose = null;          // {position: [x, y, z], yaw, pitch}
 let sceneSerial = -1;     // the scene the pose is of
@@ -145,6 +160,14 @@ async function refresh() {
         (state.tone[2] === 1 ? "filmic" : "plain");
     }
     if (state.indirect !== null) sunText += state.indirect ? "  indirect on" : "  indirect off";
+    if (!sizeShown && state.size_asked) {
+      sizeShown = true;
+      widthInput.value = state.size_asked[0];
+      heightInput.value = state.size_asked[1];
+    }
+    if (state.size) {
+      sunText += `  ${state.size[0]} x ${state.size[1]}` + (state.sizes === false ? " (only)" : "");
+    }
     numbers.textContent = `${state.renderer || "-"} / ${state.scene || "-"}  ` +
       `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}` +
       sunText;
@@ -202,6 +225,23 @@ indirectInput.addEventListener("change", () => {
   post("/indirect", {on: indirectInput.checked, scene_serial: sceneSerial}).catch(() => {});
 });
 
+// The frame's size: posted on the button (or Enter); the server refuses a size the card's
+// grid does not take, with the reason shown here, else applies it between frames.
+async function applySize() {
+  const body = {width: Number(widthInput.value), height: Number(heightInput.value)};
+  try {
+    const response = await post("/size", body);
+    const answer = await response.json();
+    sizeReason.textContent = response.ok ? "" : "refused: " + answer.error;
+  } catch (error) {
+    sizeReason.textContent = "no answer from the server";
+  }
+}
+document.getElementById("apply-size").addEventListener("click", applySize);
+for (const input of [widthInput, heightInput]) {
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") applySize(); });
+}
+
 function forward() {
   const c = Math.cos(pose.pitch);
   return [c * Math.sin(pose.yaw), Math.sin(pose.pitch), c * Math.cos(pose.yaw)];
@@ -212,7 +252,8 @@ function right() {  // y x forward, on the ground
 
 const keys = {w: 1, a: 1, s: 1, d: 1, q: 1, e: 1};
 addEventListener("keydown", (event) => {
-  if (event.target instanceof HTMLSelectElement) return;
+  if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLInputElement &&
+      event.target.type === "number") return;
   const key = event.key.toLowerCase();
   if (keys[key]) { held.add(key); event.preventDefault(); }
 });

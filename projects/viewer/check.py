@@ -1,8 +1,6 @@
-"""The viewer checked without a browser: each renderer on each scene it is offered on
-selected (400 elsewhere), 20 poses, /stream's frames decoded (1024 x 1024, first, last
-differ), a lit renderer's sun, tone and raster-gi's switch changed (frame and /state
-change), 403 without the token. One JSON line, exit 1 unless `ok`. --url URL --token T
-"""
+"""The viewer checked without a browser: every renderer on its scenes, poses, frames,
+sun, tone, switch, a frame size changed and refused (README.md "check.py"), 403
+without the token. One JSON line, exit 1 unless `ok`. --url URL --token T"""
 
 import argparse
 import io
@@ -16,7 +14,8 @@ import urllib.request
 
 from PIL import Image
 
-SIDE = 1024
+RESIZE = (1024, 576)  # the size posted to a rasterizer, then the start's again
+TOO_BIG = (2048, 1024)  # 64 x 32 = 2,048 tiles: refused (at most 1,024)
 # each renderer must offer Bistro exterior (2.83 M triangles, 1 GB of texture pages)
 # but raster-gi, offered where the scene has an indirect file (Bistro exterior: none)
 EXTERIOR = "bistro_exterior_overview"
@@ -146,6 +145,7 @@ def run_case(base, token, renderer, scene):
         fps.append(now["fps"])
     time.sleep(AFTER_S)
     sun = tone = switch = None
+    size = size_case(base, token, state, reader)
     if state.get("sun_own"):
         sun = sun_case(base, token, state, reader)
     if state.get("tone_own"):
@@ -159,7 +159,7 @@ def run_case(base, token, renderer, scene):
     reader.stop.set()
     reader.join(10.0)
     sizes = set()
-    for data in reader.frames:
+    for data in reader.frames[: size["frames_before"]]:
         with Image.open(io.BytesIO(data)) as image:
             image.load()
             sizes.add(image.size)
@@ -180,15 +180,77 @@ def run_case(base, token, renderer, scene):
         statuses=sorted(statuses),
         stream_error=reader.error,
     )
-    knobs = {"sun": sun, "tone": tone, "indirect": switch}
+    knobs = {"size": size, "sun": sun, "tone": tone, "indirect": switch}
     case.update({name: knob for name, knob in knobs.items() if knob is not None})
     case["ok"] = bool(
         taken == POSES
         and len(reader.frames) >= 2
-        and sizes == {(SIDE, SIDE)}
+        and sizes == {tuple(state["size"])}
         and differ
         and reader.error is None
-        and all(knob is None or knob["ok"] for knob in (sun, tone, switch))
+        and all(knob is None or knob["ok"] for knob in (size, sun, tone, switch))
+    )
+    return case
+
+
+def size_case(base, token, state, reader):
+    """After the poses: a size the card's grid refuses (400, its reason), then for a
+    rasterizer RESIZE (/state's size and the frames after it follow) and the start's
+    size again; the ray tracer refuses RESIZE (400) and keeps its frames."""
+    count = len(reader.frames)
+    start = tuple(state["size"])
+
+    def answer(size):
+        try:
+            code, body = post(
+                f"{base}/size", {"width": size[0], "height": size[1]}, token
+            )
+        except urllib.error.HTTPError as error:
+            code, body = error.code, json.loads(error.read())
+        return code, body
+
+    case = {"start": list(start), "frames_before": count}
+    case["refused"] = dict(zip(("code", "answer"), answer(TOO_BIG)))
+    refused_ok = case["refused"]["code"] == 400 and "at most" in str(
+        case["refused"]["answer"].get("error", "")
+    )
+    code, body = answer(RESIZE)
+    case["resize"] = {"code": code, "answer": body}
+    if not state.get("sizes"):
+        case["ok"] = bool(refused_ok and code == 400)
+        return case
+    posted, follow_s, sized = time.monotonic(), None, None
+    while time.monotonic() - posted < FOLLOW_S:
+        now = json.loads(get(f"{base}/state?token={token}")[1])
+        if now["size"] == list(RESIZE):
+            sized = [  # the frames after the state showed it
+                Image.open(io.BytesIO(data)).size for data in reader.frames[count:]
+            ]
+            if tuple(RESIZE) in sized:
+                follow_s = time.monotonic() - posted
+                break
+        time.sleep(0.05)
+    case["follow_s"] = None if follow_s is None else round(follow_s, 2)
+    case["size_ms"] = now["size_ms"]
+    back = answer(start)[0]
+    posted = time.monotonic()
+    while time.monotonic() - posted < FOLLOW_S:
+        now = json.loads(get(f"{base}/state?token={token}")[1])
+        if now["size"] == list(start):
+            break
+        time.sleep(0.05)
+    time.sleep(AFTER_S)
+    last = Image.open(io.BytesIO(reader.frames[-1])).size if reader.frames else None
+    case.update(back=back, state_size=now["size"], last_frame_size=last)
+    case["frames_before"] = count
+    case["ok"] = bool(
+        refused_ok
+        and code == 200
+        and follow_s is not None
+        and back == 200
+        and now["size"] == list(start)
+        and last == start
+        and now["status"] == "running"
     )
     return case
 

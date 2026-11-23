@@ -47,7 +47,7 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
     }
     // the table: a1's in the bank a8 - 1 (the sun region), else the surface's tensor
     const uint64_t table_source = command.a1 != 0
-        ? get_noc_addr_from_bank_id<true>(command.a8 - 1, command.a1)
+        ? get_noc_addr_from_bank_id<true>(bank_word(command.a8) - 1, command.a1)
         : get_noc_addr(
             0,
             InterleavedAddrGen<true>{
@@ -57,7 +57,7 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
     noc_async_read(table_source, get_write_ptr(kCbShadeTable), kLightTableBytes);
     noc_async_read_barrier();  // the camera after the table's words (a5, bank a8 - 1)
     noc_async_read(
-        get_noc_addr_from_bank_id<true>(command.a8 - 1, command.a5),
+        get_noc_addr_from_bank_id<true>(bank_word(command.a8) - 1, command.a5),
         get_write_ptr(kCbShadeTable) + 4 * kLtCamera,
         4 * kCamWordsShade
     );

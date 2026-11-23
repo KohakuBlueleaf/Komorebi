@@ -6,6 +6,8 @@
 #include "komorebi/device/km_worker.hpp"
 #include "komorebi/device/tensors/km_ask.hpp"
 
+#include "grid.h"  // before the namespaces: one copy for all of them
+
 #define RASTER_NO_ENTRY
 
 namespace fill_k {

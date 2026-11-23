@@ -14,7 +14,15 @@ of the mesh blocks.
 | SUM (16, writer only) | `a1` `counters_address`, `a2` `prefixes_address` (a tensor, a page of `kSlotsBytes` per core: the entries of the cores before it per tile), `a3` `totals_address` (entries, then rows per tile), `a6` `counting_cores`; 16 tiles a slice, slices across the `cores`. Needs a `bank`. |
 | HSUM (17, writer only) | `a0` `heavy_tiles`, `a1` `histograms_address` (HIST's histograms, pages of `histogram_page_bytes`), `a4` `histogram_page_bytes`, `a2` `prefixes_address` (a tensor, a page of `kHprefixPageBytes` per core: per heavy tile the cores' before it, 16 starts then 16 ends, each summed over the groups up to its own), `a3` `totals_address` (from `kSumsHeavyAt`, the 32 counts per heavy tile over the cores), `a6` `counting_cores`; heavy tiles across the `cores`. Needs a `bank`. |
 
-`bank` (`a8`), in every handler: 0, or 1 + the DRAM bank of the X280 thread's regions. When it
+`a8` in every handler (`grid.h`), but SHOW's (whose `a8` is its block's word, so SHOW
+takes no grid: a frame's tile is its page): bits 0 to 7 the `bank`; bits 8 to 15 the
+frame's tiles a row `TX`, bits 16 to 23 its rows of tiles `TY`, 0 for 32 (1,024 x 1,024).
+A tile is `ty TX + tx`; COUNT, SETUP and LANES clip the box to the padded frame
+`32 TX x 32 TY` and number tiles so; the box word is tile columns in 6 bits each and
+pixel rows in 10, so `TX` is at most 64 and `TY` at most 32 (`kGridAcrossMax`,
+`kGridDownMax`). The tables stay 1,024 tiles (`kTiles`): tiles past the grid count 0.
+
+`bank` (`a8` bits 0 to 7), in every handler: 0, or 1 + the DRAM bank of the X280 thread's regions. When it
 is not 0, the camera, items, heavy tiles and totals are addresses in that bank (pages
 contiguous). The pages only the cores read and write (counters, slots, histograms,
 HSUM's pages), the mesh, the lists and the directory are always interleaved tensors:

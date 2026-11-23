@@ -399,13 +399,22 @@ namespace setup_pass {
         }
     }
 
-    // A block with its corners' camera space: screen, area, box, distances, `planes`
-    // edges and planes; `weighted` (shaded) first multiplies corner values by 1/z.
-    inline void triangles(bool planes, bool weighted = false) {
+    // The float32 bits of an integer n in [1, 2^24).
+    inline uint32_t float_bits(uint32_t n) {
+        const uint32_t exponent = 31 - __builtin_clz(n);
+        return (127 + exponent) << 23 | (n << (23 - exponent) & 0x7FFFFF);
+    }
+
+    // A block's screen, area, box (in `grid`'s padded frame), distances, `planes` edges
+    // and planes; `weighted` (shaded) first multiplies corner values by 1/z.
+    inline void triangles(
+        bool planes, bool weighted = false, Grid grid = {kGridDefault, kGridDefault}
+    ) {
         screen();
         area_and_order();
-        box(0, 0x44800000, 0x447FC000);  // 1024, 1023
-        box(1, 0x44800000, 0x447FC000);
+        const uint32_t width = 32 * grid.across, height = 32 * grid.down;
+        box(0, float_bits(width), float_bits(width - 1));  // 1024, 1023 by default
+        box(1, float_bits(height), float_bits(height - 1));
         for (uint32_t corner = 0; corner < 3; ++corner) {
             load(L0, kSlotCameraSpace + 3 * corner + 2);
             store(L0, kSlotRecords + kRawZ + corner);

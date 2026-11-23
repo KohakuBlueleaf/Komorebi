@@ -608,23 +608,27 @@ def surface_tensors(
     }
 
 
-def decode_planes(pages):
-    """Frame pages (tiles x 5, 1024) as five images (5, H, W) of uint32."""
+def decode_planes(pages, grid=(raster.TILES_X, raster.TILES_Y)):
+    """Frame pages (tiles x 5, 1024) as five images (5, H, W) of uint32: the padded
+    frame of `grid` (TX, TY), tile ty TX + tx."""
+    across, down = grid
     planes = np.asarray(pages, dtype=np.uint32).reshape(lists.TILES, K["kPlanes"], 1024)
-    pixels = planes[:, :, lists.TILE_ORDER].reshape(
-        raster.TILES_Y, raster.TILES_X, K["kPlanes"], 32, 32
+    pixels = planes[: across * down, :, lists.TILE_ORDER].reshape(
+        down, across, K["kPlanes"], 32, 32
     )
-    return pixels.transpose(2, 0, 3, 1, 4).reshape(
-        K["kPlanes"], raster.HEIGHT, raster.WIDTH
-    )
+    return pixels.transpose(2, 0, 3, 1, 4).reshape(K["kPlanes"], 32 * down, 32 * across)
 
 
-def read_surface(session, frame_tensors_of_layer, surface):
+def read_surface(session, frame_tensors_of_layer, surface, grid=None):
     """The card's surface after a frame: the frame's planes (1/z, material word) and
-    the surface's ten planes, as images."""
-    frame = decode_planes(np.concatenate(card.read(session, *frame_tensors_of_layer)))
+    the surface's ten planes, as images of the padded frame of `grid` (TX, TY; None:
+    32 x 32)."""
+    grid = grid or (raster.TILES_X, raster.TILES_Y)
+    frame = decode_planes(
+        np.concatenate(card.read(session, *frame_tensors_of_layer)), grid
+    )
     first, second = (
-        decode_planes(np.concatenate(card.read(session, *tensors)))
+        decode_planes(np.concatenate(card.read(session, *tensors)), grid)
         for tensors in surface["frames"]
     )
     planes = np.concatenate([first, second]).view(F32)
@@ -707,7 +711,7 @@ def glass_check(view, materials, lights, got, glass_got, want):
 def surface_check(view, materials, lights, got, glass_got=None):
     """Check B: the card's surface `got` (read_surface) against the reference's for the
     pixels the reference covers, later pieces counted apart; with `glass_got` the glass
-    layer's planes too (glass_check)."""
+    layer's planes too (glass_check). Over the padded frame (both render it)."""
     want = reference_surface(view, materials, lights)
     covered = want["tri"] >= 0
     groups = {
@@ -803,17 +807,23 @@ def field_sparse(view, lights, lit):
 
 
 def light_check(view, materials, lights, got, terms=raster.TERMS):
-    """Check C: the card's 8-bit picture against light_reference's by png's rule:
-    shares of pixels off by more than 2, 4, 8 in a channel, later pieces apart; with
-    the shadow, the same inside the sun's shadow edge band (shadow_band) and outside."""
+    """Check C: the card's 8-bit picture (W x H, the view's size) against
+    light_reference's by png's rule: shares of pixels off by more than 2, 4, 8 in a
+    channel, later pieces apart; with the shadow, the same inside the sun's shadow edge
+    band (shadow_band) and outside."""
     lit = light_reference(view, materials, lights, terms)
-    want = png.to_srgb8(lit["display"])
+
+    def crop(image):  # the reference renders the padded frame: its picture
+        return raster.picture(image, view)
+
+    want = png.to_srgb8(crop(lit["display"]))
     error = np.abs(got[..., :3].astype(np.int16) - want.astype(np.int16)).max(axis=2)
     corner = {**materials, "light": lights["visibility"][view["indices"]]}
     apart = shade.later_pieces(view, corner, lit["tri"])
     front = lit["parts"]["glass_tri"] >= 0  # the glass's later pieces apart too
     if front.any():
         apart = apart | shade.later_pieces(view, corner, lit["parts"]["glass_tri"])
+    apart, front = crop(apart), crop(front)
     checked = ~apart
     count = max(int(checked.sum()), 1)
     report = {"checked": int(checked.sum()), "later_pieces": int(apart.sum())}
@@ -832,10 +842,10 @@ def light_check(view, materials, lights, got, terms=raster.TERMS):
     report["glass_in_front"]["max_error"] = int(error[glass].max(initial=0))
     parts = []
     if "shadow" in terms:
-        band = shadow_band(view, lights, lit)
+        band = crop(shadow_band(view, lights, lit))
         parts += [("band", checked & band), ("outside_band", checked & ~band)]
     if "indirect" in terms:
-        sparse = field_sparse(view, lights, lit)
+        sparse = crop(field_sparse(view, lights, lit))
         parts += [("field_under_8", checked & sparse), ("field_8", checked & ~sparse)]
     for name, chosen in parts:
         part = {"pixels": int(chosen.sum())}

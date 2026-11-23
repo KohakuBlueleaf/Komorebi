@@ -4,8 +4,10 @@
 
 #include <stdint.h>
 
-// FILL: a0 directory_address, a1 lists_address, a3 pages_per_item (output pages), a4
-// profile_address. Each core fills its directory's tiles and writes their planes.
+#include "grid.h"
+
+// FILL: a0 directory_address, a1 lists_address, a3 pages_per_item, a4 profile_address,
+// a8 the grid (grid.h). Each core fills its directory's tiles and writes their planes.
 constexpr uint32_t kHandlerFill = 1;
 // ARITH: the same addresses; items are chunks of arithmetic-check inputs.
 constexpr uint32_t kHandlerArith = 2;
@@ -51,7 +53,7 @@ constexpr uint32_t kSlotWords = 32;
 constexpr uint32_t kSlotsPerPage = 16;
 constexpr uint32_t kMarkTile = 0xFFFFFFFE;
 constexpr uint32_t kMarkEnd = 0xFFFFFFFF;
-constexpr uint32_t kHdrTile = 1;   // tile number, ty * 32 + tx
+constexpr uint32_t kHdrTile = 1;   // tile number, ty * TX + tx (grid.h)
 constexpr uint32_t kHdrCount = 2;  // records that follow
 constexpr uint32_t kHdrRow0 = 3;  // the item's rows of the tile: [first_row, end_row), even
 constexpr uint32_t kHdrRow1 = 4;  // bounds; 0 and 32 for the whole tile

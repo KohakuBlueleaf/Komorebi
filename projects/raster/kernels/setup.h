@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include "grid.h"
+
 // LANES: every block's records as the vector unit leaves them, for the exactness check.
 // Each handler's command words: kernels/README.md.
 constexpr uint32_t kHandlerLanes = 11;
@@ -25,8 +27,8 @@ constexpr uint32_t kHandlerSum = 16;
 // HSUM (writer only): the same for HIST's histograms, one heavy tile at a time: each
 // core's counts before it, summed over the groups, into its page at prefixes_address.
 constexpr uint32_t kHandlerHsum = 17;
-// bank (a8), every handler: 0, or 1 + the DRAM bank of the X280 thread's regions, whose
-// small arrays are then bank addresses (pages contiguous); mesh and lists stay tensors.
+// a8 (grid.h): the bank, whose small arrays are then bank addresses (mesh, lists stay
+// tensors); the grid, to whose padded frame COUNT, SETUP and LANES clip the box.
 
 // blocks_word (a2) with kRanges (COUNT, SETUP; bank): blocks [first_block, end_block)
 // at kRangesAt + 64 x core of the camera's region; costs at kCostsAt + 128 x core.
@@ -109,8 +111,8 @@ constexpr uint32_t kOutLast = 0x80000000;  // in an out page's count: the last p
 // COUNT: box words a page (after the count)
 constexpr uint32_t kOutWords = 1023;
 constexpr uint32_t kListPageBytes = 2048;
-constexpr uint32_t kTiles = 1024;
-constexpr uint32_t kTilesX = 32;
+constexpr uint32_t kTiles = 1024;  // the tables' tiles (the grid's at most, grid.h)
+constexpr uint32_t kTilesX = 32;  // the default grid's tiles a row (experiments' writers)
 constexpr uint32_t kBlockSlots = 18;   // x, y, z of corners 0 to 2, then their colours
 constexpr uint32_t kMeshBytes = 2304;  // kBlockSlots vectors of 32 words
 constexpr uint32_t kMeshPageBytes = 2816;  // a mesh page: the mesh's block, the shade's
@@ -118,10 +120,6 @@ static_assert(kMeshPageBytes == kMeshBytes + kShadeBlockBytes);
 constexpr uint32_t kRecBytes = 4096;  // 32 records of 32 words
 static_assert(kMeshBytes == kBlockSlots * 32 * 4);
 constexpr uint32_t kCamWords = 16;  // the scene's camera (reference/scenes.py)
-
-// The image, as reference/scenes.py.
-constexpr uint32_t kWidth = 1024;
-constexpr uint32_t kHeight = 1024;
 
 // Record words 24 to 31 as the vector unit leaves them: the box's columns and rows as
 // float32 (1.5 x 2^23 + n), the doubled area unordered, the corners' camera distances.

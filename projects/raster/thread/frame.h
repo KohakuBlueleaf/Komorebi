@@ -17,7 +17,13 @@
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
 #define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
-#define RF_TILES_ACROSS 32u       /* the frame's tiles a row (kShowTilesAcross) */
+/* The grid word: tiles a row | rows of tiles << 8, 0 for 32 x 32 (kernels/grid.h); each
+ * command's a8 is the bank's word | the grid word << 8. A tile is ty TX + tx. */
+#define RF_GRID_DEFAULT 32u     /* kGridDefault */
+#define RF_GRID_ACROSS_MAX 64u  /* kGridAcrossMax */
+#define RF_GRID_DOWN_MAX 32u    /* kGridDownMax */
+#define RF_SUN_GRID 0u          /* the SUN pass's grid: 32 x 32 tiles, a quadrant */
+#define RF_SUN_TILES_ACROSS 32u /* its tiles a row */
 /* SHADE's and LIGHT's a9 (kernels/shade.h kShade*, kLight*) */
 #define RF_SHADE_MERGED_DEPTH 1u
 #define RF_SHADE_GLASS 2u
@@ -64,6 +70,9 @@
 /* area 0 after the profiles: the glass layer's words as RF_W_M_* (args at
  * KMX_WORDS_MAX; mesh 0: none), lit its surface; ranges in RF_AREA_GLASS */
 #define RF_GLASS_WORDS_AT (RF_PROFILES_AT + 64u)
+/* area 0 after the glass words: the eye's grid word, the host's (0: 32 x 32), read by
+ * every FRAME command, so that a size changes between frames */
+#define RF_GRID_AT (RF_GLASS_WORDS_AT + 128u)
 #define RF_G_MESH 0
 #define RF_G_BLOCKS 1
 #define RF_G_LISTS 2
@@ -236,3 +245,5 @@
 #define RF_PARALLEL 7u    /* a part on the four cores did not finish (late, stopped) */
 #define RF_NOT_SERVING 8u /* a FRAME command to a thread not set up to serve */
 #define RF_NOT_LIT 9u     /* a SUN command to a frame that is not lit */
+/* the grid word: a side 0 or over its most, over RM_TILES tiles */
+#define RF_BAD_GRID 10u

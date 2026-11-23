@@ -1,7 +1,7 @@
-"""The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
-(1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--shade`;
-RasterLit: `--light`, `set_sun`, `set_tone` -> ms; RasterGi: `--light --indirect`,
-`set_indirect(on)` -> ms; Raytrace: `--show`. Each its own card session and thread."""
+"""The loops behind one interface: `open(scene, size)`, `frame(camera)` -> (image (H, W,
+4), ms), `set_size(size)`, `close()`; the camera of 1,024 x 1,024, sized here. Raster,
+-Textured, -Lit (`set_sun`, `set_tone`), -Gi (`set_indirect`); Raytrace: 1,024 only.
+Each its own card session and thread (README.md)."""
 
 import argparse
 import contextlib
@@ -10,16 +10,17 @@ import numpy as np
 
 import komorebi as km
 from projects.raster import card as raster_card
+from projects.raster import card_thread as raster_thread
 from projects.raster import live as raster_live
 from projects.raster import run as raster_run
 from projects.raster import shade as raster_shade
 from projects.raytrace import card as raytrace_card
 from projects.raytrace import frame as raytrace_frame
 from projects.raytrace import live as raytrace_live
-from reference import indirect, native, public, raster
+from reference import indirect, native, public, raster, scenes
 from reference import lights as light_data
 
-SIDE = 1024
+SIDE = 1024  # the scenes' camera convention, and the ray tracer's frame
 LIST_SLOTS_TIMES = 4  # the triangle lists: four times card_thread's default slots
 TREELETS_KIB = 128  # the ray tracer's treelets from DRAM, on every scene but tiny
 
@@ -32,14 +33,28 @@ class FrameRefused(Exception):
         self.word = word
 
 
+def check_size(size):
+    """(W, H) as integers on the rasterizer's card grid (card_thread.card_grid); else
+    ValueError with the reason."""
+    width, height = (int(n) for n in size)
+    raster_thread.card_grid((width, height))
+    return width, height
+
+
+class SizeRefused(ValueError):
+    """A frame size a renderer does not render: the reason."""
+
+
 class Renderer:
-    """What both share: the session's stack, the scene dict (`scene`), the image."""
+    """What both share: the session's stack, the scene dict (`scene`), the image of
+    the frame's size (`size`, (W, H)); `sizes`: False when only SIDE x SIDE."""
 
     name = ""
     time_label = ""  # what frame's ms are, as the page labels them
     sun_own = None  # a lit renderer: the scene's own sun (azimuth, elevation)
     tone_own = None  # a lit renderer: the scene's tone (exposure, saturation, curve)
     indirect = None  # raster-gi: the indirect switch (True: on)
+    sizes = True  # takes a frame size (set_size)
 
     @staticmethod
     def offered(scene_name):
@@ -51,7 +66,13 @@ class Renderer:
         self.scene = None
         self.sun = None  # a lit renderer: the sun's (azimuth, elevation) now
         self.tone = None  # a lit renderer: the tone now (exposure, saturation, curve)
+        self.size = (SIDE, SIDE)
         self.image = np.zeros((SIDE, SIDE, 4), dtype=np.uint8)
+
+    def sized(self, size):
+        """The size this renderer renders for `size` asked: its own when it takes
+        none."""
+        return check_size(size) if self.sizes else (SIDE, SIDE)
 
     def close(self):
         """Stops the loop's program and closes the session (also after a failure)."""
@@ -76,9 +97,10 @@ class Raster(Renderer):
 
     terms = raster.TERMS  # the lit loop's terms
 
-    def open(self, scene_name):
+    def open(self, scene_name, size=(SIDE, SIDE)):
         self.close()
         scene, _ = raster_run.load(scene_name)
+        size = self.sized(size)
         materials, lights = self.materials(scene_name), self.lights(scene_name)
         slots = LIST_SLOTS_TIMES * (2 * len(scene["indices"]) + 65536)
         self.stack = contextlib.ExitStack()
@@ -86,7 +108,7 @@ class Raster(Renderer):
             session = self.stack.enter_context(km.Session(log=raster_card.log))
             self.live = raster_live.Loop(
                 session,
-                scene,
+                scenes.with_size(scene, size),
                 True,
                 slots,
                 raster_live.show_table(),
@@ -100,11 +122,24 @@ class Raster(Renderer):
             self.close()
             raise
         self.scene = scene
+        self.size = size
+        self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
+
+    def set_size(self, size):
+        """The frame's size (W, H) from the next frame on: the grid word to the card
+        (live.Loop.set_size), no reload. Returns the host's ms; ValueError with the
+        reason when the card's grid does not take it."""
+        size = check_size(size)
+        ms = self.live.set_size(size)
+        self.size = size
+        self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
+        return ms
 
     def frame(self, camera_words):
-        """The FRAME command for the camera: (image, ms from the camera's write to the
-        image in host memory)."""
-        event, times = self.live.frame(camera_words, self.image)
+        """The FRAME command for the camera (the scene's convention, sized here):
+        (image, ms from the camera's write to the image in host memory)."""
+        camera = scenes.sized_camera(camera_words, self.size)
+        event, times = self.live.frame(camera, self.image)
         began, ended = times[0], times[4]
         if event.kind != "done":
             raise RuntimeError(f"FRAME: {event.kind}")
@@ -145,9 +180,9 @@ class RasterLit(RasterTextured):
     def lights(self, scene_name):
         return light_data.load(scene_name, native.data_dir())
 
-    def open(self, scene_name):
+    def open(self, scene_name, size=(SIDE, SIDE)):
         self.sun_own = self.sun = self.tone_own = self.tone = None
-        super().open(scene_name)
+        super().open(scene_name, size)
         own = light_data.sun_angles(self.live.lights["sun_direction"])
         self.sun_own = self.sun = (round(own[0], 4), round(own[1], 4))
         tone = self.live.tone
@@ -184,9 +219,9 @@ class RasterGi(RasterLit):
     name = "raster-gi"
     terms = raster.TERMS + ("indirect",)
 
-    def open(self, scene_name):
+    def open(self, scene_name, size=(SIDE, SIDE)):
         self.indirect = None
-        super().open(scene_name)
+        super().open(scene_name, size)
         self.indirect = True
 
     def set_indirect(self, on):
@@ -209,8 +244,9 @@ class Raytrace(Renderer):
 
     name = "raytrace"
     time_label = "frame ms (card)"
+    sizes = False  # its frame is SIDE x SIDE
 
-    def open(self, scene_name):
+    def open(self, scene_name, size=(SIDE, SIDE)):
         self.close()
         tiny = scene_name == "tiny"
         arguments = raytrace_live.frame_arguments(
@@ -235,6 +271,9 @@ class Raytrace(Renderer):
             self.close()
             raise
         self.scene = prepared["scene"]
+
+    def set_size(self, size):
+        raise SizeRefused(f"{self.name} renders {SIDE} x {SIDE} only")
 
     def frame(self, camera_words):
         """The frame's chain command for the camera: (image, the command's card time
