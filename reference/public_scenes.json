@@ -682,5 +682,283 @@
    "overview": {"eye": [22.5, 3.2, 2.0], "target": [10.0, 1.8, 12.0], "fov": 75},
    "close": {"eye": [17.0, 1.4, 4.0], "target": [12.0, 0.9, 8.0], "fov": 60}
   }
+ },
+ "breakfast_room": {
+  "title": "Breakfast Room",
+  "page": "https://casual-effects.com/data/",
+  "licence": "CC BY 3.0",
+  "attribution": "Breakfast Room by Wig42 (Blend Swap), OBJ version by Morgan McGuire, from Morgan McGuire's Computer Graphics Archive (https://casual-effects.com/data); marble texture public domain (hugolj)",
+  "triangles": 269764,
+  "files": [
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/breakfast_room/breakfast_room.zip",
+    "file": "breakfast_room/breakfast_room.zip",
+    "sha256": "e56ff9b4c89b680cfd5c4c00390533ae28fff7a122d6fc8c92c273a9066c0ca8",
+    "bytes": 6446862
+   }
+  ],
+  "meshes": [
+   {
+    "file": "breakfast_room.zip",
+    "member": "breakfast_room.obj",
+    "material_colours": {
+     "breakfast_room:Artwork": [
+      0.26,
+      0.101,
+      0.091
+     ],
+     "breakfast_room:Floor_Tiles": [
+      0.614,
+      0.506,
+      0.365
+     ]
+    }
+   }
+  ],
+  "materials": {
+   "black_kd_is_texture": true
+  },
+  "lighting": {
+   "environment": "san_giuseppe_bridge",
+   "turn": -134.1,
+   "sun_to_sky": 5.0,
+   "ambient": [
+    0.05,
+    0.05,
+    0.05
+   ],
+   "lamp_scale": 1.0,
+   "merge_distance": 1.0,
+   "radius": 10.0,
+   "size": 0.1,
+   "emissive_scale": 1.0,
+   "exposure": 1.0,
+   "shadow_bias": 3.0,
+   "elements": 50000
+  },
+  "light": [
+   0.0,
+   6.0,
+   4.0
+  ],
+  "views": {
+   "overview": {"eye": [-5.2, 4.6, 8.0], "target": [1.2, 0.2, -2.5], "fov": 70},
+   "close": {"eye": [-4.6, 2.2, 1.8], "target": [-0.6, 0.6, -2.0], "fov": 55}
+  }
+ },
+ "salle_de_bain": {
+  "title": "Salle de Bain",
+  "page": "https://casual-effects.com/data/",
+  "licence": "CC BY 3.0",
+  "attribution": "Salle de Bain (c) Nacimus Ait Cherif (Blend Swap), OBJ by Nicholas Hull (NVIDIA) and Morgan McGuire, from Morgan McGuire's Computer Graphics Archive (https://casual-effects.com/data)",
+  "triangles": 1220087,
+  "files": [
+   {
+    "url": "https://casual-effects.com/g3d/data10/research/model/salle_de_bain/salle_de_bain.zip",
+    "file": "salle_de_bain/salle_de_bain.zip",
+    "sha256": "caf37ceca995e19f3a3f983f517f786245561da32aad7cef8e6fea72a1579899",
+    "bytes": 30857397
+   }
+  ],
+  "meshes": [
+   {
+    "file": "salle_de_bain.zip",
+    "member": "salle_de_bain.obj",
+    "material_colours": {
+     "Wood": [
+      0.192,
+      0.078,
+      0.019
+     ],
+     "Label": [
+      0.648,
+      0.639,
+      0.638
+     ],
+     "WoodFloor": [
+      0.298,
+      0.164,
+      0.096
+     ]
+    }
+   }
+  ],
+  "materials": {
+   "black_kd_is_texture": true
+  },
+  "lighting": {
+   "environment": "san_giuseppe_bridge",
+   "turn": -54.1,
+   "sun_to_sky": 5.0,
+   "ambient": [
+    0.05,
+    0.05,
+    0.05
+   ],
+   "lamp_scale": 0.0,
+   "merge_distance": 5.0,
+   "radius": 50.0,
+   "size": 1.0,
+   "emissive_scale": 10.0,
+   "exposure": 1.0,
+   "shadow_bias": 3.0,
+   "elements": 50000
+  },
+  "light": [
+   0.0,
+   25.0,
+   0.0
+  ],
+  "views": {
+   "overview": {"eye": [12.0, 18.0, 20.0], "target": [-4.0, 8.0, -15.0], "fov": 70},
+   "close": {"eye": [8.0, 17.0, 8.0], "target": [-4.0, 6.0, -18.0], "fov": 45}
+  }
+ },
+ "modern_hall": {
+  "title": "Modern Hall",
+  "page": "https://benedikt-bitterli.me/resources/",
+  "licence": "CC BY 3.0",
+  "attribution": "Modern Hall by NewSee2l035 (http://www.blendswap.com/blends/view/51997), Tungsten version from Benedikt Bitterli's Rendering Resources (https://benedikt-bitterli.me/resources/), CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)",
+  "triangles": 28655,
+  "files": [
+   {
+    "url": "https://benedikt-bitterli.me/resources/tungsten/staircase2.zip",
+    "file": "staircase2/staircase2.zip",
+    "sha256": "3c4b9f1202a4f921a46dea8d972f96a41415e2709cd1d8b3ded7bc4cac123875",
+    "bytes": 5171335
+   }
+  ],
+  "meshes": [
+   {
+    "file": "staircase2.zip",
+    "member": "staircase2/scene.json",
+    "material_colours": {
+     "Wood": [
+      0.385,
+      0.053,
+      0.001
+     ],
+     "Wallpaper": [
+      0.807,
+      0.746,
+      0.54
+     ],
+     "FloorTiles": [
+      0.614,
+      0.506,
+      0.365
+     ]
+    }
+   }
+  ],
+  "materials": {
+   "emission_scale": 4.575
+  },
+  "lighting": {
+   "environment": "san_giuseppe_bridge",
+   "turn": 0.0,
+   "sun_to_sky": 0.0,
+   "ambient": [
+    0.05,
+    0.05,
+    0.05
+   ],
+   "lamp_scale": 0.0,
+   "merge_distance": 0.5,
+   "radius": 5.0,
+   "size": 0.1,
+   "emissive_scale": 4.575,
+   "exposure": 1.0,
+   "shadow_bias": 3.0,
+   "elements": 50000
+  },
+  "light": [
+   -4.0,
+   5.0,
+   1.5
+  ],
+  "views": {
+   "overview": {"eye": [6.912, 1.652, 2.554], "target": [2.328, 1.652, 0.336], "fov": 70},
+   "close": {"eye": [3.2, 2.2, 2.6], "target": [-0.6, 1.2, -1.6], "fov": 60}
+  }
+ },
+ "modern_living_room": {
+  "title": "The Modern Living Room",
+  "page": "https://benedikt-bitterli.me/resources/",
+  "licence": "CC BY 3.0",
+  "attribution": "The Modern Living Room by Wig42 (http://www.blendswap.com/blends/view/75692), Tungsten version from Benedikt Bitterli's Rendering Resources (https://benedikt-bitterli.me/resources/), CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/)",
+  "triangles": 786480,
+  "files": [
+   {
+    "url": "https://benedikt-bitterli.me/resources/tungsten/living-room-3.zip",
+    "file": "living-room-3/living-room-3.zip",
+    "sha256": "b7c9e5fe1b72e36665e3b71b2025bba8fd02dcf7965b97b4d9457fabface3e2e",
+    "bytes": 21980339
+   }
+  ],
+  "meshes": [
+   {
+    "file": "living-room-3.zip",
+    "member": "living-room-3/scene.json",
+    "material_colours": {
+     "Picture": [
+      0.616,
+      0.39,
+      0.39
+     ],
+     "Cushions": [
+      0.756,
+      0.416,
+      0.421
+     ],
+     "Floor": [
+      0.711,
+      0.414,
+      0.183
+     ]
+    },
+    "inside": {
+     "point": [
+      -3.0,
+      1.3,
+      -3.0
+     ],
+     "materials": [
+      "Floor",
+      "Walls"
+     ]
+    }
+   }
+  ],
+  "materials": {
+   "emission_scale": 114.425
+  },
+  "lighting": {
+   "environment": "san_giuseppe_bridge",
+   "turn": 0.0,
+   "sun_to_sky": 0.0,
+   "ambient": [
+    0.05,
+    0.05,
+    0.05
+   ],
+   "lamp_scale": 0.0,
+   "merge_distance": 0.5,
+   "radius": 5.0,
+   "size": 0.1,
+   "emissive_scale": 114.425,
+   "exposure": 1.0,
+   "shadow_bias": 3.0,
+   "elements": 50000
+  },
+  "light": [
+   -3.0,
+   2.4,
+   -3.0
+  ],
+  "views": {
+   "overview": {"eye": [0.277, 1.018, -5.193], "target": [-1.605, 0.895, -1.33], "fov": 70},
+   "close": {"eye": [-0.6, 0.9, -3.4], "target": [-2.2, 0.6, -1.2], "fov": 50}
+  }
  }
 }

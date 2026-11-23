@@ -13,6 +13,7 @@ deselected.
 | `test_ref_files.py` | four makers of one scene at once leave it whole and no file of their own; a failed save leaves nothing |
 | `test_ref_raster_rectangle.py` | a rectangle cut into random triangles is covered exactly once by the numpy rasterizer (one whole-screen rendering per triangle) |
 | `test_ref_indirect.py` | indirect light: in a closed box the light one element sends is what the others receive by the form factors; a pixel between two voxels blends them; an element behind a wall feeds only the directions it faces; the hierarchical apply equals the dense one |
+| `test_ref_tungsten.py` | the Tungsten scene reader on a hand-written scene (an OBJ and a `.wo3` mesh, a texture, a quad emitter, a tinted glass, the camera): positions, winding, materials' kinds, `inside` |
 | `test_ref_glass.py` | the glass layer on hand-made quads: a glass of transmission 1 leaves the colour behind unchanged, one of transmission 0 hides it, a nearer opaque surface hides the glass (`rasterize_lighted` and `rasterize_shaded`) |
 
 Run them from the repository:

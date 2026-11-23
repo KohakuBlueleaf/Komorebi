@@ -27,6 +27,10 @@ has not been fetched stops with an error that names the command.
 | `bistro_interior` | Amazon Lumberyard Bistro, interior | 1,020,903 | 21 MB | CC BY 4.0 |
 | `bistro_exterior` | Amazon Lumberyard Bistro, exterior | 2,833,330 | 64 MB | CC BY 4.0 |
 | `san_miguel` | San Miguel 2.0 | 9,963,412 | 536 MB | CC BY 3.0 (see below) |
+| `breakfast_room` | Breakfast Room | 269,764 | 6.4 MB | CC BY 3.0 |
+| `salle_de_bain` | Salle de Bain | 1,220,087 | 31 MB | CC BY 3.0 |
+| `modern_hall` | Modern Hall | 28,655 | 5.2 MB | CC BY 3.0 |
+| `modern_living_room` | The Modern Living Room | 786,480 | 22 MB | CC BY 3.0 |
 
 Triangle counts are after conversion. Attribution, as each source asks:
 
@@ -40,6 +44,20 @@ Triangle counts are after conversion. Attribution, as each source asks:
 - `san_miguel`: San Miguel by Guillermo M. Leal Llaguno (Evolucien Visual), 2017 version
   by Morgan McGuire, Guedis Cardenas, Michael Mara and Nicholas Hull, from Morgan
   McGuire's Computer Graphics Archive (https://casual-effects.com/data)
+- `breakfast_room`: Breakfast Room by Wig42 (Blend Swap), OBJ version by Morgan McGuire,
+  from Morgan McGuire's Computer Graphics Archive (https://casual-effects.com/data);
+  marble texture public domain (hugolj)
+- `salle_de_bain`: Salle de Bain (c) Nacimus Ait Cherif (Blend Swap), OBJ by Nicholas Hull
+  (NVIDIA) and Morgan McGuire, from Morgan McGuire's Computer Graphics Archive
+  (https://casual-effects.com/data)
+- `modern_hall`: Modern Hall by NewSee2l035 (http://www.blendswap.com/blends/view/51997),
+  Tungsten version from Benedikt Bitterli's Rendering Resources
+  (https://benedikt-bitterli.me/resources/), CC BY 3.0
+  (https://creativecommons.org/licenses/by/3.0/)
+- `modern_living_room`: The Modern Living Room by Wig42
+  (http://www.blendswap.com/blends/view/75692), Tungsten version from Benedikt Bitterli's
+  Rendering Resources (https://benedikt-bitterli.me/resources/), CC BY 3.0
+  (https://creativecommons.org/licenses/by/3.0/)
 
 The archive page lists San Miguel as CC BY 3.0; the licence file inside the download says
 "free for research and educational use with attribution". Use it under the narrower of
@@ -47,8 +65,8 @@ the two. Pictures of these scenes made with this repository carry the same attri
 
 ## Conversion
 
-`meshio.py` reads OBJ (with its MTL) and PLY, from a file or from inside a zip, tar or gzip
-archive, with numpy only:
+`meshio.py` reads OBJ (with its MTL) and PLY (`tungsten.py` Tungsten scenes, below),
+from a file or from inside a zip, tar or gzip archive, with numpy only:
 
 - polygons are cut into fans from their first vertex;
 - degenerate triangles (a repeated index, two equal positions, exactly collinear corners)
@@ -123,6 +141,43 @@ read as what the glass takes away because these files say so: where a material g
 both, `Tr = 1 - Tf` (0.8 and 0.2, 0.9 and 0.1, 0.61 and 0.39), and an opaque material's
 `Tf` is white. A material named glass that the MTL leaves opaque keeps its kind
 (below). A file written before this kind reads with a transmission of 0.
+
+Two keys of the table's `materials` change this reading for one scene:
+`black_kd_is_texture` reads a `Kd` of 0 beside a `map_Kd` as 1 (Blender's exporter
+writes it so; in the Breakfast Room the floor and the picture were black; the Bistro
+interior's `Metal_Chrome1` has it too and is left as it is); `emission_scale` divides
+an emissive material's `Ke` by it before the clamp to 1, so emitters of different
+radiance keep their ratio (the `lighting` entry's `emissive_scale` is then the same
+number).
+
+## Tungsten scenes
+
+`tungsten.py` reads a Tungsten `scene.json` (the format of Benedikt Bitterli's Rendering
+Resources) when a mesh entry's `member` ends in `.json`; it gives the mesh and MTL
+statements of the OBJ path, so the rest is unchanged:
+
+- primitives `mesh` (`.wo3`, Tungsten's binary mesh, or `.obj`), `quad` (side 1),
+  `disk` (radius 1, 32 segments) and `sphere` (radius 1, 12 x 24) with their
+  `transform` (translate, rotate about z, x, y in degrees, scale); `curves` and other
+  kinds are skipped and counted (`skipped_<kind>`);
+- a primitive with `emission`, or `power` (radiance `power / (pi area)`), is an emissive
+  material of its own (`emitter_<number>`), facing its local +y as in Tungsten;
+- BSDFs: the albedo colour or texture is `Kd` / `map_Kd`; `plastic` and `rough_plastic`
+  add a specular coat (`Ks` 0.04, `Ns = 2 / r^2 - 2` of the roughness); `conductor` and
+  `rough_conductor` become a plain colour (0.6 x the albedo) with `Ks` 0.9; a
+  `dielectric` is transparent with a transmission of 0.92, tinted by the medium inside
+  it (`int_medium`) as `0.92 exp(-sigma_a density 0.005)` per channel; any other type is
+  grey 0.7 and counted (`unmapped_bsdfs`);
+- a `.wo3` triangle is turned where its winding disagrees with its corners' normals;
+  Tungsten draws both sides of every surface, but the indirect light takes a triangle's
+  winding as its front, so a mesh entry may also give `inside`, `{"point", "materials"}`:
+  those materials' triangles are turned to face the point (The Modern Living Room's
+  floor, walls and ceiling face away from the room in the file);
+- the camera's position, `look_at` and `fov` (`tungsten.camera`) are the `overview` view.
+
+Lost that way: every reflection (chrome, metal, the glossy tiles of the Modern Hall),
+refraction, and the Modern Living Room's rug fibres (`curves`; the flat rug under them
+stays).
 
 Textures are stored as decoded, RGBA8; a grey image is copied into the three colours. A
 texture is reduced by halving (2 x 2 box filter, rounded) until neither side is above
@@ -211,6 +266,17 @@ gives an intensity whose unit is not verified, so brightness is `lamp_scale` and
 `sun_to_sky` here. Its README says the analytic lights are for rasterizing and the
 emissive surfaces for ray tracing.
 
+Breakfast Room: an open window with blinds and no glass; the `san_giuseppe_bridge` map
+turned by -134.1 degrees, so its sun (28.6 degrees high) comes through the blinds onto
+the table and the floor; `sun_to_sky` 5, `ambient` 0.05, no lamps. Salle de Bain: its
+window is covered by an emissive quad (`Ke` 10) that blocks the sun and the sky;
+`emissive_scale` 10, `lamp_scale` 0 (no point lights: the quad lights the room through
+`indirect`). Modern Hall and The Modern Living Room: lit only by their emitters (13 in
+the hall: ceiling disks, step lights and window quads; one sphere lamp in the living
+room), `sun_to_sky` 0, `lamp_scale` 0, `emissive_scale` the largest emitter's radiance
+(4.575 and 114.4). The living room is open on the camera's side, so the sky still lights
+it there; Tungsten renders it without a sky.
+
 ## Indirect light
 
 For the optional term `indirect` of `rasterize_lighted` (raster reference README,
@@ -228,7 +294,9 @@ the card's matrix files in `<scene>_transport/` (`blocks.npz`, `weights.f32`, `x
 (`F.npy`, about 6 GB at 40,000 elements; a stopped build goes on from it; it may be
 deleted afterwards). `lights.load` finds the indirect file by its name. Built: Sponza
 (36,832 elements, `weights.f32` 1.7 GB, about 8.5 minutes on 8 CPUs) and the Bistro
-interior (42,240, 3.2 GB, about 17 minutes).
+interior (42,240, 3.2 GB, about 17 minutes); the Breakfast Room (27,136, 1.4 GB, 8
+minutes), the Salle de Bain (47,072, 2.4 GB, 17 minutes), the Modern Hall (48,640, 2.8
+GB, 17 minutes) and The Modern Living Room (48,896, 2.4 GB, 21 minutes).
 
 ## Limits
 
@@ -239,4 +307,9 @@ them as opaque), the scenes' own lights outside
 light nothing) and San Miguel's
 textures (only their mean colour). Without the materials file, as in the ray tracer,
 textures are represented by their mean colour and foliage cut out of quads is drawn as
-whole opaque quads.
+whole opaque quads. In the scenes added from the archive and from Bitterli's resources: mirrors
+and metals have no reflection (the Salle de Bain's `Mirror` material, `Kd` 0, covers
+342,368 triangles, the taps among them, and is drawn black; the Breakfast Room's chrome
+chair legs are black; the Modern Hall's glossy floor tiles are a diffuse texture with a
+specular term), the Modern Living Room's rug fibres, and Tungsten's own lights' exact
+shapes beyond the triangles of `tungsten.unit_shape`.

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reference import meshio, scenes
+from reference import meshio, scenes, tungsten
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = Path(__file__).resolve().parent / "public_scenes.json"
@@ -190,9 +190,13 @@ def read_parts(name, data, with_uv=False):
     offset = 0
     for part in entry["meshes"]:
         path = by_name[part["file"]]
-        mesh = meshio.read_mesh(
-            path, part["member"], part.get("material_colours"), with_uv
-        )
+        colours = part.get("material_colours")
+        if part["member"].lower().endswith(".json"):
+            mesh = tungsten.read_scene(
+                path, part["member"], colours, with_uv, part.get("inside")
+            )
+        else:
+            mesh = meshio.read_mesh(path, part["member"], colours, with_uv)
         meshes.append(mesh)
         p = mesh.positions @ np.array(entry.get("axes", np.eye(3))).T
         c = mesh.colour
@@ -393,10 +397,10 @@ def transmission(statements):
     return np.clip(tau, 0.0, 1.0)
 
 
-def material_record(statements, files, texture_number):
+def material_record(statements, files, texture_number, options=None):
     """(kind, base colour, texture numbers by slot, exponent, specular colour,
-    transmission) of one material's MTL statements; texture_number(file, role)
-    numbers the files. The transmission is 0 unless the kind is `transparent`."""
+    transmission) of one material's MTL statements; texture_number(file, role) numbers
+    the files; options: the table's `materials` keys (SCENES.md, "Materials")."""
     found = {
         key: files.find(statements.get(key))
         for key in ("map_Kd", "map_d", "map_bump", "bump", "map_Ks", "map_Ke")
@@ -406,6 +410,9 @@ def material_record(statements, files, texture_number):
     glow = numbers(statements.get("Ke"), (0.0, 0.0, 0.0))
     slots = [-1, -1, -1, -1]
     base = numbers(statements.get("Kd"), meshio.DEFAULT_COLOUR)
+    options = options or {}
+    if options.get("black_kd_is_texture") and albedo and not base.any():
+        base = np.ones(3)
     exponent = int(
         np.clip(np.rint(numbers(statements.get("Ns"), 1.0)[0]), *EXPONENT_RANGE)
     )
@@ -416,7 +423,7 @@ def material_record(statements, files, texture_number):
         if emit:
             slots[0], base = texture_number(emit, "colour"), np.ones(3)
         else:
-            base = np.clip(glow, 0.0, 1.0)
+            base = np.clip(glow / options.get("emission_scale", 1.0), 0.0, 1.0)
     elif (tau > 0).any() and not (albedo and mask):
         kind = "transparent"
         if albedo:
@@ -489,7 +496,10 @@ def convert_materials(name, data, workers=4):
         number = np.zeros(len(read.material_names) + 1, dtype=np.int32)
         for k, material_name in enumerate(read.material_names):
             record = material_record(
-                read.statements.get(material_name, {}), files, texture_number
+                read.statements.get(material_name, {}),
+                files,
+                texture_number,
+                entry["materials"],
             )
             number[k] = len(names)
             names.append(material_name)
