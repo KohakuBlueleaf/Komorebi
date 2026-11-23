@@ -1,5 +1,5 @@
 """Public demo scenes, fetched from their sources and converted to the scene layout:
-`python -m reference.public list | fetch | materials | lighting <scene> ...`. The
+`python -m reference.public list | fetch | materials | lighting | indirect <scene>`. The
 table (`public_scenes.json`) is data; files go to `$KR_DATA/public/`, never into the
 repository. Each view is a scene of its own named `<scene>_<view>` (same triangles, its
 own camera). `materials` writes `<scene>_materials.npz` beside the scene file for the
@@ -642,7 +642,9 @@ def triangles(view):
 def main():
     """Lists, fetches and converts the public scenes."""
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("command", choices=("list", "fetch", "materials", "lighting"))
+    parser.add_argument(
+        "command", choices=("list", "fetch", "materials", "lighting", "indirect")
+    )
     parser.add_argument("scenes", nargs="*")
     parser.add_argument("--data", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=4, help="processes")
@@ -654,6 +656,11 @@ def main():
         for name in args.scenes or [n for n, e in table().items() if "lighting" in e]:
             out, counts = lights.prepare(name, data, args.workers, args.rebake)
             print(f"{name}: {out} {counts}")
+        return
+    if args.command == "indirect":
+        indirect = importlib.import_module("reference.indirect")
+        for name in args.scenes:
+            print(f"{name}: {json.dumps(indirect.build(name, data))}")
         return
     if args.command == "list":
         for name, entry in table().items():

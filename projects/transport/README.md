@@ -9,7 +9,9 @@ apply.
 
 ## The files it reads (the host step's layout)
 
-A set is a folder written by the host step that builds the matrix. Its `README.md`
+A set is a folder written by the reference's builder (`python -m reference.public
+indirect <scene>` writes `<scene>_transport/`; the raster reference's page, "Indirect
+light", says how the matrix is made). Its `README.md`
 gives the exact layout:
 
 - `blocks.npz`: each block's receiver rows `row0:row1` and source columns `col0:col1`

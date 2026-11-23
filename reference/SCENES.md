@@ -189,6 +189,7 @@ A scene's `lighting` entry holds its numbers:
 | `sky_side` (optional) | the side of the background's octahedral map, default 2,048 (4k files and 2,048: a texel about 0.1 degrees against a frame pixel's 0.07; 1k and 512 were blocky) |
 | `reflection` (optional) | the factor of the environment's radiance a glass surface reflects ("Glass" in the raster reference README), default 0; `lights.load` does not read it yet: set it in the lights |
 | `sun` (optional) | an authored sun, `{"direction"` it shines along`, "colour"}`; the map is turned so its sun's azimuth matches, and `turn` is not used |
+| `elements` (optional) | surface elements sampled for the indirect light (`python -m reference.public indirect`), default 50,000 |
 
 Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,
 0.33, 0.30 (the courtyard's sky visibility per vertex is low, so bounced light is most
@@ -207,6 +208,25 @@ light, colour (0.734, 0.583, 0.377), shining along (0, -0.876, -0.482). The pack
 gives an intensity whose unit is not verified, so brightness is `lamp_scale` and
 `sun_to_sky` here. Its README says the analytic lights are for rasterizing and the
 emissive surfaces for ray tracing.
+
+## Indirect light
+
+For the optional term `indirect` of `rasterize_lighted` (raster reference README,
+"Indirect light"), after `lighting`:
+
+```sh
+python -m reference.public indirect sponza      # <scene>_indirect.npz, <scene>_transport/
+```
+
+It writes `<scene>_indirect.npz` (the elements in the matrix's order, their transfer
+rows of the sky, the field's sparse matrix and grid, `counts` with the times and sizes),
+the card's matrix files in `<scene>_transport/` (`blocks.npz`, `weights.f32`, `x.npy`,
+`y_exact.npy`, `y_float.npy`, `y_q8.npy`, `perm.npy`, `README.md`: the layout of
+`projects/transport`) and keeps the dense form factors in `<scene>_indirect_work/`
+(`F.npy`, about 6 GB at 40,000 elements; a stopped build goes on from it; it may be
+deleted afterwards). `lights.load` finds the indirect file by its name. Built: Sponza
+(36,832 elements, `weights.f32` 1.7 GB, about 8.5 minutes on 8 CPUs) and the Bistro
+interior (42,240, 3.2 GB, about 17 minutes).
 
 ## Limits
 

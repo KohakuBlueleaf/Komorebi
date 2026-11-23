@@ -7,6 +7,8 @@ SHADE (`rasterize_shaded`) colours each pixel from its winner's material: FILL r
 over the triangles neither `masked` nor `transparent`, over the masked ones (taken
 where nearer and not a hole) and over the transparent ones (glass, blended over)."""
 
+import importlib
+
 import numpy as np
 
 from reference import lights as light_data
@@ -27,6 +29,7 @@ OPAQUE_BYTE = 128
 # LIGHTED: the terms of rasterize_lighted's colour (all by default), and the glass's
 # reflectance facing the eye (Schlick's F0).
 TERMS = ("sky", "ambient", "sun", "shadow", "lamps", "specular", "background", "glass")
+OPTIONAL_TERMS = ("indirect",)  # off by default: bounced light (reference/indirect.py)
 GLASS_F0 = F(0.04)
 # Texel byte to value: albedo as linear colour (the pictures' 2.2 gamma undone), the
 # other textures to [0, 1] and normals to [-1, 1].
@@ -656,7 +659,7 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
 
     zero = np.zeros_like(albedo)
     sky = zero
-    if "sky" in terms:
+    if "sky" in terms and "indirect" not in terms:
         sky = np.maximum(light_data.sky_irradiance(lights["sh"], normal), F(0))
         sky = sky * vis[:, None]
     sun_dir = lights["sun_direction"]
@@ -684,9 +687,13 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         points_e = points_e + lamp_e
         shine = shine + specular * gloss(to_light)[:, None] * (lamp_e * inv_pi)
     ambient = np.asarray(lights["ambient"], dtype=np.float32)
-    if "ambient" not in terms:
+    if "ambient" not in terms or "indirect" in terms:
         ambient = np.zeros(3, dtype=np.float32)
-    out = albedo * inv_pi * (((sky + ambient) + sun_e) + points_e)
+    light_sum = ((sky + ambient) + sun_e) + points_e
+    if "indirect" in terms:
+        bounce = variant["indirect"](position, normal)
+        light_sum = (bounce + sun_e) + points_e
+    out = albedo * inv_pi * light_sum
     if glass.any():
         own = F(1) - materials["transmission"][m].max(axis=1)
         out = out * np.where(glass, own, F(1))[:, None]
@@ -698,6 +705,9 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         "sun": albedo * inv_pi * sun_e,
         "points": albedo * inv_pi * points_e,
     }
+    if "indirect" in terms:
+        lit_parts["indirect"] = albedo * inv_pi * bounce
+        parts.setdefault("indirect", np.zeros(shape + (3,), dtype=np.float32))
     for name, value in lit_parts.items():
         parts[name][ys, xs] = np.where(emissive[:, None], F(0), value)
     parts["visibility"][ys, xs] = vis
@@ -763,17 +773,21 @@ def glass_over(scene, lights, glass, parts, front, behind, terms):
 
 def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TERMS):
     """SHADE's three FILLs and holes with direct light (raster reference README,
-    "Lighting", "Glass"); terms: the subset of TERMS that contributes. "colour" linear,
-    "display" x / (1 + x) of exposure x colour, the parts. smooth (vertex normals):
-    a comparison variant; pcf=False: one shadow tap."""
+    "Lighting", "Glass", "Indirect light"); terms: what contributes, of TERMS and
+    "indirect". "colour" linear, "display" x / (1 + x) of exposure x colour, the parts.
+    smooth (vertex normals): a comparison variant; pcf=False: one shadow tap."""
     opaque, masked, glass = fill_layers(scene, materials, "glass" in terms)
     corner_vis = lights["visibility"][scene["indices"]]
     prepared = shade_setup(scene, {**materials, "light": corner_vis})
     variant = {"smooth": smooth_setup(scene) if smooth else None, "pcf": pcf}
     variant["terms"] = set(terms)
-    unknown = variant["terms"] - set(TERMS)
+    unknown = variant["terms"] - set(TERMS) - set(OPTIONAL_TERMS)
     if unknown:
         raise ValueError(f"unknown lighting terms {sorted(unknown)}")
+    if "indirect" in variant["terms"]:
+        indirect = importlib.import_module("reference.indirect")
+        indirect.field_for(lights)
+        variant["indirect"] = lambda p, n: indirect.irradiance(lights, p, n)
     opaque_colour, _, opaque_parts = light_layer(
         scene, materials, prepared, opaque, lights, variant
     )

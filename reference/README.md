@@ -16,6 +16,7 @@ correlation), and exactly on inputs whose result is exactly representable.
 | `raster.py` | rasterization (and its shading stage), the definition the C++ and CUDA versions match |
 | `bvh.py` | the binary box tree (8-word nodes), its cut into treelets, saving and loading |
 | `raytrace.py` | ray tracing over that tree, the definition the C++ and CUDA versions match |
+| `lights.py`, `indirect.py` | the lighting of `rasterize_lighted`; indirect light: elements, the transport matrix in the card's files, the field (raster reference README, "Indirect light") |
 | `runner.py` | running the binaries and storing their results, shared by the project scripts |
 | `results.py` | the result files an implementation hands to the comparison and picture scripts |
 | `power.py` | GPU power from `nvidia-smi` and CPU package energy where readable |

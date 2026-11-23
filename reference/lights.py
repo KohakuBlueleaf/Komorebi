@@ -654,9 +654,10 @@ LIGHT_KEYS = (
 
 def load(name, data):
     """The lights of a scene (or of a view's scene): the arrays of LIGHT_KEYS, the
-    shadow map's side (`shadow_side`; a file without it: the map's), the table's
-    per-scene numbers (`reflection`: 0 without it) and the shadow bias as 1/z
-    (shadow_bias texels at the sun camera's distance). Missing file: an error."""
+    shadow map's side (`shadow_side`), the table's numbers (`reflection`: 0 without it),
+    the shadow bias as 1/z (shadow_bias texels at the sun camera's distance) and
+    `indirect`, the path of <scene>_indirect.npz when there is one. Missing file: error.
+    """
     if public.is_view(name):
         name = public.views()[name][0]
     path = lighting_path(name, data)
@@ -677,4 +678,7 @@ def load(name, data):
         k: entry[k] for k in ("ambient", "emissive_scale", "exposure", "radius", "size")
     }
     numbers["reflection"] = entry.get("reflection", 0.0)
+    found = public.public_dir(data) / f"{name}_indirect.npz"
+    if found.exists():
+        numbers["indirect"] = str(found)
     return lights | numbers | {"shadow_bias": F(bias)}

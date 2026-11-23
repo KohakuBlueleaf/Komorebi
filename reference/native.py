@@ -50,8 +50,9 @@ def stale(binary, sources):
     return any(Path(s).stat().st_mtime > binary.stat().st_mtime for s in sources)
 
 
-def build(source, name, gpu=False, includes=()):
-    """Compiles one source file to <build dir>/<name>; None if there is no compiler."""
+def build(source, name, gpu=False, includes=(), shared=False):
+    """Compiles one source file to <build dir>/<name>; None if there is no compiler.
+    shared: a shared library (C++ only), for ctypes."""
     compiler = find_nvcc() if gpu else find_cxx()
     if compiler is None:
         return None
@@ -59,7 +60,9 @@ def build(source, name, gpu=False, includes=()):
     deps = [source, *NATIVE.glob("*.hpp"), *Path(source).parents[1].glob("*.hpp")]
     deps += [h for i in includes for h in Path(i).glob("*.hpp")]
     if stale(out, deps):
-        flags = NVCCFLAGS if gpu else CXXFLAGS
+        flags = (
+            NVCCFLAGS if gpu else CXXFLAGS + (["-shared", "-fPIC"] if shared else [])
+        )
         arch = [f"-arch={os.environ.get('KR_CUDA_ARCH', 'sm_70')}"] if gpu else []
         inc = [f"-I{p}" for p in (NATIVE, Path(source).parents[1], *includes)]
         subprocess.run([compiler, *flags, *arch, *inc, "-o", out, source], check=True)
