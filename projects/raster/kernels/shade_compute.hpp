@@ -246,14 +246,15 @@ namespace shade_pass {
         }
     }
 
-    // Row r, the record's pixels: key (1 + page) << 10 | texel to the depth row (lit:
-    // `target`), the colour the albedo multiplies; (mark) triangle -2 (-2 | mask key).
+    // Row r's pixels: texel keys to the depth row (lit: `target`), the albedo's
+    // colour; (mark) tri -2 | mask key, or `mark_bits` (glass: -2 | material).
     inline void record_row(
         uint32_t r,
         Mode mode,
         uint32_t target = kVecDepth,
         bool colour = true,
-        bool mark = true
+        bool mark = true,
+        uint32_t mark_bits = kMinusTwo
     ) {
         load(L0, kVecTri + r);
         load(L1, kVecRecord + kConstTri);
@@ -334,7 +335,11 @@ namespace shade_pass {
             }
         }
         if (mark && mode != kLightTextureMask) {
-            TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
+            if (mark_bits == kMinusTwo) {
+                TT_SFPLOADI(L0, kFloatB, kMinusTwo >> 16);
+            } else {
+                immediate(L0, mark_bits);
+            }
             store(L0, kVecTri + r);
         }
         TTI_SFPENCC(3, 0, 0, 10);
@@ -825,6 +830,85 @@ namespace shade_pass {
         return done;
     }
 
+    // Glass blend (kShadeGlass) at `out`: tau C + (1 - max tau) colour where the
+    // tri plane holds -2 | material (rounded as numpy), else C.
+    inline void glass_blend(
+        uint32_t out,
+        const uint32_t* opaque,
+        const uint32_t* material_words,
+        uint32_t first_word,
+        uint32_t words,
+        size_t vl
+    ) {
+        uint32_t* to = reinterpret_cast<uint32_t*>(out);
+        for (uint32_t at = first_word; at < first_word + words; at += 32) {
+            const vuint32m8_t triangle = (
+                __riscv_vle32_v_u32m8(
+                    const_cast<const uint32_t*>(
+                        window() + (kPlanes - 1) * kPlaneWords + at
+                    ),
+                    vl
+                )
+            );
+            const vbool4_t front = __riscv_vmsgeu_vx_u32m8_b4(triangle, kMinusTwo, vl);
+            const vuint32m8_t material = (
+                __riscv_vmerge_vvm_u32m8(
+                    __riscv_vmv_v_x_u32m8(0, vl),
+                    __riscv_vand_vx_u32m8(triangle, 0xFFFF, vl),
+                    front,
+                    vl
+                )
+            );
+            const vuint32m8_t row = (
+                __riscv_vmul_vx_u32m8(material, 4 * kMaterialWords, vl)
+            );
+            const vfloat32m8_t weight = (
+                __riscv_vluxei32_v_f32m8(
+                    reinterpret_cast<const float*>(material_words + kMaterialWeight),
+                    row,
+                    vl
+                )
+            );
+            for (uint32_t plane = 0; plane < kShadeColourPages; ++plane) {
+                uint32_t* colour = to + plane * kPlaneWords + at;
+                const vfloat32m8_t behind = (
+                    __riscv_vle32_v_f32m8(
+                        reinterpret_cast<const float*>(
+                            opaque + (1 + plane) * kPlaneWords + at
+                        ),
+                        vl
+                    )
+                );
+                const vfloat32m8_t tau = (
+                    __riscv_vluxei32_v_f32m8(
+                        reinterpret_cast<const float*>(
+                            material_words + kMaterialTau + plane
+                        ),
+                        row,
+                        vl
+                    )
+                );
+                const vfloat32m8_t mixed = (
+                    __riscv_vfadd_vv_f32m8(
+                        __riscv_vfmul_vv_f32m8(tau, behind, vl),
+                        __riscv_vfmul_vv_f32m8(
+                            weight,
+                            __riscv_vle32_v_f32m8(reinterpret_cast<float*>(colour), vl),
+                            vl
+                        ),
+                        vl
+                    )
+                );
+                __riscv_vse32_v_f32m8(
+                    reinterpret_cast<float*>(colour),
+                    __riscv_vmerge_vvm_f32m8(behind, mixed, front, vl),
+                    vl
+                );
+            }
+        }
+        asm volatile("" ::: "memory");
+    }
+
 }  // namespace shade_pass
 
 #include "shade_lit.hpp"
@@ -848,8 +932,13 @@ void shade_compute_command(const km_command_t& command) {
     Counters counters;
     uint32_t* values = counters.values;
     const uint32_t started = km::wall();
-    // the masked layer's command: its planes, then the opaque layer's, an item each
+    // the masked or glass layer's: its planes, then the opaque layer's;
+    // kShadeGlass blends, kShadeMergedDepth also gives the merged 1/z
     const bool merging = command.a6 != 0;
+    const bool glass = merging && (command.a9 & kShadeGlass) != 0;
+    const bool merged_depth = (
+        merging && !glass && (command.a9 & kShadeMergedDepth) != 0
+    );
     const uint32_t item_pages = merging ? 2 * kPlanes : kPlanes;
     setup();
     bool succeeded = true;
@@ -1039,8 +1128,10 @@ void shade_compute_command(const km_command_t& command) {
                 continue;  // FILL's colour divided by 1/z, no texel
             }
             record_numbers(numbers);
+            // the glass layer's pixels keep their material for the blend
+            const uint32_t mark_bits = glass ? kMinusTwo | material : kMinusTwo;
             for (int32_t r = row_first; r <= row_last; ++r) {
-                record_row(r, mode);
+                record_row(r, mode, kVecDepth, true, true, mark_bits);
                 values[kShadeProfRows]++;
             }
             values[kShadeProfRecords]++;
@@ -1059,7 +1150,7 @@ void shade_compute_command(const km_command_t& command) {
             gamma,
             slots_address,
             page_limit,
-            merging,
+            merging && !glass,  // the masks' (the glass layer has none)
             counters
         )) {
             succeeded = false;
@@ -1087,8 +1178,36 @@ void shade_compute_command(const km_command_t& command) {
                 words
             );
         }
-        if (merging) {  // the opaque layer's colour where the depth row is not 1
+        if (glass) {  // tau C + (1 - max tau) colour where marked, else C
+            glass_blend(
+                destination, opaque_words, material_words, first_word, words, vl
+            );
+        } else if (merging) {  // the opaque layer's colour where the depth row is not 1
             uint32_t* out = reinterpret_cast<uint32_t*>(destination);
+            if (merged_depth) {  // the merged 1/z to the fourth page
+                uint32_t* depth = out + kShadeColourPages * kPlaneWords;
+                for (uint32_t at = first_word; at < first_word + words; at += 32) {
+                    const vbool4_t take = (
+                        __riscv_vmsne_vx_u32m8_b4(
+                            __riscv_vle32_v_u32m8(
+                                const_cast<const uint32_t*>(window() + at), vl
+                            ),
+                            0,
+                            vl
+                        )
+                    );
+                    __riscv_vse32_v_u32m8(
+                        depth + at,
+                        __riscv_vmerge_vvm_u32m8(
+                            __riscv_vle32_v_u32m8(opaque_words + at, vl),
+                            __riscv_vle32_v_u32m8(plane_words + at, vl),
+                            take,
+                            vl
+                        ),
+                        vl
+                    );
+                }
+            }
             for (uint32_t at = first_word; at < first_word + words; at += 32) {
                 const vbool4_t take = (
                     __riscv_vmsne_vx_u32m8_b4(

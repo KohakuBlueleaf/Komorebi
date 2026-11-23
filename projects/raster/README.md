@@ -809,6 +809,92 @@ pass, on equal partitions); frames 32.27 / 38.26 to 24.69 / 34.07. With a 2,048 
 2,048 octahedral map in the lighting file the exterior is `ok`, LIGHT 1.57 ms, 7,978
 pages: the map's side and the page counts come from the file.
 
+### Glass
+
+Materials of kind `transparent` (5, reference README "Glass") are a third layer. At the
+load `shade.prepare` puts them in a mesh of their own with its shade blocks; the other
+two layers leave them out, and the SUN pass does not see them (glass casts no shadow).
+A scene without them runs as before: no third mesh, no new command.
+
+- **The frame.** The thread runs COUNT to FILL a third time for the glass layer, with its
+  own lists, frame tensors, profile tensors and area of the camera's region
+  (`RF_AREA_GLASS`, after the sun's: ranges and costs of its own). The thread's argument
+  words were at their limit (64, `KMX_WORDS_MAX`), so the glass layer's 23 words sit in
+  area 0 after the profiles (`RF_GLASS_WORDS_AT`, frame.h `RF_G_*`), read once at the
+  set-up. The times row grew to 128 words: the glass layer's own result words 64 to
+  84, its frame, SHADE and LIGHT times words 31, 53, 54.
+- **Its surface.** Lit, the glass layer's SHADE is the non-merging lit command into the
+  layer's own surface (two frames, a LIGHT profile; the table and pages the surface's):
+  `a`, the triangle's normal turned to the eye (`kShadeNoFrame`: no normal map),
+  visibility, the specular colour (lit or transparent with a specular colour), the
+  material word; its 1/z the fill's. The materials table holds 18 words a material:
+  `tau` (14 to 16) and `1 - max tau` (17, 1 for the other kinds).
+- **LIGHT twice.** With glass the first LIGHT (`kLightLinear`) stores the linear colour
+  `C` (the sky's radiance on empty pixels). The second (`kLightGlass`, the same handler)
+  reads an item of 20 pages: the glass surface's 12 planes, `C` and the merged 1/z. Where
+  the glass is in front (its material word's bit 31 clear and its 1/z bits above the
+  merged surface's) the copy-in writes `(1 - max tau) a` and `tau C`; the keys, the
+  shadow's four taps and the sun, sky, lamps and Blinn-Phong terms are the first
+  command's code; the reflection's key is the background's code fed the mirror
+  `2 max(n.v, 0) n - v`, its three texels gathered in a second page pass; then
+  `tau C + own + F reflection R`, `F = 0.04 + 0.96 q^5`, `q = 1 - max(n.v, 0)`. Elsewhere
+  `C`; then exposure and `x / (1 + x)` for every pixel. A quarter tile without glass in
+  front is toned only.
+- **Unlit.** The masked layer's SHADE also writes the merged 1/z (`kShadeMergedDepth`),
+  and a third SHADE (`kShadeGlass`) blends `tau C + (1 - max tau) colour` where the
+  glass is in front, as the masked merge does.
+- **A tie** (equal 1/z) goes to the surface behind on the card; the reference gives it
+  to the lower triangle number. One tie in the runs below (interior, frame 19), and the
+  reference gave it to the surface too.
+- **The rings.** `kCbShadePlanes` holds 20 pages: a glass LIGHT item takes all 20, pushed
+  and popped in parts of five, as a lit SHADE item; nothing new goes on `kCbOut` (LIGHT's
+  items stay 5 pages, SHADE's 5 or 3 x 5).
+
+Checks, card 1, 2026-11-23 17:20 to 17:24, AICLK 1,350 MHz, `live.py --scene <s>
+--frames 20 --push --light --check-surface --check-light`, the rebuilt materials and
+lighting files (the shadow map without glass). Check B's glass part, frames 0 and 19:
+pixels with glass in front on the card equal the reference's on both sides, 1/z equal
+(relative error 0), materials equal, the normal's angle at most 0.09 degrees. Check C,
+frames 0, 10, 19, at most (share over 2 / 4 / 8 %, all pixels; among glass-in-front):
+
+| scene | transparent triangles | glass in front (frame 0) | C over 2 / 4 / 8 % | glass in front over 2 / 4 / 8 % | B merged `a` over 2/255 |
+|---|---:|---:|---|---|---|
+| Bistro interior overview | 220,840 | 5,910 | 0.0058 / 0.0021 / 0.0005 | 0.51 / 0.15 / 0.05 | 59, 62 |
+| Bistro interior close | 220,840 | 15,416 | 0.0026 / 0.0010 / 0.0004 | 0.16 / 0.06 / 0.03 | 4, 3 |
+| Bistro exterior overview | 3,778 | 30,498 | 0.435 / 0.071 / 0.029 | 0.46 / 0.10 / 0.05 | 2, 5 |
+| Sponza overview | 0 | 0 | 0.046 / 0.018 / 0.011 | - | 6, 3 |
+
+Every check `ok`. The differing glass pixels: the reflection is the nearest texel of a
+2,048 map, and the glass normal differs from numpy's by about 0.02 degrees (rounding of
+the plane), so the texel flips where the mirror is near a texel's edge (interior frame
+0: the 9 pixels over 4 lie 0.006 to 0.05 texel from an edge); on the exterior, also the
+shadow-edge band seen through or on the glass. The exterior's check C is today's at
+shadow side 2,048 (above). `--shade --check-shade` (17:09 to 17:13): 0 glass-in-front
+pixels differ on the three Bistro views (5,910 / 15,416 / 30,498), share at most 0.006 %.
+
+Costs, ms, medians, the same runs; "old" the old materials files (17:26 to 17:28, no
+glass, the results and times of the table at side 2,048 above); SHADE (masked / glass),
+LIGHT (its glass command):
+
+| scene | | opaque frame | masked frame | glass frame | SHADE | LIGHT | SHOW | card frame | host |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Bistro interior overview | old | 6.50 | 1.05 | - | 4.17 (0.38) | 2.29 | 0.82 | 15.18 | 15.82 |
+| Bistro interior overview | glass | 5.47 | 1.05 | 2.13 | 4.68 (0.38 / 0.69) | 3.15 (0.84) | 0.85 | 17.67 | 18.36 |
+| Bistro interior close | glass | 4.99 | 1.04 | 2.08 | 4.66 (0.38 / 0.73) | 3.36 (1.04) | 0.85 | 17.24 | 17.89 |
+| Bistro exterior overview | old | 8.45 | 5.41 | - | 7.82 (2.21) | 1.67 | 0.86 | 24.47 | 25.32 |
+| Bistro exterior overview | glass | 8.39 | 5.42 | 1.06 | 8.73 (2.21 / 0.77) | 2.68 (1.10) | 0.86 | 27.45 | 28.35 |
+| Sponza overview | old | 3.44 | 1.29 | - | 4.18 (0.77) | 1.67 | 0.78 | 11.69 | 12.35 |
+| Sponza overview | glass | 3.43 | 1.29 | - | 4.18 (0.77) | 1.67 | 0.78 | 11.68 | 12.40 |
+
+LIGHT's glass command: 66,409 (interior overview), 77,415 (close), 93,750 (exterior)
+cycles a tile, of which the copy-in about 38,000; the first command 273,791, 285,341,
+212,534. The interior's glass frame is mostly its COUNT and SETUP (0.36, 0.48) and the
+middle pass (0.60). Without glass LIGHT costs 2 % more cycles a tile than before
+(Sponza 227,573 against 222,568 from the commit's kernels at 17:06; the glass code is
+out of line, the rest in the page scan), the card frame the same. Along `--sun-path 10
+--frames 200` (17:28): every word 0; interior frame median 17.82 ms, worst 20.34, SUN
+pass 26.50 / 31.25; exterior 27.56 / 37.60, SUN pass 45.23 / 61.06.
+
 ## The interactive loop
 
 `live.py` loads the scene and the frame program once, with the thread built to serve

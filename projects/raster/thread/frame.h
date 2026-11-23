@@ -18,6 +18,11 @@
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
 #define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
 #define RF_TILES_ACROSS 32u       /* the frame's tiles a row (kShowTilesAcross) */
+/* SHADE's and LIGHT's a9 (kernels/shade.h kShade*, kLight*) */
+#define RF_SHADE_MERGED_DEPTH 1u
+#define RF_SHADE_GLASS 2u
+#define RF_LIGHT_LINEAR 1u
+#define RF_LIGHT_GLASS 2u
 
 /* The directory's frame tensors (kernels/raster.h) */
 #define RF_FRAME_MAX 15u
@@ -52,12 +57,31 @@
 #define RF_P_FILL 0
 #define RF_P_PASSES 1
 #define RF_P_SHADE 2
+/* then the glass layer's: its FILL's, COUNT's and SETUP's, SHADE's */
+#define RF_P_GLASS_FILL 3
+#define RF_P_GLASS_PASSES 4
+#define RF_P_GLASS_SHADE 5
+/* area 0 after the profiles: the glass layer's words as RF_W_M_* (args at
+ * KMX_WORDS_MAX; mesh 0: none), lit its surface; ranges in RF_AREA_GLASS */
+#define RF_GLASS_WORDS_AT (RF_PROFILES_AT + 64u)
+#define RF_G_MESH 0
+#define RF_G_BLOCKS 1
+#define RF_G_LISTS 2
+#define RF_G_LIST_SLOTS 3
+#define RF_G_DIR 4
+#define RF_G_SHADE 5
+#define RF_G_FRAMES 6
+#define RF_G_FRAME 7 /* RF_FRAME_MAX words */
+#define RF_G_SURFACE (RF_G_FRAME + RF_FRAME_MAX)
+#define RF_G_WORDS (RF_G_SURFACE + 1)
 #define RF_AREA_BYTES 49152u
 #define RF_AREA_MASKED 1u /* added to the area of a frame's masked layer */
 /* a SUN command's opaque layer of quadrant q (its masked layer: + RF_AREA_MASKED) */
 #define RF_AREA_SUN 2u
 #define RF_AREAS_A_QUADRANT 2u /* RF_AREA_SUN + RF_AREAS_A_QUADRANT q */
-#define RF_AREAS (RF_AREA_SUN + RF_AREAS_A_QUADRANT * RF_SUN_QUADRANTS_MAX)
+/* a frame's glass layer (the SUN command has none: glass casts no shadow) */
+#define RF_AREA_GLASS (RF_AREA_SUN + RF_AREAS_A_QUADRANT * RF_SUN_QUADRANTS_MAX)
+#define RF_AREAS (RF_AREA_GLASS + 1u)
 #define RF_CAMERA_BYTES (RF_AREAS * RF_AREA_BYTES)
 #define RF_MAX_CORES 248u
 
@@ -145,20 +169,25 @@
 /* A row of the times region: the result words of the frame (its own, not summed), then
  */
 #define RF_TIMES_ROWS 256u
-#define RF_TIMES_ROW_WORDS 64u
-#define RF_TIMES_BYTES 65536u /* RF_TIMES_ROWS x RF_TIMES_ROW_WORDS words */
-#define RF_T_SHOW 21          /* SHOW submitted to its event */
-#define RF_T_FRAME 22         /* the FRAME command: from its call to its answer */
-#define RF_T_NUMBER 23        /* FRAME commands served before it */
-#define RF_T_CODE 24          /* its answer */
-#define RF_T_PUSH 25          /* the PUSH submitted to its event (0: none) */
-#define RF_T_SHADE 26         /* SHADE submitted to its event (0: not shaded) */
+#define RF_TIMES_ROW_WORDS 128u
+#define RF_TIMES_BYTES 131072u /* RF_TIMES_ROWS x RF_TIMES_ROW_WORDS words */
+#define RF_T_SHOW 21           /* SHOW submitted to its event */
+#define RF_T_FRAME 22          /* the FRAME command: from its call to its answer */
+#define RF_T_NUMBER 23         /* FRAME commands served before it */
+#define RF_T_CODE 24           /* its answer */
+#define RF_T_PUSH 25           /* the PUSH submitted to its event (0: none) */
+#define RF_T_SHADE 26          /* SHADE submitted to its event (0: not shaded) */
 #define RF_T_OPAQUE 27       /* the opaque layer's frame (no masked layer: the frame) */
 #define RF_T_MASKED 28       /* the frame of the masked layer (0: none) */
 #define RF_T_SHADE_MASKED 29 /* the masked layer's SHADE, part of RF_T_SHADE */
 #define RF_T_LIGHT 30        /* LIGHT submitted to its event (0: not lit) */
+#define RF_T_GLASS 31        /* the frame of the glass layer (0: none) */
 /* the masked layer's own result words (RF_OUT_WORDS: its parts alone; 0: none) */
 #define RF_T_M_PARTS 32
+#define RF_T_SHADE_GLASS 53 /* the glass layer's SHADE, part of RF_T_SHADE */
+#define RF_T_LIGHT_GLASS 54 /* LIGHT's glass command, part of RF_T_LIGHT */
+/* the glass layer's own result words (as RF_T_M_PARTS) */
+#define RF_T_G_PARTS 64
 
 /* A row of the sun times region (RF_TIMES_ROW_WORDS words): the result words of the
  * SUN command's frames (both layers summed), then */

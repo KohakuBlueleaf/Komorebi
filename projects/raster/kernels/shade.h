@@ -4,12 +4,20 @@
 
 #include <stdint.h>
 
-// SHADE: a0 directory, a1 lists (FILL's), a2 texture pages, a3 table, a4 profile (0:
-// none), a6 the opaque layer's directory (0: none; else a0, a1 the masked layer's).
+// SHADE: a0 directory, a1 lists, a2 texture pages, a3 table, a4 profile, a6 the
+// opaque directory (else 0; a0, a1 the masked or glass layer's), a9 kShade* bits.
 constexpr uint32_t kHandlerShade = 5;  // lit: a7 the surface directory, a5 camera, a8 bank
-// LIGHT: a0 directory (the opaque layer's), a7 the surface directory (table, pages,
-// profile), a5 camera (a8 bank); a1 the table in bank a8 - 1 (0: the surface's tensor).
+// LIGHT: a0 directory, a7 surface, a5 camera (a8 bank), a1 table, a9 kLight*;
+// kLightGlass: a6 the glass directory, a2 SHADE's table, a7 the glass surface.
 constexpr uint32_t kHandlerLight = 6;
+// SHADE's a9 (unlit merging): kShadeMergedDepth also the merged 1/z (plane 0);
+// kShadeGlass: tau C + (1 - max tau) colour where nearer (a tie to the surface).
+constexpr uint32_t kShadeMergedDepth = 1;
+constexpr uint32_t kShadeGlass = 2;
+// LIGHT's a9: 0 displayed; kLightLinear C (no exposure, no tone curve: glass next);
+// kLightGlass the glass over C, then exposure and the tone curve everywhere.
+constexpr uint32_t kLightLinear = 1;
+constexpr uint32_t kLightGlass = 2;
 // With a6, a pixel nearer than the opaque layer's (a tie to it) with alpha byte >=
 // kAlphaOpaque takes the masked colour, else the opaque one, in the opaque frame.
 
@@ -49,13 +57,15 @@ constexpr uint32_t kTabBackground = 784;  // FILL's background rgb
 constexpr uint32_t kTabCamera = 800;      // lit: the reader's copy of the camera
 constexpr uint32_t kCamWordsShade = 16;   // reference/scenes.py
 constexpr uint32_t kTabMaterial = 816;
-constexpr uint32_t kMaterialWords = 14;
+constexpr uint32_t kMaterialWords = 18;
 constexpr uint32_t kMaterialMask = 4;      // 1 + mask's entry (sizes the albedo's)
 constexpr uint32_t kMaterialNormal = 5;    // 1 + normal's entry
 constexpr uint32_t kMaterialSpecular = 6;  // 1 + specular's entry
 constexpr uint32_t kMaterialLitBase = 7;   // rgb, emissive: x emissive_scale
 constexpr uint32_t kMaterialSpecularColour = 10;  // rgb, 0: no specular term
 constexpr uint32_t kMaterialExponent = 13;        // lit: specular exponent (0: none)
+constexpr uint32_t kMaterialTau = 14;     // transparent: transmission rgb (else 0)
+constexpr uint32_t kMaterialWeight = 17;  // transparent: 1 - max tau (else 1)
 constexpr uint32_t kEntryWords = 2;
 // kinds (reference/raster.py): lit is shaded as textured in this step; masked as
 // textured, its holes by the masked layer's SHADE (a6)
@@ -64,7 +74,8 @@ constexpr uint32_t kKindTextured = 1;
 constexpr uint32_t kKindMasked = 2;
 constexpr uint32_t kKindLit = 3;
 constexpr uint32_t kKindEmissive = 4;
-constexpr uint32_t kAlphaOpaque = 128;  // a masked texel under it is a hole
+constexpr uint32_t kKindTransparent = 5;  // the glass layer (shaded as textured)
+constexpr uint32_t kAlphaOpaque = 128;    // a masked texel under it is a hole
 
 // Record word (SETUP writes it on a shaded frame): material | albedo level << 16 |
 // normal level << 20 | specular level << 24.
@@ -148,6 +159,9 @@ constexpr uint32_t kLtOctaSide = 85;
 constexpr uint32_t kLtOctaLast = 86;     // side - 1
 constexpr uint32_t kLtOctaChannel = 87;  // int: a channel's key step (pages << 10)
 constexpr uint32_t kLtPages = 88;        // int: the light pages
+constexpr uint32_t kLtReflection = 89;   // the glass's reflection of the environment
+constexpr uint32_t kLtFresnel0 = 90;     // the glass's F0 (0.04)
+constexpr uint32_t kLtFresnelRest = 91;  // 1 - F0
 constexpr uint32_t kLtCamera = 96;       // 16 words, the reader's copy (a5)
 constexpr uint32_t kLtLamp = 128;
 // a lamp: position, colour, intensity, radius, 1 / radius, size^2
@@ -174,6 +188,18 @@ static_assert(kLightItemPages % 5 == 0 && kShadePlanePages % 5 == 0);
 static_assert(
     kLightItemPlanes <= kLightItemPages && kLightItemPages <= kShadePlanePages
 );
+// kLightGlass: the glass layer's twelve planes, the opaque frame's C and merged 1/z,
+// in four parts of five pages (the ring's whole size)
+constexpr uint32_t kLightGlassPlanes = 16;
+constexpr uint32_t kLightGlassC = 12;
+constexpr uint32_t kLightGlassDepth = 15;
+constexpr uint32_t kLightGlassPages = 20;
+static_assert(kLightGlassPages % 5 == 0 && kLightGlassPages == kShadePlanePages);
+static_assert(kLightGlassPlanes <= kLightGlassPages);
+// kLightGlass: SHADE's table after LIGHT's in kCbShadeTable (its first words: counts,
+// the texel tables and the materials, which must end before the buffer's end)
+constexpr uint32_t kLightShadeTableAt = kLightTableBytes / 4;
+constexpr uint32_t kLightShadeTableBytes = kShadeTableBytes - kLightTableBytes;
 
 // An ask page: word 0 the pages to read (kShadeAskEnd: the command's end), then the
 // texture pages, the page for slot i at word 1 + i.
@@ -219,6 +245,10 @@ constexpr uint32_t kLightProfSpecular = 12;  // the sun's specular term
 constexpr uint32_t kLightProfPages = 13;
 constexpr uint32_t kLightProfPasses = 14;
 constexpr uint32_t kLightProfTotal = 15;
+// not in the total's parts: kLightGlass's quarter tiles with glass in front (the
+// others only toned)
+constexpr uint32_t kLightProfGlassQuarters = 16;
+constexpr uint32_t kLightProfWords = 17;
 
 // Gave-up places (the writer's word): a wait of the unpack or pack thread, a bad
 // header or table, the reader's loop.

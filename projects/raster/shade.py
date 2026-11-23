@@ -1,7 +1,7 @@
 """A frame loaded shaded (SHADE, kernels/shade.h): what the host uploads once per scene
 (the mesh with each corner's u, v and light term, the texel areas and materials, the
-textures in pages, the table; a scene with masked triangles as two meshes, the layers)
-and the check against the reference's shaded frame."""
+textures in pages, the table; a scene with masked or transparent triangles as two or
+three meshes, the layers) and the check against the reference's shaded frame."""
 
 import numpy as np
 
@@ -78,10 +78,10 @@ def frame_ok(scene, materials):
 
 
 def mesh_blocks(scene, materials, lit=False):
-    """The mesh as passes.mesh_blocks lays it out, each corner's colour replaced by its
-    u, v and light term where the material is not flat (lit: every corner); and the
-    shade blocks (blocks, 128, kernels/setup.h kShadeAddrAt): 32 albedo texel areas, 32
-    material words (lit: kShadeNoFrame where not frame_ok), 32 normal, 32 specular."""
+    """The mesh as passes.mesh_blocks lays it out, corner colours replaced by u, v
+    and light term where not flat (lit: all); shade blocks (blocks, 128): 32 albedo
+    texel areas, 32 material words (lit: kShadeNoFrame where not frame_ok or
+    transparent), 32 normal, 32 specular."""
     kind = materials["kind"][materials["material"]]
     values = np.concatenate(
         [materials["uv"], materials["light"][:, :, None]], axis=2
@@ -97,9 +97,8 @@ def mesh_blocks(scene, materials, lit=False):
     blocks = passes.mesh_blocks(flat_scene)
     areas, word = texel_areas(materials)
     if lit:
-        word = np.where(
-            frame_ok(scene, materials), word, word | np.uint32(SH["kShadeNoFrame"])
-        )
+        framed = frame_ok(scene, materials) & (kind != raster.TRANSPARENT)
+        word = np.where(framed, word, word | np.uint32(SH["kShadeNoFrame"]))
     count = len(blocks) * passes.LANES
     shade = np.zeros((4, count), dtype=np.uint32)
     shade[0, : len(word)] = areas[0].view(np.uint32)
@@ -136,10 +135,19 @@ def texture_pages(materials):
     return np.concatenate(blocks), entries
 
 
+def specular_term(materials):
+    """Per material whether it has the Blinn-Phong term: lit or transparent (the
+    glass's, always) with a specular colour (raster.py light_layer)."""
+    shiny = (materials["kind"] == raster.LIT) | (
+        materials["kind"] == raster.TRANSPARENT
+    )
+    return shiny & (materials["specular"].max(axis=1) > 0)
+
+
 def exponents(materials):
-    """Per material its specular exponent where it has a specular term (lit, a
-    specular colour), else 0: the material word's bits from kMaterialExponentShift."""
-    has = (materials["kind"] == raster.LIT) & (materials["specular"].max(axis=1) > 0)
+    """Per material its specular exponent where it has a specular term
+    (specular_term), else 0: the material word's bits from kMaterialExponentShift."""
+    has = specular_term(materials)
     exponent = np.where(has, materials["exponent"], 0).astype(np.int64)
     if (exponent < 0).any() or exponent.max(initial=0) > SH["kExponentMax"]:
         raise ValueError(f"a specular exponent is outside 0 to {SH['kExponentMax']}")
@@ -148,7 +156,8 @@ def exponents(materials):
 
 def table(materials, entries, pages, emissive_scale=1.0):
     """SHADE's table (kernels/shade.h): counts, the texel tables, the background, the
-    materials (lit: emissive bases x emissive_scale), the (texture, level) entries."""
+    materials (lit: emissive bases x emissive_scale; transparent: tau and 1 - max tau),
+    the (texture, level) entries."""
     count, levels = entries.shape[:2]
     words = np.zeros(SH["kShadeTableBytes"] // 4, dtype=np.uint32)
     materials_count = len(materials["kind"])
@@ -197,12 +206,18 @@ def table(materials, entries, pages, emissive_scale=1.0):
     at_base = SH["kMaterialLitBase"]
     rows[:, at_base : at_base + 3] = lit_base.astype(F32).view(np.uint32)
     specular = materials["specular"].astype(F32)
-    has = (materials["kind"] == raster.LIT) & (specular.max(axis=1) > 0)
+    has = specular_term(materials)
     at_specular = SH["kMaterialSpecularColour"]
     rows[:, at_specular : at_specular + 3] = (
         np.where(has[:, None], specular, F32(0)).astype(F32).view(np.uint32)
     )
     rows[:, SH["kMaterialExponent"]] = exponents(materials)
+    tau = transmission(materials)
+    at_tau = SH["kMaterialTau"]
+    rows[:, at_tau : at_tau + 3] = tau.view(np.uint32)
+    rows[:, SH["kMaterialWeight"]] = (
+        (F32(1) - tau.max(axis=1)).astype(F32).view(np.uint32)
+    )
     end = at + rows.size
     entry_words = np.zeros((count * levels, SH["kEntryWords"]), dtype=np.uint32)
     entry_words[:, 0] = entries[:, :, 0].ravel()
@@ -217,6 +232,16 @@ def table(materials, entries, pages, emissive_scale=1.0):
     return words
 
 
+def transmission(materials):
+    """Per material its transmission tau (M, 3) float32: the materials file's where the
+    kind is transparent, else 0 (a file without it: 0)."""
+    tau = materials.get("transmission")
+    if tau is None:
+        return np.zeros((len(materials["kind"]), 3), dtype=F32)
+    clear = materials["kind"] == raster.TRANSPARENT
+    return np.where(clear[:, None], tau, 0).astype(F32)
+
+
 def layer(scene, materials, keep):
     """The scene and the materials of the triangles `keep` (a bool per triangle), in
     their order: a layer's mesh (reference/raster.py rasterize_shaded)."""
@@ -225,26 +250,30 @@ def layer(scene, materials, keep):
 
 
 def prepare(scene, materials, lights=None):
-    """Everything uploaded once for a shaded frame (with `lights`, lit: every corner's
-    light term the baked visibility): mesh and shade blocks, texture pages, table. With
-    masked triangles, two meshes: the others ("blocks", "shade_blocks") and the masked
-    ("masked_blocks", "masked_shade_blocks", "masked_triangles"), each from 0."""
+    """Everything uploaded once for a shaded frame (`lights`: corner light terms
+    the baked visibility): mesh and shade blocks, pages, table; masked triangles a
+    mesh of their own ("masked_blocks", "masked_shade_blocks", "masked_triangles"),
+    transparent too ("glass_*"), the others ("blocks", "shade_blocks") without."""
     lit = lights is not None
     if lit:
         materials = {**materials, "light": lights["visibility"][scene["indices"]]}
-    masked = materials["kind"][materials["material"]] == raster.MASKED
+    kind = materials["kind"][materials["material"]]
     prepared = {}
-    if masked.any():
-        layer_scene, layer_materials = layer(scene, materials, masked)
+    others = np.ones(len(kind), dtype=bool)
+    for name, value in (("masked", raster.MASKED), ("glass", raster.TRANSPARENT)):
+        keep = kind == value
+        if not keep.any():
+            continue
+        layer_scene, layer_materials = layer(scene, materials, keep)
         blocks, shade_blocks = mesh_blocks(layer_scene, layer_materials, lit)
-        prepared["masked_blocks"], prepared["masked_shade_blocks"] = (
-            blocks,
-            shade_blocks,
-        )
-        prepared["masked_triangles"] = int(masked.sum())
-        scene, materials_kept = layer(scene, materials, ~masked)
-    else:
+        prepared[f"{name}_blocks"] = blocks
+        prepared[f"{name}_shade_blocks"] = shade_blocks
+        prepared[f"{name}_triangles"] = int(keep.sum())
+        others &= ~keep
+    if others.all():
         materials_kept = materials
+    else:
+        scene, materials_kept = layer(scene, materials, others)
     blocks, shade_blocks = mesh_blocks(scene, materials_kept, lit)
     pages, entries = texture_pages(materials)
     if len(pages) > KEY_PAGES:
@@ -308,13 +337,23 @@ def check(view, materials, got, to_srgb8):
         {raster.MASKED: "masked", raster.LIT: "lit", raster.EMISSIVE: "emissive"}
     )
     checked = ~apart
+    # the glass in front (a kind of its own), its later pieces apart too
+    front = shaded["front"]
+    glass_apart = np.zeros_like(front)
+    if front.any():
+        glass_tri = np.where(front, shaded["glass"]["tri"], -1)
+        glass_apart = later_pieces(view, materials, glass_tri)
+        kind = np.where(front, raster.TRANSPARENT, kind)
+        names[raster.TRANSPARENT] = "glass_in_front"
+        checked = checked & ~glass_apart
     report = {
         "checked": int(checked.sum()),
         "differ": int((over & checked).sum()),
         "share": round(float((over & checked).sum() / max(checked.sum(), 1)), 6),
         "max_error": int(error[checked].max(initial=0)),
-        "later_pieces": int(apart.sum()),
-        "later_pieces_differ": int((over & apart).sum()),
+        "later_pieces": int((apart | glass_apart).sum()),
+        "later_pieces_differ": int((over & (apart | glass_apart)).sum()),
+        "glass_in_front": int(front.sum()),
         "frame_differ": int(over.sum()),
         "frame_share": round(float(over.mean()), 6),
         "differ_by_kind": {

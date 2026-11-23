@@ -45,8 +45,14 @@ F["RF_W_M_FRAME"] = F["RF_W_M_FRAMES"] + 1
 F["RF_W_SURFACE"] = F["RF_W_M_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_W_SUN_PAGES"] = F["RF_W_SURFACE"] + 1
 F["RF_WORDS"] = F["RF_W_SUN_PAGES"] + 1
+F["RF_GLASS_WORDS_AT"] = F["RF_PROFILES_AT"] + 64
+F["RF_G_SURFACE"] = F["RF_G_FRAME"] + F["RF_FRAME_MAX"]
+F["RF_G_WORDS"] = F["RF_G_SURFACE"] + 1
 F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
-F["RF_AREAS"] = F["RF_AREA_SUN"] + F["RF_AREAS_A_QUADRANT"] * F["RF_SUN_QUADRANTS_MAX"]
+F["RF_AREA_GLASS"] = (
+    F["RF_AREA_SUN"] + F["RF_AREAS_A_QUADRANT"] * F["RF_SUN_QUADRANTS_MAX"]
+)
+F["RF_AREAS"] = F["RF_AREA_GLASS"] + 1
 F["RF_CAMERA_BYTES"] = F["RF_AREAS"] * F["RF_AREA_BYTES"]
 S, K = card_passes.S, lists.K
 SHOW_H = KERNELS / "show.h"
@@ -97,11 +103,20 @@ def same_numbers():
             min(F["RF_PROFILES_AT"] + 64, F["RF_AREA_BYTES"]),
             F["RF_PROFILES_AT"] + 64,
         ),
+        "RF_GLASS_WORDS_AT + 128 <= RF_AREA_BYTES": (
+            min(F["RF_GLASS_WORDS_AT"] + 128, F["RF_AREA_BYTES"]),
+            F["RF_GLASS_WORDS_AT"] + 128,
+        ),
+        "RF_G_WORDS in two lines": (min(4 * F["RF_G_WORDS"], 128), 4 * F["RF_G_WORDS"]),
         "RF_HANDLER_SHOW": SHOW["kHandlerShow"],
         "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
         "RF_DISPLAY_PAGES": lists.TILES,
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
         "RF_HANDLER_LIGHT": SH["kHandlerLight"],
+        "RF_SHADE_MERGED_DEPTH": SH["kShadeMergedDepth"],
+        "RF_SHADE_GLASS": SH["kShadeGlass"],
+        "RF_LIGHT_LINEAR": SH["kLightLinear"],
+        "RF_LIGHT_GLASS": SH["kLightGlass"],
         "RF_SHOW_RAW": SHOW["kShowRaw"],
         "RF_TILES_ACROSS": SHOW["kShowTilesAcross"],
         "kShowTilesAcross": (SHOW["kShowTilesAcross"], raster.TILES_X),
@@ -138,26 +153,30 @@ def same_numbers():
     return {name: pair for name, pair in pairs.items() if pair[0] != pair[1]}
 
 
-def camera_region(scene, profiles=None):
+def camera_region(scene, profiles=None, glass=None):
     """The camera's numbers, then room for COUNT's and SETUP's ranges and costs (an area
     per layer and camera, frame.h RF_AREAS); at RF_PROFILES_AT `profiles` (live.py: the
-    masked layer's profile tensors), else 0."""
+    masked and glass layers' profile tensors), at RF_GLASS_WORDS_AT `glass` (the glass
+    layer's words, frame.h RF_G_*), else 0."""
     region = np.zeros((1, F["RF_CAMERA_BYTES"] // 4), dtype=np.uint32)
     region[0, : S["kCamWords"]] = card_passes.camera_page(scene)[0]
-    if profiles is not None:
-        at = F["RF_PROFILES_AT"] // 4
-        region[0, at : at + len(profiles)] = profiles
+    for at, values in (
+        (F["RF_PROFILES_AT"], profiles),
+        (F["RF_GLASS_WORDS_AT"], glass),
+    ):
+        if values is not None:
+            region[0, at // 4 : at // 4 + len(values)] = values
     return region
 
 
-def regions(scene, workers, show_table=None, sun=None, profiles=None):
+def regions(scene, workers, show_table=None, sun=None, profiles=None, glass=None):
     """The thread's regions in frame.h's order: the camera's page, then sizes; SHOW's
     block holds `show_table` (live.py), else nothing; the sun region `sun` (live.py,
     lit: the sun's camera and LIGHT's table, light.sun_region), else nothing;
-    `profiles`: camera_region's."""
+    `profiles`, `glass`: camera_region's."""
     work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
     return {
-        "camera": camera_region(scene, profiles),
+        "camera": camera_region(scene, profiles, glass),
         "heavy": F["RF_HEAVY_BYTES"],
         "items": F["RF_ITEMS_REGION_BYTES"],
         "work": work,
@@ -196,11 +215,13 @@ def shade_buffers():
     ]
 
 
-def program(scene, words, workers, show_table=None, sun=None, profiles=None):
+def program(
+    scene, words, workers, show_table=None, sun=None, profiles=None, glass=None
+):
     """The frame program: the passes' and the fill's kernels behind one entry each
     (kernels/frame_*.cpp), all their buffers, the frame thread on work cluster 1; with
-    `show_table` (live.py) it serves FRAME and SUN commands; `sun`, `profiles`: the
-    regions' (regions)."""
+    `show_table` (live.py) it serves FRAME and SUN commands; `sun`, `profiles`, `glass`:
+    the regions' (regions)."""
     fill_program, passes_program = card.program(), card_passes.program()
     frame_program = km.Program(
         "raster_frame",
@@ -232,7 +253,7 @@ def program(scene, words, workers, show_table=None, sun=None, profiles=None):
         cluster=CLUSTER,
         sources=[THREAD / "frame.c", THREAD / "middle.c"],
         includes=[THREAD],
-        regions=regions(scene, workers, show_table, sun, profiles),
+        regions=regions(scene, workers, show_table, sun, profiles, glass),
         words=words,
         deadline=10.0,
         **(
@@ -310,18 +331,19 @@ def words(uploaded, blocks, cores, workers, steps, balance=True):
     return thread_words
 
 
-def masked_words(thread_words, layer, blocks, shade_address):
-    """The masked layer's words (frame.h RF_W_M_*) into `thread_words`: its tensors
-    (layer_tensors), blocks and shade tensor."""
-    thread_words[F["RF_W_M_MESH"]] = layer["mesh"].address
-    thread_words[F["RF_W_M_BLOCKS"]] = blocks
-    thread_words[F["RF_W_M_LISTS"]] = layer["lists"].address
-    thread_words[F["RF_W_M_LIST_SLOTS"]] = layer["list_slots"]
-    thread_words[F["RF_W_M_DIR"]] = layer["dir"].address
-    thread_words[F["RF_W_M_SHADE"]] = shade_address
-    thread_words[F["RF_W_M_FRAMES"]] = len(layer["frame"])
+def masked_words(thread_words, layer, blocks, shade_address, prefix="RF_W_M_"):
+    """The masked layer's words (frame.h RF_W_M_*; `prefix` RF_G_: the glass layer's
+    words, area 0's) into `thread_words`: its tensors (layer_tensors), blocks and shade
+    tensor."""
+    thread_words[F[prefix + "MESH"]] = layer["mesh"].address
+    thread_words[F[prefix + "BLOCKS"]] = blocks
+    thread_words[F[prefix + "LISTS"]] = layer["lists"].address
+    thread_words[F[prefix + "LIST_SLOTS"]] = layer["list_slots"]
+    thread_words[F[prefix + "DIR"]] = layer["dir"].address
+    thread_words[F[prefix + "SHADE"]] = shade_address
+    thread_words[F[prefix + "FRAMES"]] = len(layer["frame"])
     for index, frame_tensor in enumerate(layer["frame"]):
-        thread_words[F["RF_W_M_FRAME"] + index] = frame_tensor.address
+        thread_words[F[prefix + "FRAME"] + index] = frame_tensor.address
     return thread_words
 
 

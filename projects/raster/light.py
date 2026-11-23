@@ -249,6 +249,10 @@ def light_table(lights, materials, terms=raster.TERMS):
     put(SH["kLtOctaLast"], lights["octahedral"].shape[0] - 1)
     words[SH["kLtOctaChannel"]] = (lights["octahedral"].shape[0] // PAGE) ** 2 << 10
     words[SH["kLtPages"]] = pages
+    # the glass's reflection (glass_over): its share, F0 and 1 - F0
+    put(SH["kLtReflection"], lights.get("reflection", 0.0))
+    put(SH["kLtFresnel0"], raster.GLASS_F0)
+    put(SH["kLtFresnelRest"], F32(1) - raster.GLASS_F0)
     radius, size = F32(lights["radius"]), F32(lights["size"])
     for lamp in range(lamps):
         at = SH["kLtLamp"] + SH["kLampWords"] * lamp
@@ -473,13 +477,18 @@ def frame_tensors(session):
     ]
 
 
-def surface_tensors(session, workers, lights, materials, terms=raster.TERMS):
-    """The surface's two frames, LIGHT's table, pages and profile tensor, and the
-    directory (a page a worker): the first frame's words at kDirFrame, the second's at
-    kSurfaceSecond, the table's, profile's and pages' addresses (kernels/shade.h)."""
+def surface_tensors(
+    session, workers, lights, materials, terms=raster.TERMS, shared=None
+):
+    """The surface's two frames, LIGHT's table, pages and profile tensor, and
+    the directory (a page a worker; shade.h kDirFrame, kSurface*). `shared` (glass):
+    another surface's table and pages, its own frames and profile."""
     frames = [frame_tensors(session), frame_tensors(session)]
-    table = card.tensor(session, light_table(lights, materials, terms)[None, :])
-    pages = card.tensor(session, light_pages(lights)[0])
+    if shared is None:
+        table = card.tensor(session, light_table(lights, materials, terms)[None, :])
+        pages = card.tensor(session, light_pages(lights)[0])
+    else:
+        table, pages = shared["table"], shared["pages"]
     profile = card.tensor(session, np.zeros((workers, SH["kShadeProfBytes"] // 4)))
     page = np.zeros(K["kDirBytes"] // 4, dtype=np.uint32)
     for frame, at in zip(frames, (K["kDirFrame"], SH["kSurfaceSecond"])):
@@ -530,9 +539,10 @@ def read_surface(session, frame_tensors_of_layer, surface):
 
 def reference_surface(view, materials, lights):
     """The reference's merged surface of a camera from rasterize_lighted's parts (terms:
-    the specular only, so no shadow or lamp is computed): a (emissive x emissive_scale),
-    normal, visibility, specular, material word, 1/z, triangle, later pieces."""
-    lit = raster.rasterize_lighted(view, materials, lights, terms=("specular",))
+    the specular and the glass only, so no shadow or lamp is computed): a (emissive x
+    emissive_scale), normal, visibility, specular, material word, 1/z, triangle, later
+    pieces, and the parts (the glass layer's among them)."""
+    lit = raster.rasterize_lighted(view, materials, lights, terms=("specular", "glass"))
     parts, tri = lit["parts"], lit["tri"]
     material = np.maximum(parts["material"], 0)
     kind = materials["kind"][material]
@@ -553,12 +563,50 @@ def reference_surface(view, materials, lights):
         "depth": lit["depth"],
         "tri": tri,
         "later": shade.later_pieces(view, corner, tri),
+        "parts": parts,
     }
 
 
-def surface_check(view, materials, lights, got):
+def glass_check(view, materials, lights, got, glass_got, want):
+    """Check B, glass: the card's glass planes in front (bit 31 clear, 1/z over
+    `got`'s) against parts glass_depth, _tri, _material, _normal: front pixels each
+    side, then on both (later pieces apart) 1/z error, material, normal, ties."""
+    parts = want["parts"]
+    card_front = ((glass_got["material"] >> 31) == 0) & (
+        glass_got["depth"].view(np.uint32) > got["depth"].view(np.uint32)
+    )
+    ties = ((glass_got["material"] >> 31) == 0) & (
+        glass_got["depth"].view(np.uint32) == got["depth"].view(np.uint32)
+    )
+    front = parts["glass_tri"] >= 0
+    corner = {**materials, "light": lights["visibility"][view["indices"]]}
+    later = shade.later_pieces(view, corner, parts["glass_tri"])
+    both = front & card_front & ~later
+    with np.errstate(all="ignore"):
+        relative = np.abs(
+            glass_got["depth"].astype(np.float64) - parts["glass_depth"]
+        ) / np.abs(parts["glass_depth"].astype(np.float64))
+    material = glass_got["material"] & 0xFFFF
+    angle = angle_degrees(glass_got["normal"], parts["glass_normal"])
+    return {
+        "front_reference": int(front.sum()),
+        "front_card": int(card_front.sum()),
+        "front_only_reference": int((front & ~card_front).sum()),
+        "front_only_card": int((card_front & ~front).sum()),
+        "ties_on_card": int(ties.sum()),
+        "later_pieces": int((front & later).sum()),
+        "checked": int(both.sum()),
+        "depth_relative_max": float(relative[both].max(initial=0)),
+        "depth_relative_over_1e-5": int((relative[both] > 1e-5).sum()),
+        "material_differ": int((material[both] != parts["glass_material"][both]).sum()),
+        "normal_degrees": figures(angle[both]),
+    }
+
+
+def surface_check(view, materials, lights, got, glass_got=None):
     """Check B: the card's surface `got` (read_surface) against the reference's for the
-    pixels the reference covers, later pieces counted apart."""
+    pixels the reference covers, later pieces counted apart; with `glass_got` the glass
+    layer's planes too (glass_check)."""
     want = reference_surface(view, materials, lights)
     covered = want["tri"] >= 0
     groups = {
@@ -594,6 +642,8 @@ def surface_check(view, materials, lights, got):
         and part["material_differ"] == 0
         and report["empty_marked_differ"] == 0
     )
+    if glass_got is not None:
+        report["glass"] = glass_check(view, materials, lights, got, glass_got, want)
     return report, want
 
 
@@ -632,6 +682,9 @@ def light_check(view, materials, lights, got, terms=raster.TERMS):
     error = np.abs(got[..., :3].astype(np.int16) - want.astype(np.int16)).max(axis=2)
     corner = {**materials, "light": lights["visibility"][view["indices"]]}
     apart = shade.later_pieces(view, corner, lit["tri"])
+    front = lit["parts"]["glass_tri"] >= 0  # the glass's later pieces apart too
+    if front.any():
+        apart = apart | shade.later_pieces(view, corner, lit["parts"]["glass_tri"])
     checked = ~apart
     count = max(int(checked.sum()), 1)
     report = {"checked": int(checked.sum()), "later_pieces": int(apart.sum())}
@@ -641,6 +694,13 @@ def light_check(view, materials, lights, got, terms=raster.TERMS):
         )
         report[f"later_over_{limit}"] = int((error[apart] > limit).sum())
     report["max_error"] = int(error[checked].max(initial=0))
+    glass = checked & front
+    report["glass_in_front"] = {"pixels": int(front.sum()), "checked": int(glass.sum())}
+    for limit in (2, 4, 8):
+        report["glass_in_front"][f"share_over_{limit}"] = round(
+            float((error[glass] > limit).sum() / max(int(glass.sum()), 1)), 6
+        )
+    report["glass_in_front"]["max_error"] = int(error[glass].max(initial=0))
     if "shadow" in terms:
         band = shadow_band(view, lights, lit)
         for name, chosen in (

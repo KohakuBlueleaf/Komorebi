@@ -1,5 +1,5 @@
-// LIGHT's reader (shade.h): the lights' table and camera, then every item's word
-// (kCbIn) and planes; the light pages the pack thread asks for (serve_ask).
+// LIGHT's reader (shade.h): table, camera, items' words and planes, asked pages;
+// kLightGlass: SHADE's table too, an item the glass planes, C and the merged 1/z.
 #include "shade.h"
 
 void light_reader_command(const km::Reader& reader, const km_command_t& command) {
@@ -10,6 +10,25 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
     if (!surface_words(reader, command, scratch, surface)) {
         return;
     }
+    const bool glass = command.a9 == kLightGlass;
+    uint32_t glass_frame[kDirFrameMax + 1] = {};  // the glass layer's frame words
+    if (glass) {
+        if (!km::read_pages(
+            reader, command, Directories(command.a6), reader.me(), 1, scratch
+        ) ||
+            !read_done(reader, command.sequence)) {
+            return;
+        }
+        invalidate_l1_cache();
+        for (uint32_t i = 0; i <= kDirFrameMax; ++i) {
+            glass_frame[i] = directory[kDirFrame + i];
+        }
+        if (glass_frame[0] == 0 || glass_frame[0] % kPlanes != 0) {
+            return;
+        }
+    }
+    const uint32_t item_pages = glass ? kLightGlassPages : kLightItemPages;
+    const uint32_t item_planes = glass ? kLightGlassPlanes : kLightItemPlanes;
     const uint32_t table_address = surface[kSurfaceWords];
     const uint32_t pages_address = surface[kSurfaceWords + 2];
     if (!km::read_pages(
@@ -42,6 +61,18 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
         get_write_ptr(kCbShadeTable) + 4 * kLtCamera,
         4 * kCamWordsShade
     );
+    if (glass) {  // SHADE's table (a2) after LIGHT's: the materials' tau and weight
+        noc_async_read(
+            get_noc_addr(
+                0,
+                InterleavedAddrGen<true>{
+                    .bank_base_address = command.a2, .page_size = kShadeTableBytes
+                }
+            ),
+            get_write_ptr(kCbShadeTable) + 4 * kLightShadeTableAt,
+            kLightShadeTableBytes
+        );
+    }
     if (!read_done(reader, command.sequence)) {
         return;
     }
@@ -79,7 +110,7 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
             ++item;
             return false;
         }
-        if (!cb_pages_reservable_at_back(kCbShadePlanes, kLightItemPages)) {
+        if (!cb_pages_reservable_at_back(kCbShadePlanes, item_pages)) {
             return false;
         }
         const uint32_t id = directory[kDirIds + item];
@@ -88,12 +119,14 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
         const uint32_t* second_words = surface + kDirFrameMax + 1;
         if (
             tile >= 1024 || page / tensor_pages >= kDirFrameMax ||
-            page / surface[0] >= kDirFrameMax || page / second_words[0] >= kDirFrameMax
+            page / surface[0] >= kDirFrameMax ||
+            page / second_words[0] >= kDirFrameMax ||
+            (glass && page / glass_frame[0] >= kDirFrameMax)
         ) {
             failed = true;
             return true;
         }
-        const InterleavedAddrGen<true> tensors[3] = {
+        const InterleavedAddrGen<true> tensors[4] = {
             {
                 .bank_base_address = surface[1 + page / surface[0]],
                 .page_size = kOutPageBytes
@@ -105,17 +138,28 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
             {
                 .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
                 .page_size = kOutPageBytes
+            },
+            {
+                .bank_base_address = glass ? glass_frame[1 + page / glass_frame[0]] : 0,
+                .page_size = kOutPageBytes
             }
         };
-        const uint32_t tensor_size[3] = {surface[0], second_words[0], tensor_pages};
-        cb_reserve_back(kCbShadePlanes, kLightItemPages);
+        const uint32_t tensor_size[4] = {
+            surface[0], second_words[0], tensor_pages, glass ? glass_frame[0] : 1
+        };
+        cb_reserve_back(kCbShadePlanes, item_pages);
         uint32_t destination = get_write_ptr(kCbShadePlanes);
-        // the surface's planes 0 to 9, then the frame's 1/z and material word
-        for (uint32_t at = 0; at < kLightItemPlanes; ++at) {
-            const uint32_t source = at < 2 * kPlanes ? at / kPlanes : 2;
-            const uint32_t plane = (
+        // the surface's planes 0 to 9, then the frame's 1/z and material word (glass:
+        // the glass layer's, then the opaque frame's colour planes and 1/z)
+        for (uint32_t at = 0; at < item_planes; ++at) {
+            uint32_t source = at < 2 * kPlanes ? at / kPlanes : glass ? 3 : 2;
+            uint32_t plane = (
                 at < 2 * kPlanes ? at % kPlanes : (at == 2 * kPlanes ? 0 : kPlanes - 1)
             );
+            if (at >= kLightGlassC) {  // C, then the merged 1/z
+                source = 2;
+                plane = at < kLightGlassDepth ? 1 + at - kLightGlassC : 0;
+            }
             noc_async_read(
                 get_noc_addr((page + plane) % tensor_size[source], tensors[source]),
                 destination,
@@ -130,7 +174,7 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
             failed = true;
             return true;
         }
-        for (uint32_t pushed = 0; pushed < kLightItemPages; pushed += kPlanes) {
+        for (uint32_t pushed = 0; pushed < item_pages; pushed += kPlanes) {
             cb_push_back(kCbShadePlanes, kPlanes);  // five at a time: none wraps
         }
         const uint32_t first_row = id >> kItemRow0Shift & kItemRowMask;

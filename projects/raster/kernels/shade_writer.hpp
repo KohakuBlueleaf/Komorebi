@@ -1,5 +1,5 @@
-// SHADE's writer (shade.h): each item's colour planes back to the frame (a band: its
-// rows; a6: the opaque layer's; lit: its three parts), then the profile page.
+// SHADE's writer (shade.h): colour planes to the frame (a band its rows; a6 the
+// opaque's, kShadeMergedDepth its 1/z too; lit three parts), the profile.
 #include "shade.h"
 
 static_assert(kShadeOutPages == kPlanes && kOutPages % kShadeOutPages == 0);
@@ -7,6 +7,11 @@ static_assert(kShadeOutPages == kPlanes && kOutPages % kShadeOutPages == 0);
 bool shade_writer_command(const km::Writer& writer, const km_command_t& command) {
     const uint32_t directory_address = command.a0, profile_address = command.a4;
     const uint32_t opaque_address = command.a6;
+    // unlit, the masked layer's command before a glass layer's: the merged 1/z too
+    const bool merged_depth = (
+        opaque_address != 0 && command.a7 == 0 &&
+        (command.a9 & (kShadeMergedDepth | kShadeGlass)) == kShadeMergedDepth
+    );
     const uint32_t scratch = get_write_ptr(kCbDirWriter);
     volatile tt_l1_ptr uint32_t* directory = km::l1(scratch);
     // the frame written: the directory's own, or the opaque layer's
@@ -129,6 +134,13 @@ bool shade_writer_command(const km::Writer& writer, const km_command_t& command)
                 noc_async_write(
                     source + from * kOutPageBytes,
                     get_noc_addr((page + plane) % words[0], tensor, byte_offset),
+                    bytes
+                );
+            }
+            if (merged_depth) {  // the fourth page: the merged 1/z, the frame's plane 0
+                noc_async_write(
+                    source + kShadeColourPages * kOutPageBytes,
+                    get_noc_addr(page % words[0], tensor, byte_offset),
                     bytes
                 );
             }

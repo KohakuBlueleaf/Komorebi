@@ -1,5 +1,5 @@
-// LIGHT's pack thread (shade.h): each item's colour from its surface planes, a quarter
-// tile at a time in Dst: texel keys, their pages (page_passes), texels, colour.
+// LIGHT's pack thread (shade.h): each item's colour, a quarter tile in Dst at a time;
+// kLightGlass: the glass layer lit over the colour C behind it.
 namespace shade_pass {
 
     // Dst for a quarter tile: its planes (row k of plane p at kLightRows p + k), each
@@ -11,12 +11,13 @@ namespace shade_pass {
     // a row's: four texels (keys until gathered), the filter's fractions, 1/z, point
     constexpr uint32_t kRvValue = 0, kRvFx = 4, kRvFy = 5, kRvW = 6, kRvPoint = 7;
     constexpr uint32_t kRowVectors = 10;
+    constexpr uint32_t kGlassKeys = 3;  // the reflection's texels (glass_vector)
     constexpr uint32_t kLvRow = kLightRows * kLvPlanes;
     constexpr uint32_t kLvLane = kLvRow + kLightRows * kRowVectors;
     constexpr uint32_t kLvXTerm = kLvLane + 1, kLvInvF = kLvLane + 2;
     constexpr uint32_t kLvScratch = kLvLane + 3;
-    // A row's scratch: sky products, max(0, n.s) shadow, shadow, to the eye, lamps,
-    // specular sum, a lamp's l and E, gloss, taps' corner, view direction, kind - 4.
+    // Row scratch: sky, max(0, n.s), shadow, eye, lamps, specular, lamp l and E,
+    // gloss, corner, view (glass: mirror) direction, kind - 4, glass F reflection.
     constexpr uint32_t kSxSky = 0;
     constexpr uint32_t kSxSun = 5;
     constexpr uint32_t kSxShadow = 6;
@@ -24,8 +25,14 @@ namespace shade_pass {
     constexpr uint32_t kSxPoints = 10;
     constexpr uint32_t kSxShine = 13, kSxLight = 16, kSxE = 19, kSxGloss = 20;
     constexpr uint32_t kSxCorner = 21, kSxDirection = 23, kSxKind = 26;
-    constexpr uint32_t kScratchVectors = 27;
-    static_assert(kLvScratch + kScratchVectors <= 256);
+    constexpr uint32_t kSxFresnel = 27;
+    constexpr uint32_t kScratchVectors = 28;
+    // glass: tau C (C where the glass is not in front), plane c's row k at kLvC + 8 c +
+    // k (an even vector: its rows are 256 words in the window, as a plane's)
+    constexpr uint32_t kLvC = (kLvScratch + kScratchVectors + 1) & ~1u;
+    // glass: the reflection's red, green, blue texels (keys until gathered), as tau C
+    constexpr uint32_t kLvReflect = kLvC + 3 * kLightRows;
+    static_assert(kLvReflect + kGlassKeys * kLightRows <= 256);
     // each Dst plane's page in the item (light_reader.hpp)
     constexpr uint32_t kLightSource[kLvPlanes] = {0, 1, 2, 11, 3, 4, 5, 6, 7, 8, 9, 10};
     constexpr uint32_t kLt0 = 0, kNe0 = 2;                            // SFPSETCC
@@ -41,6 +48,23 @@ namespace shade_pass {
 
     constexpr uint32_t sx_vector(uint32_t at) {
         return kLvScratch + at;
+    }
+
+    constexpr uint32_t c_vector(uint32_t channel, uint32_t k) {
+        return kLvC + kLightRows * channel + k;
+    }
+
+    constexpr uint32_t reflect_vector(uint32_t channel, uint32_t k) {
+        return kLvReflect + kLightRows * channel + k;
+    }
+
+    // row k's texel `tap`: the shadow's four, then (glass) the reflection's three
+    constexpr uint32_t tap_vector(uint32_t k, uint32_t tap) {
+        return (
+            tap < kLightKeys
+                ? row_vector(k, kRvValue + tap)
+                : reflect_vector(tap - kLightKeys, k)
+        );
     }
 
     // q = a / f for `a` (kept): a times 1 / f, then one step on the remainder a - q f.
@@ -97,8 +121,9 @@ namespace shade_pass {
         TT_SFPOR(0, L4, L5, 0);
     }
 
-    // Row k (numerator cy - py): the point (world_points); its shadow taps' keys, 1/z,
-    // fractions (sun_shadow; 0 outside); empty: the background's (octahedral_texel).
+    // Row k: the point, shadow taps' keys, 1/z, fractions; empty: background key;
+    // glass: keys of the mirrored view (glass_over), all 0 where not in front.
+    template <bool glass = false>
     inline void light_keys(
         uint32_t k, const uint32_t* table, uint32_t numerator_bits, uint32_t terms
     ) {
@@ -201,6 +226,29 @@ namespace shade_pass {
                 store(L0, row_vector(k, kRvValue + tap));
             }
         }
+        if (glass && (terms & kTermBackground) != 0) {
+            // v = unit(eye - P), 2 max(0, n.v) n - v in place of the view direction
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                immediate(L0, cam[axis]);
+                load(L1, row_vector(k, kRvPoint + axis));
+                sub(L0, L1, L2 + axis);
+            }
+            unit3(L2, L3, L4, L0, L1, L5, L6, L7);
+            load(L0, plane_vector(kLvNormal, k));
+            mul(L0, L2, L5);
+            load(L0, plane_vector(kLvNormal + 1, k));
+            TT_SFPMAD(L0, L3, L5, L5, 0);
+            load(L0, plane_vector(kLvNormal + 2, k));
+            TT_SFPMAD(L0, L4, L5, L5, 0);
+            TTI_SFPNOP;
+            at_least_zero(L5, L0);
+            add(L5, L5, L5);  // 2 (n.v), exact
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                load(L0, plane_vector(kLvNormal + axis, k));
+                TT_SFPMAD(L0, L5, L2 + axis, L6, kNegC);
+                store(L6, sx_vector(kSxDirection + axis));
+            }
+        }
         add(ZERO, ZERO, L5);
         add(ZERO, ZERO, L6);
         add(ZERO, ZERO, L7);
@@ -277,6 +325,22 @@ namespace shade_pass {
             TT_SFPIADD(0, L4, L6, 4);
             TT_SFPMOV(0, L6, L7, 0);
             TT_SFPIADD(0, L4, L7, 4);
+        }
+        if (glass) {  // the reflection's keys; every key 0 where not in front
+            store(L5, reflect_vector(0, k));
+            store(L6, reflect_vector(1, k));
+            store(L7, reflect_vector(2, k));
+            add(ZERO, ZERO, L4);
+            load(L0, plane_vector(kLvMaterial, k));
+            TT_SFPSETCC(0, L0, 0, kLt0);
+            for (uint32_t tap = 0; tap < kLightKeys; ++tap) {
+                store(L4, row_vector(k, kRvValue + tap));
+            }
+            for (uint32_t tap = 0; tap < kGlassKeys; ++tap) {
+                store(L4, reflect_vector(tap, k));
+            }
+            TTI_SFPENCC(3, 0, 0, 10);
+            return;
         }
         // an empty pixel's keys (bit 31 of its material word)
         add(ZERO, ZERO, L4);
@@ -420,14 +484,39 @@ namespace shade_pass {
         }
     }
 
-    // A command's numbers from the table.
+    // A command's numbers from the table, and its mode (kLight*, LIGHT's a9).
     struct LightNumbers {
         const uint32_t* table;
-        uint32_t terms, lamps, bits;
+        uint32_t terms, lamps, bits, mode;
     };
 
-    // Row k's colour into a's rows: (a / pi) E + specular terms (E: sky, ambient, sun x
-    // its 2 x 2 filter, lamps); emissive a; empty the background; x / (1 + x).
+    // x / (1 + x) of exposure x L3 into Dst vector `to` (L4 to L7, L0, L1 used).
+    inline void tone(uint32_t to, const uint32_t* table) {
+        immediate(L4, table[kLtExposure]);
+        mul(L3, L4, L3);
+        add(L3, ONE, L4);
+        recip(L4, L5, L6, L7, L0, L1);
+        mul(L3, L5, L6);
+        store(L6, to);
+    }
+
+    // Glass, rows [first, end) of a quarter where the glass is nowhere in front: x / (1
+    // + x) of C into a's rows (out of line, as the glass's other code).
+    __attribute__((noinline)) void tone_rows(
+        uint32_t first, uint32_t end, const uint32_t* table
+    ) {
+        TTI_SFPENCC(3, 0, 0, 10);
+        for (uint32_t k = first; k < end; ++k) {
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                load(L3, c_vector(channel, k));
+                tone(plane_vector(kLvAlbedo + channel, k), table);
+            }
+        }
+    }
+
+    // Row k's colour: (a / pi) E + specular; emissive a; empty the background;
+    // glass: tau C + that + F R in front, else C; x / (1 + x) (linear: not).
+    template <bool glass = false>
     inline void light_row(uint32_t k, const LightNumbers& numbers, uint32_t* values) {
         const uint32_t* table = numbers.table;
         const uint32_t terms = numbers.terms;
@@ -507,7 +596,8 @@ namespace shade_pass {
             store(L0, sx_vector(kSxPoints + i));  // and the specular sum
         }
         const bool shiny = (terms & kTermSpecular) != 0;
-        if (shiny) {
+        const bool reflected = glass && (terms & kTermBackground) != 0;
+        if (shiny || reflected) {
             const uint32_t* cam = table + kLtCamera;
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 immediate(L0, cam[axis]);
@@ -517,10 +607,35 @@ namespace shade_pass {
             unit3(L2, L3, L4, L0, L1, L5, L6, L7);
             for (uint32_t axis = 0; axis < 3; ++axis) {
                 store(L2 + axis, sx_vector(kSxEye + axis));
-                immediate(L0 + axis, table[kLtSunDirection + axis]);
             }
-            gloss(k, numbers.bits);
-            shine(k, table + kLtSun, kLtChannel, sx_vector(kSxSun), table);
+            if (reflected) {
+                // F = F0 + (1 - F0) q^5, q = 1 - max(0, n.v); times the reflection
+                load(L5, plane_vector(kLvNormal, k));
+                mul(L5, L2, L6);
+                load(L5, plane_vector(kLvNormal + 1, k));
+                TT_SFPMAD(L5, L3, L6, L6, 0);
+                load(L5, plane_vector(kLvNormal + 2, k));
+                TT_SFPMAD(L5, L4, L6, L6, 0);
+                TTI_SFPNOP;
+                at_least_zero(L6, L5);
+                sub(ONE, L6, L6);
+                mul(L6, L6, L7);
+                mul(L7, L7, L7);
+                mul(L7, L6, L7);
+                immediate(L5, table[kLtFresnelRest]);
+                immediate(L0, table[kLtFresnel0]);
+                TT_SFPMAD(L5, L7, L0, L7, 0);
+                immediate(L5, table[kLtReflection]);
+                mul(L7, L5, L7);
+                store(L7, sx_vector(kSxFresnel));
+            }
+            if (shiny) {
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    immediate(L0 + axis, table[kLtSunDirection + axis]);
+                }
+                gloss(k, numbers.bits);
+                shine(k, table + kLtSun, kLtChannel, sx_vector(kSxSun), table);
+            }
             lap(kLightProfSpecular);
         }
         if ((terms & kTermLamps) != 0) {
@@ -565,52 +680,185 @@ namespace shade_pass {
             mul(L6, L3, L3);
             load(L4, sx_vector(kSxShine + channel));
             add(L3, L4, L3);
-            // emissive: a; empty (bit 31): the background
-            load(L7, sx_vector(kSxKind));
-            TT_SFPSETCC(0, L7, 0, kEq0);
-            add(L5, ZERO, L3);
-            TTI_SFPENCC(3, 0, 0, 10);
-            if ((terms & kTermBackground) != 0) {
-                load(L4, row_vector(k, kRvValue + channel));
+            if (glass) {
+                // (tau C + own) + F reflection R; not in front (bit 31): C
+                load(L4, c_vector(channel, k));
+                add(L4, L3, L3);
+                if (reflected) {
+                    load(L4, reflect_vector(channel, k));
+                    load(L5, sx_vector(kSxFresnel));
+                    mul(L5, L4, L4);
+                    add(L3, L4, L3);
+                }
+                load(L4, c_vector(channel, k));
+                load(L7, plane_vector(kLvMaterial, k));
+                TT_SFPSETCC(0, L7, 0, kLt0);
+                add(L4, ZERO, L3);
+                TTI_SFPENCC(3, 0, 0, 10);
             } else {
-                immediate(L4, table[kLtBackground + channel]);
+                // emissive: a; empty (bit 31): the background
+                load(L7, sx_vector(kSxKind));
+                TT_SFPSETCC(0, L7, 0, kEq0);
+                add(L5, ZERO, L3);
+                TTI_SFPENCC(3, 0, 0, 10);
+                if ((terms & kTermBackground) != 0) {
+                    load(L4, row_vector(k, kRvValue + channel));
+                } else {
+                    immediate(L4, table[kLtBackground + channel]);
+                }
+                load(L7, plane_vector(kLvMaterial, k));
+                TT_SFPSETCC(0, L7, 0, kLt0);
+                add(L4, ZERO, L3);
+                TTI_SFPENCC(3, 0, 0, 10);
             }
-            load(L7, plane_vector(kLvMaterial, k));
-            TT_SFPSETCC(0, L7, 0, kLt0);
-            add(L4, ZERO, L3);
-            TTI_SFPENCC(3, 0, 0, 10);
-            immediate(L4, table[kLtExposure]);
-            mul(L3, L4, L3);
-            add(L3, ONE, L4);
-            recip(L4, L5, L6, L7, L0, L1);
-            mul(L3, L5, L6);
-            store(L6, plane_vector(kLvAlbedo + channel, k));
+            if (numbers.mode == kLightLinear) {
+                store(L3, plane_vector(kLvAlbedo + channel, k));
+            } else {
+                tone(plane_vector(kLvAlbedo + channel, k), table);
+            }
         }
         lap(kLightProfMath);
+    }
+
+    // Glass, `quarter`'s rows: in front (bit 31 clear, 1/z above the merged; a tie
+    // behind) the glass word, else bit 31; (1 - max tau) a; tau C. True if any.
+    __attribute__((noinline)) bool glass_in(
+        uint32_t planes,
+        uint32_t quarter,
+        const uint32_t* material_words,
+        uint32_t limit,
+        uint32_t size,
+        size_t vl
+    ) {
+        constexpr uint32_t kWords = 32 * kLightRows;
+        auto page_of = [&](uint32_t plane) -> const uint32_t* {
+            uint32_t page = planes + plane * kOutPageBytes;
+            if (page >= limit) {
+                page -= size;
+            }
+            return reinterpret_cast<const uint32_t*>(page) + kWords * quarter;
+        };
+        const uint32_t* glass_material = page_of(kLightItemPlanes - 1);
+        const uint32_t* glass_depth = page_of(kLightItemPlanes - 2);
+        const uint32_t* depth = page_of(kLightGlassDepth);
+        uint32_t fronts = 0;
+        for (uint32_t i = 0; i < kWords; i += 32) {
+            const vuint32m8_t material = __riscv_vle32_v_u32m8(glass_material + i, vl);
+            const vbool4_t front = (
+                __riscv_vmand_mm_b4(
+                    __riscv_vmsltu_vx_u32m8_b4(material, kMaterialNone, vl),
+                    __riscv_vmsgtu_vv_u32m8_b4(
+                        __riscv_vle32_v_u32m8(glass_depth + i, vl),
+                        __riscv_vle32_v_u32m8(depth + i, vl),
+                        vl
+                    ),
+                    vl
+                )
+            );
+            fronts += __riscv_vcpop_m_b4(front, vl);
+            __riscv_vse32_v_u32m8(
+                const_cast<uint32_t*>(window() + kWords * kLvMaterial + i),
+                __riscv_vmerge_vvm_u32m8(
+                    __riscv_vmv_v_x_u32m8(0xFFFFFFFF, vl), material, front, vl
+                ),
+                vl
+            );
+            const vuint32m8_t row = (
+                __riscv_vmul_vx_u32m8(
+                    __riscv_vmerge_vvm_u32m8(
+                        __riscv_vmv_v_x_u32m8(0, vl),
+                        __riscv_vand_vx_u32m8(material, 0xFFFF, vl),
+                        front,
+                        vl
+                    ),
+                    4 * kMaterialWords,
+                    vl
+                )
+            );
+            const vfloat32m8_t weight = (
+                __riscv_vluxei32_v_f32m8(
+                    reinterpret_cast<const float*>(material_words + kMaterialWeight),
+                    row,
+                    vl
+                )
+            );
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                const vfloat32m8_t albedo = (
+                    __riscv_vle32_v_f32m8(
+                        reinterpret_cast<const float*>(page_of(channel) + i), vl
+                    )
+                );
+                __riscv_vse32_v_f32m8(
+                    reinterpret_cast<float*>(const_cast<uint32_t*>(
+                        window() + kWords * (kLvAlbedo + channel) + i
+                    )),
+                    __riscv_vfmul_vv_f32m8(weight, albedo, vl),
+                    vl
+                );
+                const vfloat32m8_t behind = (
+                    __riscv_vle32_v_f32m8(
+                        reinterpret_cast<const float*>(page_of(kLightGlassC + channel) + i),
+                        vl
+                    )
+                );
+                const vfloat32m8_t tau = (
+                    __riscv_vluxei32_v_f32m8(
+                        reinterpret_cast<const float*>(
+                            material_words + kMaterialTau + channel
+                        ),
+                        row,
+                        vl
+                    )
+                );
+                __riscv_vse32_v_f32m8(
+                    reinterpret_cast<float*>(const_cast<uint32_t*>(
+                        window() + 64 * (kLvC / 2) + kWords * channel + i
+                    )),
+                    __riscv_vmerge_vvm_f32m8(
+                        behind, __riscv_vfmul_vv_f32m8(tau, behind, vl), front, vl
+                    ),
+                    vl
+                );
+            }
+        }
+        asm volatile("" ::: "memory");
+        return fronts != 0;
     }
 
     // LIGHT of one command: each item's word (kCbIn), planes a quarter tile at a time
     // into Dst, keys, pages and texels, colour, out to kCbOut's first three pages.
     inline void light_pack(const km_command_t& command) {
-        (void)command;
-        uint32_t values[kLightProfTotal + 1] = {};
+        uint32_t values[kLightProfWords] = {};
         const uint32_t started = km::wall();
         setup();
         bool succeeded = true;
         const uint32_t table_address = front(kCbShadeTable, 1);
         const uint32_t* table = reinterpret_cast<const uint32_t*>(table_address);
-        LightNumbers numbers = {table, 0, 0, 0};
+        const bool glass = command.a9 == kLightGlass;
+        LightNumbers numbers = {table, 0, 0, 0, command.a9};
+        // glass: SHADE's materials after LIGHT's table (light_reader.hpp)
+        const uint32_t* shade_table = table + kLightShadeTableAt;
+        const uint32_t* material_words = shade_table + kTabMaterial;
         if (table_address == 0) {
             succeeded = false;
         } else {
             numbers.terms = table[kLtTerms];
             numbers.lamps = table[kLtLamps];
             numbers.bits = table[kLtExponentBits];
-            if (numbers.lamps > kLampsMax || numbers.bits > 11) {
+            if (
+                numbers.lamps > kLampsMax || numbers.bits > 11 ||
+                command.a9 > kLightGlass ||
+                (
+                    glass &&
+                    kTabMaterial + kMaterialWords * shade_table[kTabMaterials] >
+                        kLightShadeTableBytes / 4
+                )
+            ) {
                 fill_k::give_up(kGaveBadItem, kWhereShadeBad);
                 succeeded = false;
             }
         }
+        const uint32_t item_pages = glass ? kLightGlassPages : kLightItemPages;
         const bool keyed = (
             succeeded && (numbers.terms & (kTermShadow | kTermBackground)) != 0
         );
@@ -667,7 +915,7 @@ namespace shade_pass {
                 succeeded = false;
                 break;
             }
-            const uint32_t planes = front(kCbShadePlanes, kLightItemPages);
+            const uint32_t planes = front(kCbShadePlanes, item_pages);
             if (planes == 0 || !reserve(kCbOut, kShadeOutPages)) {
                 succeeded = false;
                 break;
@@ -719,7 +967,15 @@ namespace shade_pass {
                     }
                 }
                 asm volatile("" ::: "memory");
-                pass_k::setup_pass::order(kWords * kLvPlanes - 1);
+                // glass: in front where, w a, tau C (glass_in)
+                const bool in_front = (
+                    glass && glass_in(planes, quarter, material_words, limit, size, vl)
+                );
+                pass_k::setup_pass::order(
+                    glass
+                        ? word(c_vector(2, kLightRows - 1)) + 62
+                        : kWords * kLvPlanes - 1
+                );
                 now = km::wall();
                 values[kLightProfCopyIn] += now - mark;
                 mark = now;
@@ -735,7 +991,112 @@ namespace shade_pass {
                     }
                     return true;
                 };
-                if (!keyed) {
+                // a row's texel addresses of taps [tap_first, tap_end) (row vectors;
+                // the zero texel where a key is 0) from index slot 0, and their gather
+                auto scan_taps = [&](uint32_t tap_first, uint32_t tap_end) {
+                    return [&, tap_first, tap_end](uint32_t row) -> bool {
+                        for (uint32_t tap = tap_first; tap < tap_end; ++tap) {
+                            if (row_addresses(
+                                pages,
+                                from_window(tap_vector(row - row0, tap), vl),
+                                kNoTags,
+                                index + 1024 * (tap - tap_first) + 32 * row,
+                                page_limit,
+                                kZeroTexel,
+                                false,
+                                true,
+                                vl
+                            ) < 0) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+                };
+                auto gather_taps = [&](uint32_t tap_first, uint32_t tap_end) {
+                    return [
+                        &, tap_first, tap_end
+                    ](uint32_t pass_first, uint32_t pass_end) -> bool {
+                        const uint32_t gathered = km::wall();
+                        for (uint32_t r = pass_first; r < pass_end; ++r) {
+                            for (uint32_t tap = tap_first; tap < tap_end; ++tap) {
+                                to_window(
+                                    tap_vector(r - row0, tap),
+                                    __riscv_vluxei32_v_u32m8(
+                                        slots,
+                                        __riscv_vle32_v_u32m8(
+                                            index + 1024 * (tap - tap_first) + 32 * r,
+                                            vl
+                                        ),
+                                        vl
+                                    ),
+                                    vl
+                                );
+                            }
+                        }
+                        asm volatile("" ::: "memory");
+                        pass_k::setup_pass::order(
+                            word(tap_vector(pass_end - 1 - row0, tap_end - 1)) + 62
+                        );
+                        values[kLightProfGather] += km::wall() - gathered;
+                        return true;
+                    };
+                };
+                if (glass && !in_front) {  // C toned, no light
+                    tone_rows(first - row0, end - row0, table);
+                    tensix_sync();
+                    now = km::wall();
+                    values[kLightProfMath] += now - mark;
+                } else if (glass) {
+                    // glass keys, shadow and reflection texels, colour (out of
+                    // line: the first command's hot loops stay compact)
+                    auto glass_quarter = [&]() __attribute__((noinline)) -> bool {
+                        values[kLightProfGlassQuarters]++;
+                        for (uint32_t r = first; r < end; ++r) {
+                            light_keys<true>(
+                                r - row0, table, numerator(r), numbers.terms
+                            );
+                        }
+                        tensix_sync();
+                        now = km::wall();
+                        values[kLightProfKeys] += now - mark;
+                        if (
+                            (numbers.terms & kTermShadow) != 0 &&
+                            !page_passes(
+                                first,
+                                end,
+                                pages,
+                                counts,
+                                scan_taps(0, kLightKeys),
+                                gather_taps(0, kLightKeys)
+                            )
+                        ) {
+                            return false;
+                        }
+                        if (
+                            (numbers.terms & kTermBackground) != 0 &&
+                            !page_passes(
+                                first,
+                                end,
+                                pages,
+                                counts,
+                                scan_taps(kLightKeys, kLightKeys + kGlassKeys),
+                                gather_taps(kLightKeys, kLightKeys + kGlassKeys)
+                            )
+                        ) {
+                            return false;
+                        }
+                        for (uint32_t r = first; r < end; ++r) {
+                            light_row<true>(r - row0, numbers, values);
+                            values[kLightProfRows]++;
+                        }
+                        return true;
+                    };
+                    if (!glass_quarter()) {
+                        succeeded = false;
+                        break;
+                    }
+                } else if (!keyed) {
                     if (pointed) {  // the scene point only (keys 0)
                         for (uint32_t r = first; r < end; ++r) {
                             light_keys(r - row0, table, numerator(r), numbers.terms);
@@ -831,8 +1192,7 @@ namespace shade_pass {
             }
             // popped five pages at a time, as pushed (light_reader.hpp)
             for (
-                uint32_t popped = 0; popped < kLightItemPages && succeeded;
-                popped += kPlanes
+                uint32_t popped = 0; popped < item_pages && succeeded; popped += kPlanes
             ) {
                 succeeded = pop(kCbShadePlanes, kPlanes);
             }
@@ -863,7 +1223,7 @@ namespace shade_pass {
                 reinterpret_cast<volatile uint32_t*>(write_ptr(kCbOut))
             );
             for (uint32_t i = 0; i < kShadeProfBytes / 4; ++i) {
-                profile[i] = i <= kLightProfTotal ? values[i] : 0;
+                profile[i] = i < kLightProfWords ? values[i] : 0;
             }
             push(
                 kCbOut,

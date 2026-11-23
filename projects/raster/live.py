@@ -1,7 +1,7 @@
-"""The thread-driven frame as a loop a host drives: a FRAME command a camera, the image
-read back or (`--push`) pushed by the thread; `--shade` shaded (SHADE, masked ones a
-layer), `--light` lit (SHADE's surface, LIGHT; `--sun AZ,EL`, `--sun-path N` move the
-sun: a SUN pass). One JSON line; exit 1 unless ok."""
+"""The thread-driven frame as a loop: a FRAME command a camera, the image read
+back or (`--push`) pushed; `--shade` (masked and glass layers), `--light` (LIGHT
+twice with glass; `--sun AZ,EL`, `--sun-path N`: SUN). One JSON line; exit 1 unless
+ok."""
 
 import argparse
 import json
@@ -290,9 +290,11 @@ def sun_slots(scene, materials, angles, side):
     most over the scene's own sun (`angles`) and SUN_SAMPLES around it (sun_entries),
     and the slots that take them: {layer: (entries, slots)}; a sun beyond them ends its
     SUN command with the result word RF_LISTS_SMALL, never an overrun."""
-    masked = materials["kind"][materials["material"]] == raster.MASKED
+    kind = materials["kind"][materials["material"]]
+    masked = kind == raster.MASKED
+    opaque = ~masked & (kind != raster.TRANSPARENT)  # glass: not in the sun's view
     suns = [angles] + [(angles[0] + turn, el) for turn, el in SUN_SAMPLES]
-    layers = [(name, keep) for name, keep in (("opaque", ~masked), ("masked", masked))]
+    layers = [(name, keep) for name, keep in (("opaque", opaque), ("masked", masked))]
     layers = [(name, keep) for name, keep in layers if keep.any()]
     most = light.sun_entries(scene, [keep for _, keep in layers], suns, side)
     return {
@@ -312,10 +314,10 @@ def times_rows(raw, frames):
 
 
 class Loop:
-    """The scene loaded once in `session`, the thread's program running: a FRAME command
-    a camera (`frame`), the image read back or pushed (`push`); `materials`: shaded
-    (shade.py; masked triangles a layer of their own), `lights`: also lit (the surface,
-    LIGHT's table in the sun region; `set_sun`). Fills upload_s, load_s, sun_lists."""
+    """The scene loaded in `session`, the thread's program running: a FRAME
+    command a camera (`frame`), the image read or pushed; `materials`: shaded
+    (masked and glass layers), `lights`: lit (surfaces, LIGHT's table; `set_sun`).
+    Fills upload_s, load_s, sun_lists."""
 
     def __init__(
         self,
@@ -375,25 +377,34 @@ class Loop:
                 session, workers, lights, materials, terms
             )
             self.light_profile = self.surface["profile"]
-        self.masked = None
-        if prepared is not None and "masked_blocks" in prepared:
-            masked_slots = 2 * prepared["masked_triangles"] + 65536  # card_thread's
-            if list_slots:  # the masked layer's lists grown as the others are
-                masked_slots = -(-masked_slots * list_slots // default_slots)
-            masked_slots = max(masked_slots, sun_need.get("masked", (0, 0))[1])
-            self.masked = card_thread.layer_tensors(
-                session, prepared["masked_blocks"], workers, masked_slots
+        self.masked = self.glass = self.glass_surface = None
+        for name in ("masked", "glass"):
+            if prepared is None or f"{name}_blocks" not in prepared:
+                continue
+            layer_slots = 2 * prepared[f"{name}_triangles"] + 65536  # card_thread's
+            if list_slots:  # the layer's lists grown as the others are
+                layer_slots = -(-layer_slots * list_slots // default_slots)
+            layer_slots = max(layer_slots, sun_need.get(name, (0, 0))[1])
+            layer = card_thread.layer_tensors(
+                session, prepared[f"{name}_blocks"], workers, layer_slots
             )
-            self.masked["shade"] = card.tensor(session, prepared["masked_shade_blocks"])
+            layer["shade"] = card.tensor(session, prepared[f"{name}_shade_blocks"])
             # its own profile tensors: FILL's, COUNT's and SETUP's, SHADE's
-            self.masked["prof"] = card.tensor(session, np.zeros((workers, 1024)))
-            self.masked["sprof"] = card.tensor(
+            layer["prof"] = card.tensor(session, np.zeros((workers, 1024)))
+            layer["sprof"] = card.tensor(
                 session, np.zeros((workers, S["kSProfPageBytes"] // 4))
             )
-            self.masked["shade_profile"] = card.tensor(
+            layer["shade_profile"] = card.tensor(
                 session, np.zeros((workers, SH["kShadeProfBytes"] // 4))
             )
-            report["masked_triangles"] = prepared["masked_triangles"]
+            report[f"{name}_triangles"] = prepared[f"{name}_triangles"]
+            setattr(self, name, layer)
+        if self.glass is not None and lights is not None:
+            # the glass layer's own surface and LIGHT profile; the table and pages the
+            # surface's
+            self.glass_surface = light.surface_tensors(
+                session, workers, lights, materials, terms, shared=self.surface
+            )
         self.display = card.tensor(
             session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
         )
@@ -415,20 +426,34 @@ class Loop:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
             words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
             sun = light.sun_region(lights, materials, terms)
-        if self.masked is not None:
+        glass_words = None  # frame.h RF_G_*, in area 0
+        for name, prefix in (("masked", "RF_W_M_"), ("glass", "RF_G_")):
+            layer = getattr(self, name)
+            if layer is None:
+                continue
+            if name == "glass":
+                glass_words = [0] * F["RF_G_WORDS"]
             card_thread.masked_words(
-                words,
-                self.masked,
-                len(prepared["masked_blocks"]),
-                self.masked["shade"].address,
+                words if name == "masked" else glass_words,
+                layer,
+                len(prepared[f"{name}_blocks"]),
+                layer["shade"].address,
+                prefix,
             )
-            profiles = [  # frame.h RF_P_*
-                self.masked[name].address for name in ("prof", "sprof", "shade_profile")
+        if self.glass_surface is not None:
+            glass_words[F["RF_G_SURFACE"]] = self.glass_surface["dir"].address
+        if self.masked is not None or self.glass is not None:
+            profiles = [  # frame.h RF_P_*: the masked layer's, then the glass layer's
+                0 if layer is None else layer[name].address
+                for layer in (self.masked, self.glass)
+                for name in ("prof", "sprof", "shade_profile")
             ]
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
         self.running = running = session.load(
-            card_thread.program(scene, words, workers, table, sun, profiles),
+            card_thread.program(
+                scene, words, workers, table, sun, profiles, glass_words
+            ),
             deadline=1.0,
         )
         report["load_s"] = round(time.perf_counter() - started, 3)
@@ -537,7 +562,7 @@ def loop(args):
     passes_run = []  # each SUN command: angles, word, host ms
     checked = sorted({0, args.frames // 2, args.frames - 1})
     surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
-    kept, surface_got = {}, {}
+    kept, surface_got, glass_surface_got = {}, {}, {}
     with km.Session(log=card.log) as session:
         live = Loop(
             session,
@@ -598,6 +623,10 @@ def loop(args):
                 surface_got[index] = light.read_surface(
                     session, live.uploaded["frame"], live.surface
                 )
+                if live.glass_surface is not None:
+                    glass_surface_got[index] = light.read_surface(
+                        session, live.glass["frame"], live.glass_surface
+                    )
             if word != 0:
                 card.log(f"frame {index}: {event.kind}, word {word}")
                 break
@@ -612,8 +641,9 @@ def loop(args):
             )
         (profile_pages,) = card.read(session, live.show_profile)
         layer_pages = {"opaque": live.uploaded}
-        if live.masked is not None:
-            layer_pages["masked"] = live.masked
+        for name in ("masked", "glass"):
+            if getattr(live, name) is not None:
+                layer_pages[name] = getattr(live, name)
         report["stage_profile"], raw_pages = {}, {}
         for layer, tensors in layer_pages.items():
             (fill_pages,) = card.read(session, tensors["prof"])
@@ -626,12 +656,14 @@ def loop(args):
                 **passes_profile(pass_pages.view(np.uint32).reshape(workers, -1)),
                 "fill": fill_profile(fill_pages.view(np.uint32).reshape(workers, -1)),
             }
-        if live.masked is not None and live.shade_profile is not None:
-            (masked_shade,) = card.read(session, live.masked["shade_profile"])
-            report["shade_profile_masked"] = shade_profile(
-                masked_shade.view(np.uint32).reshape(workers, -1).astype(np.int64)
+        for name in ("masked", "glass"):
+            if getattr(live, name) is None or live.shade_profile is None:
+                continue
+            (layer_shade,) = card.read(session, getattr(live, name)["shade_profile"])
+            report[f"shade_profile_{name}"] = shade_profile(
+                layer_shade.view(np.uint32).reshape(workers, -1).astype(np.int64)
             )
-            raw_pages["masked_shade"] = masked_shade
+            raw_pages[f"{name}_shade"] = layer_shade
         if live.shade_profile is not None:
             (shade_pages,) = card.read(session, live.shade_profile)
             report["shade_profile"] = shade_profile(
@@ -645,6 +677,13 @@ def loop(args):
                 len(lights["lamp_intensity"]) if "lamps" in terms else 0,
             )
             raw_pages["light"] = light_pages
+        if live.glass_surface is not None:
+            (glass_light,) = card.read(session, live.glass_surface["profile"])
+            report["light_profile_glass"] = light_profile(
+                glass_light.reshape(workers, -1).astype(np.int64),
+                len(lights["lamp_intensity"]) if "lamps" in terms else 0,
+            )
+            raw_pages["light_glass"] = glass_light
         if args.profile_pages:  # each stage's profile pages of the last frame
             np.savez(args.profile_pages, **raw_pages)
     profile = profile_pages.reshape(workers, -1).astype(np.int64)
@@ -675,40 +714,58 @@ def loop(args):
     report["card_light_ms"] = round(
         float(np.median(rows[:, F["RF_T_LIGHT"]])) * ticks_ms, 4
     )
-    if live.masked is not None:
+    layers = [name for name in ("masked", "glass") if getattr(live, name) is not None]
+    if layers:
         report["card_layer_ms"] = {
             layer: round(
                 float(np.median(rows[:, F[f"RF_T_{layer.upper()}"]])) * ticks_ms, 4
             )
-            for layer in ("opaque", "masked")
+            for layer in ["opaque"] + layers
         }
-        report["card_shade_masked_ms"] = round(
-            float(np.median(rows[:, F["RF_T_SHADE_MASKED"]])) * ticks_ms, 4
+        for layer in layers:
+            report[f"card_shade_{layer}_ms"] = round(
+                float(np.median(rows[:, F[f"RF_T_SHADE_{layer.upper()}"]])) * ticks_ms,
+                4,
+            )
+    if live.glass is not None:
+        report["card_light_glass_ms"] = round(
+            float(np.median(rows[:, F["RF_T_LIGHT_GLASS"]])) * ticks_ms, 4
         )
     report["card_parts_ms"] = {
         part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
         for part in ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
     }
-    if live.masked is not None:  # each layer's parts (the masked layer's own words)
+    if layers:  # each layer's parts (the other layers' own words)
         names = ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
-        masked_parts = {
-            part: rows[:, F["RF_T_M_PARTS"] + F[f"RF_O_{part.upper()}"]]
-            for part in names
+        own = {
+            layer: {
+                part: rows[
+                    :, F[f"RF_T_{layer[0].upper()}_PARTS"] + F[f"RF_O_{part.upper()}"]
+                ]
+                for part in names
+            }
+            for layer in layers
         }
         report["card_layer_parts_ms"] = {
             "opaque": {
                 part: round(
-                    float(np.median(rows[:, F[f"RF_O_{part.upper()}"]] - values))
+                    float(
+                        np.median(
+                            rows[:, F[f"RF_O_{part.upper()}"]]
+                            - sum(own[layer][part] for layer in layers)
+                        )
+                    )
                     * ticks_ms,
                     4,
                 )
-                for part, values in masked_parts.items()
-            },
-            "masked": {
-                part: round(float(np.median(values)) * ticks_ms, 4)
-                for part, values in masked_parts.items()
+                for part in names
             },
         }
+        for layer in layers:
+            report["card_layer_parts_ms"][layer] = {
+                part: round(float(np.median(values)) * ticks_ms, 4)
+                for part, values in own[layer].items()
+            }
     report["heavy_tiles"] = rows[:, F["RF_O_HEAVY"]].tolist()[:4]
     report["heavy_tiles_max"] = int(rows[:, F["RF_O_HEAVY"]].max())
     report["items_max"] = int(rows[:, F["RF_O_ITEMS"]].max())
@@ -741,7 +798,7 @@ def loop(args):
         folder.mkdir(parents=True, exist_ok=True)
     for index, got in surface_got.items():
         surface_checks[index], _ = light.surface_check(
-            views[index], materials, lights_of(index), got
+            views[index], materials, lights_of(index), got, glass_surface_got.get(index)
         )
     for index, got in kept.items():
         mode = "_lit" if args.light else "_shaded" if args.shade else ""

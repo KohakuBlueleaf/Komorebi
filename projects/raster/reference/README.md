@@ -480,5 +480,5 @@ none on a visible surface) and in Sponza (bit for bit, both functions); in the e
 7,942 pixels of the overview change because the sun now passes through the window
 panes (1,803 texels of its shadow map). Not represented: refraction, glass behind
 glass, coloured shadows (transparent triangles cast none). The C++ version
-(`raster_core.hpp`) and the card's code have no kind 5 yet: on the Bistro scenes
-`agree` and the card's checks need it first.
+(`raster_core.hpp`) has no kind 5 yet: on the Bistro scenes `agree` needs it first.
+The card has it (the rasterizer's page, "Glass").
