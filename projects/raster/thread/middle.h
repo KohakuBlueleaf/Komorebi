@@ -4,13 +4,19 @@
 
 #include <stdint.h>
 
-#define RM_TILES 1024u /* the tables' tiles; a frame's grid has at most these */
-#define RM_GROUPS 16u  /* 2-row groups of a tile */
+/* RM_TILES, the tables' tiles: the frame's capacity the load chose (card_thread.py), a
+ * build define; a frame's grid has at most these. */
+#ifndef RM_TILES
+#error "RM_TILES: the frame's capacity in tiles, chosen at the load"
+#endif
+#define RM_GROUPS 16u /* 2-row groups of a tile */
 #define RM_MAX_BANDS 16u
-#define RM_MAX_HEAVY 256u /* tiles cut into bands; more: rm_middle rejects */
-/* All bands number at most about 2 * fill cores / RM_SPLIT (1,503 at 248 cores)
- * besides the whole tiles. */
-#define RM_MAX_ITEMS 2048u
+/* RM_MAX_HEAVY heavy tiles, RM_BAND_ITEMS bands' items: from the load's fill cores
+ * (card.heavy_capacity); a frame has fewer than cores / RM_SPLIT of either. */
+#if !defined(RM_MAX_HEAVY) || !defined(RM_BAND_ITEMS)
+#error "RM_MAX_HEAVY, RM_BAND_ITEMS: from the load's fill cores"
+#endif
+#define RM_MAX_ITEMS (RM_TILES + RM_BAND_ITEMS)
 /* a core's counters: entries per tile, then rows */
 #define RM_COUNTERS (2 * RM_TILES)
 #define RM_MAX_CORES 248u

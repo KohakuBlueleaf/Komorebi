@@ -1,6 +1,8 @@
-/* The frame thread's words, regions, result and codes, shared with card_thread.py,
- * which checks the kernels' numbers here against kernels/setup.h and raster.h. */
+/* The frame thread's words, regions, result and codes, shared with card_thread.py
+ * (checked against kernels/setup.h, raster.h); per-tile sizes follow RM_TILES. */
 #pragma once
+
+#include "middle.h"
 
 /* Handlers (kernels/setup.h) */
 #define RF_HANDLER_COUNT 12u
@@ -13,15 +15,15 @@
 #define RF_PAGES_PER_ITEM 5u      /* the frame's pages per tile: the fill's planes */
 #define RF_HANDLER_SHOW 4u        /* kernels/show.h */
 #define RF_SHOW_TABLE_BYTES 1024u /* SHOW's block: kShowTableWords words */
-#define RF_DISPLAY_PAGES 1024u    /* the display's pages: a page a tile */
+#define RF_DISPLAY_PAGES RM_TILES /* the display's pages: a page a tile */
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
 #define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
-/* The grid word: tiles a row | rows of tiles << 8, 0 for 32 x 32 (kernels/grid.h); each
- * command's a8 is the bank's word | the grid word << 8. A tile is ty TX + tx. */
+/* The grid word: TX | TY << 16, 0 for 32 x 32; a8: the bank's word | TX << 4 | TY << 18
+ * (kernels/grid.h); at most RM_TILES tiles, narrow (no RF_WIDE) 64 by 32. */
 #define RF_GRID_DEFAULT 32u     /* kGridDefault */
-#define RF_GRID_ACROSS_MAX 64u  /* kGridAcrossMax */
-#define RF_GRID_DOWN_MAX 32u    /* kGridDownMax */
+#define RF_NARROW_ACROSS 64u    /* kNarrowAcross */
+#define RF_NARROW_DOWN 32u      /* kNarrowDown */
 #define RF_SUN_GRID 0u          /* the SUN pass's grid: 32 x 32 tiles, a quadrant */
 #define RF_SUN_TILES_ACROSS 32u /* its tiles a row */
 /* SHADE's and LIGHT's a9 (kernels/shade.h kShade*, kLight*) */
@@ -34,23 +36,26 @@
 #define RF_FRAME_MAX 15u
 
 /* Page sizes (kernels/setup.h) */
-#define RF_COUNTER_BYTES 8192u
+#define RF_COUNTER_BYTES (8u * RM_TILES)
 #define RF_HEAVY_BYTES 4096u
-#define RF_SLOTS_BYTES 8192u
-#define RF_ITEMS_BYTES 8192u
-#define RF_HIST_MAX 256u /* heavy tiles the histograms hold */
+#define RF_SLOTS_BYTES (4u * RM_MAX_ITEMS)
+#define RF_ITEMS_BYTES (4u * RM_TILES + 2u * RM_MAX_ITEMS)
+#define RF_HIST_MAX RM_MAX_HEAVY /* heavy tiles the histograms hold */
 #define RF_HIST_BYTES (64u * RF_HIST_MAX)
 #define RF_SETUP_PREFIX 0x80000000u /* SETUP's slots from SUM's and HSUM's prefixes */
-#define RF_BASE_AT 8192u            /* in the items region: the base words */
-#define RF_HPREFIX_ADDR_AT 16384u   /* then the address of HSUM's pages */
-#define RF_SHADE_ADDR_AT 16388u     /* then the shade tensor's (0: not shaded) */
-#define RF_HPREFIX_BYTES 32768u     /* an HSUM page, one per counting core */
-#define RF_SUMS_BYTES 40960u /* SUM's totals (entries, rows per tile), then HSUM's */
-#define RF_SUMS_HEAVY_AT 8192u
-#define RF_FRAME_WORDS_AT 16448u /* in the items region: PLACE's frame words, */
-#define RF_ITEM_WORDS_AT 16512u  /* the items' words (rm_compact), */
-#define RF_CORE_WORDS_AT 32896u  /* the fill cores' words */
-#define RF_ITEMS_REGION_BYTES 36864u
+#define RF_BASE_AT RF_ITEMS_BYTES   /* in the items region: the base words */
+/* HSUM's pages' address */
+#define RF_HPREFIX_ADDR_AT (RF_BASE_AT + 4u * RM_MAX_ITEMS)
+#define RF_SHADE_ADDR_AT (RF_HPREFIX_ADDR_AT + 4u) /* the shade tensor's (0: none) */
+#define RF_HPREFIX_BYTES (128u * RM_MAX_HEAVY)     /* an HSUM page a counting core */
+/* SUM's totals (entries, rows a tile), HSUM's */
+#define RF_SUMS_HEAVY_AT (8u * RM_TILES)
+#define RF_SUMS_BYTES (RF_SUMS_HEAVY_AT + 128u * RF_HIST_MAX)
+#define RF_FRAME_WORDS_AT (RF_HPREFIX_ADDR_AT + 64u) /* PLACE's frame words, */
+/* the items' words (rm_compact), */
+#define RF_ITEM_WORDS_AT (RF_FRAME_WORDS_AT + 64u)
+#define RF_CORE_WORDS_AT (RF_ITEM_WORDS_AT + 8u * RM_MAX_ITEMS) /* the fill cores' */
+#define RF_ITEMS_REGION_BYTES (RF_CORE_WORDS_AT + 16u * RF_MAX_CORES)
 /* COUNT's and SETUP's blocks from the camera's region (kernels/setup.h, kRanges): per
  * layer and camera an area, its camera page, ranges and costs (RF_AREA_*) */
 #define RF_RANGES 0x80000000u
@@ -71,7 +76,7 @@
  * KMX_WORDS_MAX; mesh 0: none), lit its surface; ranges in RF_AREA_GLASS */
 #define RF_GLASS_WORDS_AT (RF_PROFILES_AT + 64u)
 /* area 0 after the glass words: the eye's grid word, the host's (0: 32 x 32), read by
- * every FRAME command, so that a size changes between frames */
+ * every FRAME command, so that a size within the capacity changes between frames */
 #define RF_GRID_AT (RF_GLASS_WORDS_AT + 128u)
 #define RF_G_MESH 0
 #define RF_G_BLOCKS 1
@@ -245,5 +250,6 @@
 #define RF_PARALLEL 7u    /* a part on the four cores did not finish (late, stopped) */
 #define RF_NOT_SERVING 8u /* a FRAME command to a thread not set up to serve */
 #define RF_NOT_LIT 9u     /* a SUN command to a frame that is not lit */
-/* the grid word: a side 0 or over its most, over RM_TILES tiles */
+/* the grid word: a side 0, more tiles than RM_TILES (the capacity), or (narrow)
+ * wider than the narrow words */
 #define RF_BAD_GRID 10u

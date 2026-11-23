@@ -10,12 +10,13 @@ import subprocess
 import numpy as np
 import pytest
 
-from projects.raster import lists, passes
+from projects.raster import card, lists, passes
 from reference import raster, scenes
 
 CONSTANTS = lists.K
 THREAD = lists.HERE / "thread"
-MAX_ITEMS, STRIDE = 2048, 2048
+# built for the default frame's tiles (middle.h RM_TILES), its items and the bands'
+MAX_ITEMS = STRIDE = lists.TILES + card.STEPPED_BAND_ITEMS
 V, U = ctypes.c_void_p, ctypes.c_uint32
 
 
@@ -26,6 +27,9 @@ def lib(tmp_path_factory):
         pytest.skip("needs a C compiler (cc)")
     out = tmp_path_factory.mktemp("middle") / "libmiddle.so"
     command = [compiler, "-std=c11", "-O2", "-Wall", "-Werror", "-shared", "-fPIC"]
+    command.append(f"-DRM_TILES={lists.TILES}u")
+    command.append(f"-DRM_MAX_HEAVY={card.STEPPED_HEAVY}u")
+    command.append(f"-DRM_BAND_ITEMS={card.STEPPED_BAND_ITEMS}u")
     subprocess.run([*command, str(THREAD / "middle.c"), "-o", str(out)], check=True)
     library = ctypes.CDLL(str(out))
     library.rm_heavy.argtypes = [V, U, U, V, V, V]

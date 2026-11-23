@@ -254,8 +254,13 @@ namespace {
             );
             words[9 + corner] = top_left ? 0x80000001 : 0;
         }
+#ifdef RASTER_WIDE
+        words[24] = float_bits(box.first_column);  // wide (grid.h): float32 columns
+        words[25] = float_bits(box.last_column + 1);
+#else
         words[24] = half(box.first_column);
         words[25] = half(box.last_column + 1);
+#endif
         words[26] = box.first_row;
         words[27] = box.last_row;
         words[28] = float_bits(triangle);
@@ -347,6 +352,26 @@ namespace {
             return true;
         }
 
+#ifdef RASTER_WIDE
+        // COUNT, wide: a box in three words, up to kOutWords a page.
+        bool add_words(
+            const km::Compute& compute, uint32_t columns, uint32_t first, uint32_t last
+        ) {
+            if (!open(compute)) {
+                return false;
+            }
+            page[1 + filled] = columns;
+            page[2 + filled] = first;
+            page[3 + filled] = last;
+            ++entries;
+            filled += 3;
+            if (filled + 3 > kOutWords) {
+                push(false);
+            }
+            return true;
+        }
+#endif
+
         // COUNT: one box word, up to kOutWords a page.
         bool add_word(const km::Compute& compute, uint32_t box_word) {
             if (!open(compute)) {
@@ -415,14 +440,16 @@ namespace {
                 succeeded = false;
                 return;
             }
-            // the writer counts it (COUNT) or sends it to every item it reaches
-            // (SETUP); tile columns in 6 bits each, pixel rows in 10 (grid.h)
+            // the writer counts it (COUNT) or sends it to its items (SETUP): narrow,
+            // one word (grid.h); wide, COUNT's three words, SETUP's the record
+#ifndef RASTER_WIDE
             const uint32_t box_word = (
                 static_cast<uint32_t>(box.first_column >> 5) |
                 static_cast<uint32_t>(box.last_column >> 5) << 6 |
                 static_cast<uint32_t>(box.first_row) << 12 |
                 static_cast<uint32_t>(box.last_row) << 22
             );
+#endif
             if (knots != nullptr) {
                 block_cost += (
                     kCostKept +
@@ -431,11 +458,25 @@ namespace {
                         ((box.last_row >> 5) - (box.first_row >> 5) + 1)
                 );
             }
+#ifdef RASTER_WIDE
+            const bool handed = (
+                handler == kHandlerCount
+                    ? out.add_words(
+                        compute,
+                        static_cast<uint32_t>(box.first_column >> 5) |
+                            static_cast<uint32_t>(box.last_column >> 5) << 16,
+                        static_cast<uint32_t>(box.first_row),
+                        static_cast<uint32_t>(box.last_row)
+                    )
+                    : out.add(compute, words, 0)
+            );
+#else
             const bool handed = (
                 handler == kHandlerCount
                     ? out.add_word(compute, box_word)
                     : out.add(compute, words, box_word)
             );
+#endif
             succeeded = succeeded && handed;
         }
 
@@ -663,9 +704,11 @@ void setup_compute_command(const km::Compute& compute, const km_command_t& comma
     setup_pass::setup();
     Pass pass{compute, handler};
     pass.grid = grid_of(command.a8);
-    if (pass.grid.across > kGridAcrossMax || pass.grid.down > kGridDownMax) {
+#ifndef RASTER_WIDE
+    if (pass.grid.across > kNarrowAcross || pass.grid.down > kNarrowDown) {
         pass.grid = {kGridDefault, kGridDefault};  // never: the thread refuses it
     }
+#endif
     uint32_t* work = cb_ptr(kCbWork);
     for (uint32_t page = 0; page < pages; ++page) {
         const uint32_t asked = km::wall();

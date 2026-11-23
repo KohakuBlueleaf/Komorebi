@@ -190,7 +190,10 @@ namespace {
             const uint32_t tile = header[kHdrTile], records = header[kHdrCount];
             const int32_t first_row = header[kHdrRow0], end_row = header[kHdrRow1];
             if (
-                !(0 <= first_row && first_row < end_row && end_row <= 32 && tile < 1024)
+                !(
+                    0 <= first_row && first_row < end_row && end_row <= 32 &&
+                    tile < kTileCapacity
+                )
             ) {
                 give_up(kGaveBadItem, kWhereBadHeader);
                 input.end();

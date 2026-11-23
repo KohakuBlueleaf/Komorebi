@@ -209,13 +209,14 @@ class Viewer:
         self.bounces_serial = 0
         self.bounces = None
         self.field_s = None
-        # the frame's size: the one asked (a load takes it), the newest posted not yet
-        # applied and its serial, the frames' (the renderer's), the last change's ms
+        # the frame's size: asked (a load takes it), posted not applied and its serial,
+        # the frames', the last change's ms, the last refusal's reason (memory) or None
         self.size_asked = size
         self.size_pending = None
         self.size_serial = 0
         self.size = None
         self.size_ms = None
+        self.size_refused = None
 
     # Requests
 
@@ -334,6 +335,7 @@ class Viewer:
                 "size": None if self.size is None else list(self.size),
                 "size_asked": list(self.size_asked),
                 "size_ms": None if self.size_ms is None else round(self.size_ms, 3),
+                "size_refused": self.size_refused,
                 "sizes": (
                     None
                     if self.loaded[0] is None
@@ -388,10 +390,18 @@ class Viewer:
                         size, self.size_pending = self.size_pending, None
                     refused = None
                     if size is not None and renderer.sizes and size != renderer.size:
-                        # the frame's size: the grid word, between frames
-                        size_ms = renderer.set_size(size)
-                        with self.lock:
-                            self.size, self.size_ms = renderer.size, size_ms
+                        # the frame's size, between frames: the grid word, or past the
+                        # capacity a reload; refused for memory, the size as it was
+                        try:
+                            size_ms = renderer.set_size(size)
+                        except renderers.SizeRefused as error:
+                            with self.lock:
+                                self.size_refused = str(error)
+                                self.size_asked = renderer.size
+                        else:
+                            with self.lock:
+                                self.size, self.size_ms = renderer.size, size_ms
+                                self.size_refused = None
                     if sun is not None and renderer.sun_own is not None:
                         try:  # the SUN pass, between frames
                             sun_ms = renderer.set_sun(*sun)
@@ -483,7 +493,7 @@ class Viewer:
             self.tone = self.tone_own = self.tone_pending = None
             self.indirect = self.indirect_pending = None
             self.bounces = self.bounces_pending = self.field_s = None
-            self.size = self.size_ms = self.size_pending = None
+            self.size = self.size_ms = self.size_pending = self.size_refused = None
             size = self.size_asked
         name, scene = selected
         log(f"open {name} on {scene}")

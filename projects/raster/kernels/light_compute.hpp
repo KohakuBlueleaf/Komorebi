@@ -1221,7 +1221,7 @@ namespace shade_pass {
                 break;
             }
             const uint32_t first_row = rows & 0xFF, end_row = rows >> 8 & 0xFF;
-            if (!(first_row < end_row && end_row <= 32 && tile < 1024)) {
+            if (!(first_row < end_row && end_row <= 32 && tile < kTileCapacity)) {
                 fill_k::give_up(kGaveBadItem, kWhereShadeBad);
                 succeeded = false;
                 break;

@@ -4,6 +4,7 @@ bodies, the empty tile's planes as a kept field. README.md says what each line l
 to and which moves are still bodies."""
 
 import komorebi as km
+from projects.raster import card
 
 PLANES = 5  # a tile's planes (kPlanes), one 4096-byte page each
 # The fill's compute options, the hand program's: the pack CPU's vector unit.
@@ -112,7 +113,8 @@ class DirFrames(km.Entry):
     base14: int
 
 
-class FillPass(km.Program, compute=FILL):
+# the default frame's tiles and tables (kernels/grid.h)
+class FillPass(km.Program, compute=FILL, defines=card.capacity_defines()):
     """load_empty: the empty tile's planes into their field, kept. fill_tiles: the hand
     program's FILL on every core: its list pages walked on the pack CPU into each
     item's planes, written into the frame's pages, then its profile page."""

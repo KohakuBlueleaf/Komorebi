@@ -2,6 +2,7 @@
 directory, frame and profile tensors are written before the load, then FILL commands go
 to every core under the dispatcher, one in flight at a time."""
 
+import re
 import time
 
 import numpy as np
@@ -12,6 +13,8 @@ from projects.raster import lists
 
 K = lists.K
 KERNELS = lists.HERE / "kernels"
+MIDDLE_H = lists.HERE / "thread" / "middle.h"
+SETUP_H = KERNELS / "setup.h"
 STARTED = time.monotonic()
 
 
@@ -64,10 +67,11 @@ def spread_parts():
     return [*tiles, tasks], {"unpack_to_dest_mode": modes}, {"RASTER_SPREAD": "1"}
 
 
-def program(uploaded=None):
-    """The rasterizer's three kernels on every core; one command in flight per core, so
-    a command's event time is its own, submit to the last core's acknowledgement. Their
-    tensors' arguments from `uploaded` (upload's), or those of DRAM tensors."""
+def program(uploaded=None, held=None):
+    """The rasterizer's three kernels on every core, one command in flight per core (an
+    event's time its own); tensors' arguments from `uploaded` (upload's), or those of
+    DRAM tensors; built for the capacity `held` (card_thread.Capacity; by default the
+    default frame's tiles, the host-binned path's)."""
     spread_buffers, spread_compute, spread_defines = spread_parts()
     return km.Program(
         "raster",
@@ -87,7 +91,7 @@ def program(uploaded=None):
             "enable_trisc2_rvv": "if_present",
             **spread_compute,
         },
-        defines=spread_defines,
+        defines={**spread_defines, **capacity_defines(held)},
         depth=1,
         handlers=lists.RASTER_H,
     )
@@ -121,8 +125,63 @@ def read_frame(session, uploaded):
     return np.concatenate(read(session, *uploaded["frame"]))
 
 
+# A tile is cut into bands above SPLIT of a core's mean load (thread/middle.h RM_SPLIT).
+SPLIT = float(re.search(r"#define RM_SPLIT ([\d.]+)", MIDDLE_H.read_text())[1])
+# The base word's heavy index field (kernels/setup.h kBaseSlotBits): 1 + index < 2^9.
+HEAVY_FIELD = 1 << (
+    32 - int(re.search(r"kBaseSlotBits = (\d+);", SETUP_H.read_text())[1])
+)
+# The host-stepped passes' tables (card_passes standalone, passes.py, experiments): a
+# frame there is the default 1,024 tiles; the frame program sizes them from its cores.
+STEPPED_HEAVY, STEPPED_BAND_ITEMS = 256, 1024
+
+
+def heavy_capacity(held=None):
+    """(heavy tiles, bands' items) the tables of a capacity `held` hold: `cores` / SPLIT
+    and one (a frame has fewer: a tile is cut above SPLIT of a core's mean), the heavy
+    at most its tiles, the items to 32; without cores the host-stepped passes'.
+    ValueError past the base word's heavy index field."""
+    if held is None or held.cores is None:
+        return STEPPED_HEAVY, STEPPED_BAND_ITEMS
+    most = int(held.cores / SPLIT) + 1
+    heavy = min(held.tiles, most)
+    if heavy >= HEAVY_FIELD:
+        raise ValueError(
+            f"{held.cores} fill cores can cut {heavy} heavy tiles: the base word's "
+            f"heavy index holds {HEAVY_FIELD - 1} (kernels/setup.h kBaseSlotBits), "
+            f"at most {int((HEAVY_FIELD - 2) * SPLIT)} cores"
+        )
+    return heavy, -(-most // 32) * 32  # the items page's rows on 64 bytes (setup.h)
+
+
+def capacity_defines(held=None):
+    """The kernels' build defines of a capacity `held` (card_thread.Capacity; None: the
+    default frame's tiles): RASTER_TILES, RASTER_HEAVY, RASTER_BAND_ITEMS
+    (heavy_capacity), and RASTER_WIDE, RASTER_RECOUNT when set."""
+    heavy, band_items = heavy_capacity(held)
+    counts = {"RASTER_HEAVY": str(heavy), "RASTER_BAND_ITEMS": str(band_items)}
+    if held is None:
+        return {"RASTER_TILES": str(lists.TILES), **counts}
+    return {
+        "RASTER_TILES": str(held.tiles),
+        **counts,
+        **({"RASTER_WIDE": "1"} if held.wide else {}),
+        **({"RASTER_RECOUNT": "1"} if held.recount else {}),
+    }
+
+
 # Frame pages per tensor: at most 2 MB, a whole number of 3- and 5-page items.
 CHUNK_PAGES = 510
+
+
+def chunk_pages(pages):
+    """Pages per tensor of a frame of `pages`: CHUNK_PAGES, or as many more (a multiple
+    of 15) as keep it in the kDirFrameMax tensors the directory names."""
+    most = K["kDirFrameMax"]
+    if -(-pages // CHUNK_PAGES) <= most:
+        return CHUNK_PAGES
+    each = -(-pages // most)  # pages a tensor, then up to a multiple of 15
+    return -(-each // 15) * 15
 
 
 def even(session, steps):

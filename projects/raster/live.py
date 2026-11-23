@@ -1,10 +1,11 @@
-"""The thread-driven frame as a loop: a FRAME command a camera, the image read
-back or (`--push`) pushed; `--shade` (masked and glass layers), `--light` (LIGHT
-twice with glass; `--sun AZ,EL`, `--sun-path N`: SUN); `--size WxH` the frame's size
-(default 1024x1024). One JSON line; exit 1 unless ok."""
+"""The thread-driven frame as a loop: a FRAME command a camera, the image read back or
+(`--push`) pushed; `--shade`, `--light` (`--sun`, `--sun-path`: SUN); `--size WxH`
+(default 1024x1024), `--max-size WxH` the capacity, `--resize` sizes while running. One
+JSON line; exit 1 unless ok."""
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from reference import lights as light_data
 from reference import native, png, raster, scenes
 
 F, SHOW, SH, S = card_thread.F, card_thread.SHOW, card_thread.SH, card_thread.S
+M = card_thread.M
 CLUSTER = card_thread.CLUSTER
 TILE = 32
 PUSH_TIMEOUT_S = 2.0  # a frame's wait for the push's sequence words
@@ -111,15 +113,27 @@ def untile(pages, image, grid=(raster.TILES_X, raster.TILES_Y)):
     return image
 
 
-def parse_size(text):
-    """--size's "WxH" as (W, H), on the card's grid (card_thread.card_grid); exits with
-    the reason otherwise."""
+def parse_size(text, option="--size"):
+    """A "WxH" as (W, H), any positive size (card_thread.card_grid); exits with the
+    reason otherwise."""
     try:
         width, height = (int(part) for part in text.lower().split("x"))
         card_thread.card_grid((width, height))
     except ValueError as error:
-        raise SystemExit(f"--size {text}: {error}") from None
+        raise SystemExit(f"{option} {text}: {error}") from None
     return width, height
+
+
+def parse_resize(text):
+    """--resize's "N:WxH,M:WxH" as {frame index: (W, H)}."""
+    out = {}
+    for part in text.split(","):
+        index, _, size = part.partition(":")
+        try:
+            out[int(index)] = parse_size(size, "--resize")
+        except ValueError:
+            raise SystemExit(f"--resize {text}: N:WxH,...") from None
+    return out
 
 
 def expected(view):
@@ -345,11 +359,33 @@ def times_rows(raw, frames):
     return rows[numbers % F["RF_TIMES_ROWS"]], numbers
 
 
+LIST_MARGIN = 1.25  # grow_lists: the slots a frame needed, and a quarter
+
+
+class ListsRefused(ValueError):
+    """A frame's lists the card cannot hold: layer `name` needed `need` slots of the
+    `had` its lists hold, grown to `slots`; `error`, the allocation's or the load's
+    (None: past the base word's slot field, kernels/setup.h kBaseSlotBits)."""
+
+    def __init__(self, name, need, had, slots, error):
+        field = 1 << M["RM_BASE_SLOT_BITS"]
+        why = (
+            f"the base word's slot field holds {field:,}"
+            if error is None
+            else f"the card did not hold them: {error}"
+        )
+        super().__init__(
+            f"the {name} layer's lists: the frame needs {need:,} slots, they hold "
+            f"{had:,}; grown to {slots:,} slots "
+            f"({slots * lists.PAGE_WORDS * 4 // lists.PAGE_SLOTS:,} B): {why}"
+        )
+
+
 class Loop:
-    """The scene loaded in `session`, the thread's program running: a FRAME command a
-    camera (`frame`); `materials`: shaded, `lights`: lit (LIGHT's table; `set_sun`,
-    `set_tone`); term `indirect`: the field, its switch `set_indirect`; the size the
-    scene's (`size`), `set_size` between frames. Fills upload_s, load_s, ..."""
+    """The scene loaded in `session`, its program running: a FRAME command a camera
+    (`frame`); `materials`: shaded, `lights`: lit (`set_sun`, `set_tone`); `indirect`:
+    the field (`set_indirect`); the scene's size, `set_size` between frames; the
+    capacity `held` (by default the size's) sizes every per-tile tensor and buffer."""
 
     def __init__(
         self,
@@ -362,6 +398,7 @@ class Loop:
         materials=None,
         lights=None,
         terms=raster.TERMS,
+        held=None,
     ):
         self.session = session
         self.scene, self.materials, self.lights, self.terms = (
@@ -372,6 +409,11 @@ class Loop:
         )
         self.size = scenes.frame_size(scene)  # (W, H), set_size
         self.grid = card_thread.card_grid(self.size)  # (TX, TY)
+        self.held = card_thread.capacity([self.size], lights is not None, held)
+        self.push, self.list_slots, self.table = push, list_slots, table
+        self.reloads = []  # set_size's reloads: sizes, capacities, seconds
+        self.list_grown = {}  # a layer's lists' slots grown past list_slots' (frame)
+        self.lists_grown = []  # those growths: the frame's needs, the reload's ms
         self.padded = None  # the padded frame's picture when it is larger than W x H
         self.sun = None  # (azimuth, elevation) once set_sun moved it
         self.lit = lights  # the lights LIGHT's table is of (set_sun's once moved)
@@ -401,11 +443,78 @@ class Loop:
             None if materials is None else shade.prepare(scene, materials, lights)
         )
         blocks = passes.mesh_blocks(scene) if prepared is None else prepared["blocks"]
-        self.workers = workers = card.workers(session)
+        self.workers = card.workers(session)
+        self.held = self.held._replace(cores=self.workers)  # the heavy tiles' tables
+        self.prepared, self.blocks, self.sun_need = prepared, blocks, sun_need
+        self.load(report)
+
+    def load(self, report, again=False):
+        """The tensors of the capacity `held` (`again`: those that follow it alone,
+        made again), the program loaded and running (its thread serving FRAME
+        commands); a refusal for memory as card_thread.L1Refused."""
+        session, scene, held = self.session, self.scene, self.held
+        card_thread.l1_check(held, scenes.frame_size(scene), session.l1()[1])
         started = time.perf_counter()
+        if again:
+            self.tile_tensors()
+        else:
+            self.make_tensors(report)
+        self.start(report, started)
+
+    def tile_tensors(self):
+        """The tensors that follow the capacity made again for `held` (frames, their
+        directories, lists, display, counters, slots), the old ones freed."""
+        session, workers, held = self.session, self.workers, self.held
+        old = [*self.uploaded["frame"], self.display]
+        old += [
+            self.uploaded[name] for name in ("counters", "slots", "hist", "hprefix")
+        ]
+        self.uploaded["frame"] = card_thread.frame_tensors(session, held)
+        self.uploaded.update(card_thread.capacity_tensors(session, workers, held))
+        for name, layer in self.layers():
+            old.append(layer["lists"])
+            slots = self.layer_slots(name, held)
+            layer.update(card_thread.list_tensor(session, slots))
+            if name != "opaque":
+                old += layer["frame"]
+                layer["frame"] = card_thread.frame_tensors(session, held)
+        for surface in (self.surface, self.glass_surface):
+            if surface is not None:
+                light.surface_frames(session, workers, surface, held.tiles)
+        for tensor in old:
+            tensor.free()
+        self.display = card.tensor(  # a page a tile of the capacity
+            session, np.zeros((held.tiles, SHOW["kShowPageBytes"] // 4))
+        )
+
+    def layer_slots(self, name, held):
+        """The slots of layer `name`'s lists at the capacity `held`: list_slots' guess
+        from the scene, or what a frame needed (frame's RF_LISTS_SMALL) when more."""
+        guess = card_thread.list_slots(self.list_base[name], held)
+        return max(guess, self.list_grown.get(name, 0))
+
+    def layers(self):
+        """(name, tensors) of each layer loaded: opaque, then masked and glass."""
+        named = (
+            ("opaque", self.uploaded),
+            ("masked", self.masked),
+            ("glass", self.glass),
+        )
+        return [(name, layer) for name, layer in named if layer is not None]
+
+    def make_tensors(self, report):
+        """Every tensor of the frame, for the capacity `held`."""
+        session, scene, lights = self.session, self.scene, self.lights
+        materials, terms, held = self.materials, self.terms, self.held
+        list_slots, sun_need = self.list_slots, self.sun_need
+        prepared, blocks, workers = self.prepared, self.blocks, self.workers
         default_slots = 2 * len(scene["indices"]) + 65536  # card_thread's
         slots = max(list_slots or default_slots, sun_need.get("opaque", (0, 0))[1])
-        self.uploaded = card_thread.tensors(session, blocks, workers, slots)
+        self.list_base = {"opaque": slots}  # at the default frame's tiles
+        slots = max(
+            card_thread.list_slots(slots, held), self.list_grown.get("opaque", 0)
+        )
+        self.uploaded = card_thread.tensors(session, blocks, workers, slots, held)
         self.shade_profile = None
         if prepared is not None:
             self.shaded = {
@@ -421,7 +530,13 @@ class Loop:
         if lights is not None:
             report["list_slots"] = slots
             self.surface = light.surface_tensors(
-                session, workers, lights, materials, terms, field=self.field
+                session,
+                workers,
+                lights,
+                materials,
+                terms,
+                field=self.field,
+                tiles=held.tiles,
             )
             self.light_profile = self.surface["profile"]
         self.masked = self.glass = self.glass_surface = None
@@ -432,8 +547,13 @@ class Loop:
             if list_slots:  # the layer's lists grown as the others are
                 layer_slots = -(-layer_slots * list_slots // default_slots)
             layer_slots = max(layer_slots, sun_need.get(name, (0, 0))[1])
+            self.list_base[name] = layer_slots
             layer = card_thread.layer_tensors(
-                session, prepared[f"{name}_blocks"], workers, layer_slots
+                session,
+                prepared[f"{name}_blocks"],
+                workers,
+                self.layer_slots(name, held),
+                held,
             )
             layer["shade"] = card.tensor(session, prepared[f"{name}_shade_blocks"])
             # its own profile tensors: FILL's, COUNT's and SETUP's, SHADE's
@@ -450,14 +570,27 @@ class Loop:
             # the glass layer's own surface and LIGHT profile; the table and pages the
             # surface's
             self.glass_surface = light.surface_tensors(
-                session, workers, lights, materials, terms, shared=self.surface
+                session,
+                workers,
+                lights,
+                materials,
+                terms,
+                shared=self.surface,
+                tiles=held.tiles,
             )
-        self.display = card.tensor(
-            session, np.zeros((lists.TILES, SHOW["kShowPageBytes"] // 4))
+        self.display = card.tensor(  # a page a tile of the capacity
+            session, np.zeros((held.tiles, SHOW["kShowPageBytes"] // 4))
         )
         self.show_profile = card.tensor(
             session, np.zeros((workers, SHOW["kShowProfBytes"] // 4))
         )
+
+    def start(self, report, started):
+        """The thread's words from the tensors, the program built for `held` and
+        loaded (with the heavy tiles counted again when the full histograms do not fit
+        L1), the push armed."""
+        session, scene, held = self.session, self.scene, self.held
+        prepared, blocks, workers = self.prepared, self.blocks, self.workers
         session.device.finish()
         words = card_thread.words(self.uploaded, len(blocks), workers, workers, 4)
         words[F["RF_W_REPEAT"]] = 0  # serve FRAME commands
@@ -472,7 +605,7 @@ class Loop:
         if self.surface is not None:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
             words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
-            sun = self.region(lights)
+            sun = self.region(self.lit)
         glass_words = None  # frame.h RF_G_*, in area 0
         for name, prefix in (("masked", "RF_W_M_"), ("glass", "RF_G_")):
             layer = getattr(self, name)
@@ -497,15 +630,24 @@ class Loop:
             ]
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
-        self.running = running = session.load(
-            card_thread.program(
-                scene, words, workers, table, sun, profiles, glass_words
-            ),
-            deadline=1.0,
+        program = card_thread.program(
+            scene, words, workers, self.table, sun, profiles, glass_words, held
         )
+        if not held.recount and not card_thread.fits_l1(session, program):
+            # the full histograms do not fit: COUNT counts the heavy tiles' again
+            self.held = held = held._replace(recount=True)
+            program = card_thread.program(
+                scene, words, workers, self.table, sun, profiles, glass_words, held
+            )
+        try:
+            self.running = running = session.load(program, deadline=1.0)
+        except km.L1BudgetError as error:
+            size = scenes.frame_size(scene)
+            raise card_thread.L1Refused.of_budget(held, size, error) from None
         report["load_s"] = round(time.perf_counter() - started, 3)
+        report["capacity"] = card_thread.capacity_report(held, workers, self.dram())
         self.transfer = None
-        if push:
+        if self.push:
             self.transfer = transfer = session.channel_transfer(self.display, push=True)
             entry = transfer.entry
             push_words = np.zeros(F["RF_PUSH_BYTES"] // 4, dtype=np.uint32)
@@ -513,21 +655,110 @@ class Loop:
             push_words[F["RF_PUSH_GROUP"]] = entry.group[0] | entry.group[1] << 16
             push_words[F["RF_PUSH_ARGS"] : F["RF_PUSH_ARGS"] + 10] = entry.args
             running.thread.write("push", push_words)
-        self.pages = np.empty((lists.TILES, SHOW["kShowPageBytes"]), dtype=np.uint8)
+        self.pages = np.empty((held.tiles, SHOW["kShowPageBytes"]), dtype=np.uint8)
+
+    def tensors(self):
+        """Every tensor this load made, once each (the light profile: the surface's)."""
+        out, seen = [], set()
+
+        def walk(value):
+            if isinstance(value, dict):
+                for each in value.values():
+                    walk(each)
+            elif isinstance(value, list | tuple):
+                for each in value:
+                    walk(each)
+            elif hasattr(value, "free") and id(value) not in seen:
+                seen.add(id(value))
+                out.append(value)
+
+        for name in ("uploaded", "shaded", "surface", "masked", "glass"):
+            walk(getattr(self, name, None))
+        walk(
+            [
+                getattr(self, name, None)
+                for name in (
+                    "glass_surface",
+                    "display",
+                    "show_profile",
+                    "shade_profile",
+                )
+            ]
+        )
+        return out
+
+    def dram(self):
+        """The DRAM bytes of this load's tensors: those that grow with the capacity's
+        tiles (frames, surfaces, lists, display, counters, slots) and the rest."""
+        grows = {id(self.display)}
+        grows |= {id(self.uploaded[name]) for name in ("counters", "slots", "hist")}
+        for _, layer in self.layers():
+            grows |= {id(t) for t in layer["frame"]} | {id(layer["lists"])}
+        for surface in (self.surface, self.glass_surface):
+            if surface is not None:
+                grows |= {id(t) for frame in surface["frames"] for t in frame}
+        by_tiles = rest = 0
+        for tensor in self.tensors():
+            size = tensor.pages * tensor.page_bytes
+            if id(tensor) in grows:
+                by_tiles += size
+            else:
+                rest += size
+        return by_tiles, rest
 
     def set_size(self, size):
-        """The frame's size (W, H) for the next frame (card_thread.card_grid's rule,
-        ValueError with the reason otherwise): the grid word into the camera's region
-        (frame.h RF_GRID_AT), nothing reloaded; the next frame's camera is the caller's
-        (scenes.sized_camera). Returns the host's ms."""
+        """The frame's size (W, H) for the next frame, any positive size: within the
+        capacity the grid word (frame.h RF_GRID_AT), nothing reloaded; past it a reload
+        (card_thread.L1Refused when memory does not hold it). The next frame's camera is
+        the caller's (scenes.sized_camera). Returns the host's ms."""
         began = time.perf_counter()
         width, height = (int(n) for n in size)
         grid = card_thread.card_grid((width, height))
+        if not card_thread.covers(self.held, (width, height), self.lights is not None):
+            self.reload((width, height))
+            self.size, self.grid, self.padded = (width, height), grid, None
+            ms = (time.perf_counter() - began) * 1e3
+            self.reloads[-1]["ms"] = round(ms, 1)
+            return ms
         word = np.array([card_thread.grid_word((width, height))], dtype=np.uint32)
         self.running.thread.write("camera", word, F["RF_GRID_AT"])
         self.size, self.grid = (width, height), grid
         self.padded = None
         return (time.perf_counter() - began) * 1e3
+
+    def reload(self, size, stopped=False):
+        """The program stopped (unless `stopped`), its tensors freed, and everything
+        loaded again with a capacity that holds both the old capacity and `size`; the
+        tone, the indirect switch and the sun as they were (a moved sun's SUN command
+        again)."""
+        began = time.perf_counter()
+        held = card_thread.capacity([size], self.lights is not None, self.held)
+        card_thread.l1_check(held, size, self.session.l1()[1])  # before the stop
+        if not stopped:
+            self.running.stop()
+        if self.transfer is not None:
+            self.transfer.close()
+        before, self.held = self.held, held
+        self.scene = scenes.with_size(self.scene, size)
+        report = {}
+        try:
+            self.load(report, again=True)
+        except card_thread.L1Refused:
+            self.held = before  # the old capacity again, the size as it was
+            self.scene = scenes.with_size(self.scene, self.size)
+            self.load({}, again=True)
+            raise
+        if self.sun is not None:
+            self.set_sun(*self.sun)
+        self.reloads.append(
+            {
+                "size": list(size),
+                "capacity": list(held),
+                "upload_s": report["upload_s"],
+                "load_s": report["load_s"],
+                "s": round(time.perf_counter() - began, 3),
+            }
+        )
 
     def picture(self, pages, image):
         """The display's pages into `image` (H, W, 4): straight when the padded frame
@@ -542,11 +773,11 @@ class Loop:
         image[...] = self.padded[:height, :width]
         return image
 
-    def frame(self, camera, image):
-        """One FRAME command for `camera` (16 float32, the frame's size's), its 8-bit
-        picture into `image` (H, W, 4). Returns its event, the times (s) began, camera
-        written, commanded, read and ended, and the event's wait after the image (ms;
-        None without the push)."""
+    def frame(self, camera, image, grown=0):
+        """One FRAME command for `camera` (16 float32), its picture into `image` (H, W,
+        4): its event, the times (s) began, camera written, commanded, read, ended, and
+        the event's wait after the image (ms; None without the push). On RF_LISTS_SMALL
+        the lists grown (grow_lists) and the frame again (`grown`: times so far)."""
         running, transfer = self.running, self.transfer
         camera = np.asarray(camera, dtype=np.float32).view(np.uint32)
         collect = None
@@ -579,7 +810,45 @@ class Loop:
             collect = (time.perf_counter() - ended) * 1e3
             if not arrived and event.kind == "done" and event.result == 0:
                 event = event._replace(result="push words missing")
+        short = event.kind == "done" and event.result == F["RF_LISTS_SMALL"]
+        if short and grown < len(self.layers()):  # a layer's lists, then the next's
+            self.grow_lists()
+            return self.frame(camera.view(np.float32), image, grown + 1)
         return event, (began, written, commanded, read, ended, collect)
+
+    def grow_lists(self):
+        """After a frame answered RF_LISTS_SMALL: each layer whose lists hold fewer
+        slots than the frame needed (its times row) grown to LIST_MARGIN times that,
+        everything loaded again (reload); its needs and ms into lists_grown.
+        ListsRefused when the base word's slot field or the card's DRAM cannot."""
+        began = time.perf_counter()
+        self.running.stop()  # its regions are read after the stop
+        rows = np.frombuffer(self.running.thread.read("times"), dtype=np.uint32)
+        rows = rows[: F["RF_TIMES_ROWS"] * F["RF_TIMES_ROW_WORDS"]]
+        rows = rows.reshape(F["RF_TIMES_ROWS"], F["RF_TIMES_ROW_WORDS"])
+        row = rows[int(np.argmax(rows[:, F["RF_T_NUMBER"]]))]  # the last served
+        at = {"opaque": 0, "masked": F["RF_T_M_PARTS"], "glass": F["RF_T_G_PARTS"]}
+        grown = {}
+        for name, layer in self.layers():
+            need = int(row[at[name] + F["RF_O_SLOTS"]])
+            if need > layer["list_slots"]:
+                slots = math.ceil(need * LIST_MARGIN)
+                if slots >= 1 << M["RM_BASE_SLOT_BITS"]:
+                    self.reload(self.size, stopped=True)  # the frames go on as before
+                    raise ListsRefused(name, need, layer["list_slots"], slots, None)
+                grown[name] = [layer["list_slots"], need, slots]
+        before = dict(self.list_grown)
+        self.list_grown.update({name: slots for name, (_, _, slots) in grown.items()})
+        try:
+            self.reload(self.size, stopped=True)
+        except RuntimeError as error:  # DRAM (tensors), or the load
+            self.list_grown = before
+            self.load({}, again=True)  # the frames go on as before
+            name, (had, need, slots) = next(iter(grown.items()))
+            raise ListsRefused(name, need, had, slots, error) from None
+        ms = round((time.perf_counter() - began) * 1e3, 1)
+        self.reloads[-1]["lists"] = grown
+        self.lists_grown.append({"layers": grown, "ms": ms})
 
     def region(self, lights):
         """The sun region (light.sun_region) of `lights` with the tone step's numbers
@@ -691,9 +960,16 @@ class Loop:
 def loop(args):
     scene, _ = run.load(args.scene)
     size = parse_size(args.size)
+    resize = parse_resize(args.resize) if args.resize else {}
+    sized, now = [], size  # each frame's size: --size, then --resize's
+    for index in range(args.frames):
+        now = resize.get(index, now)
+        sized.append(now)
     views = [
-        scenes.with_size(view, size) for view in framegraph.cameras(scene, args.frames)
+        scenes.with_size(view, sized[index])
+        for index, view in enumerate(framegraph.cameras(scene, args.frames))
     ]
+    most = parse_size(args.max_size, "--max-size") if args.max_size else size
     table = show_table()
     args.shade = args.shade or args.light
     materials = shade.load(args.scene) if args.shade else None
@@ -734,6 +1010,7 @@ def loop(args):
     sun_at = {}  # frame index: the sun it was rendered with, once moved
     passes_run = []  # each SUN command: angles, word, host ms
     checked = {0, args.frames // 2, args.frames - 1}
+    checked |= {index for index in resize if index < args.frames}  # each new size's
     if args.indirect_switch and args.indirect_switch < args.frames:
         checked.add(args.indirect_switch)  # the first frame with the switch off
     checked = sorted(checked)
@@ -750,8 +1027,11 @@ def loop(args):
             materials,
             lights,
             terms,
+            card_thread.capacity([most], lights is not None)._replace(
+                recount=args.recount
+            ),
         )
-        workers, running = live.workers, live.running
+        workers = live.workers
         sun_got = None
         if toned:
             report["tone"]["host_ms"] = round(live.set_tone(**tone), 3)
@@ -785,6 +1065,8 @@ def loop(args):
             if args.check_sun and word == 0:
                 sun_got = live.shadow_map()
         image = np.empty((size[1], size[0], 4), dtype=np.uint8)
+        resized = []  # each --resize: frame, size, host ms, reloaded
+        regrown = []  # each growth of the lists (Loop.grow_lists): frame, needs, ms
         host, camera_ms, command_ms, read_ms, words_back = [], [], [], [], []
         collect_ms = []
         own = light_data.sun_angles(lights["sun_direction"]) if args.light else None
@@ -799,7 +1081,32 @@ def loop(args):
                 live.set_indirect(not live.indirect)
             if args.indirect:
                 indirect_at[index] = live.indirect
-            event, times = live.frame(view["camera"], image)
+            if index in resize:
+                reloads = len(live.reloads)
+                try:
+                    ms = live.set_size(resize[index])
+                except card_thread.L1Refused as error:
+                    report["refused"] = str(error)
+                    card.log(f"--resize at frame {index}: {error}")
+                    break
+                resized.append(
+                    {
+                        "frame": index,
+                        "size": list(resize[index]),
+                        "host_ms": round(ms, 1),
+                        "reloaded": len(live.reloads) > reloads,
+                    }
+                )
+                image = np.empty((sized[index][1], sized[index][0], 4), dtype=np.uint8)
+            grown = len(live.lists_grown)
+            try:
+                event, times = live.frame(view["camera"], image)
+            except ListsRefused as error:
+                report["refused"] = str(error)
+                card.log(f"frame {index}: {error}")
+                break
+            # its lists grown, the frame again
+            regrown.extend({"frame": index, **g} for g in live.lists_grown[grown:])
             began, written, commanded, read, ended, collect = times
             if collect is not None:
                 collect_ms.append(collect)
@@ -823,14 +1130,31 @@ def loop(args):
                 card.log(f"frame {index}: {event.kind}, word {word}")
                 break
         live.stop()
+        running = live.running
         report["status"] = card.check_run(running, workers, 0, [])
-        rows, numbers = times_rows(running.thread.read("times"), len(words_back))
+        if resize:
+            report["resize"] = resized
+            report["reloads"] = live.reloads
+        if regrown:
+            report["lists_grown"] = regrown
+        # the times of the frames since the last load (a reload starts them again)
+        loaded_at = max(
+            [entry["frame"] for entry in resized if entry["reloaded"]]
+            + [entry["frame"] for entry in regrown],
+            default=0,
+        )
+        rows, numbers = times_rows(
+            running.thread.read("times"), len(words_back) - loaded_at
+        )
         sun_rows = None
         if passes_run:
-            sun_rows, _ = times_rows(
-                running.thread.read("sun_times"),
-                sum(run["word"] is not None for run in passes_run),
+            sun_commands = sum(
+                run["word"] is not None and run["frame"] >= loaded_at
+                for run in passes_run
             )
+            if loaded_at and live.sun is not None:
+                sun_commands += 1  # the reload's own SUN command
+            sun_rows, _ = times_rows(running.thread.read("sun_times"), sun_commands)
         (profile_pages,) = card.read(session, live.show_profile)
         layer_pages = {"opaque": live.uploaded}
         for name in ("masked", "glass"):
@@ -927,6 +1251,11 @@ def loop(args):
         part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
         for part in ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
     }
+    middle_parts = ("take", "heavy_microseconds", "cut", "sort", "assign", "compact")
+    report["card_middle_parts_ms"] = {  # the middle pass's (frame.h RF_O_*)
+        part: round(float(np.median(rows[:, F[f"RF_O_{part.upper()}"]])) * ticks_ms, 4)
+        for part in (*middle_parts, "pages", "give")
+    }
     if layers:  # each layer's parts (the other layers' own words)
         names = ("count", "sum", "hist", "hsum", "middle", "place", "setup", "fill")
         own = {
@@ -961,6 +1290,7 @@ def loop(args):
     report["heavy_tiles"] = rows[:, F["RF_O_HEAVY"]].tolist()[:4]
     report["heavy_tiles_max"] = int(rows[:, F["RF_O_HEAVY"]].max())
     report["items_max"] = int(rows[:, F["RF_O_ITEMS"]].max())
+    report["list_slots_used_max"] = int(rows[:, F["RF_O_SLOTS"]].max())
     report["rows_in_order"] = bool((rows[:, F["RF_T_NUMBER"]] == numbers).all())
     convert = profile[:, SHOW["kShowProfConvert"]]
     converted_rows = profile[:, SHOW["kShowProfRows"]]
@@ -1118,7 +1448,23 @@ def main():
     parser.add_argument(
         "--size",
         default="1024x1024",
-        help="the frame's WxH in pixels (scenes.frame_grid; the card's grid at most)",
+        help="the frame's WxH in pixels, any positive size (scenes.frame_grid)",
+    )
+    parser.add_argument(
+        "--max-size",
+        default=None,
+        help="the capacity loaded, as the largest WxH it renders (default --size); "
+        "memory alone bounds it",
+    )
+    parser.add_argument(
+        "--recount",
+        action="store_true",
+        help="COUNT counts the heavy tiles' histograms again even where they fit L1",
+    )
+    parser.add_argument(
+        "--resize",
+        default=None,
+        help="N:WxH,...: set_size before frame N (past the capacity: a reload)",
     )
     parser.add_argument(
         "--push", action="store_true", help="the display pushed inside FRAME"

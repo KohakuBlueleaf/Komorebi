@@ -38,8 +38,12 @@ python -m projects.viewer.server --host HOST --port PORT --token TOKEN \
 `bistro_interior_overview`, `bistro_exterior_overview`, `breakfast_room_overview`,
 `salle_de_bain_overview`, `modern_hall_overview`, `modern_living_room_overview`.
 
-`--size` is the frame's size at the start, 1280x720 by default; a size the rasterizer's
-card grid does not take stops the server with the reason.
+`--size` is the frame's size at the start, 1280x720 by default; any positive size. The
+page's width and height take any size too: within the loaded capacity it applies between
+frames, past it the rasterizer reloads with a larger capacity (`live.Loop.set_size`, a
+second or so), and a size a core's L1 does not hold comes back refused with the load's
+reason under the inputs (`/state` `size_refused`), the frames going on at the size before.
+The ray tracer stays at 1,024 x 1,024.
 
 The server binds only the address `--host` gives. Open
 `http://HOST:PORT/?token=TOKEN`: every request carries the token (the query `?token=`
@@ -171,9 +175,11 @@ label) and frames a second `/state` showed; and that requests without the token 
 `ok`. A lit renderer also moves the sun and posts the tone exposure 2, saturation 1.15,
 filmic; raster-gi then posts passes 4 (400 with the reason) and 0, then switches the
 indirect light off: each must change the frame and show in `/state` (and `field_s` after
-the passes); the other renderers must refuse a passes post with 400. Each case also posts 2048 x 1024 (64 x 32 = 2,048 tiles: 400 with the
-reason), then on a rasterizer 1024 x 576 (`/state` and a frame of that size must follow)
-and the start's size again; the ray tracer must refuse 1024 x 576 with 400.
+the passes); the other renderers must refuse a passes post with 400. Each case also posts
+16384 x 16384 (512 x 512 tiles: a rasterizer takes it and `/state` shows the L1 refusal
+with the size kept; the ray tracer 400), then on a rasterizer 1024 x 576, 1920 x 1080
+(past the capacity: a reload) and the start's size, each followed by `/state` and a frame
+of that size; the ray tracer must refuse 1024 x 576 with 400.
 
 Card 1, 2026-11-24 01:52 to 01:56, server `--size 1280x720` (default) on 127.0.0.1:8766,
 `check.py` `ok`, every case: the rasterizers' frames 1,280 x 720 on every scene, the size

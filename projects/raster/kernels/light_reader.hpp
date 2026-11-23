@@ -118,7 +118,7 @@ void light_reader_command(const km::Reader& reader, const km_command_t& command)
         const uint32_t page = tile * kPlanes;
         const uint32_t* second_words = surface + kDirFrameMax + 1;
         if (
-            tile >= 1024 || page / tensor_pages >= kDirFrameMax ||
+            tile >= kTileCapacity || page / tensor_pages >= kDirFrameMax ||
             page / surface[0] >= kDirFrameMax ||
             page / second_words[0] >= kDirFrameMax ||
             (glass && page / glass_frame[0] >= kDirFrameMax)

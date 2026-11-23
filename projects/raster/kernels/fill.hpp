@@ -268,14 +268,25 @@ namespace fill {
     TTI_SFPGT(0, L5, L4, kSetCC)
 #endif
 
+    // The box columns of `record_words` into L2 and L4: masked float16 immediates, or
+    // in a wide build (grid.h) float32 ones, two immediates each.
+#ifdef RASTER_WIDE
+#define FILL_COLUMNS                     \
+    immediate(L2, record_words[kRecX0]); \
+    immediate(L4, record_words[kRecX1])
+#else
+#define FILL_COLUMNS                                                  \
+    push(TT_OP_SFPLOADI(L2, kFloatA, record_words[kRecX0] & 0xFFFF)); \
+    push(TT_OP_SFPLOADI(L4, kFloatA, record_words[kRecX1] & 0xFFFF))
+#endif
+
     // Edge `edge` of `record_words`: a px into constants[kConstA + edge] (through LReg
-    // `lreg`), b, c and T broadcast. The box columns are masked float16 immediates.
+    // `lreg`), b, c and T broadcast; FILL_COLUMNS the box's.
 #define FILL_TRI_EDGE(edge, lreg)                                               \
     immediate(lreg, record_words[kRecA + edge]);                                \
     TTI_SFPMAD(lreg, L5, NZ, lreg, 0);                                          \
     if (edge == 0) {                                                            \
-        push(TT_OP_SFPLOADI(L2, kFloatA, record_words[kRecX0] & 0xFFFF));       \
-        push(TT_OP_SFPLOADI(L4, kFloatA, record_words[kRecX1] & 0xFFFF));       \
+        FILL_COLUMNS;                                                           \
         TTI_SFPLOADI(L3, kFloatB, 0xFF80);                                      \
         FILL_BOX;                                                               \
         TTI_SFPLOADI(L3, kFloatB, 0);                                           \
@@ -370,8 +381,7 @@ namespace fill {
         TTI_SFPLOAD(L5, kInt32, kAddressMode, constant_address(kConstPx));
         TTI_SFPLOAD(L1, kInt32, kAddressMode, constant_address(kConstA));
         TTI_SFPMAD(L1, L5, NZ, L1, 0);
-        push(TT_OP_SFPLOADI(L2, kFloatA, record_words[kRecX0] & 0xFFFF));
-        push(TT_OP_SFPLOADI(L4, kFloatA, record_words[kRecX1] & 0xFFFF));
+        FILL_COLUMNS;
         TTI_SFPLOADI(L3, kFloatB, 0xFF80);
         TTI_SFPGT(0, L2, L5, kSetCC);
         TTI_SFPGT(0, L5, L4, kSetCC);

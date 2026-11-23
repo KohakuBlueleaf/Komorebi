@@ -13,9 +13,8 @@ import numpy as np
 from reference import rng
 
 WIDTH = HEIGHT = 1024
-# A frame of any size (`frame_grid`): tiles of TILE x TILE pixels, at most MAX_TILES.
+# A frame of any size (`frame_grid`): tiles of TILE x TILE pixels.
 TILE = 32
-MAX_TILES = 1024
 # Names of the scenes used by the benchmarks and the triangle count aimed at.
 PRESETS = {"tiny": 300, "s10k": 10_000, "s100k": 100_000, "s1m": 1_000_000}
 TINY_SPHERES = 5
@@ -139,19 +138,12 @@ def make_camera(half):
 
 def frame_grid(size):
     """The grid (TX, TY) of a frame of size (W, H) pixels: ceil(W / TILE) by
-    ceil(H / TILE) tiles, each at least 1 and TX TY at most MAX_TILES; ValueError
-    with the reason otherwise. The frame rendered is TILE TX by TILE TY (padded), the
-    picture its top-left W by H."""
+    ceil(H / TILE) tiles, any positive size; ValueError with the reason otherwise. The
+    frame rendered is TILE TX by TILE TY (padded), the picture its top-left W by H."""
     width, height = (int(n) for n in size)
     if width < 1 or height < 1:
         raise ValueError(f"a frame of {width} x {height} pixels: both must be >= 1")
-    across, down = -(-width // TILE), -(-height // TILE)
-    if across * down > MAX_TILES:
-        raise ValueError(
-            f"a frame of {width} x {height} pixels is {across} x {down} = "
-            f"{across * down} tiles of {TILE} x {TILE}: at most {MAX_TILES}"
-        )
-    return across, down
+    return -(-width // TILE), -(-height // TILE)
 
 
 def frame_size(scene):

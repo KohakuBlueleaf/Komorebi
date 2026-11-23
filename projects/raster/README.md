@@ -1071,16 +1071,15 @@ masked layer's lists grow by the same factor).
 ### The frame's size (`live.py --size WxH`)
 
 A frame of `W x H` pixels is a grid of `TX = ceil(W / 32)` by `TY = ceil(H / 32)` tiles,
-`TX x TY` at most 1,024 (`reference/scenes.py` `frame_grid`); the card renders the padded
-frame `32 TX x 32 TY` and the host shows and compares its top-left `W x H`. The card also
-needs `TX` at most 64 and `TY` at most 32 (SETUP's box word: 6 bits of tile column, 10 of
-pixel row), so `W` up to 2,048 and `H` up to 1,024 (`card_thread.card_grid`; a size past
-either is refused with the reason). The camera: principal point `(W / 2, H / 2)`, focal
+any positive size (`reference/scenes.py` `frame_grid`); the card renders the padded frame
+`32 TX x 32 TY` and the host shows and compares its top-left `W x H`. No number of tiles
+bounds it: memory does, through the capacity ("Any size: the capacity" below). The
+camera: principal point `(W / 2, H / 2)`, focal
 length times `max(W, H) / 1024` (`scenes.sized_camera`, used by the reference, `live.py`
 and the viewer). 1,024 x 1,024 is the default and the same as before: grid word 0, every
 command word as before, the reference bit for bit.
 
-The grid travels as a word: the host writes `TX | TY << 8` (0 for 32 x 32) at `RF_GRID_AT`
+The grid travels as a word: the host writes `TX | TY << 16` (0 for 32 x 32) at `RF_GRID_AT`
 of the camera's region, the thread reads it at every `FRAME` and hands it to every command
 in `a8` above the bank (`kernels/grid.h`, `kernels/README.md`): COUNT and SETUP clip to the
 padded frame and number a tile `ty TX + tx`, the middle pass lays out `TX x TY` tiles (the
@@ -1088,11 +1087,11 @@ tiles past them get no items), FILL, SHADE and LIGHT take a tile's row and colum
 SHOW takes none (its `a8` is its block's word): a tile's page is its number, so the display
 is `TX x TY` pages and the host untiles and crops. The SUN pass sets the sun's own grid
 (word 0, 32 x 32 a quadrant) for its passes and the eye's again after. Since the word is
-read at every frame, `Loop.set_size` changes the size between frames with no reload: one
-4-byte write, 0.17 to 0.20 ms on the host (Sponza, plain and lit, 1,024 x 1,024 to
-1,280 x 720 to 512 x 512 to 1,024 x 576 and back, each frame checked, card 1, 01:47).
-The push still moves the whole 1,024-page display (a transfer has no page range); the
-host-binned `run.py` path stays 1,024 x 1,024.
+read at every frame, `Loop.set_size` changes the size between frames with no reload while
+it is within the capacity: one 4-byte write, 0.17 to 0.20 ms on the host (Sponza, plain
+and lit, 1,024 x 1,024 to 1,280 x 720 to 512 x 512 to 1,024 x 576 and back, each frame
+checked, card 1, 01:47). The push moves the whole display, a page a tile of the capacity
+(a transfer has no page range); the host-binned `run.py` path stays 1,024 x 1,024.
 
 Card 1, 2026-11-24 01:14 to 01:58, AICLK 1,350 MHz, `live.py --push --size S`, 20 frames,
 frames 0, 10, 19 checked: vertex colours 0 pixels differ at every size on Sponza and the
@@ -1123,6 +1122,131 @@ command, 02:18): Bistro interior lit 17.74 against 17.69 ms, Sponza lit with a S
 exterior, check C ok; along `--sun-path 10 --frames 200` on Sponza (01:47) every frame's
 and pass's word 0, pass median 17.09 ms (worst 19.47), frame 10.65 (12.52), 86.7 frames a
 second.
+
+### Any size: the capacity
+
+No number of tiles is written in the frame program: the kernels, the X280 thread, the
+tensors and the reference. Every per-tile table is sized from a capacity in tiles that the
+load chooses (`card_thread.capacity`): the most tiles of the sizes it renders, rounded up
+to a multiple of 32 (a lit load at least 1,024: the SUN pass renders a 32 x 32 quadrant
+into the eye's tensors). `live.py --max-size WxH` sets it; by default it is the size
+asked. It sizes the kernels' tables (`RASTER_TILES`, `kernels/grid.h`), the thread's
+arrays and regions (`RM_TILES`, `thread/middle.h`, `frame.h`), the frame, surface and
+display tensors and the counters' and slots' pages. A size within the capacity changes
+between frames with no reload (`Loop.set_size`); a size past it reloads with a capacity
+that holds both, by itself, and reports the time (`Loop.reloads`): the program stopped,
+the tensors that follow the capacity made again (the mesh, lists, textures and tables
+kept), the program built and loaded, the sun's pass again when the sun was moved.
+`live.py --max-size WxH` loads a larger capacity up front (by default the size asked);
+`--resize F:WxH,...` changes the size at frame F. Card 1, 2026-11-24 05:10 to 05:12,
+1,280 x 720 to 1,920 x 1,080 and back (capacity 928 to 2,048): the reload 794 ms in
+vertex colours on Sponza (upload 0.12 s, load 0.59 s), 999 ms lit Sponza with the sun
+moved, 1,333 ms lit interior; back 0.2 ms; every frame after it checked, 0 pixels differ
+or `ok`. In the viewer (05:00) 0.8 to 2.8 s past the capacity, 0.2 to 0.3 ms within it.
+
+Two builds of the box words: narrow (today's words, a grid of at most 64 by 32 tiles:
+6-bit tile columns, 10-bit rows, float16 box columns) and wide (a wider grid: 32-bit
+fields, float32 columns; `kernels/README.md`). At a capacity whose full histograms do not
+fit a core's L1, the load builds `RASTER_RECOUNT`: COUNT keeps no histograms, and after
+the middle pass names the heavy tiles, COUNT runs again over the same blocks and counts
+their 2-row histograms alone, into a table of the heavy tiles (HIST sends from it).
+
+The heavy tiles' tables (HIST's histograms, HSUM's 128-byte rows, the thread's) and the
+items past one a tile (the bands) follow the load's fill cores, not a number of tiles
+(`card.heavy_capacity`): a tile is cut above 0.33 of a core's mean, so a frame has fewer
+than cores / 0.33 heavy tiles and fewer than cores / 0.33 band items; at 120 cores the
+tables hold 364 heavy tiles and 384 band items (before: 256 and 1,024; a frame with more
+than 256 heavy tiles was dropped with word 4, `RF_TOO_MANY_HEAVY`;
+`test_more_than_256_heavy_tiles` builds one of 301). The base word's 9-bit heavy index
+holds 510: past 168 fill cores the load refuses with the numbers. A fill core's directory
+page holds 997 items: the assignment gives a full core no more (before, a frame whose
+balance gave one core more was refused, `RF_NO_LAYOUT`; `test_directory_page_full`).
+
+The lists: their slots are the scene's times sqrt(capacity / 1,024) past 1,024 tiles (a
+triangle reaches more tiles as they shrink). A frame that needs more answers
+`RF_LISTS_SMALL` with what it needed; `Loop.frame` grows that layer's lists to 1.25 times
+it, loads again and renders the frame again (`Loop.lists_grown`, `report["lists_grown"]`);
+only lists past the base word's 23-bit slot field (8,388,608 slots) or the card's DRAM
+are refused (`live.ListsRefused`, with the numbers). Card 1, 05:36 to 05:38:
+`--list-slots 100000` on Sponza at 1,920 x 1,080, frame 0 needed 296,608 of 141,424
+slots, grown to 370,760, 770 ms, every frame after 0 pixels differ; `--list-slots 200000`
+lit on the Bistro exterior, frame 0 grew the masked layer's (448,304 of 432,672) then the
+glass layer's (7,248 of 3,616), 1.2 s each, the lit check `ok`.
+
+Every fixed number left in the frame program (none bounds the frame's size before L1
+does):
+
+| name | value | what it limits | beyond it |
+|---|---|---|---|
+| heavy tiles (`RASTER_HEAVY`, `RM_MAX_HEAVY`, HSUM's rows) | cores / 0.33 + 1, at most the tiles (364) | nothing: a frame has fewer | guards kept, unreachable |
+| band items (`RASTER_BAND_ITEMS`, `RM_BAND_ITEMS`) | the same, to 32 (384) | nothing: a frame has fewer | guard kept, unreachable |
+| base word's heavy index, 9 bits | 510 heavy tiles | the fill cores (at most 168) | the load refuses with the numbers |
+| base word's slot field, 23 bits | 8,388,608 slots a layer | the lists (scene x frame; 1.67 M used at most) | `ListsRefused`, the frames go on as before |
+| `kHeavyBytes` 4,096 | 1,022 heavy tiles | below the 510 above | static_assert |
+| directory page, `kDirMaxItems` 997 | items a fill core | nothing: a full core takes no more | fails past 997 x cores items (119,640), above L1's 9,728 tiles |
+| `RM_MAX_BANDS` 16, `RM_GROUPS` 16 | bands a tile, 2-row groups | the detail inside one tile | a tile stays at 16 bands: slower, correct |
+| item id's tile field, items page `n << 16` | 65,536 tiles, items | the frame's size in principle | static_assert; L1 refuses at 9,728 tiles first |
+| a8 sides, 14 bits | 16,383 tiles a side | the frame's size in principle | `RF_BAD_GRID`; L1 first |
+| frame tensors, `kDirFrameMax` 15 | 15 tensors a frame | nothing: a tensor's pages grow from 510 to a multiple of 15 (`card.chunk_pages`) | - |
+| narrow words, 64 x 32 tiles | - | nothing: a wider grid loads wide | - |
+| `RM_MAX_CORES` 248, heap core 8 bits | fill cores | the card's cores | `RF_BAD_ARGS` |
+| SUN quadrant, 32 x 32 tiles | - | a lit capacity is at least 1,024 tiles | - |
+| `RF_TIMES_ROWS` 256 | frames' times kept | measurement only | older rows overwritten |
+
+The only refusals are for memory, with the numbers (`card_thread.L1Refused`, the
+viewer shows the reason):
+
+- **A core's L1**: the buffers that grow with tiles, per tile: COUNT's counters 8 B,
+  the histograms 64 B (none with the recount; the buffer then holds PLACE's copy of the
+  items region, 4 B a tile and 14 B an item), the slots 4 B an item, the items page 4 B
+  and 2 B an item (an item a tile, and the bands' items). Full histograms: 82 B a tile;
+  with the recount about 36 B a tile.
+- **The card's DRAM**: a frame 20 KB a tile a layer (five 4 KB pages), a lit surface two
+  frames (40 KB a tile, the glass layer's too), the display 4 KB, the counters 8 B and
+  the slots 4 B an item a core.
+- **The thread's memory**: its items region 4 B a tile and 14 B an item, its work region
+  32 B a tile and 60 B an item, its sums 8 B a tile (`card_thread.thread_sizes`,
+  `work_bytes`), in its bank of DRAM.
+
+Card 1, 2026-11-24, AICLK 1,350 MHz, `live.py --push --size S`, 20 frames, frames 0, 10,
+19 checked (1,920 x 1,080 03:20 to 03:37, 2,560 x 1,440 03:20 to 03:59, 3,840 x 2,160
+04:22 to 04:55; with the heavy tiles' tables of 256 and 1,024 band items, the vertex
+colours at 3,840 x 2,160 again with 364 and 384 at 05:38: 24.90, 29.91, 39.27 ms, 0 pixels
+differ): vertex colours 0 pixels differ everywhere; `--shade --check-shade`,
+`--light --check-light`, `--light --indirect --check-light` (Sponza, interior) and
+`--check-sun --sun=90,40` (check B 0 texels apart, 0 empty on one side) all `ok`, every
+word 0. Lit over 4 at most 0.029 % (Sponza), 0.0027 % (interior), 0.074 % (exterior).
+
+| scene | size | grid | capacity | colours: card frame | COUNT / middle / SETUP / FILL | SHOW | host | fps | shaded frame | lit frame (SHADE / LIGHT) | lit fps | indirect frame | fps |
+|---|---|---|---|---:|---|---:|---:|---:|---:|---|---:|---:|---:|
+| Sponza | 1920 x 1080 | 60 x 34 | 2,048 wide | 7.70 | 0.78 / 0.84 / 1.40 / 2.31 | 1.55 | 10.31 | 97.0 | 16.28 | 18.66 (6.12 / 3.00) | 46.8 | 23.00 | 39.0 |
+| Bistro interior | 1920 x 1080 | 60 x 34 | 2,048 wide | 12.21 | 1.99 / 1.01 / 2.77 / 3.84 | 1.68 | 14.84 | 67.4 | 24.52 | 29.09 (7.70 / 5.98) | 31.4 | 34.39 | 27.3 |
+| Bistro exterior | 1920 x 1080 | 60 x 34 | 2,048 wide | 16.72 | 3.41 / 0.98 / 4.04 / 5.86 | 1.55 | 18.96 | 52.7 | 38.11 | 38.26 (12.50 / 4.66) | 24.5 | (no indirect file) | |
+| Sponza | 2560 x 1440 | 80 x 45 | 3,616 wide | 12.04 | 1.06 / 1.51 / 1.98 / 3.48 | 2.62 | 15.59 | 64.1 | 25.47 | 29.26 (9.28 / 4.98) | 30.3 | 36.58 | 25.1 |
+| Bistro interior | 2560 x 1440 | 80 x 45 | 3,616 wide | 16.48 | 2.06 / 1.51 / 3.57 / 5.42 | 2.56 | 19.57 | 51.1 | 35.79 | 42.59 (11.30 / 9.31) | 21.9 | 50.86 | 18.3 |
+| Bistro exterior | 2560 x 1440 | 80 x 45 | 3,616 wide | 22.27 | 3.52 / 1.52 / 4.44 / 8.75 | 2.66 | 25.45 | 39.3 | 53.23 | 53.84 (18.26 / 7.32) | 17.3 | (no indirect file) | |
+| Sponza | 3840 x 2160 | 120 x 68 | 8,160 wide, recount | 24.93 | 1.31 / 4.08 / 3.96 / 6.77 | 5.77 | 33.80 | 29.6 | 51.02 | 58.60 (17.82 / 10.64) | 14.7 | 74.75 | 11.9 |
+| Bistro interior | 3840 x 2160 | 120 x 68 | 8,160 wide, recount | 30.01 | 2.30 / 3.99 / 5.24 / 9.61 | 5.79 | 40.02 | 25.0 | 67.19 | 81.64 (20.32 / 20.02) | 10.9 | 99.54 | 9.0 |
+| Bistro exterior | 3840 x 2160 | 120 x 68 | 8,160 wide, recount | 39.31 | 3.75 / 4.13 / 6.83 / 15.70 | 5.82 | 47.02 | 21.3 | 96.64 | 99.38 (32.89 / 15.11) | 9.0 | (no indirect file) | |
+
+The memory each capacity takes (`report["capacity"]`): a core's L1 for the buffers that
+grow with tiles 170,240 B at 2,048 tiles, 298,816 B at 3,616, 313,856 B at 8,160 with the
+recount (the rest of the frame program's L1 is about 995 KB); the card's DRAM that grows
+with tiles 53.8 / 94.6 / 212.8 MB in vertex colours (Sponza), lit Sponza 179.6 MB at
+2,048 and 316.7 MB at 3,616, lit exterior 305.4 MB at 2,048 and 538.9 MB at 3,616; the
+thread's regions 441,088 / 625,216 / 1,161,152 B (at 120 fill cores). The largest
+capacity a core's L1 holds is 9,728 tiles with the recount (about 4,480 with the full
+histograms): 7,680 x 4,320 is refused, "a core's L1 needs 2,182,064 B of 1,366,208 B ...
+The largest capacity that fits: 9728 tiles" (05:57). The second COUNT costs a COUNT's
+walk where it runs: forced (`--recount`) on the Bistro interior at 1,920 x 1,080 (50
+heavy tiles, 05:56) HIST 0.02 -> 2.00 ms, the frame 12.24 -> 14.20 ms, 0 pixels differ;
+at 1,024 x 1,024 (84 to 94 heavy tiles, 04:27) the lit checks equal those without it. At
+3,840 x 2,160 no tile is heavy in the three scenes, so it does not run there. The tables
+of 364 heavy tiles cost the middle pass at today's sizes: Bistro interior lit 1,024 x
+1,024 (05:50 to 05:52) middle 1.673 ms with 256 and 1.759 ms with 364 (`rm_compact` and
+the totals' read), PLACE 0.300 -> 0.260 ms (fewer band items), the frame 17.78 -> 17.80
+ms. What grows past 1,920 x 1,080 is the middle pass on the
+X280 (7.5 ms lit Sponza, 11.6 lit interior at 3,840 x 2,160) and SHOW.
 
 ## Results
 

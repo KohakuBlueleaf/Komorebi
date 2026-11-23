@@ -23,8 +23,54 @@ S = {
 }
 
 
-def program():
-    """The passes' three kernels on every core; one command in flight per core."""
+def sizes(
+    tiles, recount=False, heavy=card.STEPPED_HEAVY, band_items=card.STEPPED_BAND_ITEMS
+):
+    """setup.h's sizes that follow the capacity's `tiles` (kTiles; kernels/grid.h), its
+    `heavy` tiles and `band_items` (card.heavy_capacity); `recount`: RASTER_RECOUNT's
+    histograms, a heavy tile's only."""
+    items = tiles + band_items
+    out = {
+        "kTiles": tiles,
+        "kBandItems": band_items,
+        "kHeavyMax": heavy,
+        "kHprefixPageBytes": 128 * heavy,
+        "kItems": items,
+        "kCountBytes": 8 * tiles,
+        "kSlotsBytes": 4 * items,
+        "kItemsBytes": 4 * tiles + 2 * items,
+        "kItemRows": 4 * tiles,
+        "kSumsHeavyAt": 8 * tiles,
+    }
+    out["kBaseAt"] = out["kItemsBytes"]
+    out["kHprefixAddrAt"] = out["kBaseAt"] + 4 * items
+    out["kShadeAddrAt"] = out["kHprefixAddrAt"] + 4
+    out["kFrameWordsAt"] = out["kHprefixAddrAt"] + 64
+    out["kItemWordsAt"] = out["kFrameWordsAt"] + 64
+    out["kCoreWordsAt"] = out["kItemWordsAt"] + 4 * S["kItemWords"] * items
+    out["kItemsRegionBytes"] = (
+        out["kCoreWordsAt"] + S["kCoreWords"] * 4 * S["kMaxFillCores"]
+    )
+    out["kHistBytes"] = max(
+        64 * (heavy if recount else tiles),
+        out["kItemsRegionBytes"] + S["kDirPageBytes"] + 128 + S["kOutBytes"],
+        out["kHprefixAddrAt"] - out["kBaseAt"] + 64 + out["kHprefixPageBytes"],
+    )
+    return out
+
+
+# the default frame's sizes beside the header's constants (the host-stepped passes)
+S.update(sizes(lists.TILES))
+
+
+def program(held=None):
+    """The passes' three kernels on every core; one command in flight per core; built
+    for the capacity `held` (card_thread.Capacity; by default the default frame's
+    tiles)."""
+    tiles, recount = (
+        (held.tiles, held.recount) if held is not None else (lists.TILES, False)
+    )
+    P = sizes(tiles, recount, *card.heavy_capacity(held))
     return km.Program(
         "raster_passes",
         kernels={
@@ -35,15 +81,16 @@ def program():
         buffers=[
             km.Buffer(S["kCbMesh"], "uint32", S["kMeshPageBytes"], S["kMeshPages"]),
             km.Buffer(S["kCbRec"], "uint32", S["kRecBytes"], S["kRecPages"]),
-            km.Buffer(S["kCbSlots"], "uint32", S["kSlotsBytes"], 1),
+            km.Buffer(S["kCbSlots"], "uint32", P["kSlotsBytes"], 1),
             km.Buffer(S["kCbWork"], "uint32", S["kWorkBytes"], 1),
-            km.Buffer(S["kCbCount"], "uint32", S["kCountBytes"], 1),
+            km.Buffer(S["kCbCount"], "uint32", P["kCountBytes"], 1),
             km.Buffer(S["kCbOut"], "uint32", S["kOutBytes"], S["kOutPages"]),
-            km.Buffer(S["kCbHist"], "uint32", S["kHistBytes"], 1),
-            km.Buffer(S["kCbItems"], "uint32", S["kItemsBytes"], 1),
+            km.Buffer(S["kCbHist"], "uint32", P["kHistBytes"], 1),
+            km.Buffer(S["kCbItems"], "uint32", P["kItemsBytes"], 1),
             km.Buffer(S["kCbSProf"], "uint32", S["kSProfBytes"], 1),
         ],
         compute={"fp32_dest_acc_en": True, "enable_trisc2_rvv": "if_present"},
+        defines=card.capacity_defines(held),
         depth=1,
         handlers=SETUP_H,
     )

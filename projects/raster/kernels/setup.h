@@ -10,7 +10,7 @@
 // Each handler's command words: kernels/README.md.
 constexpr uint32_t kHandlerLanes = 11;
 // COUNT: per core, over its partition, the records of every tile and their rows in it
-// (two arrays of 1,024 words), and the histograms kept for HIST.
+// (two arrays of kTiles words), and the histograms kept for HIST.
 constexpr uint32_t kHandlerCount = 12;
 // SETUP: each kept record goes once to every item (a tile, or a band of its rows) it
 // reaches, at that item's next slot.
@@ -29,6 +29,16 @@ constexpr uint32_t kHandlerSum = 16;
 constexpr uint32_t kHandlerHsum = 17;
 // a8 (grid.h): the bank, whose small arrays are then bank addresses (mesh, lists stay
 // tensors); the grid, to whose padded frame COUNT, SETUP and LANES clip the box.
+
+// The tables' tiles: the load's capacity (grid.h); the items, an item a tile and the
+// heavy tiles' bands past it (grid.h kBandCapacity).
+constexpr uint32_t kTiles = kTileCapacity;
+constexpr uint32_t kBandItems = kBandCapacity;
+constexpr uint32_t kItems = kTiles + kBandItems;
+
+constexpr uint32_t larger(uint32_t a, uint32_t b) {
+    return a > b ? a : b;
+}
 
 // blocks_word (a2) with kRanges (COUNT, SETUP; bank): blocks [first_block, end_block)
 // at kRangesAt + 64 x core of the camera's region; costs at kCostsAt + 128 x core.
@@ -56,33 +66,35 @@ constexpr uint32_t kCbHist = 7;    // COUNT to HIST: per tile 16 uint16 counts o
 constexpr uint32_t kCbItems = 8;   // SETUP's items page
 constexpr uint32_t kMeshPages = 4;
 constexpr uint32_t kRecPages = 2;
-constexpr uint32_t kSlotsBytes = 8192;  // at most 2,048 items
-constexpr uint32_t kItemsBytes = 8192;
-constexpr uint32_t kItemRows = 4096;
+constexpr uint32_t kSlotsBytes = 4 * kItems;  // a word an item
+// SETUP's items page: a word a tile, then the items' rows (uint16 each) from kItemRows
+constexpr uint32_t kItemsBytes = 4 * kTiles + 2 * kItems;
+constexpr uint32_t kItemRows = 4 * kTiles;
 // SETUP with kSetupPrefix in list_slots (a6): each core's slots page from the prefixes
 // and the items' base words (first slot | 1 + heavy index << kBaseSlotBits).
 constexpr uint32_t kSetupPrefix = 0x80000000;
-constexpr uint32_t kBaseAt = 8192;
+constexpr uint32_t kBaseAt = kItemsBytes;  // 64-byte aligned: kTiles a multiple of 32
+static_assert(kBaseAt % 64 == 0);
 constexpr uint32_t kBaseSlotBits = 23;
-constexpr uint32_t kHprefixAddrAt = 16384;
+constexpr uint32_t kHprefixAddrAt = kBaseAt + 4 * kItems;
 // Shaded SETUP: then the shade tensor (0: none), per mesh block 32 texel areas of the
 // albedo, 32 material words, 32 of the normal, 32 of the specular; corners u, v, light.
-constexpr uint32_t kShadeAddrAt = 16388;
-static_assert(kShadeAddrAt == kHprefixAddrAt + 4);
+constexpr uint32_t kShadeAddrAt = kHprefixAddrAt + 4;
 constexpr uint32_t kShadeBlockBytes = 512;
 // material | the albedo's, normal's, specular's levels << 16, << 20, << 24 (shade.h)
 // | the shade block's bit 28 (lit: no tangent frame, shade.h kShadeNoFrame)
 constexpr uint32_t kRecShadeWord = 30;
 constexpr uint32_t kShadeWordKept = 0x10000000;
-constexpr uint32_t kHprefixPageBytes = 32768;  // 128 bytes per heavy tile, 256 of them
-constexpr uint32_t kSumsHeavyAt = 8192;  // in SUM's totals: HSUM's, 128 bytes per tile
+constexpr uint32_t kHprefixPageBytes = 128 * kHeavyCapacity;  // 128 B a heavy tile
+// in SUM's totals (entries, then rows a tile): HSUM's, 128 bytes per heavy tile
+constexpr uint32_t kSumsHeavyAt = 8 * kTiles;
 // Then PLACE's words: frame words, per item and per fill core (README.md); each part on
 // 64 bytes, as a DRAM read must start (one at 16 mod 64 returned the line's start).
-constexpr uint32_t kFrameWordsAt = 16448;
+constexpr uint32_t kFrameWordsAt = kHprefixAddrAt + 64;
 static_assert(kShadeAddrAt + 4 <= kFrameWordsAt);
-constexpr uint32_t kItemWordsAt = 16512;
+constexpr uint32_t kItemWordsAt = kFrameWordsAt + 64;
 constexpr uint32_t kItemWords = 2;
-constexpr uint32_t kCoreWordsAt = 32896;
+constexpr uint32_t kCoreWordsAt = kItemWordsAt + 4 * kItemWords * kItems;
 constexpr uint32_t kCoreWords = 4;
 constexpr uint32_t kMaxFillCores = 248;
 constexpr uint32_t kItemsRegionBytes = kCoreWordsAt + kCoreWords * 4 * kMaxFillCores;
@@ -98,20 +110,38 @@ constexpr uint32_t kLayHdrTile = 1;
 constexpr uint32_t kLayHdrCount = 2;
 constexpr uint32_t kLayHdrRow0 = 3;
 constexpr uint32_t kLayHdrRow1 = 4;
-constexpr uint32_t kCountBytes = 8192;
+constexpr uint32_t kCountBytes = 8 * kTiles;  // entries, then rows a tile
 constexpr uint32_t kWorkBytes = 12288;  // records of a block, of pieces, crossing corners
 constexpr uint32_t kWorkCostsAt = 11776;  // then COUNT's costs (kCostsAt), 128 bytes
 constexpr uint32_t kOutBytes = 4096;
-constexpr uint32_t kHistBytes = 65536;  // kTiles x 64
 constexpr uint32_t kHeavyBytes = 4096;  // HIST's heavy tiles: at most 1,023
 constexpr uint32_t kDirPageBytes = 4096;
+// COUNT's histograms, 64 bytes a tile (RASTER_RECOUNT: a heavy tile, README.md); PLACE
+// (items region, directory page, slot, headers), SETUP's reader use its space after.
+constexpr uint32_t kHeavyMax = kHeavyCapacity;
+static_assert(kHeavyMax < kHeavyBytes / 4);  // the heavy page: the count, the tiles
+static_assert(kHeavyMax < 1u << (32 - kBaseSlotBits));  // base words: 1 + heavy index
+#ifdef RASTER_RECOUNT
+constexpr uint32_t kHistTiles = kHeavyMax;
+static_assert(2 * kTiles + kHeavyBytes <= 8 * kTiles);  // the map, the list (kCbCount)
+#else
+constexpr uint32_t kHistTiles = kTiles;
+#endif
+constexpr uint32_t kHistBytes = (
+    larger(
+        64 * kHistTiles,
+        larger(
+            kItemsRegionBytes + kDirPageBytes + 128 + kOutBytes,
+            kHprefixAddrAt - kBaseAt + 64 + kHprefixPageBytes
+        )
+    )
+);
 constexpr uint32_t kOutPages = 4;
 constexpr uint32_t kOutEntries = 31;
 constexpr uint32_t kOutLast = 0x80000000;  // in an out page's count: the last page
 // COUNT: box words a page (after the count)
 constexpr uint32_t kOutWords = 1023;
 constexpr uint32_t kListPageBytes = 2048;
-constexpr uint32_t kTiles = 1024;  // the tables' tiles (the grid's at most, grid.h)
 constexpr uint32_t kTilesX = 32;  // the default grid's tiles a row (experiments' writers)
 constexpr uint32_t kBlockSlots = 18;   // x, y, z of corners 0 to 2, then their colours
 constexpr uint32_t kMeshBytes = 2304;  // kBlockSlots vectors of 32 words

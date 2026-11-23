@@ -314,20 +314,24 @@ uint32_t rm_owners(uint32_t fill_cores, rm_scratch* scratch, uint32_t item_count
     if (fill_cores == 0 || fill_cores > RM_MAX_CORES) {
         return 0;
     }
-    /* the least loaded core (ties: the lower) from a heap of the cores' keys; with all
-     * loads 0 the cores in order are one */
+    /* the least loaded core (ties: the lower) from a heap of load << 8 | core; a core
+     * with RM_DIR_MAX_ITEMS (first_item counts; rm_layout sets it after) goes last */
     uint64_t* heap = scratch->heap;
     for (uint32_t core = 0; core < fill_cores; core++) {
         heap[core] = core;
+        scratch->load[core] = 0;
+        scratch->first_item[core] = 0;
     }
     for (uint32_t rank = 0; rank < item_count; rank++) {
-        const uint32_t item = scratch->order[rank];
-        scratch->owner[item] = (uint32_t)(heap[0] & 0xFF);
-        heap[0] += scratch->cost[item] << 8;
+        const uint32_t item = scratch->order[rank], core = (uint32_t)(heap[0] & 0xFF);
+        scratch->owner[item] = core;
+        scratch->load[core] += scratch->cost[item];
+        heap[0] = (
+            ++scratch->first_item[core] < RM_DIR_MAX_ITEMS
+                ? heap[0] + (scratch->cost[item] << 8)
+                : (UINT64_MAX & ~(uint64_t)0xFF) | core
+        );
         sift_down(heap, fill_cores);
-    }
-    for (uint32_t core = 0; core < fill_cores; core++) {
-        scratch->load[heap[core] & 0xFF] = heap[core] >> 8;
     }
     return 1;
 }

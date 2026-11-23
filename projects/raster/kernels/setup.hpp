@@ -512,6 +512,14 @@ namespace setup_pass {
         if (!records) {
             return;
         }
+#ifdef RASTER_WIDE
+        // columns x0 and x1 + 1 as float32 (wide, grid.h; L0: x0's word, L2: x1's)
+        sub(L0, L4, L0);
+        store(L0, kSlotRecords + kRawX0);
+        add(L2, ONE, L2);
+        sub(L2, L4, L2);
+        store(L2, kSlotRecords + kRawX1);
+#else
         // columns x0 and x1 + 1 as float16 (L0: x0's word, L2: x1's word)
         immediate(L5, 0x1C000);
         sub(L0, L4, L0);
@@ -521,6 +529,7 @@ namespace setup_pass {
         sub(L2, L4, L2);
         half_of(L2, L1);
         store(L6, kSlotRecords + kRawX1);
+#endif
         // top-left thresholds: a > 0, or a = ±0 and b > 0
         immediate(L7, 0x80000001);
         immediate(L6, 0x7FFFFFFF);

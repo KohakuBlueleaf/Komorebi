@@ -6,9 +6,11 @@ the mesh uploaded once, the camera at the load. `python -m projects.raster.card_
 import argparse
 import contextlib
 import json
+import math
 import re
 import sys
 import time
+from typing import NamedTuple
 
 import numpy as np
 
@@ -25,6 +27,12 @@ F = {
     name: int(value.rstrip("u"), 0)
     for name, value in re.findall(
         r"^#define (RF_\w+)\s+(\d+u?)\b", FRAME_H.read_text(), re.M
+    )
+}
+M = {  # middle.h's numbers
+    name: int(value.rstrip("u"), 0)
+    for name, value in re.findall(
+        r"^#define (RM_\w+)\s+(\d+u?)\b", (THREAD / "middle.h").read_text(), re.M
     )
 }
 # expressions in frame.h
@@ -49,7 +57,6 @@ F["RF_GLASS_WORDS_AT"] = F["RF_PROFILES_AT"] + 64
 F["RF_GRID_AT"] = F["RF_GLASS_WORDS_AT"] + 128
 F["RF_G_SURFACE"] = F["RF_G_FRAME"] + F["RF_FRAME_MAX"]
 F["RF_G_WORDS"] = F["RF_G_SURFACE"] + 1
-F["RF_HIST_BYTES"] = 64 * F["RF_HIST_MAX"]
 F["RF_AREA_GLASS"] = (
     F["RF_AREA_SUN"] + F["RF_AREAS_A_QUADRANT"] * F["RF_SUN_QUADRANTS_MAX"]
 )
@@ -70,10 +77,108 @@ SH = {
 }
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
+TILE_ROWS = 32  # the per-tile tables' rows: a capacity is a whole number of them
+WORK_LEAST = 256 << 10  # the thread's work region at the least (work_bytes)
 
 
-def same_numbers():
-    """The numbers frame.h takes from the kernels' headers, as pairs that differ."""
+class Capacity(NamedTuple):
+    """What a load sizes tables, tensors and regions from: `tiles` (TILE_ROWS each);
+    `wide`, 32-bit box words past the narrow grid (kernels/grid.h); `recount`, the heavy
+    tiles' histograms counted again (setup.h RASTER_RECOUNT); `cores`, the fill cores
+    the heavy and band tables follow (card.heavy_capacity; None: host-stepped)."""
+
+    tiles: int
+    wide: bool
+    recount: bool = False
+    cores: int | None = None
+
+
+def narrow(grid):
+    """True when the grid (TX, TY) fits the narrow words (kernels/grid.h)."""
+    across, down = grid
+    return across <= GRID["kNarrowAcross"] and down <= GRID["kNarrowDown"]
+
+
+def capacity(sizes, lit=False, at_least=None):
+    """The capacity that renders every frame size (W, H) of `sizes`: their most tiles
+    (and, lit, the SUN pass's quadrant of kGridDefault x kGridDefault tiles, rendered
+    into the eye's tensors) rounded up to TILE_ROWS; wide when one's grid passes the
+    narrow words; at least `at_least` (a Capacity) when given."""
+    grids = [scenes.frame_grid(size) for size in sizes]
+    tiles = max(across * down for across, down in grids)
+    if lit:
+        tiles = max(tiles, GRID["kGridDefault"] ** 2)
+    tiles = -(-tiles // TILE_ROWS) * TILE_ROWS
+    wide = not all(narrow(grid) for grid in grids)
+    if at_least is not None:  # and its recount (live.py --recount, or L1's)
+        tiles, wide = max(tiles, at_least.tiles), wide or at_least.wide
+        return Capacity(tiles, wide, at_least.recount, at_least.cores)
+    return Capacity(tiles, wide)
+
+
+def covers(held, size, lit=False):
+    """True when the capacity `held` renders a frame of size (W, H)."""
+    asked = capacity([size], lit)
+    return asked.tiles <= held.tiles and (held.wide or not asked.wide)
+
+
+def default_capacity():
+    """The default frame's capacity (scenes.WIDTH x scenes.HEIGHT)."""
+    return capacity([(scenes.WIDTH, scenes.HEIGHT)])
+
+
+def thread_sizes(held):
+    """frame.h's sizes that follow the capacity `held`: its tiles (RM_TILES), heavy
+    tiles and bands' items (RM_MAX_HEAVY, RM_BAND_ITEMS: card.heavy_capacity)."""
+    tiles, (heavy, band_items) = held.tiles, card.heavy_capacity(held)
+    items = tiles + band_items
+    out = {
+        "RF_HIST_MAX": heavy,
+        "RF_HIST_BYTES": 64 * heavy,
+        "RF_HPREFIX_BYTES": 128 * heavy,
+        "RF_COUNTER_BYTES": 8 * tiles,
+        "RF_SLOTS_BYTES": 4 * items,
+        "RF_ITEMS_BYTES": 4 * tiles + 2 * items,
+        "RF_DISPLAY_PAGES": tiles,
+        "RF_SUMS_HEAVY_AT": 8 * tiles,
+    }
+    out["RF_BASE_AT"] = out["RF_ITEMS_BYTES"]
+    out["RF_HPREFIX_ADDR_AT"] = out["RF_BASE_AT"] + 4 * items
+    out["RF_SHADE_ADDR_AT"] = out["RF_HPREFIX_ADDR_AT"] + 4
+    out["RF_SUMS_BYTES"] = out["RF_SUMS_HEAVY_AT"] + 128 * heavy
+    out["RF_FRAME_WORDS_AT"] = out["RF_HPREFIX_ADDR_AT"] + 64
+    out["RF_ITEM_WORDS_AT"] = out["RF_FRAME_WORDS_AT"] + 64
+    out["RF_CORE_WORDS_AT"] = out["RF_ITEM_WORDS_AT"] + 8 * items
+    out["RF_ITEMS_REGION_BYTES"] = out["RF_CORE_WORDS_AT"] + 16 * F["RF_MAX_CORES"]
+    return out
+
+
+def work_bytes(held):
+    """The thread's own region (frame.c work_t): 32 B a tile (entries, rows, cost, heavy
+    index, first item), 60 B an item (rm_item, cost, order, spare, owner, header, next
+    slot), a fixed part (heavy tiles' counts, cores, areas) and a page to spare; whole
+    pages, at least WORK_LEAST (the 1,024-tile frame's region as before)."""
+    tiles, (heavy, band_items) = held.tiles, card.heavy_capacity(held)
+    items = tiles + band_items
+    cores = F["RF_MAX_CORES"]
+    fixed = (
+        8 * 2 * cores  # load, heap
+        + 4 * (cores + 1)  # first_item
+        + 8 * heavy * 2 * 16  # histograms
+        + 4 * 2 * cores  # slot_counts, item_counts
+        + 4 * (1 + 2 * heavy)  # tile_item's last, heavy, bands
+        + 4 * (F["RF_AREAS"] + 1) * (cores + 1)  # ranges, cuts
+    )
+    total = 32 * tiles + 60 * items + fixed + 4096
+    return max(-(-total // 4096) * 4096, WORK_LEAST)
+
+
+def same_numbers(held=None):
+    """The numbers frame.h takes from the kernels' headers (at the capacity `held`, by
+    default the default frame's), as pairs that differ."""
+    held = held or default_capacity()
+    T = thread_sizes(held)
+    P = card_passes.sizes(held.tiles, False, *card.heavy_capacity(held))
     pairs = {
         "RF_HANDLER_COUNT": S["kHandlerCount"],
         "RF_HANDLER_SETUP": S["kHandlerSetup"],
@@ -81,21 +186,26 @@ def same_numbers():
         "RF_HANDLER_PLACE": S["kHandlerPlace"],
         "RF_HANDLER_SUM": S["kHandlerSum"],
         "RF_HANDLER_HSUM": S["kHandlerHsum"],
-        "RF_BASE_AT": S["kBaseAt"],
-        "RF_HPREFIX_ADDR_AT": S["kHprefixAddrAt"],
-        "RF_HPREFIX_BYTES": S["kHprefixPageBytes"],
-        "RF_SUMS_HEAVY_AT": S["kSumsHeavyAt"],
+        "RF_BASE_AT": (T["RF_BASE_AT"], P["kBaseAt"]),
+        "RF_HPREFIX_ADDR_AT": (T["RF_HPREFIX_ADDR_AT"], P["kHprefixAddrAt"]),
+        "RF_HPREFIX_BYTES": (T["RF_HPREFIX_BYTES"], P["kHprefixPageBytes"]),
+        "RF_HIST_MAX": (T["RF_HIST_MAX"], P["kHeavyMax"]),
+        "RF_SUMS_HEAVY_AT": (T["RF_SUMS_HEAVY_AT"], P["kSumsHeavyAt"]),
+        "RM_BAND_ITEMS": (T["RF_SLOTS_BYTES"] // 4 - held.tiles, P["kBandItems"]),
         "RF_HANDLER_FILL": K["kHandlerFill"],
         "RF_PAGES_PER_ITEM": PAGES_PER_ITEM,
         "RF_FRAME_MAX": K["kDirFrameMax"],
-        "RF_COUNTER_BYTES": S["kCountBytes"],
+        "RF_COUNTER_BYTES": (T["RF_COUNTER_BYTES"], P["kCountBytes"]),
         "RF_HEAVY_BYTES": S["kHeavyBytes"],
-        "RF_SLOTS_BYTES": S["kSlotsBytes"],
-        "RF_ITEMS_BYTES": S["kItemsBytes"],
-        "RF_FRAME_WORDS_AT": S["kFrameWordsAt"],
-        "RF_ITEM_WORDS_AT": S["kItemWordsAt"],
-        "RF_CORE_WORDS_AT": S["kCoreWordsAt"],
-        "RF_ITEMS_REGION_BYTES": S["kCoreWordsAt"] + 16 * S["kMaxFillCores"],
+        "RF_SLOTS_BYTES": (T["RF_SLOTS_BYTES"], P["kSlotsBytes"]),
+        "RF_ITEMS_BYTES": (T["RF_ITEMS_BYTES"], P["kItemsBytes"]),
+        "RF_FRAME_WORDS_AT": (T["RF_FRAME_WORDS_AT"], P["kFrameWordsAt"]),
+        "RF_ITEM_WORDS_AT": (T["RF_ITEM_WORDS_AT"], P["kItemWordsAt"]),
+        "RF_CORE_WORDS_AT": (T["RF_CORE_WORDS_AT"], P["kCoreWordsAt"]),
+        "RF_ITEMS_REGION_BYTES": (
+            T["RF_ITEMS_REGION_BYTES"],
+            P["kCoreWordsAt"] + 16 * S["kMaxFillCores"],
+        ),
         "RF_RANGES_AT": S["kRangesAt"],
         "RF_COSTS_AT": S["kCostsAt"],
         "RF_COST_KNOTS": S["kCostKnots"],
@@ -115,7 +225,6 @@ def same_numbers():
         "RF_G_WORDS in two lines": (min(4 * F["RF_G_WORDS"], 128), 4 * F["RF_G_WORDS"]),
         "RF_HANDLER_SHOW": SHOW["kHandlerShow"],
         "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
-        "RF_DISPLAY_PAGES": lists.TILES,
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
         "RF_HANDLER_LIGHT": SH["kHandlerLight"],
         "RF_SHADE_MERGED_DEPTH": SH["kShadeMergedDepth"],
@@ -124,8 +233,8 @@ def same_numbers():
         "RF_LIGHT_GLASS": SH["kLightGlass"],
         "RF_SHOW_RAW": SHOW["kShowRaw"],
         "RF_GRID_DEFAULT": GRID["kGridDefault"],
-        "RF_GRID_ACROSS_MAX": GRID["kGridAcrossMax"],
-        "RF_GRID_DOWN_MAX": GRID["kGridDownMax"],
+        "RF_NARROW_ACROSS": GRID["kNarrowAcross"],
+        "RF_NARROW_DOWN": GRID["kNarrowDown"],
         "RF_SUN_TILES_ACROSS": GRID["kGridDefault"],
         "kGridDefault": (GRID["kGridDefault"], raster.TILES_X),
         "RF_GRID_AT + 64 <= RF_AREA_BYTES": (
@@ -142,7 +251,7 @@ def same_numbers():
             F["RF_SUN_TABLE_AT"] + SH["kLightTableBytes"],
             F["RF_SUN_BYTES"],
         ),
-        "RF_SHADE_ADDR_AT": S["kShadeAddrAt"],
+        "RF_SHADE_ADDR_AT": (T["RF_SHADE_ADDR_AT"], P["kShadeAddrAt"]),
         "kRecShade": (SH["kRecShade"], S["kRecShadeWord"]),
         # PLACE's list and directory words against the fill's
         "kLayDirIds": (S["kLayDirIds"], K["kDirIds"]),
@@ -167,27 +276,18 @@ def same_numbers():
 
 def card_grid(size):
     """The grid (TX, TY) of a frame of size (W, H) on the card: scenes.frame_grid's
-    rule, and TX at most kGridAcrossMax, TY at most kGridDownMax (SETUP's box word,
-    kernels/grid.h); ValueError with the reason otherwise."""
-    across, down = scenes.frame_grid(size)
-    most_across, most_down = GRID["kGridAcrossMax"], GRID["kGridDownMax"]
-    if across > most_across or down > most_down:
-        width, height = (int(n) for n in size)
-        raise ValueError(
-            f"a frame of {width} x {height} pixels is {across} x {down} tiles: the "
-            f"card takes at most {most_across} tiles a row ({32 * most_across} pixels) "
-            f"and {most_down} rows of tiles ({32 * most_down} pixels)"
-        )
-    return across, down
+    rule (ValueError for a side under 1). Any grid renders; its tiles set the capacity
+    a load needs (capacity), which memory alone bounds (memory_check)."""
+    return scenes.frame_grid(size)
 
 
 def grid_word(size):
-    """The frame's grid word (frame.h RF_GRID_AT; kernels/grid.h): TX | TY << 8, 0 for
+    """The frame's grid word (frame.h RF_GRID_AT; kernels/grid.h): TX | TY << 16, 0 for
     the default 32 x 32 (every command as before)."""
     across, down = card_grid(size)
     if (across, down) == (GRID["kGridDefault"], GRID["kGridDefault"]):
         return 0
-    return across | down << 8
+    return across | down << 16
 
 
 def camera_region(scene, profiles=None, glass=None):
@@ -207,18 +307,21 @@ def camera_region(scene, profiles=None, glass=None):
     return region
 
 
-def regions(scene, workers, show_table=None, sun=None, profiles=None, glass=None):
-    """The thread's regions in frame.h's order: the camera's page, then sizes; SHOW's
-    block holds `show_table` (live.py), else nothing; the sun region `sun` (live.py,
-    lit: the sun's camera and LIGHT's table, light.sun_region), else nothing;
-    `profiles`, `glass`: camera_region's."""
-    work = 256 << 10  # frame.c work_t: middle.h scratch and items (about 130 KB)
+def regions(
+    scene, workers, show_table=None, sun=None, profiles=None, glass=None, held=None
+):
+    """The thread's regions in frame.h's order: the camera's page, then sizes (items,
+    work, sums from the capacity `held`, by default program's); SHOW's block holds
+    `show_table` (live.py); the sun region `sun` (lit: light.sun_region); `profiles`,
+    `glass`: camera_region's."""
+    held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
+    sizes = thread_sizes(held)
     return {
         "camera": camera_region(scene, profiles, glass),
         "heavy": F["RF_HEAVY_BYTES"],
-        "items": F["RF_ITEMS_REGION_BYTES"],
-        "work": work,
-        "sums": F["RF_SUMS_BYTES"],
+        "items": sizes["RF_ITEMS_REGION_BYTES"],
+        "work": work_bytes(held),
+        "sums": sizes["RF_SUMS_BYTES"],
         "times": F["RF_TIMES_BYTES"],
         "show": (
             F["RF_SHOW_TABLE_BYTES"]
@@ -253,14 +356,131 @@ def shade_buffers():
     ]
 
 
+def l1_tile_bytes(held):
+    """A core's L1 buffers that follow the capacity `held` (setup.h): {name: bytes}.
+    A tile: counters 8 B, histograms 64 B (recount: 64 B a heavy tile; PLACE's items
+    region 4 B a tile, 14 B an item, in their space), slots 4 B an item, items page
+    4 B + 2 B an item (an item a tile, and the bands' kBandItems)."""
+    P = card_passes.sizes(held.tiles, held.recount, *card.heavy_capacity(held))
+    return {
+        "counters (kCbCount)": P["kCountBytes"],
+        "histograms (kCbHist)": P["kHistBytes"],
+        "slots (kCbSlots)": P["kSlotsBytes"],
+        "items (kCbItems)": P["kItemsBytes"],
+    }
+
+
+L1_BYTES_A_TILE = 8 + 64 + 4 + 6  # l1_tile_bytes' growth per tile
+L1_BYTES_A_TILE_RECOUNT = 8 + 18 + 4 + 6  # and with recount (the items region's 18)
+
+
+class L1Refused(ValueError):
+    """A load refused for a core's L1: the frame's size (W, H) and the capacity
+    `held`, the bytes L1 needs (`used`) and leaves for buffers (`free`), the buffers
+    that grow with tiles, and the largest capacity that fits (`fixed`: the bytes that
+    do not grow with tiles; None when not known, nothing loaded)."""
+
+    def __init__(self, held, size, used, free, fixed=None):
+        width, height = size
+        across, down = scenes.frame_grid(size)
+        grows = l1_tile_bytes(held)
+        rows = ", ".join(f"{name} {bytes_:,} B" for name, bytes_ in grows.items())
+        most = None
+        if fixed is not None:
+            most = 0
+            for tiles in range(TILE_ROWS, held.tiles, TILE_ROWS):
+                fewer = held._replace(tiles=tiles)
+                if fixed + sum(l1_tile_bytes(fewer).values()) <= free:
+                    most = tiles
+        needs = "needs" if fixed is not None else "needs at least"
+        fits = f" The largest capacity that fits: {most} tiles." if most else ""
+        a_tile = L1_BYTES_A_TILE_RECOUNT if held.recount else L1_BYTES_A_TILE
+        super().__init__(
+            f"a frame of {width} x {height} pixels is {across} x {down} = "
+            f"{across * down} tiles (capacity {held.tiles}): a core's L1 {needs} "
+            f"{used:,} B of {free:,} B. The buffers that grow with tiles "
+            f"(about {a_tile} B a tile): {rows}.{fits}"
+        )
+        self.used, self.free, self.most = used, free, most
+
+    @classmethod
+    def of_budget(cls, held, size, error):
+        """From the load's km.L1BudgetError: its table's total and room."""
+        used, free = (
+            int(n.replace(",", ""))
+            for n in re.search(
+                r"total\s+([\d,]+) B of ([\d,]+) B", error.table
+            ).groups()
+        )
+        grows = sum(l1_tile_bytes(held).values())
+        return cls(held, size, used, free, used - grows)
+
+
+L1_SLOTS_MARGIN = 16 << 10  # the overlay slots beside l1_rows' (9,344 B measured)
+
+
+def fits_l1(session, program):
+    """Whether `program`'s L1 budget (session.l1_rows, and L1_SLOTS_MARGIN for the
+    slots it leaves out) fits a core before a load tries it: a load refused for L1
+    leaves the session's L1 held, and its retry reopened the card."""
+    rows = session.l1_rows(program)
+    return sum(size for _, size in rows) + L1_SLOTS_MARGIN <= session.l1()[1]
+
+
+def l1_check(held, size, free):
+    """Before anything is stopped or built: L1Refused when the buffers that grow with
+    tiles alone (with recount, their least) take more than the `free` bytes a core's
+    L1 leaves for buffers (session.l1()); the load's budget checks the rest."""
+    least = held._replace(recount=True)
+    grows = sum(l1_tile_bytes(least).values())
+    if grows > free:
+        raise L1Refused(least, size, grows, free)
+
+
+def capacity_report(held, workers, dram):
+    """The memory a capacity `held` takes: a core's L1 (the buffers that grow with
+    tiles), the card's DRAM (`dram`: bytes of the tensors that grow, of the rest), the
+    thread's regions."""
+    sizes = thread_sizes(held)
+    heavy, band_items = card.heavy_capacity(held)
+    return {
+        "tiles": held.tiles,
+        "wide": held.wide,
+        "recount": held.recount,
+        "cores": held.cores,
+        "heavy": heavy,
+        "band_items": band_items,
+        "l1_tile_buffers": sum(l1_tile_bytes(held).values()),
+        "dram_by_tiles": dram[0],
+        "dram_rest": dram[1],
+        "thread_regions": (
+            sizes["RF_ITEMS_REGION_BYTES"] + work_bytes(held) + sizes["RF_SUMS_BYTES"]
+        ),
+    }
+
+
+def defines(held):
+    """The kernels' build defines of the capacity `held` (kernels/grid.h)."""
+    return card.capacity_defines(held)
+
+
 def program(
-    scene, words, workers, show_table=None, sun=None, profiles=None, glass=None
+    scene,
+    words,
+    workers,
+    show_table=None,
+    sun=None,
+    profiles=None,
+    glass=None,
+    held=None,
 ):
-    """The frame program: the passes' and the fill's kernels behind one entry each
-    (kernels/frame_*.cpp), all their buffers, the frame thread on work cluster 1; with
-    `show_table` (live.py) it serves FRAME and SUN commands; `sun`, `profiles`, `glass`:
-    the regions' (regions)."""
-    fill_program, passes_program = card.program(), card_passes.program()
+    """The frame program: the passes' and the fill's kernels (kernels/frame_*.cpp),
+    their buffers, the frame thread on cluster 1, for the capacity `held` (by default
+    the default frame's, or the scene's size's when larger); with `show_table` it
+    serves FRAME and SUN commands; `sun`, `profiles`, `glass`: regions'."""
+    held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
+    fill_program = card.program(held=held)
+    passes_program = card_passes.program(held=held)
     frame_program = km.Program(
         "raster_frame",
         kernels={
@@ -277,7 +497,7 @@ def program(
         ],
         compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
         compute=fill_program.compute,
-        defines=card.spread_parts()[2],
+        defines={**card.spread_parts()[2], **defines(held)},
         depth=1,
         handlers={
             **fill_program.handlers,
@@ -287,60 +507,100 @@ def program(
             "light": SH["kHandlerLight"],
         },
     )
+    thread_defines = {
+        "RM_TILES": f"{held.tiles}u",
+        "RM_MAX_HEAVY": f"{card.heavy_capacity(held)[0]}u",
+        "RM_BAND_ITEMS": f"{card.heavy_capacity(held)[1]}u",
+        **({"RF_WIDE": "1"} if held.wide else {}),
+        **({"RF_RECOUNT": "1"} if held.recount else {}),
+        **({"RF_SERVE": "1"} if show_table is not None else {}),
+    }
     frame_program.thread(
         cluster=CLUSTER,
         sources=[THREAD / "frame.c", THREAD / "middle.c"],
         includes=[THREAD],
-        regions=regions(scene, workers, show_table, sun, profiles, glass),
+        regions=regions(scene, workers, show_table, sun, profiles, glass, held),
         words=words,
         deadline=10.0,
-        **(
-            {"handlers": {"frame": 1, "sun": 2}, "defines": {"RF_SERVE": "1"}}
-            if show_table is not None
-            else {}
-        ),
+        defines=thread_defines,
+        **({"handlers": {"frame": 1, "sun": 2}} if show_table is not None else {}),
     )
     return frame_program
 
 
-def layer_tensors(session, blocks, workers, list_slots):
-    """A mesh's own DRAM tensors: the mesh (once per scene), lists, directory, frame."""
-    pages = -(-list_slots // lists.PAGE_SLOTS)
-    output_pages = lists.TILES * 5
-    chunks = -(-output_pages // card.CHUNK_PAGES)
-    frame = [
-        card.tensor(
-            session,
-            np.zeros(
-                (min(card.CHUNK_PAGES, output_pages - chunk * card.CHUNK_PAGES), 1024)
-            ),
-        )
-        for chunk in range(chunks)
+def frame_tensors(session, held):
+    """A frame's tensors, five pages a tile of the capacity `held`, card.chunk_pages
+    pages a tensor (the directory names at most kDirFrameMax of them)."""
+    output_pages = held.tiles * PAGES_PER_ITEM
+    chunk = card.chunk_pages(output_pages)
+    return [
+        card.tensor(session, np.zeros((min(chunk, output_pages - at), 1024)))
+        for at in range(0, output_pages, chunk)
     ]
+
+
+def frame_pages(frame):
+    """Pages per tensor of a frame's tensors (frame_tensors): the directory's word."""
+    return card.chunk_pages(sum(tensor.pages for tensor in frame))
+
+
+def list_slots(slots, held):
+    """The list slots of a capacity `held` for `slots` sized at the default frame's
+    tiles: times sqrt(tiles / lists.TILES) past it (a triangle reaches more tiles as
+    they shrink against it; RF_LISTS_SMALL when a frame needs more)."""
+    return math.ceil(slots * max(1.0, math.sqrt(held.tiles / lists.TILES)))
+
+
+def list_tensor(session, slots):
+    """The lists tensor of at least `slots` slots: {"lists", "list_slots"}."""
+    pages = -(-slots // lists.PAGE_SLOTS)
     return {
-        "mesh": card.tensor(session, blocks),
         "lists": card.tensor(session, np.zeros((pages, lists.PAGE_WORDS))),
-        "dir": card.tensor(session, np.zeros((workers, K["kDirBytes"] // 4))),
-        "frame": frame,
         "list_slots": pages * lists.PAGE_SLOTS,
     }
 
 
-def tensors(session, blocks, workers, list_slots):
+def layer_tensors(session, blocks, workers, slots, held=None):
+    """A mesh's own DRAM tensors: the mesh (once per scene), lists of `slots`,
+    directory, frame (frame_tensors of the capacity `held`, by default the default
+    frame's)."""
+    return {
+        "mesh": card.tensor(session, blocks),
+        **list_tensor(session, slots),
+        "dir": card.tensor(session, np.zeros((workers, K["kDirBytes"] // 4))),
+        "frame": frame_tensors(session, held or default_capacity()),
+    }
+
+
+def capacity_tensors(session, workers, held):
+    """The pages only the cores read and write whose size follows the capacity `held`:
+    COUNT's counters, SUM's prefixes (SETUP's slots), HIST's histograms, HSUM's
+    pages (a heavy tile's: card.heavy_capacity)."""
+    sizes = thread_sizes(held)
+    return {
+        "counters": card.tensor(
+            session, np.zeros((workers, sizes["RF_COUNTER_BYTES"] // 4))
+        ),
+        "slots": card.tensor(
+            session, np.zeros((workers, sizes["RF_SLOTS_BYTES"] // 4))
+        ),
+        "hist": card.tensor(session, np.zeros((workers, sizes["RF_HIST_BYTES"] // 4))),
+        "hprefix": card.tensor(
+            session, np.zeros((workers, sizes["RF_HPREFIX_BYTES"] // 4))
+        ),
+    }
+
+
+def tensors(session, blocks, workers, slots, held=None):
     """The DRAM tensors: mesh (once per scene), lists, directory, frame, profiles, and
-    the pages only the cores read and write."""
+    the pages only the cores read and write; sized for the capacity `held` (by default
+    the default frame's)."""
+    held = held or default_capacity()
     uploaded = {
-        **layer_tensors(session, blocks, workers, list_slots),
+        **layer_tensors(session, blocks, workers, slots, held),
         "prof": card.tensor(session, np.zeros((workers, 1024))),
         "sprof": card.tensor(session, np.zeros((workers, S["kSProfPageBytes"] // 4))),
-        "counters": card.tensor(
-            session, np.zeros((workers, F["RF_COUNTER_BYTES"] // 4))
-        ),
-        "hist": card.tensor(session, np.zeros((workers, F["RF_HIST_BYTES"] // 4))),
-        "slots": card.tensor(session, np.zeros((workers, F["RF_SLOTS_BYTES"] // 4))),
-        "hprefix": card.tensor(
-            session, np.zeros((workers, F["RF_HPREFIX_BYTES"] // 4))
-        ),
+        **capacity_tensors(session, workers, held),
     }
     session.device.finish()  # the uploads land before any frame runs
     return uploaded
@@ -358,7 +618,7 @@ def words(uploaded, blocks, cores, workers, steps, balance=True):
     thread_words[F["RF_W_LIST_SLOTS"]] = uploaded["list_slots"]
     thread_words[F["RF_W_DIR"]] = uploaded["dir"].address
     thread_words[F["RF_W_STEPS"]] = steps
-    thread_words[F["RF_W_FRAME_PAGES"]] = card.CHUNK_PAGES
+    thread_words[F["RF_W_FRAME_PAGES"]] = frame_pages(uploaded["frame"])
     thread_words[F["RF_W_FRAMES"]] = len(uploaded["frame"])
     for index, frame_tensor in enumerate(uploaded["frame"]):
         thread_words[F["RF_W_FRAME"] + index] = frame_tensor.address
@@ -512,7 +772,9 @@ def frame(args, session=None):
         cores = args.cores or workers
         started = time.perf_counter()
         slots = args.list_slots or 2 * len(scene["indices"]) + 65536
-        uploaded = tensors(session, blocks, workers, slots)
+        held = capacity([scenes.frame_size(scene)], at_least=default_capacity())
+        held = held._replace(cores=workers)  # the heavy tiles' tables from the cores
+        uploaded = tensors(session, blocks, workers, slots, held)
         times["upload_s"] = time.perf_counter() - started
         thread_words = words(
             uploaded, len(blocks), cores, workers, args.steps, args.balance
@@ -520,7 +782,7 @@ def frame(args, session=None):
         thread_words[F["RF_W_REPEAT"]] = args.repeat
         started = time.perf_counter()
         running = session.load(
-            program(scene, thread_words, workers), deadline=1.0, trace=16
+            program(scene, thread_words, workers, held=held), deadline=1.0, trace=16
         )
         times["load_s"] = time.perf_counter() - started
         started = time.perf_counter()
@@ -578,7 +840,7 @@ def frame(args, session=None):
             frame_words = directories[:, K["kDirFrame"] :].copy()
             directories[:, K["kDirFrame"] :] = 0
             report["dir_equal"] = bool(np.array_equal(directories, middle["directory"]))
-            want = [card.CHUNK_PAGES] + [
+            want = [frame_pages(uploaded["frame"])] + [
                 frame_tensor.address for frame_tensor in uploaded["frame"]
             ]
             report["dir_frame_equal"] = bool(

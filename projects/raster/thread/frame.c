@@ -58,19 +58,29 @@ static void costs_part(int core, void* arg) {
     );
 }
 
-/* The tiles of a grid word (frame.h RF_GRID_*), or 0 when it is not one. */
+/* The tiles of a grid word (frame.h RF_GRID_*), or 0 when it is not one this build
+ * renders: more tiles than its capacity (RM_TILES), or past the narrow words. */
 static uint32_t grid_tiles(uint32_t grid) {
-    const uint32_t across = grid & 0xFFu, down = grid >> 8 & 0xFFu;
-    if (grid == 0) {
-        return RF_GRID_DEFAULT * RF_GRID_DEFAULT;
-    }
+    const uint32_t across = grid ? grid & 0xFFFFu : RF_GRID_DEFAULT;
+    const uint32_t down = grid ? grid >> 16 : RF_GRID_DEFAULT;
     if (
-        grid >> 16 || across == 0 || down == 0 || across > RF_GRID_ACROSS_MAX ||
-        down > RF_GRID_DOWN_MAX || across * down > RM_TILES
+        across == 0 || down == 0 || across >> 14 || down >> 14 ||
+        (uint64_t)across * down > RM_TILES
     ) {
         return 0;
     }
+#ifndef RF_WIDE
+    if (across > RF_NARROW_ACROSS || down > RF_NARROW_DOWN) {
+        return 0;
+    }
+#endif
     return across * down;
+}
+
+/* A grid word as a8's bits: TX << 4 | TY << 18 (kernels/grid.h), 0 for 0 (grid_tiles
+ * takes sides below 2^14 only). */
+static uint32_t grid_bits(uint32_t grid) {
+    return (grid & 0xFFFFu) << 4 | (grid >> 16) << 18;
 }
 
 /* The commands' grid: the eye's word from the camera's region (when it holds one),
@@ -125,9 +135,9 @@ static void new_command(km_command_t* command, uint32_t handler, const frame_t* 
                                                                     ->a6 = command
                                                                                ->a7 = 0
     );
-    command->a9 = frame->words[RF_W_SPROF];                /* profile_address */
-    command->a5 = frame->words[RF_W_CORES];                /* cores */
-    command->a8 = frame->bank_plus_one | frame->grid << 8; /* bank, grid */
+    command->a9 = frame->words[RF_W_SPROF];                      /* profile_address */
+    command->a5 = frame->words[RF_W_CORES];                      /* cores */
+    command->a8 = frame->bank_plus_one | grid_bits(frame->grid); /* bank, grid */
 }
 
 /* Submits `command`: 0 with its handle, or the code to report. */
@@ -354,6 +364,20 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
             heavy_words[1 + heavy_index] = work->heavy[heavy_index];
         }
         kmx_flush(RF_R_HEAVY);
+#ifdef RF_RECOUNT
+        /* the histograms not kept by COUNT: COUNT again, the heavy tiles' alone */
+        new_command(&command, RF_HANDLER_COUNT, frame);
+        command.a0 = frame->words[RF_W_MESH];
+        command.a1 = frame->words[RF_W_COUNTERS];
+        command.a2 = frame->words[RF_W_BLOCKS] | ranges;
+        command.a3 = camera;
+        command.a4 = frame->address[RF_R_HEAVY]; /* heavy_address */
+        command.a9 = 0;                          /* COUNT's profile stays the first's */
+        code = run(&command);
+        if (code) {
+            return code;
+        }
+#endif
         new_command(&command, RF_HANDLER_HIST, frame);
         command.a0 = frame->address[RF_R_HEAVY]; /* heavy_address */
         command.a1 = frame->words[RF_W_HIST];    /* histograms_address */
@@ -730,8 +754,13 @@ static uint32_t show(frame_t* frame, uint32_t raw, uint32_t across, uint32_t qua
     /* display_address, profile_address (raw: the shadow map's pages, none) */
     command.a1 = raw ? frame->words[RF_W_SUN_PAGES] : frame->words[RF_W_DISPLAY];
     command.a2 = raw ? 0 : frame->words[RF_W_SHOWPROF];
-    /* display_pages: a page a tile; raw: the map's, across x across frames */
-    command.a3 = raw ? across * across * RF_DISPLAY_PAGES : RF_DISPLAY_PAGES;
+    /* display_pages: a page a tile of the capacity; raw: the map's, across x across
+     * quadrants of 32 x 32 tiles */
+    command.a3 = (
+        raw
+            ? across * across * RF_SUN_TILES_ACROSS * RF_SUN_TILES_ACROSS
+            : RF_DISPLAY_PAGES
+    );
     command.a4 = raw ? RF_SHOW_RAW : 0;
     /* a8 becomes the block's word (kmx_block): SHOW takes no grid (show.h) */
     if (raw) { /* the quadrant's first page, the map's pages a row (show.h kShowRaw) */
@@ -997,7 +1026,8 @@ static uint32_t serve_sun(void) {
     /* the sun's own grid for its passes, as its camera; the eye's again after */
     const uint32_t eye = frame->grid, eye_tiles = frame->tiles;
     frame->grid = RF_SUN_GRID;
-    frame->tiles = grid_tiles(RF_SUN_GRID);
+    frame->tiles = grid_tiles(RF_SUN_GRID); /* 0: a capacity below a quadrant's */
+    code = code == 0 && frame->tiles == 0 ? RF_BAD_GRID : code;
     for (; code == 0 && quadrant < across * across; quadrant++) {
         uint64_t mark = kmx_time();
         frame->camera = frame->address[RF_R_SUN] + RF_SUN_CAMERA_BYTES * quadrant;

@@ -11,8 +11,10 @@ def test_grid_rule():
     assert scenes.frame_grid((1024, 1024)) == (32, 32)
     assert scenes.frame_grid((1280, 720)) == (40, 23)
     assert scenes.frame_grid((1, 1)) == (1, 1)
-    for size, reason in (((2000, 2000), "at most 1024"), ((0, 5), ">= 1")):
-        with pytest.raises(ValueError, match=reason):
+    assert scenes.frame_grid((3840, 2160)) == (120, 68)  # no number of tiles bounds it
+    assert scenes.frame_grid((20000, 3)) == (625, 1)
+    for size in ((0, 5), (5, 0), (-1, 1)):
+        with pytest.raises(ValueError, match=">= 1"):
             scenes.frame_grid(size)
 
 

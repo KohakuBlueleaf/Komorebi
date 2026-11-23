@@ -42,6 +42,8 @@ constexpr uint32_t kItemEmpty = 0x80000000;
 // Item id bits 0 to 15: its slot in the frame; a band of a split tile also holds its
 // rows [first_row, end_row) in bits 16 to 21 and 22 to 27 (both 0: every row).
 constexpr uint32_t kItemSlot = 0xFFFF;
+// (a core's L1 holds far fewer tiles than the 16 bits number: card_thread.capacity)
+static_assert(kTileCapacity <= kItemSlot + 1);
 constexpr uint32_t kItemRow0Shift = 16;
 constexpr uint32_t kItemRow1Shift = 22;
 constexpr uint32_t kItemRowMask = 0x3F;
@@ -67,7 +69,8 @@ constexpr uint32_t kRecT = 9;       // edge k inside when e > T: +0, or -0's low
 constexpr uint32_t kRecW = 12;      // 1/z plane: px, py, constant coefficients
 constexpr uint32_t kRecCol = 15;    // colour channel c: kRecCol + 3 c + (0, 1, 2)
 constexpr uint32_t kRecX0 = 24;     // first pixel column of the box, as float16
-constexpr uint32_t kRecX1 = 25;     // last pixel column + 1, as float16
+constexpr uint32_t kRecX1 = 25;     // last pixel column + 1, as float16 (both float32
+                                    // in a wide build, grid.h)
 constexpr uint32_t kRecY0 = 26;     // first pixel row of the box (int)
 constexpr uint32_t kRecY1 = 27;     // last pixel row of the box (int)
 constexpr uint32_t kRecTri = 28;    // triangle number, as a float

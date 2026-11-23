@@ -565,24 +565,32 @@ def sun_check(view, materials, lights, got):
     return report
 
 
-def frame_tensors(session):
-    """A frame's tensors as the fill's (card_thread.layer_tensors): five pages a tile,
-    card.CHUNK_PAGES pages a tensor."""
-    pages = lists.TILES * K["kPlanes"]
+def frame_tensors(session, tiles):
+    """A frame's tensors as the fill's (card_thread.frame_tensors): five pages a tile of
+    `tiles` (the capacity's), card.chunk_pages pages a tensor."""
+    pages = tiles * K["kPlanes"]
+    chunk = card.chunk_pages(pages)
     return [
-        card.tensor(session, np.zeros((min(card.CHUNK_PAGES, pages - at), 1024)))
-        for at in range(0, pages, card.CHUNK_PAGES)
+        card.tensor(session, np.zeros((min(chunk, pages - at), 1024)))
+        for at in range(0, pages, chunk)
     ]
 
 
 def surface_tensors(
-    session, workers, lights, materials, terms=raster.TERMS, shared=None, field=None
+    session,
+    workers,
+    lights,
+    materials,
+    terms=raster.TERMS,
+    shared=None,
+    field=None,
+    tiles=lists.TILES,
 ):
-    """The surface's two frames, LIGHT's table, pages and profile tensor, and
-    the directory (a page a worker; shade.h kDirFrame, kSurface*). `shared` (glass):
-    another surface's table and pages, its own frames and profile; `field` (the term
-    indirect): the field's words and pages (field_of)."""
-    frames = [frame_tensors(session), frame_tensors(session)]
+    """The surface's two frames (of `tiles`, the capacity's), LIGHT's table, pages and
+    profile tensor, and the directory (a page a worker; shade.h kDirFrame, kSurface*).
+    `shared` (glass): another surface's table and pages, its own frames and profile;
+    `field` (the term indirect): the field's words and pages (field_of)."""
+    frames = [frame_tensors(session, tiles), frame_tensors(session, tiles)]
     if shared is None:
         table = card.tensor(
             session, light_table(lights, materials, terms, field)[None, :]
@@ -591,28 +599,38 @@ def surface_tensors(
     else:
         table, pages = shared["table"], shared["pages"]
     profile = card.tensor(session, np.zeros((workers, SH["kShadeProfBytes"] // 4)))
+    surface = {"frames": frames, "table": table, "pages": pages, "profile": profile}
+    surface["dir"] = surface_directory(session, workers, surface)
+    return surface
+
+
+def surface_directory(session, workers, surface):
+    """The surface's directory tensor (a page a worker): its frames, table, profile
+    and pages (shade.h kDirFrame, kSurface*)."""
     page = np.zeros(K["kDirBytes"] // 4, dtype=np.uint32)
-    for frame, at in zip(frames, (K["kDirFrame"], SH["kSurfaceSecond"])):
-        page[at] = card.CHUNK_PAGES
+    for frame, at in zip(surface["frames"], (K["kDirFrame"], SH["kSurfaceSecond"])):
+        page[at] = card.chunk_pages(sum(tensor.pages for tensor in frame))
         page[at + 1 : at + 1 + len(frame)] = [tensor.address for tensor in frame]
-    page[SH["kSurfaceLightTable"]] = table.address
-    page[SH["kSurfaceLightProfile"]] = profile.address
-    page[SH["kSurfaceLightPages"]] = pages.address
-    directory = card.tensor(session, np.tile(page, (workers, 1)))
-    return {
-        "frames": frames,
-        "dir": directory,
-        "table": table,
-        "pages": pages,
-        "profile": profile,
-    }
+    page[SH["kSurfaceLightTable"]] = surface["table"].address
+    page[SH["kSurfaceLightProfile"]] = surface["profile"].address
+    page[SH["kSurfaceLightPages"]] = surface["pages"].address
+    return card.tensor(session, np.tile(page, (workers, 1)))
+
+
+def surface_frames(session, workers, surface, tiles):
+    """The surface's two frames made again for `tiles` (a new capacity) and its
+    directory with them; the old ones freed."""
+    for tensor in [*surface["frames"][0], *surface["frames"][1], surface["dir"]]:
+        tensor.free()
+    surface["frames"] = [frame_tensors(session, tiles), frame_tensors(session, tiles)]
+    surface["dir"] = surface_directory(session, workers, surface)
 
 
 def decode_planes(pages, grid=(raster.TILES_X, raster.TILES_Y)):
     """Frame pages (tiles x 5, 1024) as five images (5, H, W) of uint32: the padded
     frame of `grid` (TX, TY), tile ty TX + tx."""
     across, down = grid
-    planes = np.asarray(pages, dtype=np.uint32).reshape(lists.TILES, K["kPlanes"], 1024)
+    planes = np.asarray(pages, dtype=np.uint32).reshape(-1, K["kPlanes"], 1024)
     pixels = planes[: across * down, :, lists.TILE_ORDER].reshape(
         down, across, K["kPlanes"], 32, 32
     )

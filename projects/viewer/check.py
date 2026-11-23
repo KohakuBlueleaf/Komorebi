@@ -15,8 +15,9 @@ import urllib.request
 
 from PIL import Image
 
-RESIZE = (1024, 576)  # the size posted to a rasterizer, then the start's again
-TOO_BIG = (2048, 1024)  # 64 x 32 = 2,048 tiles: refused (at most 1,024)
+RESIZE = (1024, 576)  # the size posted to a rasterizer (within the capacity loaded),
+BEYOND = (1920, 1080)  # then one past it (a reload), then the start's again
+TOO_BIG = (16384, 16384)  # 512 x 512 tiles: a core's L1 refuses it (the load's reason)
 # each renderer must offer Bistro exterior (2.83 M triangles, 1 GB of texture pages)
 # but raster-gi, offered where the scene has an indirect file (Bistro exterior: none)
 EXTERIOR = "bistro_exterior_overview"
@@ -201,9 +202,10 @@ def run_case(base, token, renderer, scene):
 
 
 def size_case(base, token, state, reader):
-    """After the poses: a size the card's grid refuses (400, its reason), then for a
-    rasterizer RESIZE (/state's size and the frames after it follow) and the start's
-    size again; the ray tracer refuses RESIZE (400) and keeps its frames."""
+    """After the poses: TOO_BIG (a rasterizer: /state shows the load's reason and keeps
+    its size; the ray tracer 400), then for a rasterizer RESIZE, BEYOND (a reload) and
+    the start's size, each followed by /state and a frame of it; the ray tracer refuses
+    RESIZE (400)."""
     count = len(reader.frames)
     start = tuple(state["size"])
 
@@ -216,45 +218,63 @@ def size_case(base, token, state, reader):
             code, body = error.code, json.loads(error.read())
         return code, body
 
+    def follow(size):
+        """Seconds until /state shows `size` and a frame of it arrived (None: not in
+        FOLLOW_S), and /state then."""
+        posted, frames = time.monotonic(), len(reader.frames)
+        while time.monotonic() - posted < FOLLOW_S:
+            now = json.loads(get(f"{base}/state?token={token}")[1])
+            if now["size"] == list(size) and any(
+                Image.open(io.BytesIO(data)).size == tuple(size)
+                for data in reader.frames[frames:]
+            ):
+                return round(time.monotonic() - posted, 2), now
+            time.sleep(0.05)
+        return None, now
+
     case = {"start": list(start), "frames_before": count}
-    case["refused"] = dict(zip(("code", "answer"), answer(TOO_BIG)))
-    refused_ok = case["refused"]["code"] == 400 and "at most" in str(
-        case["refused"]["answer"].get("error", "")
-    )
-    code, body = answer(RESIZE)
-    case["resize"] = {"code": code, "answer": body}
+    code, body = answer(TOO_BIG)
+    case["refused"] = {"code": code, "answer": body}
     if not state.get("sizes"):
-        case["ok"] = bool(refused_ok and code == 400)
+        code, body = answer(RESIZE)
+        case["resize"] = {"code": code, "answer": body}
+        case["ok"] = bool(case["refused"]["code"] == 400 and code == 400)
         return case
-    posted, follow_s, sized = time.monotonic(), None, None
-    while time.monotonic() - posted < FOLLOW_S:
+    posted, now = time.monotonic(), state
+    while time.monotonic() - posted < FOLLOW_S and not now.get("size_refused"):
         now = json.loads(get(f"{base}/state?token={token}")[1])
-        if now["size"] == list(RESIZE):
-            sized = [  # the frames after the state showed it
-                Image.open(io.BytesIO(data)).size for data in reader.frames[count:]
-            ]
-            if tuple(RESIZE) in sized:
-                follow_s = time.monotonic() - posted
-                break
         time.sleep(0.05)
-    case["follow_s"] = None if follow_s is None else round(follow_s, 2)
-    case["size_ms"] = now["size_ms"]
-    back = answer(start)[0]
-    posted = time.monotonic()
-    while time.monotonic() - posted < FOLLOW_S:
-        now = json.loads(get(f"{base}/state?token={token}")[1])
-        if now["size"] == list(start):
-            break
-        time.sleep(0.05)
+    case["refused"].update(reason=now.get("size_refused"), size=now["size"])
+    refused_ok = (
+        code == 200
+        and "L1" in str(now.get("size_refused"))
+        and now["size"] == list(start)
+        and now["status"] == "running"
+    )
+    case["sizes"] = []
+    for size in (RESIZE, BEYOND, start):
+        code = answer(size)[0]
+        follow_s, now = follow(size)
+        case["sizes"].append(
+            {
+                "size": list(size),
+                "code": code,
+                "follow_s": follow_s,
+                "size_ms": now["size_ms"],
+                "refused": now.get("size_refused"),
+            }
+        )
     time.sleep(AFTER_S)
     last = Image.open(io.BytesIO(reader.frames[-1])).size if reader.frames else None
-    case.update(back=back, state_size=now["size"], last_frame_size=last)
-    case["frames_before"] = count
+    case.update(state_size=now["size"], last_frame_size=last)
     case["ok"] = bool(
         refused_ok
-        and code == 200
-        and follow_s is not None
-        and back == 200
+        and all(
+            each["code"] == 200
+            and each["follow_s"] is not None
+            and each["refused"] is None
+            for each in case["sizes"]
+        )
         and now["size"] == list(start)
         and last == start
         and now["status"] == "running"

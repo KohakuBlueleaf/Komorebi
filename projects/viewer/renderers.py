@@ -34,15 +34,15 @@ class FrameRefused(Exception):
 
 
 def check_size(size):
-    """(W, H) as integers on the rasterizer's card grid (card_thread.card_grid); else
-    ValueError with the reason."""
+    """(W, H) as integers, any positive size (card_thread.card_grid); else ValueError
+    with the reason. Memory alone bounds it, at the load (SizeRefused)."""
     width, height = (int(n) for n in size)
     raster_thread.card_grid((width, height))
     return width, height
 
 
 class SizeRefused(ValueError):
-    """A frame size a renderer does not render: the reason."""
+    """A frame size a renderer does not render: the reason (the load's, for memory)."""
 
 
 class Renderer:
@@ -112,17 +112,20 @@ class Raster(Renderer):
         self.stack = contextlib.ExitStack()
         try:
             session = self.stack.enter_context(km.Session(log=raster_card.log))
-            self.live = raster_live.Loop(
-                session,
-                scenes.with_size(scene, size),
-                True,
-                slots,
-                raster_live.show_table(),
-                {},
-                materials,
-                lights,
-                self.terms,
-            )
+            try:
+                self.live = raster_live.Loop(
+                    session,
+                    scenes.with_size(scene, size),
+                    True,
+                    slots,
+                    raster_live.show_table(),
+                    {},
+                    materials,
+                    lights,
+                    self.terms,
+                )
+            except raster_thread.L1Refused as error:
+                raise SizeRefused(str(error)) from None
             self.stack.callback(self.live.stop)
         except BaseException:
             self.close()
@@ -132,11 +135,15 @@ class Raster(Renderer):
         self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
 
     def set_size(self, size):
-        """The frame's size (W, H) from the next frame on: the grid word to the card
-        (live.Loop.set_size), no reload. Returns the host's ms; ValueError with the
-        reason when the card's grid does not take it."""
+        """The frame's size (W, H) from the next frame on (live.Loop.set_size): the grid
+        word to the card, or past the loaded capacity a reload. Returns the host's ms;
+        SizeRefused with the load's reason when memory does not hold it (the size as it
+        was)."""
         size = check_size(size)
-        ms = self.live.set_size(size)
+        try:
+            ms = self.live.set_size(size)
+        except raster_thread.L1Refused as error:
+            raise SizeRefused(str(error)) from None
         self.size = size
         self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
         return ms

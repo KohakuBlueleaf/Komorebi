@@ -9,15 +9,50 @@
 
 namespace {
 
-    // A kept triangle's tile columns and rows, as the pack thread packs them (tile
-    // columns 6 bits each, pixel rows 10).
+    // A kept triangle's tile columns and pixel rows, as the pack thread hands them.
     struct BoxWord {
         uint32_t first_tile_x, last_tile_x, first_row, last_row;
     };
 
-    inline BoxWord box_of(uint32_t word) {
+#ifdef RASTER_WIDE
+    // Wide (grid.h): COUNT's box in three words, tile columns 16 bits each, then the
+    // first and the last pixel row; SETUP's from its record's box words.
+    constexpr uint32_t kBoxWords = 3;
+
+    inline BoxWord box_at(const volatile tt_l1_ptr uint32_t* words) {
+        return {words[0] & 0xFFFF, words[0] >> 16, words[1], words[2]};
+    }
+
+    // The integer n in [0, 2^24) whose float32 bits are `bits` (a wide record's box
+    // column).
+    inline uint32_t integer_of(uint32_t bits) {
+        if (bits == 0) {
+            return 0;
+        }
+        const uint32_t exponent = (bits >> 23) - 127;
+        return ((bits & 0x7FFFFF) | 0x800000) >> (23 - exponent);
+    }
+
+    // A record's box (raster.h kRecX0 to kRecY1: first column and last + 1 as float32,
+    // first and last row).
+    inline BoxWord record_box(const volatile tt_l1_ptr uint32_t* record) {
+        return {
+            integer_of(record[kRawX0]) >> 5,
+            (integer_of(record[kRawX1]) - 1) >> 5,
+            record[kRawY0],
+            record[kRawY1]
+        };
+    }
+#else
+    // Narrow: one word, tile columns in 6 bits each, pixel rows in 10.
+    constexpr uint32_t kBoxWords = 1;
+
+    inline BoxWord box_at(const volatile tt_l1_ptr uint32_t* words) {
+        const uint32_t word = words[0];
         return {word & 63, word >> 6 & 63, word >> 12 & 1023, word >> 22 & 1023};
     }
+#endif
+    static_assert(kOutWords % kBoxWords == 0);  // a COUNT page holds whole boxes
 
     // Records the first give-up of this core's writer and asks the run to stop.
     void give_up(uint32_t code, uint32_t where) {
@@ -192,12 +227,13 @@ namespace {
 
     // COUNT's second stage: per tile entries and rows (kCbCount's space) and the
     // 2-row histograms (kCbHist's, kept for HIST) from the pack thread's box words.
-    template <typename Flushed>
+    template <typename Flushed, typename Arrived>
     bool count_stage(
         const km::Writer& writer,
         const km_command_t& command,
         WriterProfile& profile,
-        Flushed flushed
+        Flushed flushed,
+        Arrived arrived
     ) {
         const uint32_t counters_address = command.a1, blocks_word = command.a2;
         const uint32_t camera_address = command.a3, bank = bank_word(command.a8);
@@ -207,12 +243,51 @@ namespace {
         volatile tt_l1_ptr uint16_t*
             histogram = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(histogram_words);
         const uint32_t zero_started = km::wall();
+#ifdef RASTER_RECOUNT
+        // COUNT counts (a4 0), or again its heavy tiles' histograms (a4 the heavy
+        // tiles' page, README.md): through a map, 1 + heavy index a tile (kCbCount)
+        const uint32_t heavy_address = command.a4;
+        volatile tt_l1_ptr uint16_t*
+            heavy_of = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(counters);
+        if (heavy_address != 0) {
+            const uint32_t heavy_space = get_read_ptr(kCbCount) + 4 * kTiles;
+            noc_async_read(
+                setup_pass::noc_address(bank, heavy_address, 0, kHeavyBytes),
+                heavy_space,
+                kHeavyBytes
+            );
+            for (uint32_t i = 0; i < kTiles / 2; ++i) {
+                counters[i] = 0;
+            }
+            if (!arrived()) {
+                return false;
+            }
+            invalidate_l1_cache();
+            volatile tt_l1_ptr uint32_t* heavy_words = km::l1(heavy_space);
+            const uint32_t heavy_count = heavy_words[0];
+            if (heavy_count > kHistTiles) {
+                give_up(kGaveBadHeavy, heavy_count);
+                return true;
+            }
+            for (uint32_t heavy_index = 0; heavy_index < heavy_count; ++heavy_index) {
+                heavy_of[heavy_words[1 + heavy_index] % kTiles] = heavy_index + 1;
+            }
+            for (uint32_t i = 0; i < 16 * heavy_count; ++i) {
+                histogram_words[i] = 0;
+            }
+        } else {
+            for (uint32_t i = 0; i < 2 * kTiles; ++i) {
+                counters[i] = 0;
+            }
+        }
+#else
         for (uint32_t i = 0; i < 2 * kTiles; ++i) {
             counters[i] = 0;
         }
         for (uint32_t i = 0; i < kHistBytes / 4; ++i) {
             histogram_words[i] = 0;
         }
+#endif
         profile.write += km::wall() - zero_started;
         for (;;) {
             const uint32_t wait_start = km::wall();
@@ -225,8 +300,10 @@ namespace {
             volatile tt_l1_ptr uint32_t* page_words = km::l1(get_read_ptr(kCbOut));
             const uint32_t head = page_words[0], words = head & ~kOutLast;
             ++profile.pages;
-            for (uint32_t i = 0; i < words && i < kOutWords; ++i) {
-                const BoxWord box = box_of(page_words[1 + i]);
+            for (
+                uint32_t i = 0; i + kBoxWords <= words && i < kOutWords; i += kBoxWords
+            ) {
+                const BoxWord box = box_at(page_words + 1 + i);
                 for (
                     uint32_t tile_y = box.first_row >> 5; tile_y <= box.last_row >> 5;
                     ++tile_y
@@ -243,10 +320,24 @@ namespace {
                         ++tile_x
                     ) {
                         const uint32_t tile = across * tile_y + tile_x;
+#ifdef RASTER_RECOUNT
+                        if (heavy_address == 0) {
+                            counters[tile] += 1;
+                            counters[kTiles + tile] += last_row - first_row + 1;
+                            continue;
+                        }
+                        const uint32_t heavy = heavy_of[tile];
+                        if (heavy == 0) {
+                            continue;
+                        }
+                        volatile tt_l1_ptr uint16_t*
+                            tile_histogram = (histogram + 32 * (heavy - 1));
+#else
                         counters[tile] += 1;
                         counters[kTiles + tile] += last_row - first_row + 1;
                         volatile tt_l1_ptr uint16_t*
                             tile_histogram = (histogram + 32 * tile);
+#endif
                         const uint16_t starts = (
                             tile_histogram[(first_row - top) >> 1] + 1
                         );
@@ -269,6 +360,11 @@ namespace {
                 break;
             }
         }
+#ifdef RASTER_RECOUNT
+        if (heavy_address != 0) {  // the histograms stay for HIST; counters and costs
+            return true;           // are the first COUNT's
+        }
+#endif
         const uint32_t send_started = km::wall();
         asm volatile(
             "fence" ::: "memory"
@@ -335,7 +431,11 @@ namespace {
             const uint32_t head = page_words[0], entries = head & ~kOutLast;
             ++profile.pages;
             for (uint32_t i = 0; i < entries && i < kOutEntries && succeeded; ++i) {
-                const BoxWord box = box_of(page_words[1 + i]);
+#ifdef RASTER_WIDE
+                const BoxWord box = record_box(page_words + 32 * (1 + i));
+#else
+                const BoxWord box = box_at(page_words + 1 + i);
+#endif
                 for (
                     uint32_t tile_y = box.first_row >> 5;
                     tile_y <= box.last_row >> 5 && succeeded;
@@ -488,7 +588,7 @@ bool setup_writer_pass(
         ) == km::kGaveNone;
     };
     if (handler == kHandlerCount) {
-        return count_stage(writer, command, profile, flushed);
+        return count_stage(writer, command, profile, flushed, arrived);
     }
     if (handler == kHandlerHist) {
         const uint32_t heavy_address = command.a0, histograms_address = command.a1;
@@ -511,7 +611,11 @@ bool setup_writer_pass(
         }
         const uint32_t histogram_space = get_read_ptr(kCbHist);
         for (uint32_t heavy_index = 0; heavy_index < heavy_count; ++heavy_index) {
+#ifdef RASTER_RECOUNT
+            const uint32_t tile = heavy_index;  // the second COUNT's table
+#else
             const uint32_t tile = heavy_words[1 + heavy_index] % kTiles;
+#endif
             noc_async_write(
                 histogram_space + 64 * tile,
                 setup_pass::noc_address(

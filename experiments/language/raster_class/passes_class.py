@@ -4,12 +4,18 @@ program's vector-unit setup and its pass as inline bodies, the writer's counting
 sending as bodies on mover B. README.md says which moves are still bodies."""
 
 import komorebi as km
+from projects.raster import card
 
 # The passes' compute options, the hand program's: the pack CPU's vector unit.
 PASSES = {"fp32_dest_acc_en": True, "enable_trisc2_rvv": True}
 # The hand's setup_compute.cpp on the pack CPU: its helpers alone, its out buffer the
-# class's field `out` (buffer 10, after HIST's table's two; a start body checks it).
-PASS_HELPERS = {"RASTER_PASS_HELPERS": 1, "RASTER_NO_ENTRY": 1, "RASTER_OUT_CB": 10}
+# class's field `out` (buffer 10, after HIST's table's two; a start body checks it),
+PASS_HELPERS = {
+    "RASTER_PASS_HELPERS": 1,
+    "RASTER_NO_ENTRY": 1,
+    "RASTER_OUT_CB": 10,
+    **card.capacity_defines(),  # the default frame's tiles and tables (grid.h)
+}
 HEADERS = """
 #include "../../../../../projects/raster/kernels/setup.h"
 #include "../../../../../projects/raster/kernels/setup_noc.hpp"
