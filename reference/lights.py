@@ -654,10 +654,10 @@ LIGHT_KEYS = (
 
 def load(name, data):
     """The lights of a scene (or of a view's scene): the arrays of LIGHT_KEYS, the
-    shadow map's side (`shadow_side`), the table's numbers (`reflection`: 0 without it),
-    the shadow bias as 1/z (shadow_bias texels at the sun camera's distance) and
-    `indirect`, the path of <scene>_indirect.npz when there is one. Missing file: error.
-    """
+    shadow map's side (`shadow_side`), the table's numbers (`reflection`: 0 without it;
+    the tone step's `saturation` and `curve`: 1 and 0 without them), the shadow bias
+    as 1/z (shadow_bias texels at the sun camera's distance) and `indirect`, the path
+    of <scene>_indirect.npz when there is one. Missing file: error."""
     if public.is_view(name):
         name = public.views()[name][0]
     path = lighting_path(name, data)
@@ -678,6 +678,8 @@ def load(name, data):
         k: entry[k] for k in ("ambient", "emissive_scale", "exposure", "radius", "size")
     }
     numbers["reflection"] = entry.get("reflection", 0.0)
+    numbers["saturation"] = entry.get("saturation", 1.0)
+    numbers["curve"] = int(entry.get("curve", raster.CURVE_PLAIN))
     found = public.public_dir(data) / f"{name}_indirect.npz"
     if found.exists():
         numbers["indirect"] = str(found)

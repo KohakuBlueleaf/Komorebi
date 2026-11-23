@@ -262,11 +262,11 @@ def field_words(words, field, first):
     words[SH["kLtFieldPages"]] = count
 
 
-def light_table(lights, materials, terms=raster.TERMS, field=None):
-    """LIGHT's table (kernels/shade.h kLt*): per channel the sky's products, ambient,
-    the sun; the sun's direction, exposure, background, 1 / pi, terms, exponent bits,
-    lamps; the shadow texel, bias, camera; the turn; the maps' pages; each lamp; with
-    the term `indirect` the field's words (`field`: field_of)."""
+def light_table(lights, materials, terms=raster.TERMS, field=None, indirect=True):
+    """LIGHT's table (kernels/shade.h kLt*): the sky, ambient, sun, exposure, terms,
+    lamps, shadow, turn, maps' pages, tone (raster.tone: saturation 1 and curve 0 when
+    the lights lack them), each lamp; with the term `indirect` the field's words
+    (`field`: field_of), `indirect` False clearing kTermIndirect (the switch)."""
     words = np.zeros(SH["kLightTableBytes"] // 4, dtype=np.uint32)
 
     def put(at, values):
@@ -306,6 +306,13 @@ def light_table(lights, materials, terms=raster.TERMS, field=None):
     put(SH["kLtBackground"], raster.BACKGROUND)
     put(SH["kLtInvPi"], F32(1 / np.pi))
     words[SH["kLtTerms"]] = term_bits(terms)
+    if not indirect:
+        words[SH["kLtTerms"]] &= ~np.uint32(SH["kTermIndirect"])
+    saturation, curve = F32(lights.get("saturation", 1.0)), lights.get("curve", 0)
+    if curve not in (raster.CURVE_PLAIN, raster.CURVE_FILMIC):
+        raise ValueError(f"tone curve {curve}: 0 (plain) or 1 (filmic)")
+    put(SH["kLtSaturation"], saturation)
+    words[SH["kLtCurve"]] = int(curve)
     words[SH["kLtExponentBits"]] = int(
         shade.exponents(materials).max(initial=0)
     ).bit_length()
@@ -415,10 +422,11 @@ def quadrant_cameras(camera, side):
     ]
 
 
-def sun_region(lights, materials, terms=raster.TERMS, field=None):
+def sun_region(lights, materials, terms=raster.TERMS, field=None, indirect=True):
     """The frame thread's sun region (thread/frame.h RF_R_SUN): the sun's camera of each
     quadrant of the shadow map as COUNT's and SETUP's camera page, the quadrants a side,
-    then LIGHT's table (light_table; `field` with the term indirect)."""
+    then LIGHT's table (light_table; `field` with the term indirect, `indirect` its
+    switch)."""
     words = np.zeros(card_thread.F["RF_SUN_BYTES"] // 4, dtype=np.uint32)
     side = light_data.shadow_side(lights)
     cameras = quadrant_cameras(lights["shadow_camera"], side)
@@ -430,7 +438,7 @@ def sun_region(lights, materials, terms=raster.TERMS, field=None):
     words[card_thread.F["RF_SUN_ACROSS_AT"] // 4] = side // light_data.FILL_SIDE
     at = card_thread.F["RF_SUN_TABLE_AT"] // 4
     words[at : at + SH["kLightTableBytes"] // 4] = light_table(
-        lights, materials, terms, field
+        lights, materials, terms, field, indirect
     )
     return words
 

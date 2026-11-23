@@ -311,6 +311,16 @@ def sun_slots(scene, materials, angles, side):
     }
 
 
+def tone_of(lights):
+    """The tone step's numbers of `lights` (raster.tone; saturation 1, curve 0 when
+    absent)."""
+    return {
+        "exposure": float(lights["exposure"]),
+        "saturation": float(lights.get("saturation", 1.0)),
+        "curve": int(lights.get("curve", raster.CURVE_PLAIN)),
+    }
+
+
 def times_rows(raw, frames):
     """The thread's rows of the frames served (the last RF_TIMES_ROWS), in order."""
     rows = np.frombuffer(raw, dtype=np.uint32)[
@@ -323,9 +333,9 @@ def times_rows(raw, frames):
 
 class Loop:
     """The scene loaded in `session`, the thread's program running: a FRAME command a
-    camera (`frame`), the image read or pushed; `materials`: shaded (masked and glass),
-    `lights`: lit (surfaces, LIGHT's table; `set_sun`); term `indirect`: the field, at
-    the load and after a sun change. Fills upload_s, load_s, sun_lists, field_update."""
+    camera (`frame`); `materials`: shaded, `lights`: lit (LIGHT's table; `set_sun`,
+    `set_tone`); term `indirect`: the field, remade after a sun change, its switch
+    `set_indirect`. Fills upload_s, load_s, sun_lists, field_update."""
 
     def __init__(
         self,
@@ -347,6 +357,9 @@ class Loop:
             terms,
         )
         self.sun = None  # (azimuth, elevation) once set_sun moved it
+        self.lit = lights  # the lights LIGHT's table is of (set_sun's once moved)
+        self.tone = None if lights is None else tone_of(lights)
+        self.indirect = "indirect" in terms  # the switch (set_indirect)
         self.box = None if lights is None else light.scene_box(scene)
         self.field = self.field_update = None  # the term indirect: field_of's
         if lights is not None and "indirect" in terms:
@@ -442,7 +455,7 @@ class Loop:
         if self.surface is not None:
             words[F["RF_W_SURFACE"]] = self.surface["dir"].address
             words[F["RF_W_SUN_PAGES"]] = self.surface["pages"].address
-            sun = light.sun_region(lights, materials, terms, self.field)
+            sun = self.region(lights)
         glass_words = None  # frame.h RF_G_*, in area 0
         for name, prefix in (("masked", "RF_W_M_"), ("glass", "RF_G_")):
             layer = getattr(self, name)
@@ -524,13 +537,48 @@ class Loop:
                 event = event._replace(result="push words missing")
         return event, (began, written, commanded, read, ended, collect)
 
+    def region(self, lights):
+        """The sun region (light.sun_region) of `lights` with the tone step's numbers
+        now (set_tone) and the indirect switch (set_indirect)."""
+        return light.sun_region(
+            {**lights, **self.tone},
+            self.materials,
+            self.terms,
+            self.field,
+            self.indirect,
+        )
+
+    def set_tone(self, exposure, saturation, curve):
+        """The tone step's numbers (raster.tone: exposure > 0, saturation >= 0, curve 0
+        plain or 1 filmic) into LIGHT's table in the sun region, for the next frame;
+        nothing reloaded. Returns the host's ms."""
+        began = time.perf_counter()
+        exposure, saturation, curve = float(exposure), float(saturation), int(curve)
+        if not (exposure > 0 and saturation >= 0) or curve not in (0, 1):
+            raise ValueError("a tone is exposure > 0, saturation >= 0, curve 0 or 1")
+        self.tone = {"exposure": exposure, "saturation": saturation, "curve": curve}
+        self.running.thread.write("sun", self.region(self.lit))
+        return (time.perf_counter() - began) * 1e3
+
+    def set_indirect(self, on):
+        """The indirect switch (a frame loaded with the field): off, LIGHT lights as
+        without the field (ambient, sky x visibility); on, from the field. Its terms
+        word in the sun region, for the next frame. Returns the host's ms."""
+        if self.field is None:
+            raise ValueError("the indirect switch needs a frame loaded with --indirect")
+        began = time.perf_counter()
+        self.indirect = bool(on)
+        self.running.thread.write("sun", self.region(self.lit))
+        return (time.perf_counter() - began) * 1e3
+
     def set_sun(self, azimuth, elevation):
         """The sun at `azimuth`, `elevation` (degrees): light.sun_lights into the sun
         region, then above the horizon the SUN command (the next frame's shadow map).
         The command's word (None: no pass), the host's ms, the lights (no map)."""
         began = time.perf_counter()
         lights = light.sun_lights(self.lights, self.box, azimuth, elevation)
-        region = light.sun_region(lights, self.materials, self.terms, self.field)
+        self.lit = lights
+        region = self.region(lights)
         self.running.thread.write("sun", region)
         word = None
         if elevation > 0:
@@ -559,7 +607,7 @@ class Loop:
         self.session.write(
             self.surface["pages"], pages.view(np.uint8).reshape(len(pages), -1), first
         )
-        region = light.sun_region(lights, self.materials, self.terms, self.field)
+        region = self.region(lights)
         self.running.thread.write("sun", region)
         ended = time.perf_counter()
         self.field_update = {
@@ -609,9 +657,22 @@ def loop(args):
     sun_set = parse_sun(args.sun) if args.sun else None
     if (sun_set or args.sun_path or args.check_sun) and not args.light:
         raise SystemExit("--sun, --sun-path and --check-sun move a lit frame's sun")
+    toned = (args.exposure, args.saturation, args.curve) != (None, None, None)
+    if toned and not args.light:
+        raise SystemExit("--exposure, --saturation and --curve tone a lit frame")
+    if args.indirect_switch and not args.indirect:
+        raise SystemExit("--indirect-switch flips the field of an --indirect frame")
+    if toned:  # set_tone before the first frame; the reference with the same numbers
+        tone = live_tone(lights, args)
+        lights = {**lights, **tone}
+        report["tone"] = tone
+    indirect_at = {}  # frame index: the indirect switch it was rendered with
     sun_at = {}  # frame index: the sun it was rendered with, once moved
     passes_run = []  # each SUN command: angles, word, host ms
-    checked = sorted({0, args.frames // 2, args.frames - 1})
+    checked = {0, args.frames // 2, args.frames - 1}
+    if args.indirect_switch and args.indirect_switch < args.frames:
+        checked.add(args.indirect_switch)  # the first frame with the switch off
+    checked = sorted(checked)
     surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
     kept, surface_got, glass_surface_got = {}, {}, {}
     with km.Session(log=card.log) as session:
@@ -628,6 +689,8 @@ def loop(args):
         )
         workers, running = live.workers, live.running
         sun_got = None
+        if toned:
+            report["tone"]["host_ms"] = round(live.set_tone(**tone), 3)
 
         def move_sun(azimuth, elevation, index):
             word, host_ms, _ = live.set_sun(azimuth, elevation)
@@ -660,6 +723,10 @@ def loop(args):
                     break
             if live.sun is not None:
                 sun_at[index] = live.sun
+            if args.indirect_switch and index and index % args.indirect_switch == 0:
+                live.set_indirect(not live.indirect)
+            if args.indirect:
+                indirect_at[index] = live.indirect
             event, times = live.frame(view["camera"], image)
             began, written, commanded, read, ended, collect = times
             if collect is not None:
@@ -833,6 +900,11 @@ def loop(args):
     report["frames_run"] = len(words_back)
     if passes_run:
         report["sun"] = sun_report(passes_run, sun_rows, ticks_ms)
+    if args.indirect_switch:
+        report["indirect_switch"] = {
+            "every": args.indirect_switch,
+            "off": [index for index, on in indirect_at.items() if not on],
+        }
     moved = {}  # the reference's lights per sun (lights.moved: seconds each)
 
     def lights_of(index):
@@ -861,9 +933,13 @@ def loop(args):
         if args.light:
             if not args.check_light:
                 continue
+            frame_terms = terms
+            if not indirect_at.get(index, True):  # the switch off: as without the field
+                frame_terms = tuple(term for term in terms if term != "indirect")
             light_checks[index], want = light.light_check(
-                views[index], materials, lights_of(index), got, terms
+                views[index], materials, lights_of(index), got, frame_terms
             )
+            light_checks[index]["indirect"] = "indirect" in frame_terms
             if folder:
                 png.write_png(folder / f"{tag}_reference.png", want)
                 png.write_png(
@@ -917,6 +993,16 @@ def loop(args):
         and report["table_differs"] == 0
     )
     return report
+
+
+def live_tone(lights, args):
+    """The tone step's numbers of --exposure, --saturation, --curve, the scene's
+    (lights) where an option is not given."""
+    tone = tone_of(lights)
+    for name in tone:
+        if getattr(args, name) is not None:
+            tone[name] = type(tone[name])(getattr(args, name))
+    return tone
 
 
 def parse_sun(text):
@@ -988,6 +1074,31 @@ def main():
         "--indirect",
         action="store_true",
         help="lit: indirect light from the field (the reference's term indirect)",
+    )
+    parser.add_argument(
+        "--exposure",
+        type=float,
+        default=None,
+        help="lit: the tone step's exposure (default the scene's), set before frame 0",
+    )
+    parser.add_argument(
+        "--saturation",
+        type=float,
+        default=None,
+        help="lit: the tone step's saturation (default the scene's, 1: none)",
+    )
+    parser.add_argument(
+        "--curve",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help="lit: the tone curve, 0 x / (1 + x), 1 filmic (default the scene's)",
+    )
+    parser.add_argument(
+        "--indirect-switch",
+        type=int,
+        default=0,
+        help="with --indirect: the field switched off and on every N frames",
     )
     parser.add_argument(
         "--light-terms",

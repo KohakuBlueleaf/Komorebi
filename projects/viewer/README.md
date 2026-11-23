@@ -87,7 +87,11 @@ Requests: `GET /` the page; `GET /stream` the frames; `POST /pose`
 (`{"renderer": r, "scene": s}`); `POST /sun` (`{"azimuth": a, "elevation": e,
 "scene_serial": n}`, raster-lit); `GET /state` (the numbers, the status, the renderers
 and scenes offered, the scene box's diagonal, the scene's first pose; raster-lit: `sun`,
-`sun_own`, `sun_ms`).
+`sun_own`, `sun_ms`; raster-lit and raster-gi: `tone`, `tone_own`; raster-gi:
+`indirect`); `POST /tone` (`{"exposure": e, "saturation": s, "curve": 0 or 1,
+"scene_serial": n}`, raster-lit and raster-gi: exposure clamped to 0.25 to 8,
+saturation to 0 to 2); `POST /indirect` (`{"on": true or false, "scene_serial": n}`,
+raster-gi).
 
 The sun (raster-lit): two sliders, azimuth and elevation, start at the scene's own sun;
 "reset sun" puts them back. A move posts the angles (at most ten times a second); the
@@ -106,6 +110,19 @@ sun came 1.7 and 3.5 s after the post (`follow_s`); frame ms (host) 14.9 and 23.
 `check.py` waits up to 60 s for that frame, and does not ask raster-gi for Bistro
 exterior (no indirect file).
 
+The tone (raster-lit, raster-gi; hidden for the other renderers): an exposure slider
+(0.25 to 8, logarithmic), a saturation slider (0 to 2), the curve (plain `x / (1 + x)`,
+filmic) and "reset tone", back to the scene's numbers (its `lighting` entry). A change
+posts the three (at most ten times a second); the render loop applies the newest between
+frames (`Loop.set_tone`: LIGHT's table in the sun region, nothing reloaded), and the
+header shows them. raster-gi also has the checkbox "indirect light" (on at a load): a
+change posts it, and the loop switches the field off (lit as raster-lit, sky x
+visibility and ambient) or on (`Loop.set_indirect`) before the next frame.
+Card 1, 2026-11-24 00:31 to 00:37, `check.py` (`ok`, every case; the tone and the switch
+changed the frame and `/state` named them): the tone shown with a frame after it in 0.06
+to 0.11 s on raster-lit's three scenes and raster-gi's Bistro interior, 1.08 s on
+raster-gi's Sponza; the indirect switch 1.07 s (Sponza) and 0.11 s (Bistro interior).
+
 ## Checking it
 
 ```
@@ -116,4 +133,6 @@ For each renderer and scene: selects it, waits for `running`, posts 20 poses alo
 short path, reads the frames from `/stream`, and reports the frames received, that they
 decode to 1024 x 1024, that the first and the last differ, and the frame ms (with its
 label) and frames a second `/state` showed; and that requests without the token get 403. One JSON line with
-`ok`.
+`ok`. A lit renderer also moves the sun and posts the tone exposure 2, saturation 1.15,
+filmic; raster-gi then switches the indirect light off: each must change the frame and
+show in `/state`.

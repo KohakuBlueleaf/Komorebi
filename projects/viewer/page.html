@@ -14,8 +14,8 @@
            padding: 2px 6px; }
   #numbers { font-family: ui-monospace, monospace; color: var(--dim); }
   #status.bad { color: #e87; }
-  #sun[hidden] { display: none; }
-  #sun input[type=range] { width: 140px; vertical-align: middle; }
+  #sun[hidden], #tone[hidden], #gi[hidden] { display: none; }
+  #sun input[type=range], #tone input[type=range] { width: 140px; vertical-align: middle; }
   button { background: #222; color: var(--fg); border: 1px solid var(--line);
            padding: 2px 8px; }
   main { display: flex; justify-content: center; padding: 8px 16px; }
@@ -35,6 +35,13 @@
     <label>elevation <input id="elevation" type="range" min="-10" max="90" step="any"></label>
     <button id="reset-sun" type="button">reset sun</button>
   </span>
+  <span id="tone" hidden>
+    <label>exposure <input id="exposure" type="range" min="-2" max="3" step="any"></label>
+    <label>saturation <input id="saturation" type="range" min="0" max="2" step="0.01"></label>
+    <label>curve <select id="curve"><option value="0">plain</option><option value="1">filmic</option></select></label>
+    <button id="reset-tone" type="button">reset tone</button>
+  </span>
+  <label id="gi" hidden><input id="indirect" type="checkbox"> indirect light</label>
   <span id="numbers"></span>
   <span id="status"></span>
 </header>
@@ -52,6 +59,12 @@ const statusText = document.getElementById("status");
 const sunControls = document.getElementById("sun");
 const azimuthInput = document.getElementById("azimuth");
 const elevationInput = document.getElementById("elevation");
+const toneControls = document.getElementById("tone");
+const exposureInput = document.getElementById("exposure");  // log2 of the exposure
+const saturationInput = document.getElementById("saturation");
+const curveSelect = document.getElementById("curve");
+const giControl = document.getElementById("gi");
+const indirectInput = document.getElementById("indirect");
 
 let pose = null;          // {position: [x, y, z], yaw, pitch}
 let sceneSerial = -1;     // the scene the pose is of
@@ -64,6 +77,11 @@ let sunOwn = null;        // the scene's own sun [azimuth, elevation] (raster-li
 let sunScene = -1;        // the scene the sliders are of
 let sunChanged = false;
 let lastSunPost = 0;
+let toneOwn = null;       // the scene's tone [exposure, saturation, curve] (lit)
+let toneScene = -1;       // the scene the tone controls are of
+let toneChanged = false;
+let lastTonePost = 0;
+let giScene = -1;         // the scene the indirect checkbox is of
 
 view.src = "/stream" + q;
 
@@ -104,12 +122,29 @@ async function refresh() {
       elevationInput.value = state.sun[1];
       sunChanged = false;
     }
+    toneOwn = state.tone_own;
+    toneControls.hidden = toneOwn === null;
+    if (toneOwn !== null && state.scene_serial !== toneScene) {
+      toneScene = state.scene_serial;  // a new load: the scene's tone on the controls
+      showTone(state.tone);
+      toneChanged = false;
+    }
+    giControl.hidden = state.indirect === null;
+    if (state.indirect !== null && state.scene_serial !== giScene) {
+      giScene = state.scene_serial;
+      indirectInput.checked = state.indirect;
+    }
     const ms = state.card_ms === null ? "-" : state.card_ms.toFixed(1);
     let sunText = "";
     if (state.sun) {
       const pass = state.sun_ms === null ? "-" : state.sun_ms.toFixed(1);
       sunText = `  sun ${state.sun[0].toFixed(1)}, ${state.sun[1].toFixed(1)}  SUN pass ms ${pass}`;
     }
+    if (state.tone) {
+      sunText += `  exposure ${state.tone[0].toFixed(2)} saturation ${state.tone[1].toFixed(2)} ` +
+        (state.tone[2] === 1 ? "filmic" : "plain");
+    }
+    if (state.indirect !== null) sunText += state.indirect ? "  indirect on" : "  indirect off";
     numbers.textContent = `${state.renderer || "-"} / ${state.scene || "-"}  ` +
       `${state.card_ms_label || "frame ms"} ${ms}  ${state.fps} frames/s  frame ${state.frame}` +
       sunText;
@@ -146,6 +181,25 @@ document.getElementById("reset-sun").addEventListener("click", () => {
   azimuthInput.value = sunOwn[0];
   elevationInput.value = sunOwn[1];
   sunChanged = true;
+});
+
+// The tone: exposure (a logarithmic slider), saturation, curve; posted as the sun is,
+// applied between frames (LIGHT's table). The indirect switch: posted on a change.
+function showTone(tone) {
+  exposureInput.value = Math.log2(tone[0]);
+  saturationInput.value = tone[1];
+  curveSelect.value = String(tone[2]);
+}
+exposureInput.addEventListener("input", () => { toneChanged = true; });
+saturationInput.addEventListener("input", () => { toneChanged = true; });
+curveSelect.addEventListener("change", () => { toneChanged = true; });
+document.getElementById("reset-tone").addEventListener("click", () => {
+  if (toneOwn === null) return;
+  showTone(toneOwn);
+  toneChanged = true;
+});
+indirectInput.addEventListener("change", () => {
+  post("/indirect", {on: indirectInput.checked, scene_serial: sceneSerial}).catch(() => {});
 });
 
 function forward() {
@@ -211,6 +265,13 @@ function tick(now) {
     lastSunPost = now;
     post("/sun", {azimuth: Number(azimuthInput.value), elevation: Number(elevationInput.value),
                   scene_serial: sceneSerial}).catch(() => {});
+  }
+  if (toneChanged && toneOwn !== null && now - lastTonePost >= 100) {
+    toneChanged = false;
+    lastTonePost = now;
+    post("/tone", {exposure: 2 ** Number(exposureInput.value),
+                   saturation: Number(saturationInput.value),
+                   curve: Number(curveSelect.value), scene_serial: sceneSerial}).catch(() => {});
   }
   if (changed && !posting && now - lastPost >= 1000 / 30) {
     changed = false;

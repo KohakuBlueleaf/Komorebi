@@ -523,8 +523,9 @@ Without `--light` SHADE runs its old path unchanged and gives the textured frame
   ambient + sun x max(0, n.s) x shadow + the lamps`; colour `a / pi x E` plus, where the
   specular plane is not 0, the Blinn-Phong term for the sun and for each lamp, each times
   that light's irradiance over pi (the exponent in the material word's bits 20 to 30, the
-  power by squaring); `emissive` `a`; empty the background; then `x = exposure x
-  colour`, `x / (1 + x)` by the exact reciprocal. The numbers are immediates from a 4 KB
+  power by squaring); `emissive` `a`; empty the background; then the tone step ("Tone
+  and the indirect switch" below; by default `x = exposure x colour`, `x / (1 + x)` by
+  the exact reciprocal). The numbers are immediates from a 4 KB
   table (`light.light_table`: the sky's products, the sun, the shadow camera, the
   background's turn, the maps' page numbers, up to 32 lamps; the reader adds the
   camera), which the reader takes from the frame thread's sun region (LIGHT's a1), so
@@ -961,6 +962,51 @@ Costs, ms and cycles a tile (medians; without: `--light` 23:14 to 23:17):
 The field's update on the host after a sun change (Sponza, 23:13): 2.66 s (shadow map
 read 0.006, field 2.656, pages and table written 0.002), 5,455,872 bytes. At the load:
 Sponza 2.6 to 2.8 s, Bistro interior 13.9 s (the transport's first read included).
+
+### Tone and the indirect switch (`--exposure`, `--saturation`, `--curve`, `--indirect-switch N`)
+
+The reference's tone step (`raster.tone`; its README, "The tone step"): exposure,
+saturation `s` (`max(0, lum + (x - lum) s)`, none at 1) and the curve (0 `x / (1 + x)`,
+1 the filmic fit at most 1), then SHOW's 8-bit conversion as before. All three are
+numbers of LIGHT's table (`kLtExposure`, `kLtSaturation` 92, `kLtCurve` 93), which the
+host rewrites between frames in the sun region, so `Loop.set_tone(exposure, saturation,
+curve)` changes the next frame with nothing reloaded. Both curves are in the kernel: at
+saturation 1 and curve 0 LIGHT runs its earlier per-channel `tone` (the frames are the
+earlier ones bit for bit); otherwise each channel's linear colour is stored and
+`grade_row` (out of line) tones the row: exposure, the luminance by fused
+multiply-adds, the saturation, then the curve with the exact reciprocal of its
+denominator and a min with 1. The glass command (and its rows without glass in front)
+uses the same step. The live options apply `set_tone` before frame 0 and give the
+reference the same numbers.
+
+The indirect switch: `Loop.set_indirect(on)` rewrites the table's terms word without
+`kTermIndirect` (off) or with it (on); the field's words and pages stay, so off lights as
+a frame without the field (sky x visibility, ambient) and on from the field, nothing
+reloaded. `--indirect-switch N` flips it every N frames (the frames checked add frame
+N; check C uses the reference without `indirect` on the frames with it off).
+
+Card 1, 2026-11-24, AICLK 1,350 MHz, `--frames 20 --push --light --check-light`
+(`sponza_overview`, `bistro_interior_overview`), frames 0, 10, 19 at most:
+
+- Defaults: frames 0, 10 and 19 of Sponza lit equal the earlier kernels' pictures bit
+  for bit (00:07); LIGHT 229,062 cycles a tile against 228,515 (23:59, before the
+  change). The closing runs below give all four cases again.
+- `--curve 1 --exposure 2 --saturation 1.15` (00:08 to 00:12), check C against the
+  reference with the same numbers, share over 2 / 4 / 8 %: Sponza lit 0.21 / 0.054 /
+  0.019, with `--indirect` 0.33 / 0.088 / 0.030; Bistro interior lit 0.013 / 0.0063 /
+  0.0022, with `--indirect` 0.0125 / 0.0064 / 0.0022; every check `ok`, every word 0.
+  On Sponza the pixels over 4 are the shadow-edge band's (500 to 890), outside it at
+  most 5; the brighter curve's steeper slope turns the same flips into more 8-bit
+  steps. Bistro interior: glass in front 0.3 % to 0.46 % over 4.
+- The switch, `--indirect --indirect-switch 5` (00:12 to 00:14; off on frames 5 to 9 and
+  15 to 19): every word 0, every check `ok`; frames 0 and 10 (on) equal the
+  `--indirect` frames, frame 19 (off) the frame without the field, bit for bit, both
+  scenes.
+- LIGHT's cost, filmic and saturation against the default (cycles a tile, the
+  profile's mean): Sponza 236,253 against 228,515 (the colour part 42,022 against
+  34,663), with the field 564,669 against 554,563; Bistro interior's glass command
+  74,977 against 66,065 (with the field 80,291 against 71,978); about 7,400 to 8,900
+  cycles a tile, 0.05 ms of LIGHT on Sponza (1.727 against 1.675 ms).
 
 ## The interactive loop
 

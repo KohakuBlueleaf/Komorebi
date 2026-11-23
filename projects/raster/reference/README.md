@@ -328,8 +328,8 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    emissive_scale`, unlit; `masked`: holes as SHADE. Background: the nearest texel of
    the octahedral map (below) in the pixel's view direction turned by `-turn` about y,
    `(x, z) -> (c x + s z, c z - s x)` with `c, s` the float32 cosine and sine of
-   `-turn` (y kept). The frame is
-   `x / (1 + x)` of `exposure x colour`, then the pictures' 8-bit conversion.
+   `-turn` (y kept). The frame is the tone step of the colour (`raster.tone`, below),
+   then the pictures' 8-bit conversion (`png.to_srgb8`, the 2.2 gamma).
 6. **Octahedral map.** `prepare` resamples the environment once into a side x side
    (the entry's `sky_side`, default 2,048; a reader takes it from the map's shape)
    float32 RGB map of directions in the environment's own frame (turn 0, y up), saved
@@ -352,6 +352,17 @@ writes `$KR_DATA/public/<scene>_lighting.npz`; the visibility bake is also kept 
    95 at most, from nearest-texel resampling on a differently turned grid; against a
    direct lookup of the file the mean error went from 5.9 to 5.2. No surface pixel
    changed. Sponza and the interior, turn 0, are unchanged.)
+
+**The tone step.** `display = curve(saturate(exposure x colour))` with three numbers a
+frame, from the scene's `lighting` entry (`lights.load` returns them; a caller may
+override them in the lights): `exposure`; `saturation` `s` (default 1), which makes
+`x` into `max(0, lum + (x - lum) s)`, `lum = (0.2126 R + 0.7152 G) + 0.0722 B`, and
+is skipped when `s = 1`; `curve` (default 0): 0 is `x / (1 + x)`, 1 the filmic fit
+`x (2.51 x + 0.03) / (x (2.43 x + 0.59) + 0.14)` clamped to [0, 1]. All float32 in
+that order. The 8-bit conversion is the same for both curves. With the defaults every
+frame is the earlier one bit for bit. A host test on the frames with indirect light
+(2026-11-23) found the filmic curve at exposure 2 to 3 with saturation about 1.15 less
+dull; no scene's entry sets these yet, so the defaults stand.
 
 **Moving the sun.** `lights.moved(lights, scene, materials, azimuth, elevation)` takes
 the prepared lights (`lights.load`), the scene's mesh and materials, and two angles in
@@ -389,7 +400,7 @@ without `background` an empty pixel has the fill's constant background colour
 (0.05, 0.05, 0.08); emissive materials are always drawn. The card's stages are
 checked against these subsets.
 
-**Returned arrays.** `colour` (H, W, 3, linear), `display`, `depth` (the merged 1/z)
+**Returned arrays.** `colour` (H, W, 3, linear), `display` (the tone step's), `depth` (the merged 1/z)
 and `tri` (the visible triangle, -1 empty), and `parts`, each per pixel of the taken
 layer: `albedo` (`a`), `normal` (the normal used), `visibility`, `specular`
 (specular colour x texel, 0 where the material has none), `material` (-1 empty),

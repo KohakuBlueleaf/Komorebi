@@ -37,6 +37,8 @@ JPEG_QUALITY = 85
 BOUNDARY = "frame"
 TOKEN_HEADER = "X-Token"
 PITCH_LIMIT = math.radians(89.0)
+EXPOSURE_RANGE = (0.25, 8.0)  # the tone's exposure slider (logarithmic)
+SATURATION_RANGE = (0.0, 2.0)
 
 
 def log(message):
@@ -101,6 +103,30 @@ def parse_sun(body):
     return azimuth, max(-90.0, min(90.0, elevation))
 
 
+def parse_tone(body):
+    """A tone from the page's JSON: exposure and saturation finite, clamped to
+    EXPOSURE_RANGE and SATURATION_RANGE, curve 0 (plain) or 1 (filmic); else
+    ValueError."""
+    exposure, saturation = float(body["exposure"]), float(body["saturation"])
+    curve = body["curve"]
+    if not (math.isfinite(exposure) and math.isfinite(saturation)):
+        raise ValueError("a tone is a finite exposure and saturation")
+    if curve not in (0, 1) or isinstance(curve, bool):
+        raise ValueError("a tone curve is 0 (plain) or 1 (filmic)")
+    exposure = max(EXPOSURE_RANGE[0], min(EXPOSURE_RANGE[1], exposure))
+    saturation = max(SATURATION_RANGE[0], min(SATURATION_RANGE[1], saturation))
+    return exposure, saturation, int(curve)
+
+
+def parse_indirect(body):
+    """The indirect switch from the page's JSON: `on`, true or false; else
+    ValueError."""
+    on = body["on"]
+    if not isinstance(on, bool):
+        raise ValueError("the indirect switch is true or false")
+    return on
+
+
 def diagonal(scene):
     """The diagonal of the scene's box."""
     positions = np.asarray(scene["positions"], dtype=np.float64)
@@ -148,6 +174,15 @@ class Viewer:
         self.sun = None
         self.sun_own = None
         self.sun_ms = None
+        # the tone (raster-lit, raster-gi) and the indirect switch (raster-gi), as the
+        # sun: the newest posted, its serial, what the frames have; the scene's tone
+        self.tone_pending = None
+        self.tone_serial = 0
+        self.tone = None
+        self.tone_own = None
+        self.indirect_pending = None
+        self.indirect_serial = 0
+        self.indirect = None
 
     # Requests
 
@@ -168,6 +203,26 @@ class Viewer:
                 return False
             self.sun_pending = sun
             self.sun_serial += 1
+            self.changed.notify_all()
+            return True
+
+    def set_tone(self, tone, scene_serial):
+        """A tone from the page, for the scene it was posted in: the newest waits."""
+        with self.lock:
+            if scene_serial != self.scene_serial or self.tone_own is None:
+                return False
+            self.tone_pending = tone
+            self.tone_serial += 1
+            self.changed.notify_all()
+            return True
+
+    def set_indirect(self, on, scene_serial):
+        """The indirect switch from the page, for the scene it was posted in."""
+        with self.lock:
+            if scene_serial != self.scene_serial or self.indirect is None:
+                return False
+            self.indirect_pending = on
+            self.indirect_serial += 1
             self.changed.notify_all()
             return True
 
@@ -206,6 +261,9 @@ class Viewer:
                 "sun": None if self.sun is None else list(self.sun),
                 "sun_own": None if self.sun_own is None else list(self.sun_own),
                 "sun_ms": None if self.sun_ms is None else round(self.sun_ms, 3),
+                "tone": None if self.tone is None else list(self.tone),
+                "tone_own": None if self.tone_own is None else list(self.tone_own),
+                "indirect": self.indirect,
             }
 
     def next_jpeg(self, after, timeout):
@@ -224,7 +282,9 @@ class Viewer:
     def render_loop(self):
         renderer = None
         failed = 0  # the selection that failed: wait for a new one
-        rendered = (None, None, None)  # (selection, pose, sun serial) of the last frame
+        rendered = (
+            None  # (selection, pose, sun, tone, switch serials) of the last frame
+        )
         last_frame = 0.0
         try:
             while True:
@@ -244,6 +304,10 @@ class Viewer:
                         own = pose == self.first_pose
                         sun_serial, sun = self.sun_serial, self.sun_pending
                         self.sun_pending = None
+                        tone_serial, tone = self.tone_serial, self.tone_pending
+                        self.tone_pending = None
+                        switch_serial = self.indirect_serial
+                        switch, self.indirect_pending = self.indirect_pending, None
                     refused = None
                     if sun is not None and renderer.sun_own is not None:
                         try:  # the SUN pass, between frames
@@ -253,6 +317,14 @@ class Viewer:
                         else:
                             with self.lock:
                                 self.sun, self.sun_ms = renderer.sun, sun_ms
+                    if tone is not None and renderer.tone_own is not None:
+                        renderer.set_tone(*tone)  # LIGHT's table, between frames
+                        with self.lock:
+                            self.tone = renderer.tone
+                    if switch is not None and renderer.indirect is not None:
+                        renderer.set_indirect(switch)
+                        with self.lock:
+                            self.indirect = renderer.indirect
                     camera = (
                         renderer.scene["camera"]
                         if own
@@ -273,7 +345,13 @@ class Viewer:
                             self.frame_times.append(time.monotonic())
                             self.status = refused or "running"
                             self.framed.notify_all()
-                    rendered = (selection, pose_serial, sun_serial)
+                    rendered = (
+                        selection,
+                        pose_serial,
+                        sun_serial,
+                        tone_serial,
+                        switch_serial,
+                    )
                     last_frame = time.monotonic()
                 except Exception as error:  # noqa: BLE001 - shown on the page, closed
                     traceback.print_exc()
@@ -292,9 +370,14 @@ class Viewer:
             return True
         if self.selection == failed:
             return False
-        return (self.selection, self.pose_serial, self.sun_serial) != rendered or (
-            time.monotonic() - last_frame >= KEEP_ALIVE_S
+        serials = (
+            self.selection,
+            self.pose_serial,
+            self.sun_serial,
+            self.tone_serial,
+            self.indirect_serial,
         )
+        return serials != rendered or time.monotonic() - last_frame >= KEEP_ALIVE_S
 
     def open(self, renderer, selected):
         """Closes the current renderer and opens the selected one on its scene; the
@@ -304,6 +387,8 @@ class Viewer:
             self.status = "loading"
             self.loaded = (None, None)
             self.sun = self.sun_own = self.sun_ms = self.sun_pending = None
+            self.tone = self.tone_own = self.tone_pending = None
+            self.indirect = self.indirect_pending = None
         name, scene = selected
         log(f"open {name} on {scene}")
         renderer = renderers.RENDERERS[name]()
@@ -321,6 +406,8 @@ class Viewer:
             self.loaded = selected
             self.first_scene = scene
             self.sun = self.sun_own = renderer.sun_own  # a new load: the scene's sun
+            self.tone = self.tone_own = renderer.tone_own  # and its tone
+            self.indirect = renderer.indirect  # raster-gi: on
         log(f"opened {name} on {scene}")
         return renderer
 
@@ -395,6 +482,16 @@ def handler_class(viewer, token, page):
                 elif url.path == "/sun":
                     taken = viewer.set_sun(
                         parse_sun(body), int(body.get("scene_serial", -1))
+                    )
+                    self.reply_json(200, {"taken": taken})
+                elif url.path == "/tone":
+                    taken = viewer.set_tone(
+                        parse_tone(body), int(body.get("scene_serial", -1))
+                    )
+                    self.reply_json(200, {"taken": taken})
+                elif url.path == "/indirect":
+                    taken = viewer.set_indirect(
+                        parse_indirect(body), int(body.get("scene_serial", -1))
                     )
                     self.reply_json(200, {"taken": taken})
                 elif url.path == "/select":

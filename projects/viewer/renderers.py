@@ -1,7 +1,7 @@
 """The interactive loops behind one interface: `open(scene)`, `frame(camera)` -> (image
 (1024, 1024, 4) uint8, ms), `close()`. Raster: `--push`; RasterTextured: `--shade`;
-RasterLit: `--light`, `set_sun(az, el)` -> ms (the SUN pass); RasterGi: `--light
---indirect`; Raytrace: `--show`. Each opens its own card session, on its thread."""
+RasterLit: `--light`, `set_sun`, `set_tone` -> ms; RasterGi: `--light --indirect`,
+`set_indirect(on)` -> ms; Raytrace: `--show`. Each its own card session and thread."""
 
 import argparse
 import contextlib
@@ -38,6 +38,8 @@ class Renderer:
     name = ""
     time_label = ""  # what frame's ms are, as the page labels them
     sun_own = None  # a lit renderer: the scene's own sun (azimuth, elevation)
+    tone_own = None  # a lit renderer: the scene's tone (exposure, saturation, curve)
+    indirect = None  # raster-gi: the indirect switch (True: on)
 
     @staticmethod
     def offered(scene_name):
@@ -48,6 +50,7 @@ class Renderer:
         self.stack = None
         self.scene = None
         self.sun = None  # a lit renderer: the sun's (azimuth, elevation) now
+        self.tone = None  # a lit renderer: the tone now (exposure, saturation, curve)
         self.image = np.zeros((SIDE, SIDE, 4), dtype=np.uint8)
 
     def close(self):
@@ -143,10 +146,23 @@ class RasterLit(RasterTextured):
         return light_data.load(scene_name, native.data_dir())
 
     def open(self, scene_name):
-        self.sun_own = self.sun = None
+        self.sun_own = self.sun = self.tone_own = self.tone = None
         super().open(scene_name)
         own = light_data.sun_angles(self.live.lights["sun_direction"])
         self.sun_own = self.sun = (round(own[0], 4), round(own[1], 4))
+        tone = self.live.tone
+        self.tone_own = self.tone = (
+            tone["exposure"],
+            tone["saturation"],
+            tone["curve"],
+        )
+
+    def set_tone(self, exposure, saturation, curve):
+        """The tone step's numbers into LIGHT's table, applied to the next frame (no
+        reload). Returns the host's ms."""
+        ms = self.live.set_tone(exposure, saturation, curve)
+        self.tone = (float(exposure), float(saturation), int(curve))
+        return ms
 
     def set_sun(self, azimuth, elevation):
         """The sun moved to `azimuth`, `elevation` (degrees): its numbers and the card's
@@ -167,6 +183,18 @@ class RasterGi(RasterLit):
 
     name = "raster-gi"
     terms = raster.TERMS + ("indirect",)
+
+    def open(self, scene_name):
+        self.indirect = None
+        super().open(scene_name)
+        self.indirect = True
+
+    def set_indirect(self, on):
+        """The indirect switch (off: lit as without the field), applied to the next
+        frame (no reload). Returns the host's ms."""
+        ms = self.live.set_indirect(on)
+        self.indirect = bool(on)
+        return ms
 
     @staticmethod
     def offered(scene_name):

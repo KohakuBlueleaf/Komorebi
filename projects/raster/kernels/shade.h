@@ -162,7 +162,12 @@ constexpr uint32_t kLtPages = 88;        // int: the light pages
 constexpr uint32_t kLtReflection = 89;   // the glass's reflection of the environment
 constexpr uint32_t kLtFresnel0 = 90;     // the glass's F0 (0.04)
 constexpr uint32_t kLtFresnelRest = 91;  // 1 - F0
-constexpr uint32_t kLtCamera = 96;       // 16 words, the reader's copy (a5)
+// the tone step (reference/raster.py tone): saturation (1: none), curve (int)
+constexpr uint32_t kLtSaturation = 92;
+constexpr uint32_t kLtCurve = 93;
+constexpr uint32_t kCurvePlain = 0;   // x / (1 + x)
+constexpr uint32_t kCurveFilmic = 1;  // x (2.51 x + 0.03) / (x (2.43 x + 0.59) + 0.14)
+constexpr uint32_t kLtCamera = 96;    // 16 words, the reader's copy (a5)
 constexpr uint32_t kLtLamp = 128;
 // a lamp: position, colour, intensity, radius, 1 / radius, size^2
 constexpr uint32_t kLampWords = 16;

@@ -56,6 +56,11 @@ namespace shade_pass {
     constexpr uint32_t kEighthBits = 0x3E000000, kEightBits = 0x41000000;  // 1/8, 8
     constexpr uint32_t kTwoBits = 0x40000000;  // 2 (1/2: kHalfB)
     constexpr uint32_t kOneBits = 0x3F800000, kSixtyFourBits = 0x42800000;  // 1, 64
+    // the tone step's numbers (reference/raster.py TONE_LUMA, FILMIC), float32 bits
+    constexpr uint32_t kLumaBits[3] = {0x3E59B3D0, 0x3F371759, 0x3D93DD98};
+    constexpr uint32_t kFilmicA = 0x4020A3D7, kFilmicB = 0x3CF5C28F;  // 2.51, 0.03
+    constexpr uint32_t kFilmicC = 0x401B851F, kFilmicD = 0x3F170A3D;  // 2.43, 0.59
+    constexpr uint32_t kFilmicE = 0x3E0F5C29;                         // 0.14
 
     constexpr uint32_t plane_vector(uint32_t plane, uint32_t k) {
         return kLightRows * plane + k;
@@ -705,10 +710,12 @@ namespace shade_pass {
         TTI_SFPENCC(3, 0, 0, 10);
     }
 
-    // A command's numbers from the table, and its mode (kLight*, LIGHT's a9).
+    // A command's numbers from the table, and its mode (kLight*, LIGHT's a9); graded:
+    // a saturation other than 1 or the filmic curve (grade_row, else tone).
     struct LightNumbers {
         const uint32_t* table;
         uint32_t terms, lamps, bits, mode;
+        bool graded;
     };
 
     // x / (1 + x) of exposure x L3 into Dst vector `to` (L4 to L7, L0, L1 used).
@@ -721,22 +728,85 @@ namespace shade_pass {
         store(L6, to);
     }
 
-    // Glass, rows [first, end) of a quarter where the glass is nowhere in front: x / (1
-    // + x) of C into a's rows (out of line, as the glass's other code).
+    // Row k's linear colour in a's rows toned (raster.py tone): exposure, saturation s
+    // (not 1: max(0, lum + (x - lum) s)), the curve: x / (1 + x) or filmic at most 1.
+    __attribute__((noinline)) void grade_row(uint32_t k, const uint32_t* table) {
+        TTI_SFPENCC(3, 0, 0, 10);
+        immediate(L7, table[kLtExposure]);
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            load(L0 + channel, plane_vector(kLvAlbedo + channel, k));
+            mul(L0 + channel, L7, L0 + channel);
+        }
+        if (table[kLtSaturation] != kOneBits) {
+            immediate(L4, kLumaBits[0]);
+            mul(L0, L4, L3);
+            for (uint32_t channel = 1; channel < 3; ++channel) {
+                immediate(L4, kLumaBits[channel]);
+                TT_SFPMAD(L0 + channel, L4, L3, L3, 0);
+            }
+            immediate(L4, table[kLtSaturation]);
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                sub(L0 + channel, L3, L0 + channel);
+                TT_SFPMAD(L0 + channel, L4, L3, L0 + channel, 0);
+                TTI_SFPNOP;
+                at_least_zero(L0 + channel, L5);
+            }
+        }
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            store(L0 + channel, plane_vector(kLvAlbedo + channel, k));
+        }
+        const bool filmic = table[kLtCurve] == kCurveFilmic;
+        for (uint32_t channel = 0; channel < 3; ++channel) {
+            load(L3, plane_vector(kLvAlbedo + channel, k));
+            if (filmic) {
+                // x (a x + b) over x (c x + d) + e, at most 1
+                immediate(L4, kFilmicA);
+                immediate(L5, kFilmicB);
+                TT_SFPMAD(L3, L4, L5, L4, 0);
+                mul(L3, L4, L2);
+                immediate(L4, kFilmicC);
+                immediate(L5, kFilmicD);
+                TT_SFPMAD(L3, L4, L5, L4, 0);
+                immediate(L5, kFilmicE);
+                TT_SFPMAD(L3, L4, L5, L4, 0);
+                recip(L4, L5, L6, L7, L0, L1);
+                mul(L2, L5, L3);
+                immediate(L4, kOneBits);
+                TTI_SFPNOP;
+                TT_SFPSWAP(0, L4, L3, kMinMax);
+                store(L3, plane_vector(kLvAlbedo + channel, k));
+            } else {
+                add(L3, ONE, L4);
+                recip(L4, L5, L6, L7, L0, L1);
+                mul(L3, L5, L6);
+                store(L6, plane_vector(kLvAlbedo + channel, k));
+            }
+        }
+    }
+
+    // Glass, rows [first, end) of a quarter where the glass is nowhere in front: C
+    // toned into a's rows (tone, or grade_row; out of line, as the glass's other code).
     __attribute__((noinline)) void tone_rows(
-        uint32_t first, uint32_t end, const uint32_t* table
+        uint32_t first, uint32_t end, const uint32_t* table, bool graded
     ) {
         TTI_SFPENCC(3, 0, 0, 10);
         for (uint32_t k = first; k < end; ++k) {
             for (uint32_t channel = 0; channel < 3; ++channel) {
                 load(L3, c_vector(channel, k));
-                tone(plane_vector(kLvAlbedo + channel, k), table);
+                if (graded) {
+                    store(L3, plane_vector(kLvAlbedo + channel, k));
+                } else {
+                    tone(plane_vector(kLvAlbedo + channel, k), table);
+                }
+            }
+            if (graded) {
+                grade_row(k, table);
             }
         }
     }
 
-    // Row k's colour: (a / pi) E + specular; emissive a; empty the background;
-    // glass: tau C + that + F R in front, else C; x / (1 + x) (linear: not).
+    // Row k's colour: (a / pi) E + specular; emissive a; empty the background; glass:
+    // tau C + that + F R in front, else C; toned (linear: not; graded: grade_row).
     template <bool glass = false>
     inline void light_row(uint32_t k, const LightNumbers& numbers, uint32_t* values) {
         const uint32_t* table = numbers.table;
@@ -939,11 +1009,14 @@ namespace shade_pass {
                 add(L4, ZERO, L3);
                 TTI_SFPENCC(3, 0, 0, 10);
             }
-            if (numbers.mode == kLightLinear) {
+            if (numbers.mode == kLightLinear || numbers.graded) {
                 store(L3, plane_vector(kLvAlbedo + channel, k));
             } else {
                 tone(plane_vector(kLvAlbedo + channel, k), table);
             }
+        }
+        if (numbers.mode != kLightLinear && numbers.graded) {
+            grade_row(k, table);
         }
         lap(kLightProfMath);
     }
@@ -1063,7 +1136,7 @@ namespace shade_pass {
         const uint32_t table_address = front(kCbShadeTable, 1);
         const uint32_t* table = reinterpret_cast<const uint32_t*>(table_address);
         const bool glass = command.a9 == kLightGlass;
-        LightNumbers numbers = {table, 0, 0, 0, command.a9};
+        LightNumbers numbers = {table, 0, 0, 0, command.a9, false};
         // glass: SHADE's materials after LIGHT's table (light_reader.hpp)
         const uint32_t* shade_table = table + kLightShadeTableAt;
         const uint32_t* material_words = shade_table + kTabMaterial;
@@ -1073,9 +1146,12 @@ namespace shade_pass {
             numbers.terms = table[kLtTerms];
             numbers.lamps = table[kLtLamps];
             numbers.bits = table[kLtExponentBits];
+            numbers.graded = (
+                table[kLtSaturation] != kOneBits || table[kLtCurve] != kCurvePlain
+            );
             if (
                 numbers.lamps > kLampsMax || numbers.bits > 11 ||
-                command.a9 > kLightGlass ||
+                table[kLtCurve] > kCurveFilmic || command.a9 > kLightGlass ||
                 (
                     glass &&
                     kTabMaterial + kMaterialWords * shade_table[kTabMaterials] >
@@ -1374,7 +1450,7 @@ namespace shade_pass {
                     return true;
                 };
                 if (glass && !in_front) {  // C toned, no light
-                    tone_rows(first - row0, end - row0, table);
+                    tone_rows(first - row0, end - row0, table, numbers.graded);
                     tensix_sync();
                     now = km::wall();
                     values[kLightProfMath] += now - mark;

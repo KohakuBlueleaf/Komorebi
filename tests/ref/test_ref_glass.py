@@ -124,3 +124,15 @@ def test_the_glass_loses_to_a_nearer_opaque_surface():
     shaded = raster.rasterize_shaded(scene, materials)
     assert not shaded["front"].any()
     assert (shaded["glass"]["tri"] >= 0).sum() > 0
+
+
+def test_rasterize_lighted_tones_by_the_lights_numbers():
+    scene = scene_of([(5, 6)])
+    materials = materials_of([0, 0])
+    plain = raster.rasterize_lighted(scene, materials, lights_of(scene))
+    lit = {**lights_of(scene), "exposure": 2.5, "saturation": 1.15, "curve": 1}
+    graded = raster.rasterize_lighted(scene, materials, lit)
+    np.testing.assert_array_equal(graded["colour"], plain["colour"])
+    want = raster.tone(plain["colour"], 2.5, 1.15, raster.CURVE_FILMIC)
+    np.testing.assert_array_equal(graded["display"], want)
+    assert not np.array_equal(graded["display"], plain["display"])

@@ -31,6 +31,11 @@ OPAQUE_BYTE = 128
 TERMS = ("sky", "ambient", "sun", "shadow", "lamps", "specular", "background", "glass")
 OPTIONAL_TERMS = ("indirect",)  # off by default: bounced light (reference/indirect.py)
 GLASS_F0 = F(0.04)
+# The tone step (`tone`): the curves by number, the luminance weights of the saturation
+# and the filmic curve's fit x (a x + b) / (x (c x + d) + e).
+CURVE_PLAIN, CURVE_FILMIC = 0, 1
+TONE_LUMA = (F(0.2126), F(0.7152), F(0.0722))
+FILMIC = (F(2.51), F(0.03), F(2.43), F(0.59), F(0.14))
 # Texel byte to value: albedo as linear colour (the pictures' 2.2 gamma undone), the
 # other textures to [0, 1] and normals to [-1, 1].
 TEXEL_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
@@ -771,10 +776,32 @@ def glass_over(scene, lights, glass, parts, front, behind, terms):
     return out
 
 
+def tone(colour, exposure, saturation=1.0, curve=CURVE_PLAIN):
+    """The tone step of a linear colour (..., 3): x = exposure x colour; saturation s
+    (s = 1: none) makes it max(0, lum + (x - lum) s), lum = 0.2126 R + 0.7152 G +
+    0.0722 B; then the curve: CURVE_PLAIN x / (1 + x), CURVE_FILMIC the fit
+    x (2.51 x + 0.03) / (x (2.43 x + 0.59) + 0.14) clamped to [0, 1]. Float32."""
+    x = F(exposure) * colour
+    s = F(saturation)
+    if s != F(1):
+        r, g, b = TONE_LUMA
+        lum = (x[..., 0:1] * r + x[..., 1:2] * g) + x[..., 2:3] * b
+        x = np.maximum(lum + (x - lum) * s, F(0))
+    if curve == CURVE_PLAIN:
+        return x / (F(1) + x)
+    if curve == CURVE_FILMIC:
+        a, b, c, d, e = FILMIC
+        return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), F(0), F(1))
+    raise ValueError(
+        f"a tone curve is {CURVE_PLAIN} (plain) or {CURVE_FILMIC} (filmic)"
+    )
+
+
 def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TERMS):
     """SHADE's three FILLs and holes with direct light (raster reference README,
     "Lighting", "Glass", "Indirect light"); terms: what contributes, of TERMS and
-    "indirect". "colour" linear, "display" x / (1 + x) of exposure x colour, the parts.
+    "indirect". "colour" linear, "display" its `tone` with the lights' exposure,
+    saturation (default 1) and curve (default 0: x / (1 + x)), the parts.
     smooth (vertex normals): a comparison variant; pcf=False: one shadow tap."""
     opaque, masked, glass = fill_layers(scene, materials, "glass" in terms)
     corner_vis = lights["visibility"][scene["indices"]]
@@ -823,10 +850,15 @@ def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TE
         colour = glass_over(scene, lights, glass, glass_parts, front, behind, terms)
         parts["glass_material"] = np.where(front, glass_parts["material"], -1)
         parts["glass_normal"] = np.where(front[:, :, None], glass_parts["normal"], F(0))
-    x = F(lights["exposure"]) * colour
+    display = tone(
+        colour,
+        lights["exposure"],
+        lights.get("saturation", 1.0),
+        lights.get("curve", CURVE_PLAIN),
+    )
     return {
         "colour": colour,
-        "display": x / (F(1) + x),
+        "display": display,
         "depth": depth,
         "tri": tri,
         "parts": parts,

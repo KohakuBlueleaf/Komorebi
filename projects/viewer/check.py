@@ -1,7 +1,8 @@
 """The viewer checked without a browser: each renderer on each scene it is offered on
-selected (400 on the others), 20 poses posted, the frames of /stream decoded (1024 x
-1024, first and last differing), a lit renderer's sun moved (frame and /state change),
-403 without the token. One JSON line, exit 1 unless `ok`. check --url URL --token T"""
+selected (400 elsewhere), 20 poses, /stream's frames decoded (1024 x 1024, first, last
+differ), a lit renderer's sun, tone and raster-gi's switch changed (frame and /state
+change), 403 without the token. One JSON line, exit 1 unless `ok`. --url URL --token T
+"""
 
 import argparse
 import io
@@ -29,6 +30,7 @@ SUN_TURN = (
     90.0  # the sun's move: its azimuth turned by this, its elevation SUN_ELEVATION
 )
 SUN_ELEVATION = 40.0
+TONE = (2.0, 1.15, 1)  # the tone posted: exposure, saturation, filmic
 
 
 def get(url, timeout=10.0):
@@ -143,9 +145,17 @@ def run_case(base, token, renderer, scene):
             card_ms.append(now["card_ms"])
         fps.append(now["fps"])
     time.sleep(AFTER_S)
-    sun = None
+    sun = tone = switch = None
     if state.get("sun_own"):
         sun = sun_case(base, token, state, reader)
+    if state.get("tone_own"):
+        tone = knob_case(
+            base, token, state, reader, "/tone", tone_body(), "tone", list(TONE)
+        )
+    if state.get("indirect") is not None:
+        switch = knob_case(
+            base, token, state, reader, "/indirect", {"on": False}, "indirect", False
+        )
     reader.stop.set()
     reader.join(10.0)
     sizes = set()
@@ -170,17 +180,65 @@ def run_case(base, token, renderer, scene):
         statuses=sorted(statuses),
         stream_error=reader.error,
     )
-    if sun is not None:
-        case["sun"] = sun
+    knobs = {"sun": sun, "tone": tone, "indirect": switch}
+    case.update({name: knob for name, knob in knobs.items() if knob is not None})
     case["ok"] = bool(
         taken == POSES
         and len(reader.frames) >= 2
         and sizes == {(SIDE, SIDE)}
         and differ
         and reader.error is None
-        and (sun is None or sun["ok"])
+        and all(knob is None or knob["ok"] for knob in (sun, tone, switch))
     )
     return case
+
+
+def tone_body():
+    """The tone TONE as /tone takes it."""
+    exposure, saturation, curve = TONE
+    return {"exposure": exposure, "saturation": saturation, "curve": curve}
+
+
+def knob_case(base, token, state, reader, path, body, key, want):
+    """A post to `path` (`body`) after the poses: the newest frame before and after
+    against each other, and /state's `key` against `want` once a frame came after
+    it showed."""
+    before = reader.frames[-1] if reader.frames else None
+    count = len(reader.frames)
+    taken = post(
+        f"{base}{path}", {**body, "scene_serial": state["scene_serial"]}, token
+    )[1]["taken"]
+    posted = time.monotonic()
+    follow_s = None
+    while time.monotonic() - posted < FOLLOW_S:
+        now = json.loads(get(f"{base}/state?token={token}")[1])
+        if now[key] == want and follow_s is None:
+            follow_s, count_shown = time.monotonic() - posted, len(reader.frames)
+        if follow_s is not None and len(reader.frames) > count_shown:
+            follow_s = time.monotonic() - posted
+            break
+        time.sleep(0.05)
+    time.sleep(AFTER_S)
+    now = json.loads(get(f"{base}/state?token={token}")[1])
+    after = reader.frames[-1] if len(reader.frames) > count else None
+    changed = (
+        before is not None
+        and after is not None
+        and Image.open(io.BytesIO(before)).tobytes()
+        != Image.open(io.BytesIO(after)).tobytes()
+    )
+    return {
+        "posted": body,
+        "taken": taken,
+        "state": now[key],
+        "follow_s": None if follow_s is None else round(follow_s, 2),
+        "frames_after": len(reader.frames) - count,
+        "frame_changed": bool(changed),
+        "status": now["status"],
+        "ok": bool(
+            taken and changed and now[key] == want and now["status"] == "running"
+        ),
+    }
 
 
 def sun_case(base, token, state, reader):
@@ -251,6 +309,8 @@ def main():
             "pose": status_of(lambda: post(f"{base}/pose", {}, None)),
             "select": status_of(lambda: post(f"{base}/select", {}, None)),
             "sun": status_of(lambda: post(f"{base}/sun", {}, None)),
+            "tone": status_of(lambda: post(f"{base}/tone", {}, None)),
+            "indirect": status_of(lambda: post(f"{base}/indirect", {}, None)),
         }
     }
     page_status, page = get(f"{base}/?token={token}")

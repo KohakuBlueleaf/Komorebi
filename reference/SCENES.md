@@ -182,7 +182,9 @@ A scene's `lighting` entry holds its numbers:
 | `merge_distance` | lamps whose centroids are nearer than this are one |
 | `radius`, `size` | a lamp's reach `r` and the `s` of its falloff |
 | `emissive_scale` | the factor of an emissive material's colour |
-| `exposure` | the factor before `x / (1 + x)` |
+| `exposure` | the factor of the colour before the tone curve |
+| `saturation` (optional) | the tone step's saturation, default 1 (none): `max(0, lum + (x - lum) s)` (the raster reference README, "The tone step") |
+| `curve` (optional) | the tone curve, default 0: `x / (1 + x)`; 1 the filmic fit `x (2.51 x + 0.03) / (x (2.43 x + 0.59) + 0.14)` clamped to [0, 1] |
 | `shadow_bias` | the shadow test's bias, in shadow texels |
 | `lights` (optional) | authored point lights, each `{"position", "colour"}`; they replace the emissive groups, each of intensity `lamp_scale` (an empty list: none) |
 | `shadow_side` (optional) | the sun's shadow map side, 1,024 or 2,048 (default): 2,048 is four FILLs of 1,024, one a quadrant |

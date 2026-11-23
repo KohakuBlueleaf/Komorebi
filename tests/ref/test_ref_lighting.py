@@ -190,3 +190,32 @@ def test_background_turns_the_view_direction_not_the_map():
         assert not np.array_equal(
             got, raster.background(scene, {"octahedral": octa, "turn": F(0)})
         )
+
+
+def test_the_tone_step_by_default_is_the_plain_curve_bit_for_bit():
+    colour = np.random.default_rng(5).uniform(0, 4, (64, 64, 3)).astype(F)
+    x = F(1.7) * colour
+    np.testing.assert_array_equal(raster.tone(colour, 1.7), x / (F(1) + x))
+    np.testing.assert_array_equal(raster.tone(colour, 1.7, 1.0, 0), x / (F(1) + x))
+
+
+def test_saturation_zero_is_grey_and_two_moves_away_from_it():
+    colour = np.array([[0.2, 0.5, 0.1], [1.0, 0.1, 0.05]], dtype=F)
+    grey = raster.tone(colour, 1.0, saturation=0.0)
+    lum = colour @ np.array(raster.TONE_LUMA)
+    np.testing.assert_allclose(grey, (lum / (1 + lum))[:, None] * [1, 1, 1], 1e-6)
+    vivid = raster.tone(colour, 1.0, saturation=2.0)
+    assert (vivid >= 0).all()
+    assert vivid[1, 0] > raster.tone(colour, 1.0)[1, 0]
+    assert vivid[1, 2] == 0  # lum + 2 (x - lum) below 0: clamped
+
+
+def test_the_filmic_curve_rises_from_zero_to_one():
+    x = np.concatenate([[0], np.geomspace(1e-4, 1e3, 200)]).astype(F)[:, None] * [
+        1,
+        1,
+        1,
+    ]
+    y = raster.tone(x.astype(F), 1.0, curve=raster.CURVE_FILMIC)[:, 0]
+    assert y[0] == 0 and y[-1] == 1
+    assert (np.diff(y) >= 0).all() and (y >= 0).all() and (y <= 1).all()
