@@ -226,10 +226,11 @@ has no SHADE.
 | `masked` | as `textured`; a hole where the mask's alpha byte (or the albedo's) is under 128 |
 | `lit` | albedo x base colour x (0.25 + 0.75 max(0, n . l)) + specular colour x (specular texel) x max(0, n . h)^exponent, n the normal map's normal in the frame, l toward the scene's point light, h the half vector |
 | `emissive` | albedo x base colour, unlit |
+| `transparent` | a third layer over the others ("Glass" below): `tau C + (1 - max tau)` x albedo x base colour x light term, `C` the colour behind, `tau` the transmission |
 
 Everything is float32 in the order written (the power by squaring, low bit first),
 so the two versions agree bit for bit. Not part of it: bilinear filtering, a level per
-pixel, glass and shadows. With one level a triangle and a box-filtered mask, leaves
+pixel and shadows. The C++ version has no `transparent` kind (below, "Glass"). With one level a triangle and a box-filtered mask, leaves
 far from the camera fall below the threshold at the coarser levels and thin out.
 
 What SHADE needs beyond the fill's 128-byte record, per triangle: the three planes
@@ -414,3 +415,70 @@ median relative error 6.7e-7 (Sponza; 2.9e-6 for the 1,024 map against its own v
 across a quadrant border one triangle's 1/z steps by up to 6e-5 relative (inside a
 quadrant one float32 unit), the two renders' own plane rounding, and no seam shows in a
 picture of the map.
+
+## Glass
+
+A material whose transmission `tau` (per channel: `1 - Tf`, else `Tr`, else `1 - d`)
+is above 0 has the kind `transparent` and keeps `tau` in the materials file
+([SCENES.md](../../../reference/SCENES.md), "Materials"). It is drawn as a third layer
+over the surface behind it, in numpy only (`rasterize_shaded` and `rasterize_lighted`
+in `reference/raster.py`); no ray is traced, every rule is per-pixel arithmetic, a
+table lookup or a texel fetch.
+
+1. **Three FILLs.** FILL runs a third time over the transparent triangles only; the
+   other two layers do not contain them. The surface behind is the merge of the other
+   two (masked where nearer and not a hole, as SHADE). A pixel's glass is the nearest
+   transparent triangle there, counted only where it is nearer than that surface (the
+   fill's rule: larger 1/z, a tie to the lower triangle number); an empty pixel's
+   surface is the background, so glass in front of the sky counts. One transparent
+   layer: glass behind glass is not shown.
+2. **A pixel with glass in front**, `C` the colour behind (the lit colour before the
+   tone curve, or the background's radiance), `a` the glass's albedo x base colour,
+   `n` its triangle's normal turned toward the eye (no normal map, also in the smooth
+   variant), `v` toward the eye:
+   `colour = tau C + (1 - max tau) a / pi E + S + F reflection R`. `E` is the glass's own
+   irradiance by the rules of "Lighting" (sky x visibility, ambient, sun with shadow,
+   lamps); `S` the `lit` kind's Blinn-Phong term for the sun and each lamp with the
+   material's specular colour and exponent (always, when it has a specular colour);
+   `R` the environment's radiance along `2 (n.v) n - v` (the octahedral map's nearest
+   texel, turned like the background); `F = F0 + (1 - F0)(1 - n.v)^5`, `F0 = 0.04`,
+   `n.v` clamped at 0; `reflection` the scene's number of its `lighting` entry. Then
+   the tone curve as for every pixel. `rasterize_shaded` (no lighting) uses
+   `tau C + (1 - max tau) a light` with its light term and no `S` or `R`; on scenes without
+   transparent materials its results are unchanged (no third FILL runs).
+3. **Shadows.** Transparent triangles cast none: the shadow map is `rasterize_shaded`'s
+   1/z, which is the surface behind the glass. The baked sky visibility is not rebuilt:
+   it still treats glass as opaque.
+4. **Terms.** `glass` (default on): left out, transparent triangles are not drawn. `R`
+   needs `background`; `S` needs `specular`. `parts` gains the glass layer's own planes
+   where it is in front: `glass_depth` (1/z, 0 elsewhere), `glass_tri` and
+   `glass_material` (-1 elsewhere), `glass_normal` (`n`). The other parts, `depth` and
+   `tri` stay those of the surface behind. `rasterize_shaded` also returns the glass
+   layer (`glass`) and where it is in front (`front`).
+
+Chosen by the pictures (2026-11-23): `reflection` 0.5 in both Bistro scenes (in the
+interior 0.25 left the clear bottles and glasses hard to see, rims only; in the exterior
+the panes show the curtains behind them and a faint reflection); Sponza has no
+transparent material. Transparent triangles: Bistro interior 220,840 (the bottles,
+jars and glasses, the counter's display glass, the cash register's), exterior 3,778 (the
+buildings' window panes `MASTER_Glass_Dirty` and `_Clean`, the street lights, a menu
+sign). The bottles pass 0.95 to 0.97 (the `_02` bottles 0.8 to 1 by channel), the panes
+0.8: the bottles read as clear glass with a faint reflection and highlights in front of
+their opaque liquid (`Paris_LiquorBottle_01_Glass_Wine`), the windows as glass with the
+rooms' curtains behind. No picture showed a material that should be clearly darker.
+
+| view | pixels with glass in front | `rasterize_lighted` before, after (s) | `rasterize_shaded` before, after (s) |
+|---|---:|---:|---:|
+| Bistro interior overview | 5,910 | 9.7, 10.2 | 8.5, 8.7 |
+| Bistro interior close | 15,416 | 9.2, 9.5 | 7.4, 8.4 |
+| Bistro exterior overview | 30,498 | 14.8, 15.9 | 13.8, 15.7 |
+| Sponza overview | 0 | 5.6, 5.7 | 4.8, 4.6 |
+
+Numpy, one process pinned to 8 CPUs, 2026-11-23. Outside the glass the lit frames are
+unchanged in the interior (the sun's new shadow map differs in 883 of 1,048,576 texels,
+none on a visible surface) and in Sponza (bit for bit, both functions); in the exterior
+7,942 pixels of the overview change because the sun now passes through the window
+panes (1,803 texels of its shadow map). Not represented: refraction, glass behind
+glass, coloured shadows (transparent triangles cast none). The C++ version
+(`raster_core.hpp`) and the card's code have no kind 5 yet: on the Bistro scenes
+`agree` and the card's checks need it first.

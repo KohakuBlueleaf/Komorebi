@@ -4,8 +4,8 @@ Triangles are clipped at the near distance, binned to 32 x 32 tiles by pixel box
 by the top-left rule; the larger 1/z wins, a tie goes to the lower triangle index.
 
 SHADE (`rasterize_shaded`) colours each pixel from its winner's material: FILL runs
-once over the triangles that are not `masked` and once over those that are, and the
-masked layer's pixel is taken where it is nearer and not a hole."""
+over the triangles neither `masked` nor `transparent`, over the masked ones (taken
+where nearer and not a hole) and over the transparent ones (glass, blended over)."""
 
 import numpy as np
 
@@ -20,12 +20,14 @@ CHUNK = 128
 F = np.float32
 # SHADE: the kinds' codes (reference/public.py KINDS), texture slots, the lit kind's
 # ambient and diffuse weights, and the alpha byte under which a masked pixel is a hole.
-FLAT, TEXTURED, MASKED, LIT, EMISSIVE = range(5)
+FLAT, TEXTURED, MASKED, LIT, EMISSIVE, TRANSPARENT = range(6)
 ALBEDO, MASK, NORMAL, SPECULAR = range(4)
 AMBIENT, DIFFUSE = F(0.25), F(0.75)
 OPAQUE_BYTE = 128
-# LIGHTED: the terms of rasterize_lighted's colour (all by default).
-TERMS = ("sky", "ambient", "sun", "shadow", "lamps", "specular", "background")
+# LIGHTED: the terms of rasterize_lighted's colour (all by default), and the glass's
+# reflectance facing the eye (Schlick's F0).
+TERMS = ("sky", "ambient", "sun", "shadow", "lamps", "specular", "background", "glass")
+GLASS_F0 = F(0.04)
 # Texel byte to value: albedo as linear colour (the pictures' 2.2 gamma undone), the
 # other textures to [0, 1] and normals to [-1, 1].
 TEXEL_LINEAR = ((np.arange(256) / 255.0) ** 2.2).astype(np.float32)
@@ -266,6 +268,34 @@ def layer_scene(scene, keep):
     return {**scene, "indices": indices}
 
 
+def fill_layers(scene, materials, glass=True):
+    """SHADE's FILLs: the layers of the triangles that are neither `masked` nor
+    `transparent`, of the `masked` ones and of the `transparent` ones (glass); the
+    glass layer is empty (no FILL) when there are none or glass is false."""
+    kind = materials["kind"][materials["material"]]
+    clear = kind == TRANSPARENT
+    opaque = rasterize(layer_scene(scene, (kind != MASKED) & ~clear))
+    masked = rasterize(layer_scene(scene, kind == MASKED))
+    if glass and clear.any():
+        return opaque, masked, rasterize(layer_scene(scene, clear))
+    empty = {
+        "colour": np.broadcast_to(BACKGROUND, (HEIGHT, WIDTH, 3)).copy(),
+        "depth": np.zeros((HEIGHT, WIDTH), dtype=np.float32),
+        "tri": np.full((HEIGHT, WIDTH), -1, dtype=np.int32),
+        "tile_counts": np.zeros((TILES_Y, TILES_X), dtype=np.int32),
+    }
+    return opaque, masked, empty
+
+
+def glass_numbers(materials, layer, front):
+    """Transmission tau (H, W, 3) of the glass layer's material where it is in front
+    and its own surface's weight 1 - max(tau) (H, W, 1); both 0 elsewhere."""
+    m = materials["material"][np.maximum(layer["tri"], 0)]
+    tau = np.where(front[:, :, None], materials["transmission"][m], F(0))
+    weight = np.where(front, F(1) - materials["transmission"][m].max(axis=2), F(0))
+    return tau, weight[:, :, None]
+
+
 def dot3(a, b):
     """(a0 b0 + a1 b1) + a2 b2 over the last axis (float32, in this order)."""
     return (a[..., 0] * b[..., 0] + a[..., 1] * b[..., 1]) + a[..., 2] * b[..., 2]
@@ -496,24 +526,34 @@ def nearer_layer(first, second):
 
 
 def rasterize_shaded(scene, materials):
-    """SHADE after two FILLs: the layers of the triangles that are not `masked` and of
-    those that are; a pixel takes the masked layer where it is nearer and not a hole.
-    Colour (H, W, 3), the taken layer's 1/z and triangle, both layers' tile counts
-    added, and the layers' own arrays ("opaque", "masked")."""
-    kind = materials["kind"][materials["material"]]
-    opaque = rasterize(layer_scene(scene, kind != MASKED))
-    masked = rasterize(layer_scene(scene, kind == MASKED))
+    """SHADE after three FILLs (fill_layers): the masked layer where nearer and not a
+    hole, else the other; glass where nearer, tau C + (1 - max tau) a light. Colour,
+    the surface behind the glass (1/z, triangle), the tile counts added, the layers
+    ("opaque", "masked", "glass") and where the glass is in front ("front")."""
+    opaque, masked, glass = fill_layers(scene, materials)
     prepared = shade_setup(scene, materials)
     opaque_colour, _ = shade_layer(scene, materials, prepared, opaque)
     masked_colour, hole = shade_layer(scene, materials, prepared, masked)
     take = nearer_layer(masked, opaque) & ~hole
+    colour = np.where(take[:, :, None], masked_colour, opaque_colour)
+    depth = np.where(take, masked["depth"], opaque["depth"])
+    tri = np.where(take, masked["tri"], opaque["tri"])
+    front = nearer_layer(glass, {"depth": depth, "tri": tri})
+    if front.any():
+        glass_colour, _ = shade_layer(scene, materials, prepared, glass)
+        tau, weight = glass_numbers(materials, glass, front)
+        mixed = tau * colour + weight * glass_colour
+        colour = np.where(front[:, :, None], mixed, colour)
+    counts = opaque["tile_counts"] + masked["tile_counts"] + glass["tile_counts"]
     return {
-        "colour": np.where(take[:, :, None], masked_colour, opaque_colour),
-        "depth": np.where(take, masked["depth"], opaque["depth"]),
-        "tri": np.where(take, masked["tri"], opaque["tri"]),
-        "tile_counts": opaque["tile_counts"] + masked["tile_counts"],
+        "colour": colour,
+        "depth": depth,
+        "tri": tri,
+        "tile_counts": counts,
         "opaque": opaque,
         "masked": masked,
+        "glass": glass,
+        "front": front,
     }
 
 
@@ -596,7 +636,9 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
         + frame[:, 2] * n_texel[:, 2:3]
     )
     normal = np.where(mapped[:, None], bent, frame[:, 2])
-    has_specular = (kind == LIT) & (materials["specular"][m].max(axis=1) > 0)
+    glass = kind == TRANSPARENT
+    normal = np.where(glass[:, None], prepared["frame"][t][:, 2], normal)
+    has_specular = ((kind == LIT) | glass) & (materials["specular"][m].max(axis=1) > 0)
     specular = np.where(
         (texture[:, SPECULAR] >= 0)[:, None],
         materials["specular"][m] * TEXEL_UNIT[texel(SPECULAR)[:, :3]],
@@ -644,7 +686,11 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
     ambient = np.asarray(lights["ambient"], dtype=np.float32)
     if "ambient" not in terms:
         ambient = np.zeros(3, dtype=np.float32)
-    out = albedo * inv_pi * (((sky + ambient) + sun_e) + points_e) + shine
+    out = albedo * inv_pi * (((sky + ambient) + sun_e) + points_e)
+    if glass.any():
+        own = F(1) - materials["transmission"][m].max(axis=1)
+        out = out * np.where(glass, own, F(1))[:, None]
+    out = out + shine
     emissive = kind == EMISSIVE
     out = np.where(emissive[:, None], albedo * F(lights["emissive_scale"]), out)
     lit_parts = {
@@ -668,30 +714,59 @@ def light_layer(scene, materials, prepared, layer, lights, variant):
 
 
 def background(scene, lights):
-    """The environment's radiance (H, W, 3) in each pixel's view direction turned by
-    -turn about y: the nearest texel of the octahedral map (the map's frame, y up)."""
+    """The environment's radiance (H, W, 3) in each pixel's view direction
+    (environment_radiance)."""
     cam = scene["camera"]
     ys, xs = np.mgrid[0:HEIGHT, 0:WIDTH]
     sx = (xs.ravel().astype(np.float32) + F(0.5) - cam[13]) / cam[12]
     sy = (ys.ravel().astype(np.float32) + F(0.5) - cam[14]) / cam[12]
     d = (cam[9:12] + cam[3:6] * sx[:, None]) - cam[6:9] * sy[:, None]
+    return environment_radiance(lights, d).reshape(HEIGHT, WIDTH, 3)
+
+
+def environment_radiance(lights, d):
+    """The environment's radiance (n, 3) along directions d (n, 3) turned by -turn
+    about y: the nearest texel of the octahedral map (the map's frame, y up)."""
     angle = np.radians(-float(lights["turn"]))
     c, s = F(np.cos(angle)), F(np.sin(angle))
     x, z = d[:, 0], d[:, 2]
     d = np.stack([c * x + s * z, d[:, 1], c * z - s * x], -1)
     octa = lights["octahedral"]
     row, column = light_data.octahedral_texel(d, octa.shape[0])
-    return octa[row, column].reshape(HEIGHT, WIDTH, 3)
+    return octa[row, column]
+
+
+def glass_over(scene, lights, glass, parts, front, behind, terms):
+    """The colour where the glass is in front: tau C + light_layer's (1 - max tau)
+    a / pi E + S (`behind`: C, that own colour, tau) + F x reflection x R, R the
+    environment along the view mirrored about the glass's normal (with "background")."""
+    ys, xs = np.nonzero(front)
+    px, py = xs.astype(np.float32) + F(0.5), ys.astype(np.float32) + F(0.5)
+    cam = scene["camera"]
+    position = world_points(cam, px, py, glass["depth"][ys, xs])
+    to_eye = normalized(cam[None, 0:3] - position)
+    normal = parts["normal"][ys, xs]
+    facing = np.maximum(dot3(normal, to_eye), F(0))
+    q = F(1) - facing
+    fresnel = GLASS_F0 + (F(1) - GLASS_F0) * (((q * q) * (q * q)) * q)
+    mirror = normal * (F(2) * facing)[:, None] - to_eye
+    reflection = F(lights.get("reflection", 0.0))
+    shine = np.zeros((len(ys), 3), dtype=np.float32)
+    if "background" in terms and reflection > 0:
+        shine = (fresnel * reflection)[:, None] * environment_radiance(lights, mirror)
+    colour, own, tau = behind
+    out = colour.copy()
+    seen = tau[ys, xs] * colour[ys, xs]
+    out[ys, xs] = (seen + own[ys, xs]) + shine
+    return out
 
 
 def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TERMS):
-    """SHADE's two FILLs and holes with direct light (raster reference README,
-    "Lighting"); terms: the subset of TERMS that contributes. "colour" linear,
+    """SHADE's three FILLs and holes with direct light (raster reference README,
+    "Lighting", "Glass"); terms: the subset of TERMS that contributes. "colour" linear,
     "display" x / (1 + x) of exposure x colour, the parts. smooth (vertex normals):
     a comparison variant; pcf=False: one shadow tap."""
-    kind = materials["kind"][materials["material"]]
-    opaque = rasterize(layer_scene(scene, kind != MASKED))
-    masked = rasterize(layer_scene(scene, kind == MASKED))
+    opaque, masked, glass = fill_layers(scene, materials, "glass" in terms)
     corner_vis = lights["visibility"][scene["indices"]]
     prepared = shade_setup(scene, {**materials, "light": corner_vis})
     variant = {"smooth": smooth_setup(scene) if smooth else None, "pcf": pcf}
@@ -713,7 +788,6 @@ def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TE
     if "background" in variant["terms"]:
         behind = background(scene, lights)
     colour = np.where(sky, behind, colour)
-    x = F(lights["exposure"]) * colour
     parts = {}
     for name in opaque_parts:
         pick = take if opaque_parts[name].ndim == 2 else take[:, :, None]
@@ -721,6 +795,21 @@ def rasterize_lighted(scene, materials, lights, smooth=False, pcf=True, terms=TE
     depth = np.where(take, masked["depth"], opaque["depth"])
     parts["depth"] = depth
     parts["layer"] = np.where(tri < 0, -1, take.astype(np.int32)).astype(np.int8)
+    front = nearer_layer(glass, {"depth": depth, "tri": tri})
+    parts["glass_depth"] = np.where(front, glass["depth"], F(0))
+    parts["glass_tri"] = np.where(front, glass["tri"], -1).astype(np.int32)
+    parts["glass_material"] = np.full(tri.shape, -1, dtype=np.int32)
+    parts["glass_normal"] = np.zeros(tri.shape + (3,), dtype=np.float32)
+    if front.any():
+        own, _, glass_parts = light_layer(
+            scene, materials, prepared, glass, lights, variant
+        )
+        tau, _ = glass_numbers(materials, glass, front)
+        behind = (colour, own, tau)
+        colour = glass_over(scene, lights, glass, glass_parts, front, behind, terms)
+        parts["glass_material"] = np.where(front, glass_parts["material"], -1)
+        parts["glass_normal"] = np.where(front[:, :, None], glass_parts["normal"], F(0))
+    x = F(lights["exposure"]) * colour
     return {
         "colour": colour,
         "display": x / (F(1) + x),

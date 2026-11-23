@@ -99,11 +99,12 @@ command only; without it the command stops with an error that names it.
 | `uv` | (T, 3, 2) float32 | texture coordinates of each triangle's corners, in the scene file's triangle order (0 where there are none) |
 | `material` | (T,) int32 | the triangle's material |
 | `light` | (T, 3) float32 | the light term of each corner, the shade the scene file's colours are multiplied by (`vertex_shade`), kept apart |
-| `kind` | (M,) int32 | the material's kind of shader: 0 `flat`, 1 `textured`, 2 `masked`, 3 `lit`, 4 `emissive` |
+| `kind` | (M,) int32 | the material's kind of shader: 0 `flat`, 1 `textured`, 2 `masked`, 3 `lit`, 4 `emissive`, 5 `transparent` |
 | `base_colour` | (M, 3) float32 | `Kd`; for `emissive` without a texture, `Ke` clamped to 1 |
 | `textures` | (M, 4) int32 | the material's albedo, mask, normal and specular texture, -1 for none |
 | `exponent` | (M,) int32 | the specular exponent `Ns`, rounded, 1 to 1024 |
 | `specular` | (M, 3) float32 | `Ks` |
+| `transmission` | (M, 3) float32 | `transparent`: the share of the light behind that passes, per channel: `1 - Tf`, else `Tr`, else `1 - d` (clamped to 0..1); 0 for every other kind |
 | `texels` | (B,) uint8 | every level of every texture, RGBA8, rows from the top |
 | `mip` | (N, 11, 3) int64 | per texture and level: the level's byte offset in `texels`, width, height |
 | `levels` | (N,) int32 | the levels of each texture's chain |
@@ -114,8 +115,14 @@ this order: a glow (`map_Ke`, or `Ke` of 0.5 or more in a channel) makes it `emi
 its albedo the `map_Ke` texture; without `map_Kd` it is `flat` (the scene file's
 colour); with `map_d` it is `masked` (the mask is `map_d`; when `map_d` names the albedo
 image itself, the albedo's alpha); with a bump map (`map_bump` or `bump`) or a specular
-map (`map_Ks`) it is `lit`; otherwise `textured`. Glass and other transparency are
-opaque.
+map (`map_Ks`) it is `lit`; otherwise `textured`. A material whose transmission
+(`1 - Tf` when the MTL gives `Tf`, else `Tr` in every channel, else `1 - d`) is above 0
+in a channel is `transparent` unless it glows or is `masked` (`map_Kd` and `map_d`): it
+keeps its `map_Kd` as albedo (no normal or specular map) and its transmission. `Tf` is
+read as what the glass takes away because these files say so: where a material gives
+both, `Tr = 1 - Tf` (0.8 and 0.2, 0.9 and 0.1, 0.61 and 0.39), and an opaque material's
+`Tf` is white. A material named glass that the MTL leaves opaque keeps its kind
+(below). A file written before this kind reads with a transmission of 0.
 
 Textures are stored as decoded, RGBA8; a grey image is copied into the three colours. A
 texture is reduced by halving (2 x 2 box filter, rounded) until neither side is above
@@ -128,6 +135,20 @@ maps already. The same image used in two roles is stored once per role.
 
 The converted sizes: Sponza 26 materials, 37 textures, 190 MB of texels; Bistro
 interior 67 and 88, 373 MB; Bistro exterior 133 and 208, 1,007 MB.
+
+Transparent materials (MTL statements; triangles). Bistro interior, 220,840 triangles:
+the bottles `Paris_LiquorBottle_01_Glass1` (`Tf` 0.03 0.05 0.04, transmission 0.97
+0.95 0.96; 128,248), `_02_Glass` (`Tf` 0.2 0.1 0: 0.8 0.9 1; 51,324), `_01_Glass` and
+`_03_Glass` (`Tf` 0.2: 0.8; 24,352 and 14,336), `CookieJar_Glass1` (0.9; 2,544), the
+counter's `MASTER_Interior_01_Glass` (0.8; 8) and `Paris_Cashregister_Glass` (0.9; 28).
+Bistro exterior, 3,778 triangles: the buildings' window panes `MASTER_Glass_Dirty`
+(1,176) and `MASTER_Glass_Clean` (582) (`Tf` 0.2: 0.8), `Streetlight_Glass` (0.7; 2,016),
+`MenuSign_02_Glass` (0.61; 4). Sponza has none. Named glass but opaque in
+the MTL (`d` 1, white or no `Tf`, illum 2), kept as they were:
+`Paris_LiquorBottle_01_Glass_Wine` (interior 28,308, exterior 3,542),
+`MASTER_Interior_01_Frozen_Glass`, `Paris_Paintings_Glass`, `MASTER_Frosted_Glass`,
+`Vespa_Odometer_Glass`, and the glowing `MASTER_Glass_Exterior` (window panes, 366),
+`MASTER_Focus_Glass` and `Spotlight_Glass` (`emissive`).
 
 ## Lighting
 
@@ -166,6 +187,7 @@ A scene's `lighting` entry holds its numbers:
 | `lights` (optional) | authored point lights, each `{"position", "colour"}`; they replace the emissive groups, each of intensity `lamp_scale` (an empty list: none) |
 | `shadow_side` (optional) | the sun's shadow map side, 1,024 or 2,048 (default): 2,048 is four FILLs of 1,024, one a quadrant |
 | `sky_side` (optional) | the side of the background's octahedral map, default 2,048 (4k files and 2,048: a texel about 0.1 degrees against a frame pixel's 0.07; 1k and 512 were blocky) |
+| `reflection` (optional) | the factor of the environment's radiance a glass surface reflects ("Glass" in the raster reference README), default 0; `lights.load` does not read it yet: set it in the lights |
 | `sun` (optional) | an authored sun, `{"direction"` it shines along`, "colour"}`; the map is turned so its sun's azimuth matches, and `turn` is not used |
 
 Chosen by looking at the pictures: Sponza `turn` 0, `sun_to_sky` 5, `ambient` 0.35,
@@ -188,7 +210,9 @@ emissive surfaces for ray tracing.
 
 ## Limits
 
-Not represented: transparency (glass is opaque), the scenes' own lights outside
+Not represented: refraction, glass behind glass (one transparent layer: the nearest),
+coloured shadows (transparent triangles cast none; the baked sky visibility still treats
+them as opaque), the scenes' own lights outside
 `rasterize_lighted` (one point light per scene; emissive materials are drawn unlit and
 light nothing) and San Miguel's
 textures (only their mean colour). Without the materials file, as in the ray tracer,

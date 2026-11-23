@@ -35,7 +35,7 @@ SHADE_BASE, SHADE_GAIN = 0.55, 0.45
 SHADE_DIR = np.array([0.3, 1.0, 0.5]) / np.sqrt(0.09 + 1.0 + 0.25)
 # Materials: the kinds of shader (the number is the kind's code), a material's texture
 # slots, the largest texture side kept, levels a mip chain can have (1024 to 1).
-KINDS = ("flat", "textured", "masked", "lit", "emissive")
+KINDS = ("flat", "textured", "masked", "lit", "emissive", "transparent")
 SLOTS = ("albedo", "mask", "normal", "specular")
 TEXTURE_SIDE = 1024
 MIP_LEVELS = 11
@@ -380,9 +380,23 @@ def numbers(text, default):
     return np.array((values + values[-1:] * 2)[:3], dtype=np.float64)
 
 
+def transmission(statements):
+    """The transmission colour (3,) of a material's MTL statements, in 0..1: 1 - `Tf`
+    when it gives `Tf` (in these files `Tf` is what the glass takes away: where both
+    are given, `Tr` = 1 - `Tf`), else `Tr` in every channel, else 1 - `d`."""
+    if "Tf" in statements:
+        tau = 1.0 - numbers(statements["Tf"], 1.0)
+    elif "Tr" in statements:
+        tau = numbers(statements["Tr"], 0.0)[:1].repeat(3)
+    else:
+        tau = 1.0 - numbers(statements.get("d"), 1.0)[:1].repeat(3)
+    return np.clip(tau, 0.0, 1.0)
+
+
 def material_record(statements, files, texture_number):
-    """(kind, base colour, texture numbers by slot, exponent, specular colour) of one
-    material's MTL statements; texture_number(file, role) numbers the files."""
+    """(kind, base colour, texture numbers by slot, exponent, specular colour,
+    transmission) of one material's MTL statements; texture_number(file, role)
+    numbers the files. The transmission is 0 unless the kind is `transparent`."""
     found = {
         key: files.find(statements.get(key))
         for key in ("map_Kd", "map_d", "map_bump", "bump", "map_Ks", "map_Ke")
@@ -396,12 +410,17 @@ def material_record(statements, files, texture_number):
         np.clip(np.rint(numbers(statements.get("Ns"), 1.0)[0]), *EXPONENT_RANGE)
     )
     specular_colour = numbers(statements.get("Ks"), (0.0, 0.0, 0.0))
+    tau = transmission(statements)
     if emit or glow.max() >= EMISSIVE_MIN:
         kind = "emissive"
         if emit:
             slots[0], base = texture_number(emit, "colour"), np.ones(3)
         else:
             base = np.clip(glow, 0.0, 1.0)
+    elif (tau > 0).any() and not (albedo and mask):
+        kind = "transparent"
+        if albedo:
+            slots[0] = texture_number(albedo, "colour")
     elif albedo is None:
         kind = "flat"
     else:
@@ -418,7 +437,9 @@ def material_record(statements, files, texture_number):
                 slots[3] = texture_number(specular, "colour")
         else:
             kind = "textured"
-    return KINDS.index(kind), base, slots, exponent, specular_colour
+    if kind != "transparent":
+        tau = np.zeros(3)
+    return KINDS.index(kind), base, slots, exponent, specular_colour, tau
 
 
 def convert_materials(name, data, workers=4):
@@ -445,7 +466,7 @@ def convert_materials(name, data, workers=4):
     light = vertex_shade(vp, idx)[idx]
     # Material 0 is flat: the ground, triangles without coordinates or material.
     names = ["(flat)"]
-    rows = [(0, np.array(meshio.DEFAULT_COLOUR), [-1] * 4, 1, np.zeros(3))]
+    rows = [(0, np.array(meshio.DEFAULT_COLOUR), [-1] * 4, 1, np.zeros(3), np.zeros(3))]
     jobs, numbers_of = [], {}
 
     def texture_number(file, role):
@@ -479,7 +500,7 @@ def convert_materials(name, data, workers=4):
         material[span] = own
         uv[span] = np.where(has_uv[:, None, None], np.nan_to_num(read.uv), 0)
         first += triangles
-    kinds, bases, slots, exponents, speculars = zip(*rows, strict=True)
+    kinds, bases, slots, exponents, speculars, taus = zip(*rows, strict=True)
     kinds = np.array(kinds, dtype=np.int32)
     sources = [(Path(a), m, r) for a, m, r in jobs]
     if workers > 1:
@@ -515,6 +536,7 @@ def convert_materials(name, data, workers=4):
         textures=np.array(slots, dtype=np.int32),
         exponent=np.array(exponents, dtype=np.int32),
         specular=np.array(speculars, dtype=np.float32),
+        transmission=np.array(taus, dtype=np.float32),
         texels=np.concatenate(blocks) if blocks else np.zeros(0, np.uint8),
         mip=mip,
         levels=level_count,
@@ -534,6 +556,7 @@ MATERIAL_KEYS = (
     "textures",
     "exponent",
     "specular",
+    "transmission",
     "texels",
     "mip",
     "levels",
@@ -542,7 +565,8 @@ MATERIAL_KEYS = (
 
 def load_materials(name, data):
     """The materials of a converted scene (or of a view's scene): the arrays of
-    MATERIAL_KEYS and the counts; missing, an error naming the command."""
+    MATERIAL_KEYS and the counts; missing, an error naming the command. A file written
+    before the `transparent` kind gets a transmission of 0."""
     if is_view(name):
         name = views()[name][0]
     path = public_dir(data) / f"{name}_materials.npz"
@@ -552,13 +576,25 @@ def load_materials(name, data):
             f"python -m reference.public materials {name}"
         )
     with np.load(path) as f:
-        return {k: f[k] for k in MATERIAL_KEYS}, json.loads(str(f["counts"]))
+        found = {k: f[k] for k in MATERIAL_KEYS if k in f.files}
+        counts = json.loads(str(f["counts"]))
+    return with_defaults(found), counts
+
+
+def with_defaults(materials):
+    """The materials with a transmission of 0 (M, 3) added when they have none (made
+    before the `transparent` kind)."""
+    rows = len(materials["kind"])
+    zeros = np.zeros((rows, 3), dtype=np.float32)
+    return {**materials, "transmission": materials.get("transmission", zeros)}
 
 
 def export_materials(materials, folder):
-    """Writes each array of the materials as <folder>/<key>.npy, the C++ input."""
+    """Writes each array of the materials as <folder>/<key>.npy, the C++ input (a
+    missing transmission as 0, `with_defaults`)."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    materials = with_defaults(materials)
     for key in MATERIAL_KEYS:
         np.save(folder / f"{key}.npy", materials[key])
     return folder
