@@ -20,9 +20,9 @@ too: one chip, and the chips of a Galaxy as islands
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.4.0 is on PyPI (as `komorebi-tt`), with a second dispatcher that runs on a Tensix core
-and a first part of Wormhole: one chip, and islands of chips
-([release notes](docs/releases/0.4.0.md)).
+0.5.0 is on PyPI (as `komorebi-tt`), with a handler that is a hand-written kernel
+(`km.kernel`), the chips of a Wormhole Galaxy as islands, and collectives that refuse
+after a give-up until the host clears them ([release notes](docs/releases/0.5.0.md)).
 
 | Program | On the card | Beside it, on the same card |
 |---|---|---|
@@ -57,7 +57,7 @@ kmr doctor
 The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
 or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-From a clone, for what is on `main` after 0.4.0 and for Wormhole (it needs a tt-metal source tree at
+From a clone, for what is on `main` after 0.5.0 and for Wormhole (it needs a tt-metal source tree at
 the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
 runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 
@@ -709,7 +709,7 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 | The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented, on one island or over several, for the handlers of one program, those that cast to a row or a column among them; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | The dispatcher on one Tensix core (`km.Session(dispatcher="tensix")`): the host's commands handed to the cores, their events returned | implemented (0.4.0): the job queue, dynamic handlers, recovery, the trace, streams and graphs (host-fed, and the resident engines on its core's TRISC 0), islands and links, and on Blackhole X280 threads, X280 ports and X280 ranks; not shared regions; on Wormhole one thread, on its own core, and no X280 ports ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md) | [01_mapcollect](examples/01_mapcollect/) with `KMR_DISPATCHER=tensix` |
-| Wormhole: a session on one chip, its facts read from the device; the chips of a Galaxy as islands, up to 31; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part (0.4.0); islands over a Galaxy on main ([below](#the-two-dispatchers-and-wormhole)) | [Wormhole](docs/reference/wormhole.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/), [28_islands_reduce](examples/28_islands_reduce/) |
+| Wormhole: a session on one chip, its facts read from the device; the chips of a Galaxy as islands, up to 31; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part (0.4.0); islands over a Galaxy (0.5.0) ([below](#the-two-dispatchers-and-wormhole)) | [Wormhole](docs/reference/wormhole.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/), [28_islands_reduce](examples/28_islands_reduce/) |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
 | X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_fetch_clean` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
@@ -721,7 +721,7 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 
 ## The two dispatchers, and Wormhole
 
-New in 0.4.0.
+New in 0.4.0. The chips of a Galaxy as islands are new in 0.5.0.
 
 `km.Session(dispatcher="tensix")` puts the dispatcher on the grid's last Tensix core
 and runs the program on the others: 119 cores on a P150A, 79 on a Wormhole chip. It is
