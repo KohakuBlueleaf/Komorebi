@@ -8,6 +8,7 @@ import inspect
 
 from komorebi.dsl import compiler, first_use
 from komorebi.dsl import program as made
+from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.records import Compiled, Refused
 from komorebi.dsl.front import front
 from komorebi.dsl.front.front import ClassHandler, HandlerMethod
@@ -498,6 +499,13 @@ def markers(self, given, overlay):
                     f"{self.cname}: {word}= {marker!r}: {error}"
                 ) from None
         for method in chosen:
+            if overlay and method.kernel is not None:
+                owner = method.owner.__name__ if method.owner else self.cname
+                raise ProgramError(
+                    f"{self.cname}: overlay= marks {owner}.{method.name}, a "
+                    f"km.{spelling('kernel')} handler, whose hand files an overlay "
+                    "part does not hold; leave it resident"
+                )
             changed = method.overlay is not None and bool(method.overlay) != overlay
             if changed and getattr(method, "marked", False):
                 raise ProgramError(
@@ -534,6 +542,15 @@ def build(self):
         for index, source in enumerate(sources)
     ]
     handlers = {method.name: method for method in self.methods.values()}
+    kernel_handler.made_refused(
+        self.cname,
+        list(handlers.values()),
+        "kernel",
+        self.chain_wanted,
+        made.chain_methods(type(self)),
+        made.islands_of(session),
+        None,
+    )
     given = {}  # each class's example tensors, for a direct input's landing area
     for source in sources:
         given.update(source.given["tensors"])

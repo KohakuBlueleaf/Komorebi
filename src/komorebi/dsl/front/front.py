@@ -264,6 +264,73 @@ def own(push="found"):
     return Own(push)
 
 
+class Pair:
+    """`a_in = km.Pair(km.bf16, pages=32)` in a class body: a buffer pair a hand
+    kernel streams through (role read, or write with `write=True`), pages of the
+    format's tiles, `pages` (an int or a constant of the class) in each half."""
+
+    def __init__(self, format, pages, write=False):
+        if not isinstance(format, Format):
+            raise ProgramError(
+                f"km.{spelling('pair')}(format, pages): the format first, km.bf16, "
+                "km.fp32, km.u32, km.fp16 or a block format (km.bfp8_b, ...)"
+            )
+        if not (
+            isinstance(pages, Constant)
+            or (isinstance(pages, int) and not isinstance(pages, bool) and pages >= 1)
+        ):
+            raise ProgramError(
+                f"km.{spelling('pair')}(pages={pages!r}): the pages of each half, an "
+                f"int of 1 or more or a constant of the class "
+                f"(km.{spelling('constant')}(n))"
+            )
+        if not isinstance(write, bool):
+            raise ProgramError(f"km.{spelling('pair')}(write={write!r}): True or False")
+        self.format, self.pages, self.write = format, pages, write
+
+
+# A hand kernel's roles and the CPUs each one's function runs on.
+KERNEL_ROLES = {
+    "movement": ("mover_a", "mover_b"),
+    "reader": ("mover_a",),
+    "writer": ("mover_b",),
+    "compute": ("unpack", "math", "pack"),
+    "unpack": ("unpack",),
+    "math": ("math",),
+    "pack": ("pack",),
+}
+
+
+class Kernel:
+    """`km.kernel(movement=..., compute=...)`, the first argument of km.handler: the
+    handler's body is hand-written files, `<entry>_<role>` called on each role's
+    CPUs; `clean`: they leave the formats and Dst as the start-up set them."""
+
+    def __init__(self, roles, entry, clean):
+        self.roles = {role: path for role, path in roles.items() if path is not None}
+        self.entry, self.clean = entry, clean
+
+
+def kernel(
+    *,
+    movement=None,
+    reader=None,
+    writer=None,
+    compute=None,
+    unpack=None,
+    math=None,
+    pack=None,
+    entry=None,
+    clean=False,
+):
+    """A handler written as hand kernels: a file for each role (a path relative to
+    the class's file), checked when the class is made (compile.handler.kernel_handler).
+    """
+    roles = {"movement": movement, "reader": reader, "writer": writer}
+    roles |= {"compute": compute, "unpack": unpack, "math": math, "pack": pack}
+    return Kernel(roles, entry, clean)
+
+
 class Tile:
     """`gives=km.Tile`: what an inline body of compute leaves in DST 0."""
 
@@ -497,8 +564,30 @@ class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
 
-    def __init__(self, function, overlay=None, stamps=None, direct=(), in_place=False):
+    def __init__(
+        self,
+        function,
+        overlay=None,
+        stamps=None,
+        direct=(),
+        in_place=False,
+        kernel=None,
+    ):
         self.function = function
+        self.kernel = kernel  # a front.Kernel: its body hand-written files
+        # what km.handler gave besides the kernel, refused with one (kernel_handler)
+        self.kernel_given = {
+            name: value
+            for name, value, default in (
+                ("overlay", overlay, None),
+                ("stamps", stamps, None),
+                ("direct", tuple(direct), ()),
+                ("in_place", in_place, False),
+            )
+            if kernel is not None and value is not default and value != default
+        }
+        if kernel is not None and overlay is None:
+            overlay = False  # resident: an overlay part has no hand file's include
         # its code is an overlay (loaded into a slot, called); False: resident, kept
         # so in a merged program too; None: resident, which a merged build may move
         self.overlay = overlay
@@ -998,12 +1087,17 @@ def word_of(handler, parameter, kind, value):
 
 
 def handler(function=None, *, overlay=None, stamps=None, direct=(), in_place=False):
-    """Makes a method of a class deriving km.Program a handler; `overlay=True`: built
-    apart as an overlay, loaded into a slot when a command needs it (False: resident,
-    also when merged); `stamps="t"`: each mover's cycles to tensor t; `direct`: the
-    inputs a chain's call may send into its cores' L1 (`in_place`: its stream's)."""
+    """Makes a method of a class deriving km.Program a handler (km.kernel(...) first:
+    its body hand files); `overlay=True`: an overlay, loaded into a slot when a command
+    needs it (False: resident, also merged); `stamps="t"`: each mover's cycles to t;
+    `direct`: inputs a chain's call may send into L1 (`in_place`: its stream's)."""
     if isinstance(direct, str):
         direct = (direct,)
+    if isinstance(function, Kernel):
+        made = function
+        return lambda function: HandlerMethod(
+            function, overlay, stamps, direct, in_place, made
+        )
     if function is None:
         return lambda function: HandlerMethod(
             function, overlay, stamps, direct, in_place
@@ -1205,6 +1299,8 @@ def exports():
         "first_use": FirstUse(),
         "up_to": UpTo(),
         "own": own,
+        "pair": Pair,
+        "kernel": kernel,
         "tile_value": Tile,
         "startup": Startup,
         "tensor": Tensor,

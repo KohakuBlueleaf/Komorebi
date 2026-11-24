@@ -35,6 +35,7 @@
 1 examples/20_message_overlays/message_overlays.py
 1 examples/21_thread_load/thread_load.py --cores 12
 1 examples/22_gate/gate.py --cores 12
+1 examples/33_kernel_handler/kernel_handler.py --cores 12
 1 examples/23_message_body/message_body.py
 1 examples/23_message_body/message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
 1 examples/24_thread_rank/thread_rank.py --x280 1 --seeds 4 --hops 2

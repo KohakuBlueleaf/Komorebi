@@ -94,6 +94,17 @@ NAMES = {
         None,
     ),
     "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
+    "pair": Name(
+        "Pair",
+        "p = km.Pair(format, pages, write=False): a buffer pair hand kernels stream",
+        None,
+    ),
+    "kernel": Name(
+        "kernel",
+        '@km.handler(km.kernel(movement="m.hpp", compute="c.hpp")): a handler whose '
+        "body is hand-written kernel files",
+        None,
+    ),
     "tensor": Name("Tensor", "km.Tensor: a parameter that is a tensor", "tensor"),
     "pattern": Name("Pattern", "km.Pattern: a parameter that is a pattern", "pattern"),
     "region": Name(

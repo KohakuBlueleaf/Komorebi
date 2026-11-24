@@ -13,6 +13,7 @@ from komorebi import _env, abi, formats
 from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use, padding
 from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.layout import padded_rings
 from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
@@ -248,6 +249,15 @@ def make(
             f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
             f"{', '.join(FORMS)}"
         )
+    kernel_handler.made_refused(
+        cls.__name__,
+        compiler.handler_methods(cls),
+        form,
+        chain,
+        chain_methods(cls),
+        islands_of(session),
+        handlers,
+    )
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
@@ -1275,6 +1285,8 @@ def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     text_key of the files (equal text is one folder, whoever made it; text that differs
     never is); `make` is sources_key, reported; `key` names the folder instead (a first
     use's); `thread` is class_thread's base header; an equal file is not written."""
+    builds = Path(compiled.source).resolve().parent / BUILD
+    kernel_handler.entered(compiled, start_formats(compiled), builds)
     files = {
         header_name(compiled): header(compiled),
         thread_header_name(compiled): thread_header(compiled),
@@ -1373,9 +1385,13 @@ def header(compiled):
         lines += ["", f"// {cls}: an entry's words in a table of entries."]
         for word, index in words.items():
             lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
+    lines += kernel_handler.constant_lines(compiled)
     for buffer in compiled.buffers:
         lines.append("")
         lines.append(f"// {buffer.what}")
+        if buffer.declared:  # a km.Pair: its pair and pages
+            lines += kernel_handler.pair_lines(buffer)
+            continue
         if buffer.index_b is None:
             if buffer.role == "arrival":
                 slots = buffer.pages[0]
@@ -1505,7 +1521,12 @@ def compute_source(compiled, walk=True):
         "// the compute kernel: the tiles of its streams, in block order.",
         *compute_includes(compiled),
     ]
-    lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
+    lines += [f'#include "{header_name(compiled)}"']
+    lines += [
+        *kernel_handler.include_lines(compiled, "compute"),
+        "",
+        "void kernel_main() {",
+    ]
     # The unit starts with buffers the class declares: its first read (or another
     # buffer compute takes) and its first write (or that one); none: 0 and 16.
     reads = [b for b in compiled.buffers if b.role == "read"]

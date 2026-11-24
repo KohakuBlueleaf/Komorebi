@@ -756,6 +756,9 @@ to it unrounded.
 
 ## Inline bodies
 
+`km.cxx` is a hand-written line in a DSL handler; `km.kernel` is a hand-written handler
+in a class ([A handler that is a hand-written kernel](#a-handler-that-is-a-hand-written-kernel)).
+
 A `km.cxx` body is its C++ as written, at its line's place in its handler, on the CPU
 `on=` names: `"mover_a"` or `"mover_b"` (the movement source, under that mover's
 `#if`), `"unpack"`, `"math"` or `"pack"` (the compute source, under that CPU's
@@ -1156,6 +1159,138 @@ Refused, each at its line: a drain of a stream no line ends above (neither `.end
 nor a `with`); `.end()` twice, or inside its own `with`; a body that takes the stream
 after its end, or on a mover; no `mover=`; a field a mover pushes, or not an own field;
 a drain of a stream no compute body fills; lines of another CPU in the drain loop.
+
+## A handler that is a hand-written kernel
+
+A handler's body may be hand-written kernel files, beside handlers written in the DSL
+in the same class. From [33_kernel_handler](../../examples/33_kernel_handler/README.md):
+
+```python
+class Mixed(km.Program):
+    BLOCK = km.constant(4)
+    a_in = km.Pair(km.bf16, pages=BLOCK * 4)
+    b_in = km.Pair(km.bf16, pages=BLOCK * 4)
+    result = km.Pair(km.bf16, pages=BLOCK * 4, write=True)
+
+    @km.handler(
+        km.kernel(
+            movement="kernels/gate_movement.hpp",
+            compute="kernels/gate_compute.hpp",
+            entry="gate_k::gate",
+        )
+    )
+    def gate(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+    ):
+        """out = silu(a) * b."""
+
+    @km.handler
+    def add(
+        self,
+        a: km.Tensor,
+        b: km.Tensor,
+        out: km.Tensor,
+        tiles: int,
+        pattern: km.Pattern,
+    ): ...  # DSL lines
+```
+
+`km.kernel(*, movement=None, reader=None, writer=None, compute=None, unpack=None,
+math=None, pack=None, entry=None, clean=False)` is `km.handler`'s first argument. Each
+role names a file (a `str` or a `Path`; a relative one from the folder of the class's
+file) whose function runs on the role's CPUs; a CPU no role names does nothing in the
+handler's case.
+
+| Role | CPUs | Function called |
+|---|---|---|
+| `movement` | mover A and mover B, one call each of the same function | `<entry>_movement` |
+| `reader` | mover A | `<entry>_reader` |
+| `writer` | mover B | `<entry>_writer` |
+| `compute` | unpack, math and pack, one call compiled for the three | `<entry>_compute` |
+| `unpack`, `math`, `pack` | that CPU, under its `#if defined(TRISC_...)` | `<entry>_unpack`, ... |
+
+`entry` is the functions' stem with its namespace (`"gate_k::gate"`), the handler's
+name when not given. The handler's parameters are its command words as for any
+handler (tensors, ints, floats, patterns). Its case calls, on a mover, `if
+(!<entry>_<role>(movement, command, <args>)) { return false; }` and, on compute,
+`<entry>_<role>(compute, command, <args>);`, the arguments in the parameters' order: a
+tensor as its `km::Tensor` accessor (a mover's alone; compute's call has no tensors),
+an int as `uint32_t`, a float as `float`, a pattern as `km::Pattern`; a handler of no
+parameters passes `(movement, command)` or `(compute, command)`. The call's `#line` is
+the handler's `def` line.
+
+Each file is `#include`d once a kernel source, after the class's own header (so it
+uses the header's names): the movers' files in the movement source, compute's in the
+compute source, with no `#if` when every CPU of that source uses it, else under the
+`#if` of each CPU that does. The include line is the file's path from the build folder
+(`build/<name>-<digest>/`), so it is in the generated text and the build key
+([Making and calling](#making-and-calling)); nothing else is added to the key: an edit
+of an included file rebuilds the kernels by tt-metal's dependency hash of each object
+(the folder's name unchanged).
+
+What a hand file may assume: the names of the class's header and of the kernel source
+above its include (`movement` is a `km::Movement`, `compute` a `km::Compute`, `command`
+the command, the tensors' types `A`, `B`, ... by the parameters' names); its tensors
+come as accessors of those types, so a mover's function is a template over them (the
+kernels build as C++17). What it must do: carry `#pragma once`; on a mover return
+false when it gave up, true when done; take, wait for, reserve, push and free its
+buffers' pages itself, and set up the unpacker, the math and the packer it uses.
+
+**Declared pairs.** `p = km.Pair(format, pages, write=False)` in the class body is a
+buffer pair a hand kernel streams through: role read (write with `write=True`), pages
+of the format's tile bytes, `pages` (an int or a constant of the class) in each half.
+Its indices are taken after every handler's streams took theirs, in declaration order
+(parents first), by the stream pairs' rule (reads from 0, writes from 16, two side by
+side); the start-up, the format changes and the unpack modes treat it as a stream's
+pair. The header gives `constexpr km::BufferPair kPair<Name> = {i, i + 1};` and
+`kPair<Name>Pages`, under a comment naming the attribute. In a program with a
+`km.kernel` handler the header also gives each constant of the class as `constexpr
+uint32_t kConst<Name> = <this program's value>;` (`BLOCK` is `kConstBlock`). A float
+constant gets no `kConst`. In a merge, the classes that hold a `km.kernel` handler
+declaring one constant with two values is refused: the header has one `kConst` a name.
+A buffer
+that is no stream's is an own field (`km.own()`, `kField<Name>`, [A body's own
+buffer](#a-bodys-own-buffer)).
+
+**A DSL handler beside one.** A hand kernel may leave the unpacker's, the math's and
+the packer's formats and Dst other than the start-up set them. In a program with a
+`km.kernel` handler not made `clean=True` and a DSL handler, each DSL handler's compute
+case begins with the start-up's formats set again (the runtime form's lines,
+`reconfig_data_format` and `pack_reconfig_data_format` of the program's first input
+and output buffers; with a `km.Startup`, of its fields) and Dst cleared whole on the
+math CPU (`TTI_ZEROACC(p_zeroacc::CLR_ALL, ...)`). `clean=True` states that the kernel
+leaves them as the start-up set them, and a program whose kernel handlers are all
+clean, or that has no DSL handler, gets none of it. A hand kernel sets up what it
+needs itself.
+
+**Compute options.** A hand kernel in a class runs under the class's compute options
+(float32 Dst, which holds half the tiles a 16-bit Dst does), so a kernel written for
+other options is adapted, as example 33's gate was (blocks of 4 tiles where example 22
+has 8).
+
+**What it supports.** The kernel form, alone or merged with other classes in the
+kernel form (`km.merge` of made classes, a class deriving several): the handlers
+numbered as always, a file included once, a `km.Pair` of one name declared alike in
+two classes one pair. A `km.kernel` handler is resident. Refused at the make, each
+with its reason: `form="runtime"` (its files are included in the class's own kernels);
+`chain=True` and a `km.chain` method calling it (a chain's records state what each call
+reads and writes, and a hand kernel's are its own C++), and `Run.chain` of a call of it;
+a dynamic handler in the class; an island session's make; `handlers=` listing it; and,
+at the handler's line, `overlay=`, `stamps=`, `direct=` or `in_place=`, a body that is
+not a docstring or `pass`, and a region, rectangle or constant parameter.
+
+Measured (card 1, [33_kernel_handler](../../examples/33_kernel_handler/README.md)):
+the gate's two files as a handler of a class beside a DSL handler, 12 cores, 64 tiles a
+core, against the same files as a hand program of the class's compute options in one
+session: the class's gate gives the hand program's output word for word, 94.44 µs
+against 94.28 µs (merged: 94.46 against 94.22); the DSL `add` beside it 23.76 µs, 0
+wrong, against 23.32 µs in a class of its own (the state set again at its entry); 20
+alternations of the two right.
 
 ## Tables of entries
 
@@ -3313,6 +3448,28 @@ Unbounded.apply, line 640, `arrived_blocks = down.cast(x.tiles[0:2, 0:n].read())
 Overwide.apply, line 656, `y.tiles[0:1, 0 : min(3, self.rank)].write(self.part)  # overwide`: self.part is 1 x 2 tiles; write a rectangle of them (a side a word: the build must know it is at most the field's); write y.tiles[r:r + 1, c:c + 2].write(self.part), or c:min(c + 2, e)
 Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # unfillable`: the rectangle's columns are a word and self.weight's rows are 2 tiles: the build must know they are at most 2; write w.tiles[r0:r1, c:min(c + 2, e)]
 Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
+```
+
+A `km.kernel` handler's refusals, from
+[test_kernel_handler.py](../../tests/core/dsl/test_kernel_handler.py) (its paths
+shortened):
+
+```text
+Nothing.gate, line 239, `@km.handler(km.kernel())`: km.kernel(...) names no file: a hand kernel has a file for a role at least; give movement=, reader=, writer=, compute=, unpack=, math= or pack=
+Twice.gate, line 244, `@km.handler(km.kernel(movement=HAND + "movement.hpp", reader=HAND + "r.hpp"))`: movement= is the file of mover_a, mover_b, and reader= names one of them again; give movement= alone, or reader= and writer=
+Thrice.gate, line 249, `@km.handler(km.kernel(compute=HAND + "compute.hpp", pack=HAND + "math.hpp"))`: compute= is the file of unpack, math, pack, and pack= names one of them again; give compute= alone, or unpack= and math= and pack=
+Missing.gate, line 266, `@km.handler(km.kernel(movement=HAND + "absent.hpp"))`: movement= names .../tests/core/dsl/kernel_hand/absent.hpp, which is no file; give a path relative to .../tests/core/dsl, or an absolute one
+Overlaid.gate, line 271, `@km.handler(km.kernel(movement=HAND + "movement.hpp"), overlay=True)`: overlay= with km.kernel: a hand kernel's handler is resident and called as written, by its command alone; drop overlay=, or write the handler in the DSL
+Lined.gate, line 286, `km.cxx("use(n);", takes=[n])`: a handler is a kernel or lines; a hand-written line in a DSL handler is km.cxx; leave the body a docstring (or pass), or drop km.kernel
+Constant.gate, line 290, `def gate(self, n: int, size: km.constant[int] = 4):`: size is a constant parameter: a hand kernel's call passes tensors, ints, floats and patterns, and builds no set; pass its words as ints, or write the handler in the DSL
+Gates.gate (line 96): a km.kernel handler with form="runtime": its hand files are included in the class's own kernels, which the runtime's form does not build; make it in the kernel form (form="kernel")
+Gates.gate (line 96): a km.kernel handler with chain=True: a chain's records state what each call reads and writes, and a hand kernel's are its own C++; submit its commands, or write the handler in the DSL
+Chained.steps: the km.chain method calls gate, a km.kernel handler: a chain's records state what each call reads and writes, and a hand kernel's are its own C++; call DSL handlers alone in the chain
+Dynamic.gate (line 306): a km.kernel handler beside the dynamic handler visit: a dynamic class's kernels are its message loop; make them two programs
+Gates.gate (line 96): a km.kernel handler in a session of 2 islands: what may cross a link is found from the lines' moves, and a hand kernel's are its own C++; make it in a session of one card
+Gates.gate: handlers= lists sets of a km.kernel handler, which has no constant parameters: one build serves every call; drop it from handlers=
+Many: km.Pair p13 (read) needs pair kPairP13, and indices 0 to 25 have no two free side by side: 13 pairs (kPairP0 0-1 (bfloat16, declared); ...; kPairP12 24-25 (bfloat16, declared)) and 0 other buffers, fields and reserved indices take them; declare fewer pairs, open fewer streams at once in one handler, or split the class
+gates_other: km.Pair a_in is (bfloat16, pages=32, write=False) in Gates and (float32, pages=32, write=False) in Other; a pair of one name is one pair: declare it alike, or rename one
 ```
 
 A tensor not in whole tiles is refused at the make, or at a submit, where a reduction

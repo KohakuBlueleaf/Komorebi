@@ -19,7 +19,7 @@ from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst.dst_code import (
     DST_HALF,
 )
-from komorebi.dsl.compile.handler import handler_compile
+from komorebi.dsl.compile.handler import handler_compile, kernel_handler
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
@@ -133,6 +133,8 @@ def compile_class(
         names = handler_names(method)
         compile_handler(compiled, method, names, plan, tensors)
     listed_words(compiled, methods)
+    declared_pairs(compiled, class_pairs(compiled, cls, {}))
+    kernel_handler.constants_kept(compiled, [(cls.__name__, compiled.class_constants)])
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
@@ -256,6 +258,7 @@ def compile_merged(name, parts, l1=None):
                 "whose message loop is its program's own kernels; not merged"
             )
     plan, tensors, order = {}, {}, []
+    pairs, constants = {}, []  # the classes' km.Pair and constants' values
     for part in parts:
         for key, value in part.plan.items():
             if plan.setdefault(key, value) != value:
@@ -264,6 +267,9 @@ def compile_merged(name, parts, l1=None):
                     f"{value!r} in {part.cls.__name__}; one value a merged program"
                 )
         declared_constants(compiled, part.cls, part.constants)
+        pairs = class_pairs(compiled, part.cls, pairs)
+        if any(method.kernel is not None for _, method in part.methods):
+            constants.append((part.cls.__name__, compiled.class_constants))
         compiled.tensors = []  # this class's tensor parameters
         for number, method in part.methods:
             compiled.handlers[method.name] = number
@@ -285,6 +291,8 @@ def compile_merged(name, parts, l1=None):
             merged_aliases(compiled, method.name, aliases)
     compiled.tensors = order
     compiled.declared, compiled.class_constants = {}, {}
+    declared_pairs(compiled, pairs)
+    kernel_handler.constants_kept(compiled, constants)
     bind_fields(compiled, plan, l1)
     options = [(part.cls, class_compute(part.cls, compiled)) for part in parts]
     for cls, given in options[1:]:
@@ -340,6 +348,61 @@ def merged_fields(compiled, parts):
                 )
             compiled.word_fields[field_name] = value.shape[0]
             del compiled.fields[field_name]
+
+
+def class_pairs(compiled, cls, found):
+    """`found` with the class's km.Pair attributes, parents first, each (its class,
+    format, this program's pages of each half, write); one name declared two ways in
+    two classes of a merged program refused naming both."""
+    own = {
+        name: value
+        for klass in reversed(cls.__mro__)
+        for name, value in vars(klass).items()
+        if isinstance(value, front.Pair)
+    }
+    found = dict(found)
+    for name, pair in own.items():
+        pages = pair.pages
+        if isinstance(pages, front.Constant):
+            try:
+                pages = pages.value(compiled.class_constants)
+            except KeyError:  # a symbol the build solves after the pairs
+                pages = repr(pair.pages)
+        if isinstance(pages, bool) or not isinstance(pages, int) or pages < 1:
+            raise Refused(
+                f"{cls.__name__}.{name}: km.{spelling('pair')}'s pages are "
+                f"{pages!r}; give an int of 1 or more"
+            )
+        made = (cls.__name__, pair.format, pages, pair.write)
+        if name in found and found[name][1:] != made[1:]:
+            raise Refused(
+                f"{compiled.name}: km.{spelling('pair')} {name} is "
+                f"{pair_text(found[name])} in {found[name][0]} and {pair_text(made)} "
+                f"in {cls.__name__}; a pair of one name is one pair: declare it "
+                "alike, or rename one"
+            )
+        found.setdefault(name, made)
+    return found
+
+
+def pair_text(made):
+    """A km.Pair as its declaration reads: format, pages, write."""
+    _, format_, pages, write = made
+    return f"({format_.dtype}, pages={pages}, write={write})"
+
+
+def declared_pairs(compiled, pairs):
+    """Each km.Pair a buffer pair of role read (write with write=True), indices by
+    the stream pairs' rule, after every handler's streams took theirs."""
+    for name, (_, format_, pages, write) in pairs.items():
+        role = "write" if write else "read"
+        what = (
+            f"pair {name}: {format_.dtype}, {pages} pages a half; "
+            f"km.{spelling('pair')}: streamed by hand kernels"
+        )
+        layout.declared_pair(
+            compiled, name, role, format_.dtype, format_.tile_bytes, pages, what
+        )
 
 
 def merged_aliases(compiled, handler, aliases):

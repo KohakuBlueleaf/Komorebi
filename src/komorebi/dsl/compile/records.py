@@ -42,6 +42,7 @@ class Buffer:
     )  # a pair's streaming handlers (or None)
     padded: bool = False  # a read pair handlers of other blocks share (KM_RING_PADDED)
     items: list = field(default_factory=list)  # an out buffer's item widths
+    declared: bool = False  # a km.Pair of the class: hand kernels stream it
 
 
 @dataclass
@@ -198,6 +199,13 @@ class CompiledText:
     # A handler with constant parameters -> [(its set of values, the handler built
     # for them)] (handler_variants).
     variants: dict = field(default_factory=dict)
+    # The km.kernel handlers by name, and their files by kernel ("movement",
+    # "compute"): path -> the CPUs whose role names it (kernel_handler).
+    kernel_handlers: dict = field(default_factory=dict)
+    kernel_files: dict = field(default_factory=lambda: {"movement": {}, "compute": {}})
+    kernel_constants: dict = field(default_factory=dict)  # kConst<Name>: its value
+    entered: bool = False  # a DSL handler's entry state added (kernel_handler)
+    builds: str | None = None  # the build folders' folder: include paths from there
 
 
 @dataclass

@@ -1592,6 +1592,12 @@ def chain_calls(run, calls, group, prefetch=True, starts=(0,)):
                 f"call {index}: {call!r} is neither a call of a class's handler nor a "
                 "chain.Call"
             )
+        if call.method.kernel is not None:
+            raise kc.ChainRefused(
+                f"call {index} ({call.method.name}): a km.{spelling('kernel')} "
+                "handler: a chain's records state what each call reads and writes, "
+                "and a hand kernel's are its own C++; submit it on its own"
+            )
         one = describe(run, call, group, starts)
         for place, value in zip(call.method.places(), call.values):
             tensor = value.tensor if isinstance(value, front.Marked) else value

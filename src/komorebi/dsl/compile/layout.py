@@ -2,7 +2,9 @@
 class's list, which every handler's buffers join in the order they are asked for (a
 buffer is shared by name across handlers and grown in place)."""
 
+from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Buffer, Refused
+from komorebi.dsl.front.names import spelling
 
 # Circular buffer indices: reads from 0, writes from 16, the others from 8, to 25 (26
 # to 31 are the runtime's: messages 26-28, tokens 29-30, trace 31).
@@ -126,6 +128,35 @@ def no_pair(compiled, name, role, handler, first):
         "format and page of another handler's (a pair of one name serves both), or "
         "split the class"
     )
+
+
+def declared_pair(compiled, attribute, role, dtype, page_bytes, pages, what):
+    """The pair of a km.Pair of the class (role "read" or "write"), by the stream
+    pairs' rule: the first two free indices side by side from their role's first."""
+    name = f"kPair{camel(attribute)}"
+    first = FIRST_READ if role == "read" else FIRST_WRITE
+    index = free_index(compiled, first, pair=True)
+    if index + 1 > LAST_INDEX:
+        pairs = [b for b in compiled.buffers if b.index_b is not None]
+        held = "; ".join(
+            f"{b.name} {b.index_a}-{b.index_b} ({b.dtype}, "
+            f"{', '.join(map(str, b.handlers)) or 'declared'})"
+            for b in pairs
+        )
+        singles = len(compiled.buffers) - len(pairs) + len(compiled.reserved)
+        raise Refused(
+            f"{compiled.name}: km.{spelling('pair')} {attribute} ({role}) needs pair "
+            f"{name}, and "
+            f"indices {first} to {LAST_INDEX} have no two free side by side: "
+            f"{len(pairs)} pairs ({held}) and {singles} other buffers, fields and "
+            "reserved indices take them; declare fewer pairs, open fewer streams at "
+            "once in one handler, or split the class"
+        )
+    buffer = Buffer(
+        name, role, index, index + 1, dtype, page_bytes, (pages, pages), 1, what
+    )
+    buffer.declared = True
+    return added(compiled, buffer)
 
 
 def padded_rings(compiled):

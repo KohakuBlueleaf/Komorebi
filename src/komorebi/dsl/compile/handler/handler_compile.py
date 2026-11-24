@@ -9,7 +9,7 @@ from komorebi.dsl.compile import handler_buffers, scope
 from komorebi.dsl.compile.casts import messages
 from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.frame import Frame
-from komorebi.dsl.compile.handler import statements
+from komorebi.dsl.compile.handler import kernel_handler, statements
 from komorebi.dsl.compile.pages import field_fills, page_streams, stamp_pages
 from komorebi.dsl.compile.pages.stamp_pages import timed_waits
 from komorebi.dsl.compile.records import Param, Value
@@ -122,7 +122,10 @@ def run(frame):
     frame.block_words, frame.block_shadows = {}, {}
     marks = (len(movement), len(compute))
     frame.rect_read = False
-    body_m, body_c = frame.statements(frame.definition.body)
+    if frame.method.kernel is not None:  # hand-written files, one call a role
+        body_m, body_c = kernel_handler.lowered(frame)
+    else:
+        body_m, body_c = frame.statements(frame.definition.body)
     if frame.rect_param is not None and not (frame.rect_read or frame.movers):
         refuse(
             frame.where,

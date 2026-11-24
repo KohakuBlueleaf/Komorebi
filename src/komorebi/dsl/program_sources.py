@@ -7,6 +7,7 @@ from pathlib import Path
 
 from komorebi import abi, layout
 from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
+from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.layout import REGION_PAGE
 from komorebi.dsl.files import (
     camel,
@@ -618,8 +619,9 @@ def movement_source(compiled):
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
         *movement_includes(compiled),
     ]
-    lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
-    lines += [INDENT + line for line in tensor_aliases(compiled)]
+    lines += [f'#include "{header_name(compiled)}"']
+    lines += [*kernel_handler.include_lines(compiled, "movement"), ""]
+    lines += ["void kernel_main() {", *(INDENT + a for a in tensor_aliases(compiled))]
     lines += [f"{INDENT}km::Movement movement;"]
     lines += kernel_bodies(compiled, "start", "movement")
     lines += [f"{INDENT}movement.run([&](const km_command_t& command) {{"]
