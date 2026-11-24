@@ -20,6 +20,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
+from komorebi import _env
 from komorebi.bench import power
 from komorebi.device import chips, kernel_buffer, mock, native, remembered
 from komorebi.islands import session as island_session
@@ -578,6 +579,7 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
         print(f"  {missing[0]}")
         return len(missing)
     shape, holder, opened = SHAPES[cards], None, 0.0
+    _env.activate()  # the tree's runtime root, as km.Session sets it
     module = native.load_module()
     watch = Watch()
     install(watch, module, shared=cards in ALONE)

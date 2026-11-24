@@ -185,18 +185,22 @@ namespace km {
             const uint32_t from = (body >> kMessagesOutBodyShift) << 6;
             const uint32_t lines = messages_body_lines(body_bytes);
             code = (
-                far_write(kernel, rank, island, slot + message_bytes, from, lines, -1)
+                far_write<true>(
+                    kernel, rank, island, slot + message_bytes, from, lines, -1
+                )
             );
         }
         *message_mark_half(source) = 0;
         invalidate_l1_cache();  // a fence: the NoC reads the stored words
         if (code == kGaveNone) {
-            code = far_write(kernel, rank, island, slot, source, message_bytes, -1);
+            code = (
+                far_write<true>(kernel, rank, island, slot, source, message_bytes, -1)
+            );
         }
         *message_mark_half(source) = mark;
         invalidate_l1_cache();
         if (code == kGaveNone) {
-            code = far_write(kernel, rank, island, slot, source, 16, -1);
+            code = far_write<true>(kernel, rank, island, slot, source, 16, -1);
         }
         return code;
     }
