@@ -83,8 +83,8 @@ public scene takes a while, and the page shows `loading` meanwhile.
   frame for the latest pose and never the same pose twice in a row unless a second
   passes with nothing new (a keep-alive frame).
 - The pose is a position, a yaw and a pitch (y is up). The server makes the 16 camera
-  numbers from it as `reference/scenes.py` lays them out (right = y x forward, up =
-  forward x right); the focal length, the centre and the near distance stay the scene's
+  numbers from it as `reference/scenes.py` lays them out (right = forward x y, up =
+  right x forward); the focal length, the centre and the near distance stay the scene's
   own. The first pose is the scene's own camera, and while the pose is that one the
   scene's camera is used as it is. A rasterizer sizes the camera to the frame
   (`scenes.sized_camera`: centre at `(W / 2, H / 2)`, focal length times
@@ -172,8 +172,8 @@ For each renderer and scene: selects it, waits for `running`, posts 20 poses alo
 short path, reads the frames from `/stream`, and reports the frames received, that they
 decode to the size `/state` reports, that the first and the last differ, and the frame ms (with its
 label) and frames a second `/state` showed; and that requests without the token get 403. One JSON line with
-`ok`. A lit renderer also moves the sun and posts the tone exposure 2, saturation 1.15,
-filmic; raster-gi then posts passes 4 (400 with the reason) and 0, then switches the
+`ok`. A lit renderer also moves the sun and posts a tone that differs from the scene's own
+(`tone_own`): 1.5 times its exposure, its saturation + 0.15 and the other curve; raster-gi then posts passes 4 (400 with the reason) and 0, then switches the
 indirect light off: each must change the frame and show in `/state` (and `field_s` after
 the passes); the other renderers must refuse a passes post with 400. Each case also posts
 16384 x 16384 (512 x 512 tiles: a rasterizer takes it and `/state` shows the L1 refusal

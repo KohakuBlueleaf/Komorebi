@@ -427,8 +427,8 @@ function forward() {
   const c = Math.cos(pose.pitch);
   return [c * Math.sin(pose.yaw), Math.sin(pose.pitch), c * Math.cos(pose.yaw)];
 }
-function right() {  // y x forward, on the ground
-  return [Math.cos(pose.yaw), 0, -Math.sin(pose.yaw)];
+function right() {  // forward x y, on the ground
+  return [-Math.cos(pose.yaw), 0, Math.sin(pose.yaw)];
 }
 
 const keys = {w: 1, a: 1, s: 1, d: 1, q: 1, e: 1};
@@ -461,7 +461,7 @@ view.addEventListener("pointerdown", (event) => {
 view.addEventListener("pointermove", (event) => {
   if (!drag || !pose) return;
   const turn = Math.PI / shownWidth();  // the frame's whole width: half a turn
-  pose.yaw += (event.clientX - drag.x) * turn;
+  pose.yaw -= (event.clientX - drag.x) * turn;  // yaw turns toward -right
   pose.pitch -= (event.clientY - drag.y) * turn;
   const limit = 89 * Math.PI / 180;
   pose.pitch = Math.max(-limit, Math.min(limit, pose.pitch));

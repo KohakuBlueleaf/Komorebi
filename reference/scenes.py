@@ -129,8 +129,8 @@ def make_camera(half):
     """Camera arrays: looks from behind the scene's near edge toward its centre."""
     eye = np.array([0.0, 0.25 * half, -1.3 * half])
     fwd = normalize(np.array([0.0, -0.1 * half, 0.3 * half]) - eye)
-    right = normalize(cross(np.array([0.0, 1.0, 0.0]), fwd))
-    up = cross(fwd, right)
+    right = normalize(cross(fwd, np.array([0.0, 1.0, 0.0])))
+    up = cross(right, fwd)
     focal = (WIDTH / 2) / TAN_HALF_FOV
     camera = np.concatenate([eye, right, up, fwd, [focal, WIDTH / 2, HEIGHT / 2, 0.05]])
     return camera.astype(np.float32)

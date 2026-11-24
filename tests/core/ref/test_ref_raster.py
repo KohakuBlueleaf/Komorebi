@@ -9,9 +9,9 @@ from ref_raster_fixture import CAMERA, covered, crossing_scene, screen_scene
 from reference import raster, scenes
 
 TINY_SHA = {
-    "tri": "cb5967b33fd29b20ad41208da3772e66beb94e0386111a2ae4d3c12c60125970",
-    "colour": "29e0b437db693c1e7b19786bcadd26265199a28ac2f6a332d12562af6f732e62",
-    "tile_counts": "c7689608337f498d54a9ec17a1cc77f778bc2b6dd8ce89585753167c11db8c02",
+    "tri": "f2bce7ba7de095553496ae220c4e18826300dde60903eefb24022fe0571c4c12",
+    "colour": "b1065650f865dac7e562fd1d13fa9391f2a3c1875b2952ca2c32f6e1d84d6e94",
+    "tile_counts": "4867828c013f2ff10c731040704c6331aa260566c0bcd6fa299a79fbcece4a6f",
 }
 
 

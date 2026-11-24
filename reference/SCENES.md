@@ -86,7 +86,9 @@ normals of the triangles around the vertex; without it a room is a few flat area
 ray tracer uses the same colours.
 
 Per view the table gives the eye, the target and the field of view (square image,
-1024 x 1024); the light is one point per scene. The ray offset `eps` is `2e-5` of the
+1024 x 1024); the light is one point per scene. The camera's axes (`public.camera`):
+forward from the eye to the target, right = forward x y, up = right x forward, so
+that with y up a point on the camera's right is on the picture's right. The ray offset `eps` is `2e-5` of the
 scene's diagonal and the near distance `1e-4` of it unless the view gives `near`.
 
 `$KR_SCENES_EXTRA` names a further JSON file in the layout of `public_scenes.json`; its
@@ -276,7 +278,8 @@ window is covered by an emissive quad (`Ke` 10) that blocks the sun and the sky;
 the hall: ceiling disks, step lights and window quads; one sphere lamp in the living
 room), `sun_to_sky` 0, `lamp_scale` 0, `emissive_scale` the largest emitter's radiance
 (4.575 and 114.4). The living room is open on the camera's side, so the sky still lights
-it there; Tungsten renders it without a sky.
+it there; Tungsten renders it without a sky. These four take the filmic tone:
+`exposure` 2, `saturation` 1.15, `curve` 1; the other scenes keep the plain curve.
 
 ## Indirect light
 

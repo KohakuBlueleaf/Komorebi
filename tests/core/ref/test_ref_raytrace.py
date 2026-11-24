@@ -12,10 +12,10 @@ SUBSET = (
     np.arange(64)[:, None] * 16 * 1024 + np.arange(64)[None, :] * 16 + 8 * 1025
 ).ravel()
 PINNED = {
-    "image": "5b797f568ed5092fed036f9ffa58f941337e16a61dae1c626e697741cfb6f61c",
-    "t": "5c50f6d7676117f9a460d5581eb3a8733c3b3114fdd417df4e8ff2eff0601998",
-    "tri": "fd672e27918135466263397952886aae6f2ee7703399fa58324b9a60ec773a75",
-    "nodes": "0d616eaa0e29b17318b37fc74c29461cfc79bd4aea60c449f68548e180be65fb",
+    "image": "4a9e2285d87121fcdbb141f5a0d693e9de4a86a6532bbc5c730565a7a3b16bee",
+    "t": "e9756b1f713cede47a2ac7a89ddfd36e5139dd7b4d6bd7bdc4182ffdac1f20ad",
+    "tri": "603ca7fa4f01ca8d0a71f85f8b6a4cf47d59669f6c661cc5c8645aac4a766f6b",
+    "nodes": "230ada7505f21e22ee3c1b01d88a7949b92eabaeb1c7ceac5dee8e57afd55fc9",
 }
 
 

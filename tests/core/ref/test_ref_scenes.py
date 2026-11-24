@@ -5,8 +5,8 @@ import pytest
 
 from reference import rng, scenes
 
-TINY_SHA = "be345bfaf5f8346fc171db374ed27d975750e261800f3f93e3d8a1b65f0b1663"
-S10K_SHA = "0e1cee8beafb645161800b75603c76801b6fe6b6ec2336024e0fb19fcf1670fa"
+TINY_SHA = "7fee160b4e0e8e516157f64fbc2444886f32e543780f98f0e036a5ac6eef2049"
+S10K_SHA = "6dedc3fd3ffa9bfeda93f152c967bed6598d2d327c25f8cd1d5a4739b8185b39"
 
 
 def test_hash_ranges():
@@ -70,6 +70,8 @@ def test_camera_basis_is_orthonormal():
         assert abs(first @ second) < 1e-6
     for first in (right, up, forward):
         assert abs(first @ first - 1) < 1e-6
+    assert np.allclose(np.cross(right, up), -forward, atol=1e-6)  # right-handed, y up
+    assert abs(right[1]) < 1e-7 and up[1] > 0
     assert cam[12] == pytest.approx(512 / scenes.TAN_HALF_FOV, rel=1e-6)
 
 

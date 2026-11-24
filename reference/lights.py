@@ -357,7 +357,8 @@ def find_lamps(scene, materials, merge_distance, lamp_scale):
 def sun_camera(positions, sun, side=SHADOW_SIDE):
     """A camera (16,) float32 far along the sun's direction (SUN_DISTANCE radii of
     the scene's box) looking at its centre, whose square frame of side x side covers
-    the box."""
+    the box. Its axes (right = helper x forward) stay as the shadow maps were made with
+    them, not the view cameras' forward x y."""
     lo, hi = positions.min(0).astype(np.float64), positions.max(0).astype(np.float64)
     centre, radius = (lo + hi) / 2, np.linalg.norm(hi - lo) / 2
     distance = SUN_DISTANCE * radius

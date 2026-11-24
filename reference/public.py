@@ -614,8 +614,8 @@ def camera(eye, target, fov_deg, near):
     """Camera array (16,) float32 looking from eye at target, square field of view."""
     eye, target = np.asarray(eye, np.float64), np.asarray(target, np.float64)
     fwd = scenes.normalize(target - eye)
-    right = scenes.normalize(scenes.cross(np.array([0.0, 1.0, 0.0]), fwd))
-    up = scenes.cross(fwd, right)
+    right = scenes.normalize(scenes.cross(fwd, np.array([0.0, 1.0, 0.0])))
+    up = scenes.cross(right, fwd)
     focal = (scenes.WIDTH / 2) / np.tan(np.radians(fov_deg) / 2)
     tail = [focal, scenes.WIDTH / 2, scenes.HEIGHT / 2, near]
     return np.concatenate([eye, right, up, fwd, tail]).astype(np.float32)

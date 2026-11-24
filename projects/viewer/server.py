@@ -70,7 +70,7 @@ def pose_of(camera):
 
 def camera_of(own, pose):
     """The 16 numbers of `pose`: position and the orientation from yaw and pitch (right
-    = y x forward, up = forward x right, as reference/scenes.py makes them); focal,
+    = forward x y, up = right x forward, as reference/scenes.py makes them); focal,
     centre and near the scene's own camera's."""
     yaw, pitch = pose["yaw"], pose["pitch"]
     forward = np.array(
@@ -80,9 +80,9 @@ def camera_of(own, pose):
             math.cos(pitch) * math.cos(yaw),
         ]
     )
-    right = np.cross(np.array([0.0, 1.0, 0.0]), forward)
+    right = np.cross(forward, np.array([0.0, 1.0, 0.0]))
     right /= np.linalg.norm(right)
-    up = np.cross(forward, right)
+    up = np.cross(right, forward)
     camera = np.array(own, dtype=np.float32)
     camera[0:3] = pose["position"]
     camera[3:6], camera[6:9], camera[9:12] = right, up, forward

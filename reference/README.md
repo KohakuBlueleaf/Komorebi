@@ -35,7 +35,7 @@ grid, with per-vertex colour, one camera and one point light. Names and triangle
 
 The arrays: `positions` (V, 3) float32, `colors` (V, 3) float32, `indices` (T, 3)
 int32, `camera` (16,) float32 (eye, right, up, forward, focal length in pixels, principal
-point, near distance), `light` (3,) float32, `eps` (1,) float32 (ray offset), `meta`
+point, near distance; right = forward x y, up = right x forward, y up), `light` (3,) float32, `eps` (1,) float32 (ray offset), `meta`
 (5,) int32. Geometry uses only addition, subtraction, multiplication, division and square
 root in float64, and every random number comes from one 32-bit hash of (index, stream,
 seed), so the files are the same on every host. Nothing is shipped: the scenes are

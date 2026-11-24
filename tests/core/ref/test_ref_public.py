@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from reference import native, public, scenes
+from reference import native, public, raster, scenes
 
 README = Path(__file__).resolve().parents[3] / "reference" / "SCENES.md"
 
@@ -85,7 +85,22 @@ def test_camera_is_orthonormal():
         assert abs(np.dot(axis, axis) - 1) < 1e-6
     assert abs(np.dot(right, up)) < 1e-6 and abs(np.dot(up, forward)) < 1e-6
     assert abs(right[1]) < 1e-7 and up[1] > 0
+    assert np.allclose(np.cross(right, up), -forward, atol=1e-6)  # right-handed, y up
     assert cam[12] == pytest.approx(512 / np.tan(np.radians(30)), rel=1e-6)
+
+
+def test_a_point_on_the_right_is_in_the_right_half():
+    """From the origin along -z with y up, a triangle around (1, 0, -5) covers pixel
+    columns right of the centre's only (the scenes are right-handed: +x is right)."""
+    corners = [[0.9, -0.1, -5.0], [1.1, -0.1, -5.0], [1.0, 0.1, -5.0]]
+    scene = {
+        "positions": np.array(corners, dtype=np.float32),
+        "colors": np.full((3, 3), 0.5, dtype=np.float32),
+        "indices": np.array([[0, 1, 2]], dtype=np.int32),
+        "camera": public.camera([0.0, 0.0, 0.0], [0.0, 0.0, -1.0], 60.0, 0.01),
+    }
+    _, columns = np.nonzero(raster.rasterize(scene)["tri"] >= 0)
+    assert len(columns) > 0 and columns.min() > scene["camera"][13]
 
 
 def fake_table(tmp_path):
