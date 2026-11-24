@@ -45,6 +45,12 @@ second or so), and a size a core's L1 does not hold comes back refused with the 
 reason under the inputs (`/state` `size_refused`), the frames going on at the size before.
 The ray tracer stays at 1,024 x 1,024.
 
+A reload's kernels can be larger than the kernel buffer the session opened with (the
+build for a wider grid, or the one that counts heavy tiles again), and a session that
+has loaded a run cannot grow that buffer. The server then opens the renderer again on a
+new session at the size asked, with the sun, the tone, the switch and the passes the
+page had set (card 1, 2026-11-24: 3,200 x 1,800 on Breakfast Room, 8.6 s).
+
 The server binds only the address `--host` gives. Open
 `http://HOST:PORT/?token=TOKEN`: every request carries the token (the query `?token=`
 on a GET, the header `X-Token` on a POST) and gets 403 without it; the page keeps the

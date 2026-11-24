@@ -46,6 +46,12 @@ class SizeRefused(ValueError):
     """A frame size a renderer does not render: the reason (the load's, for memory)."""
 
 
+class NeedsSession(Exception):
+    """A reload's kernels do not fit the session's kernel buffer, which a session that
+    has loaded a run cannot grow: the renderer is to be opened again (a new session
+    opens with the buffer the build asked for). Its text is the load's."""
+
+
 class Renderer:
     """What both share: the session's stack, the scene dict (`scene`), the image of
     the frame's size (`size`, (W, H)); `sizes`: False when only SIDE x SIDE."""
@@ -144,15 +150,17 @@ class Raster(Renderer):
         self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
 
     def set_size(self, size):
-        """The frame's size (W, H) from the next frame on (live.Loop.set_size): the grid
-        word to the card, or past the loaded capacity a reload. Returns the host's ms;
-        SizeRefused with the load's reason when memory does not hold it (the size as it
-        was)."""
+        """The frame's size (W, H) from the next frame on: the grid word, or past the
+        capacity a reload (live.Loop.set_size). Returns the host's ms. SizeRefused when
+        memory does not hold it (the size as it was); NeedsSession when the reload's
+        kernels outgrow the session's kernel buffer (the loop then stopped)."""
         size = check_size(size)
         try:
             ms = self.live.set_size(size)
         except raster_thread.L1Refused as error:
             raise SizeRefused(str(error)) from None
+        except km.KernelSizeError as error:
+            raise NeedsSession(str(error)) from None
         self.size = size
         self.image = np.zeros((size[1], size[0], 4), dtype=np.uint8)
         return ms

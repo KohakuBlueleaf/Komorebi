@@ -401,6 +401,14 @@ class Viewer:
                             with self.lock:
                                 self.size_refused = str(error)
                                 self.size_asked = renderer.size
+                        except renderers.NeedsSession as error:
+                            log(f"a new session for {size[0]} x {size[1]}: {error}")
+                            renderer, kept = self.reopen(renderer, selected, size)
+                            # what the page had set, where the new load differs
+                            sun = kept[0] if sun is None else sun
+                            tone = kept[1] if tone is None else tone
+                            switch = kept[2] if switch is None else switch
+                            bounces = kept[3] if bounces is None else bounces
                         else:
                             with self.lock:
                                 self.size, self.size_ms = renderer.size, size_ms
@@ -524,6 +532,31 @@ class Viewer:
             self.size = renderer.size  # the size asked, or the renderer's only one
         log(f"opened {name} on {scene} at {renderer.size[0]} x {renderer.size[1]}")
         return renderer
+
+    def reopen(self, renderer, selected, size):
+        """The renderer opened again on a new session at `size` (its reload's kernels
+        outgrew the old session's kernel buffer). Returns it and what the page had set
+        that the new load does not have: (sun, tone, switch, passes), None where equal.
+        A size memory does not hold: the size before, with the reason in /state."""
+        started = time.monotonic()
+        with self.lock:
+            had = (self.sun, self.tone, self.indirect, self.bounces)
+            before, self.size_asked = renderer.size, size
+        try:
+            renderer = self.open(renderer, selected)
+            refused = None
+        except renderers.SizeRefused as error:
+            refused = str(error)
+            with self.lock:
+                self.size_asked = before
+            renderer = self.open(None, selected)
+        with self.lock:
+            self.size_refused = refused
+            self.size_ms = (time.monotonic() - started) * 1e3
+            now = (self.sun, self.tone, self.indirect, self.bounces)
+        return renderer, tuple(
+            None if old is None or old == new else old for old, new in zip(had, now)
+        )
 
     def close(self, renderer):
         """Closes a renderer (its card session); returns None."""
