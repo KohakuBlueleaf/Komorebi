@@ -79,6 +79,7 @@ CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
 TILE_ROWS = 32  # the per-tile tables' rows: a capacity is a whole number of them
 WORK_LEAST = 256 << 10  # the thread's work region at the least (work_bytes)
+UPDATE_HANDLER = 3  # the thread's UPDATE (thread/update.c; update.py)
 
 
 class Capacity(NamedTuple):
@@ -308,12 +309,19 @@ def camera_region(scene, profiles=None, glass=None):
 
 
 def regions(
-    scene, workers, show_table=None, sun=None, profiles=None, glass=None, held=None
+    scene,
+    workers,
+    show_table=None,
+    sun=None,
+    profiles=None,
+    glass=None,
+    held=None,
+    update=None,
 ):
     """The thread's regions in frame.h's order: the camera's page, then sizes (items,
     work, sums from the capacity `held`, by default program's); SHOW's block holds
     `show_table` (live.py); the sun region `sun` (lit: light.sun_region); `profiles`,
-    `glass`: camera_region's."""
+    `glass`: camera_region's; then `update`'s, when given (update.regions)."""
     held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
     sizes = thread_sizes(held)
     return {
@@ -331,6 +339,7 @@ def regions(
         "push": F["RF_PUSH_BYTES"],
         "sun": F["RF_SUN_BYTES"] if sun is None else np.asarray(sun, dtype=np.uint32),
         "sun_times": F["RF_TIMES_BYTES"],
+        **(update or {}),
     }
 
 
@@ -473,11 +482,13 @@ def program(
     profiles=None,
     glass=None,
     held=None,
+    update=None,
+    apply=False,
 ):
     """The frame program: the passes' and the fill's kernels (kernels/frame_*.cpp),
     their buffers, the frame thread on cluster 1, for the capacity `held` (by default
-    the default frame's, or the scene's size's when larger); with `show_table` it
-    serves FRAME and SUN commands; `sun`, `profiles`, `glass`: regions'."""
+    the default frame's or the scene's size's); with `show_table` it serves FRAME and
+    SUN, with `update` also UPDATE (update.py; `apply`: RF_APPLY); others: regions'."""
     held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
     fill_program = card.program(held=held)
     passes_program = card_passes.program(held=held)
@@ -514,16 +525,25 @@ def program(
         **({"RF_WIDE": "1"} if held.wide else {}),
         **({"RF_RECOUNT": "1"} if held.recount else {}),
         **({"RF_SERVE": "1"} if show_table is not None else {}),
+        **({"RF_UPDATE": "1"} if update is not None else {}),
+        **({"RF_APPLY": "1"} if update is not None and apply else {}),
     }
+    handlers = {"frame": 1, "sun": 2}
+    sources = [THREAD / "frame.c", THREAD / "middle.c"]
+    if update is not None:
+        if show_table is None:
+            raise ValueError("UPDATE is served: the program needs show_table")
+        handlers["update"] = UPDATE_HANDLER
+        sources.append(THREAD / "update.c")
     frame_program.thread(
         cluster=CLUSTER,
-        sources=[THREAD / "frame.c", THREAD / "middle.c"],
+        sources=sources,
         includes=[THREAD],
-        regions=regions(scene, workers, show_table, sun, profiles, glass, held),
+        regions=regions(scene, workers, show_table, sun, profiles, glass, held, update),
         words=words,
         deadline=10.0,
         defines=thread_defines,
-        **({"handlers": {"frame": 1, "sun": 2}} if show_table is not None else {}),
+        **({"handlers": handlers} if show_table is not None else {}),
     )
     return frame_program
 

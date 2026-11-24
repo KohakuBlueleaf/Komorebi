@@ -8,6 +8,9 @@
 #include "frame.h"
 #include "kmx.h"
 #include "middle.h"
+#ifdef RF_UPDATE
+#include "update.h" /* UPDATE: the field's update after a sun change */
+#endif
 
 #define WAIT_TICKS KMX_TICKS_PER_SECOND /* per command, longer than its deadline */
 
@@ -1092,6 +1095,10 @@ uint32_t kmx_program(const km_command_t* command) {
             return g_set_up ? g_set_up : serve_frame(command);
         case kHandlerSun:
             return g_set_up ? g_set_up : serve_sun();
+#ifdef RF_UPDATE
+        case kHandlerUpdate:
+            return g_set_up ? g_set_up : rf_update(command);
+#endif
     }
     return 0;
 }

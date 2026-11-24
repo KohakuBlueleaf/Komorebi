@@ -1034,6 +1034,51 @@ Card 1, 2026-11-24, `--frames 20 --push --light --indirect --check-light`, frame
   0.652, 1.628 s, Bistro interior 0.145, 0.908, 2.429 s. Frame times unchanged
   (host 14.7 to 14.8 ms Sponza, 21.4 Bistro interior).
 
+### The field's update in the thread (`live.py --card-field`)
+
+`--card-field` (with `--indirect`) moves `Loop.update_field` into the frame thread as
+the thread command UPDATE (handler 3, `thread/update.c`, words in `thread/update.h`,
+host side `update.py`). After SUN, UPDATE fetches the card's own shadow pages from the
+light pages, makes each element's sun (shadow lookup in that map), sky (25 terms x 3)
+and L0 = base + albedo / pi x (sun x irradiance + sky), runs the passes E_p = M x
+(total += E_p, x = albedo / pi x E_p in bf16 tiles), e = total + sky, the field's
+values by row (float32 products, double sums, the reference's order), the scale, the
+texels (sqrt-coded 11/11/9, round half to even), stores the field pages into the light
+pages and writes LIGHT's unit and scale words. Steps (a0): 0 the whole update, 1
+sources to x of pass 1, 2 a pass, 3 the finish. A pass is `apply_pass()`: the cores'
+APPLY with `RF_APPLY`; without it (today) the host does `indirect.apply` on x between
+steps ("stepped"), so with bounces > 0 the field is the card's but the passes are the
+host's. The four X280 cores share every loop (`kmx_parallel`); regions and tensors are
+sized from the scene. Without `--card-field` nothing changes.
+
+Card 1, 2026-11-24 (`live.py`, and a script that reads the thread's regions back):
+
+- Sources (step 1 at 30,60 / 120,40 / 200,25, elements with luminance > 1e-4): sky
+  and L0 against the reference with the card's map, relative luminance error median
+  2e-9 to 7e-8, p99 1.5e-7 to 7.5e-7, most 3.9e-7 (Sponza) to 1.4e-5 (Modern hall);
+  x of pass 1 against bf16 of the reference's L0: share equal 0.999986 to 1, at most
+  1 code.
+- 0 bounces (step 0): texels against `light.field_of` share equal 0.99986 to 0.99999,
+  at most 1 code a channel, scale within 2.2e-7. `--light --indirect --bounces 0 --sun
+  120,40 --check-light`: ok, the light check's dictionaries equal to the run without
+  `--card-field` (all three scenes).
+- 1 to 3 bounces, stepped: against `field_of` (float passes) share equal 0.98 to 0.99
+  (Sponza), 0.89 (Bistro interior), 0.77 to 0.81 (Modern hall), at most 2 / 4 / 1
+  codes, scale within 2.7e-3; against the same passes fed bf16 x as the card's x
+  tiles are, 0.99996 to 1, at most 1 code, scale equal or within 2.1e-7.
+  `--check-light` ok for 1, 2, 3 on all three.
+- Times, the whole update at 0 bounces (thread ms: fetch / sources / rows / pack /
+  store / total): Sponza 0.36 / 40 / 21 / 28 / 0.13 / 89, Bistro interior 0.36 / 27 /
+  27 to 33 / 39 / 0.34 / 94 to 100, Modern hall 0.36 / 38 to 39 / 22 to 28 / 43 / 1.04
+  / 105 to 112; the host's wait 0.18 to 0.20 s. The first update also zeroes the pages
+  and x tiles (6 / 15 / 44 ms). Stepped at 1 / 2 / 3 bounces, host s (of it the host's
+  apply): Sponza 0.70 (0.49) / 1.21 (0.99) / 1.69 (1.46), Bistro interior 0.98 (0.76)
+  / 2.36 (2.12) / 2.64 (2.39), Modern hall 1.10 (0.84) / 1.65 (1.37) / 2.38 (2.08).
+- Without `--card-field`: vertex colours 0 pixels differ (Sponza, Bistro interior),
+  `--light --indirect --check-light` dictionaries equal to the base tree's, card frame
+  4.815 / 4.816, 14.088 / 14.086, 7.754 / 7.754, 20.526 / 20.522 ms (base / new).
+  Thread image 42,832 B without UPDATE, 48,560 B with it, of 126,976 B.
+
 ## The interactive loop
 
 `live.py` loads the scene and the frame program once, with the thread built to serve

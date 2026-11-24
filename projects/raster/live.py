@@ -15,7 +15,7 @@ import numpy as np
 import komorebi as km
 from komorebi.bench import power
 from komorebi.program.thread import TIMER_HZ
-from projects.raster import card, card_thread, light, lists, passes, run, shade
+from projects.raster import card, card_thread, light, lists, passes, run, shade, update
 from projects.raytrace import framegraph
 from reference import lights as light_data
 from reference import native, png, raster, scenes
@@ -384,8 +384,8 @@ class ListsRefused(ValueError):
 class Loop:
     """The scene loaded in `session`, its program running: a FRAME command a camera
     (`frame`); `materials`: shaded, `lights`: lit (`set_sun`, `set_tone`); `indirect`:
-    the field (`set_indirect`); the scene's size, `set_size` between frames; the
-    capacity `held` (by default the size's) sizes every per-tile tensor and buffer."""
+    the field (`set_indirect`; `card_field`: updated by the thread, card_update); the
+    size, `set_size`; the capacity `held` sizes every per-tile tensor and buffer."""
 
     def __init__(
         self,
@@ -399,6 +399,8 @@ class Loop:
         lights=None,
         terms=raster.TERMS,
         held=None,
+        card_field=False,
+        apply=False,
     ):
         self.session = session
         self.scene, self.materials, self.lights, self.terms = (
@@ -421,6 +423,12 @@ class Loop:
         self.indirect = "indirect" in terms  # the switch (set_indirect)
         self.box = None if lights is None else light.scene_box(scene)
         self.field = self.field_update = None  # the term indirect: field_of's
+        self.card_field, self.apply = card_field, apply
+        self.card_updates = 0  # UPDATE's updates (card_field)
+        if card_field and (lights is None or "indirect" not in terms):
+            raise ValueError("the field's update in the thread needs the term indirect")
+        if card_field and update.same_numbers():
+            raise ValueError(f"update.h differs: {update.same_numbers()}")
         if lights is not None and "indirect" in terms:
             self.field = light.field_of(lights)
             self.shadow = lights["shadow_map"]  # the map the field was made with
@@ -539,6 +547,9 @@ class Loop:
                 tiles=held.tiles,
             )
             self.light_profile = self.surface["profile"]
+        self.update_tensors = None
+        if self.card_field:  # the passes' x and y (update.py)
+            self.update_tensors = update.tensors(session, self.field["model"])
         self.masked = self.glass = self.glass_surface = None
         for name in ("masked", "glass"):
             if prepared is None or f"{name}_blocks" not in prepared:
@@ -628,17 +639,38 @@ class Loop:
                 for layer in (self.masked, self.glass)
                 for name in ("prof", "sprof", "shade_profile")
             ]
+        updating = None
+        if self.card_field:  # UPDATE's regions (update.py)
+            updating = update.regions(
+                self.field["model"],
+                self.lit,
+                self.surface["pages"],
+                self.update_tensors,
+                workers,
+                self.bounces(),
+            )
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
-        program = card_thread.program(
-            scene, words, workers, self.table, sun, profiles, glass_words, held
-        )
+
+        def build(held):
+            return card_thread.program(
+                scene,
+                words,
+                workers,
+                self.table,
+                sun,
+                profiles,
+                glass_words,
+                held,
+                updating,
+                self.apply,
+            )
+
+        program = build(held)
         if not held.recount and not card_thread.fits_l1(session, program):
             # the full histograms do not fit: COUNT counts the heavy tiles' again
             self.held = held = held._replace(recount=True)
-            program = card_thread.program(
-                scene, words, workers, self.table, sun, profiles, glass_words, held
-            )
+            program = build(held)
         try:
             self.running = running = session.load(program, deadline=1.0)
         except km.L1BudgetError as error:
@@ -674,6 +706,7 @@ class Loop:
 
         for name in ("uploaded", "shaded", "surface", "masked", "glass"):
             walk(getattr(self, name, None))
+        walk(getattr(self, "update_tensors", None))
         walk(
             [
                 getattr(self, name, None)
@@ -750,6 +783,8 @@ class Loop:
             raise
         if self.sun is not None:
             self.set_sun(*self.sun)
+        elif self.card_updates:  # the field as UPDATE left it (the bounces)
+            self.card_update(self.lit)
         self.reloads.append(
             {
                 "size": list(size),
@@ -861,6 +896,21 @@ class Loop:
             self.indirect,
         )
 
+    def write_region(self, region):
+        """The sun region `region` into the thread's; with card_field all but LIGHT's
+        field unit and scale words, which UPDATE writes (the host's are the load's)."""
+        if not self.card_field:
+            self.running.thread.write("sun", region)
+            return
+        at = F["RF_SUN_TABLE_AT"] // 4 + SH["kLtFieldUnit"]
+        end = F["RF_SUN_TABLE_AT"] // 4 + SH["kLtFieldScale"] + 1
+        self.running.thread.write("sun", region[:at])
+        self.running.thread.write("sun", region[end:], 4 * end)
+
+    def bounces(self):
+        """The field's bounce passes now (lights.bounce_count of the lights')."""
+        return light_data.bounce_count(self.lit.get("bounces", light_data.BOUNCES))
+
     def set_tone(self, exposure, saturation, curve):
         """The tone step's numbers (raster.tone: exposure > 0, saturation >= 0, curve 0
         plain or 1 filmic) into LIGHT's table in the sun region, for the next frame;
@@ -870,7 +920,7 @@ class Loop:
         if not (exposure > 0 and saturation >= 0) or curve not in (0, 1):
             raise ValueError("a tone is exposure > 0, saturation >= 0, curve 0 or 1")
         self.tone = {"exposure": exposure, "saturation": saturation, "curve": curve}
-        self.running.thread.write("sun", self.region(self.lit))
+        self.write_region(self.region(self.lit))
         return (time.perf_counter() - began) * 1e3
 
     def set_indirect(self, on):
@@ -881,7 +931,7 @@ class Loop:
             raise ValueError("the indirect switch needs a frame loaded with --indirect")
         began = time.perf_counter()
         self.indirect = bool(on)
-        self.running.thread.write("sun", self.region(self.lit))
+        self.write_region(self.region(self.lit))
         return (time.perf_counter() - began) * 1e3
 
     def set_bounces(self, bounces):
@@ -894,7 +944,10 @@ class Loop:
         began = time.perf_counter()
         self.lights = {**self.lights, "bounces": bounces}
         self.lit = {**self.lit, "bounces": bounces}
-        self.update_field(self.lit, False)
+        if self.card_field:
+            self.card_update(self.lit)
+        else:
+            self.update_field(self.lit, False)
         return (time.perf_counter() - began) * 1e3
 
     def set_sun(self, azimuth, elevation):
@@ -905,7 +958,7 @@ class Loop:
         lights = light.sun_lights(self.lights, self.box, azimuth, elevation)
         self.lit = lights
         region = self.region(lights)
-        self.running.thread.write("sun", region)
+        self.write_region(region)
         word = None
         if elevation > 0:
             event = self.running.wait(
@@ -914,8 +967,40 @@ class Loop:
             word = event.result if event.kind == "done" else f"{event.kind}"
         self.sun = (float(azimuth), float(elevation))
         if self.field is not None and word in (0, None):
-            self.update_field(lights, word == 0)
+            if self.card_field:  # with the card's map, the last one when not rendered
+                self.card_update(lights)
+            else:
+                self.update_field(lights, word == 0)
         return word, (time.perf_counter() - began) * 1e3, lights
+
+    def card_update(self, lights):
+        """The field for `lights` (sun_lights') by the thread's UPDATE (update.py) with
+        the card's shadow map: its inputs written, then the whole update, or without
+        RF_APPLY and with passes its steps with the host's apply between them;
+        field_update: its word, mode, the host's seconds by part."""
+        began = time.perf_counter()
+        bounces = light_data.bounce_count(lights.get("bounces", light_data.BOUNCES))
+        update.write_sun(self.running, lights, bounces)
+        stepped = not self.apply and bounces > 0
+        word, host = update.run(
+            self.running,
+            self.session,
+            self.update_tensors,
+            self.field["model"],
+            bounces,
+            stepped,
+        )
+        self.card_updates += 1
+        self.field_update = {
+            "card": True,
+            "mode": "stepped, the host's apply" if stepped else "thread",
+            "word": word,
+            "bounces": bounces,
+            **host,
+            "s": round(time.perf_counter() - began, 3),
+        }
+        if word != 0:
+            card.log(f"UPDATE: word {word}")
 
     def update_field(self, lights, rendered):
         """The field for `lights` (sun_lights') with the card's shadow map (read back
@@ -1002,6 +1087,13 @@ def loop(args):
         raise SystemExit("--indirect-switch flips the field of an --indirect frame")
     if args.bounces is not None and not args.indirect:
         raise SystemExit("--bounces sets the passes of an --indirect frame's field")
+    if args.card_field and not args.indirect:
+        raise SystemExit("--card-field updates an --indirect frame's field")
+    if args.card_field:
+        report["card_field"] = {  # without RF_APPLY the host applies between steps
+            "mode": "stepped: the host's float apply (indirect.apply) between "
+            "UPDATE's steps, no RF_APPLY; 0 passes: the whole update in the thread"
+        }
     if toned:  # set_tone before the first frame; the reference with the same numbers
         tone = live_tone(lights, args)
         lights = {**lights, **tone}
@@ -1030,6 +1122,7 @@ def loop(args):
             card_thread.capacity([most], lights is not None)._replace(
                 recount=args.recount
             ),
+            card_field=args.card_field,
         )
         workers = live.workers
         sun_got = None
@@ -1132,6 +1225,10 @@ def loop(args):
         live.stop()
         running = live.running
         report["status"] = card.check_run(running, workers, 0, [])
+        if args.card_field:  # UPDATE's times rows since the last load
+            report["card_field"]["updates"] = update.times(
+                running.thread.read("update")
+            )
         if resize:
             report["resize"] = resized
             report["reloads"] = live.reloads
@@ -1523,6 +1620,12 @@ def main():
         choices=range(4),
         default=None,
         help="with --indirect: the field's bounce passes 0 to 3 (default the scene's)",
+    )
+    parser.add_argument(
+        "--card-field",
+        action="store_true",
+        help="with --indirect: the field's update after a sun or bounce change by "
+        "the frame thread's UPDATE (without RF_APPLY its passes' applies on the host)",
     )
     parser.add_argument(
         "--indirect-switch",
