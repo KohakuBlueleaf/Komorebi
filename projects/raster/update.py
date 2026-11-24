@@ -45,11 +45,15 @@ PASS_PARTS = ("store", "apply", "fetch", "next")
 def same_numbers():
     """update.h's numbers against the ones they stand for, as pairs that differ."""
     pairs = {
-        "RF_R_UPDATE": (U["RF_R_UPDATE"], card_thread.F["RF_REGIONS"]),
-        "RF_UPDATE_REGIONS": (
+        "RF_R_UPDATE": (U["RF_R_UPDATE"], card_thread.F["RF_R_UPDATE"]),
+        "RF_UPDATE_REGIONS": (  # the update region is frame.h's last, the others after
             U["RF_UPDATE_REGIONS"],
-            card_thread.F["RF_REGIONS"] + len(REGIONS),
+            card_thread.F["RF_REGIONS"] + len(REGIONS) - 1,
         ),
+        "RF_UPDATE_BYTES": (U["RF_UPDATE_BYTES"], card_thread.F["RF_UPDATE_BYTES"]),
+        "RF_U_APPLY_GROUP": (U["RF_U_APPLY_GROUP"], card_thread.F["RF_U_GROUP"]),
+        "OWN_AT": (OWN_AT, card_thread.F["RF_U_OTHER"]),
+        "RF_NO_APPLY": (U["RF_NO_APPLY"], card_thread.F["RF_NO_APPLY"]),
         "RF_LT_FIELD_UNIT": (U["RF_LT_FIELD_UNIT"], card_thread.SH["kLtFieldUnit"]),
         "RF_LT_FIELD_SCALE": (U["RF_LT_FIELD_SCALE"], card_thread.SH["kLtFieldScale"]),
         "RF_SKY_TERMS": (U["RF_SKY_TERMS"], indirect.SKY_TERMS),

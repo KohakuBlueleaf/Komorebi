@@ -15,7 +15,17 @@ import numpy as np
 import komorebi as km
 from komorebi.bench import power
 from komorebi.program.thread import TIMER_HZ
-from projects.raster import card, card_thread, light, lists, passes, run, shade, update
+from projects.raster import (
+    apply,
+    card,
+    card_thread,
+    light,
+    lists,
+    passes,
+    run,
+    shade,
+    update,
+)
 from projects.raytrace import framegraph
 from reference import lights as light_data
 from reference import native, png, raster, scenes
@@ -401,8 +411,11 @@ class Loop:
         held=None,
         card_field=False,
         apply=False,
+        apply_set=None,
     ):
         self.session = session
+        # APPLY (apply.checked_set's set): its tensors made at the first load
+        self.apply_set, self.apply_made = apply_set, None
         self.scene, self.materials, self.lights, self.terms = (
             scene,
             materials,
@@ -649,6 +662,18 @@ class Loop:
                 workers,
                 self.bounces(),
             )
+        applied = {}  # APPLY's parts and the update region's words 0 to 15
+        if self.apply_set is not None:
+            ready = self.apply_set
+            if self.apply_made is None:
+                self.apply_made = apply.tensors(
+                    session, ready["set"], ready["tables"], ready["raw"], ready["x"],
+                    workers,
+                )  # fmt: skip
+            applied = {
+                "apply_parts": apply.frame_parts(ready["sizes"]),
+                "apply_header": apply.header(self.apply_made, workers),
+            }
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
 
@@ -664,6 +689,7 @@ class Loop:
                 held,
                 updating,
                 self.apply,
+                **applied,
             )
 
         program = build(held)
@@ -1041,6 +1067,21 @@ class Loop:
         """Stops the program (the run's own stop)."""
         self.running.stop()
 
+    def apply_once(self):
+        """The thread's apply command (thread/apply.c: APPLY on the cores from the
+        update region): its word, the host's ms and, when done, y checked
+        (apply.y_check); the thread's ticks are read after the stop (apply_ticks)."""
+        began = time.perf_counter()
+        event = self.running.wait(
+            self.running.submit("apply", cluster=CLUSTER, result=True), timeout=10.0
+        )
+        host_ms = (time.perf_counter() - began) * 1e3
+        word = event.result if event.kind == "done" else f"{event.kind}"
+        out = {"word": word, "host_ms": round(host_ms, 3)}
+        if word == 0:
+            out.update(apply.y_check(self.session, self.apply_made, self.apply_set))
+        return out
+
 
 def loop(args):
     scene, _ = run.load(args.scene)
@@ -1108,7 +1149,16 @@ def loop(args):
     checked = sorted(checked)
     surfaces = sorted({0, args.frames - 1}) if args.check_surface else []
     kept, surface_got, glass_surface_got = {}, {}, {}
+    applying = args.apply_check or args.apply_alternate
     with km.Session(log=card.log) as session:
+        ready = None
+        if applying:  # the scene's transport set, dealt to the cores, emulated
+            folder = apply.scene_set(args.scene, native.data_dir())
+            cache = None
+            if args.apply_cache:
+                cache = Path(args.apply_cache) / f"{folder.name}_w.npy"
+            ready = apply.checked_set(folder, card.workers(session), cache)
+            report["apply_set"] = {"folder": ready["folder"], "sizes": ready["sizes"]}
         live = Loop(
             session,
             scenes.with_size(scene, size),
@@ -1123,8 +1173,20 @@ def loop(args):
                 recount=args.recount
             ),
             card_field=args.card_field,
+            apply_set=ready,
         )
         workers = live.workers
+        applies = []  # each apply command: when, word, ms, y's check
+        if (
+            applying
+        ):  # x is the set's x.npy (made at the load); the applies before frames
+            report["apply_windows"] = {
+                name: list(window)
+                for name, window in apply.frame_parts(ready["sizes"])["windows"].items()
+            }
+        applies += [
+            {"before_frame": 0, **live.apply_once()} for _ in range(args.apply_check)
+        ]
         sun_got = None
         if toned:
             report["tone"]["host_ms"] = round(live.set_tone(**tone), 3)
@@ -1222,6 +1284,8 @@ def loop(args):
             if word != 0:
                 card.log(f"frame {index}: {event.kind}, word {word}")
                 break
+            if args.apply_alternate:  # an apply between this frame and the next
+                applies.append({"after_frame": index, **live.apply_once()})
         live.stop()
         running = live.running
         report["status"] = card.check_run(running, workers, 0, [])
@@ -1229,6 +1293,9 @@ def loop(args):
             report["card_field"]["updates"] = update.times(
                 running.thread.read("update")
             )
+        if applying:
+            words = np.frombuffer(running.thread.read("update"), dtype=np.uint32)
+            report["apply"] = apply_report(applies, words)
         if resize:
             report["resize"] = resized
             report["reloads"] = live.reloads
@@ -1484,7 +1551,8 @@ def loop(args):
         not args.check_sun or "sun_check" in report
     )
     report["ok"] = bool(
-        len(words_back) == args.frames
+        (not applying or report["apply"]["ok"])
+        and len(words_back) == args.frames
         and report["words_nonzero"] == 0
         and sun_ok
         and pictures_ok
@@ -1492,6 +1560,39 @@ def loop(args):
         and report["table_differs"] == 0
     )
     return report
+
+
+def apply_report(applies, update):
+    """The apply commands: each one's word, host ms and y's check, the thread's ticks
+    from the update region `update` (frame.h RF_U_*: the last, mean and least, us);
+    ok when every word is 0, the thread served them all and every y is the same bits
+    (x is the same every time)."""
+    words = [entry["word"] for entry in applies]
+    hashes = sorted({str(entry.get("y_sha256")) for entry in applies})
+    served = int(update[F["RF_U_SERVED"]])
+    us = 1e6 / TIMER_HZ
+    return {
+        "runs": applies,
+        "count": len(applies),
+        "served": served,
+        "code": int(update[F["RF_U_CODE"]]),
+        "words_nonzero": sum(word != 0 for word in words),
+        "y_sha256": hashes,
+        "thread_us_last": round(float(update[F["RF_U_TICKS"]]) * us, 1),
+        "thread_us_mean": round(
+            float(update[F["RF_U_TICKS_SUM"]]) * us / max(served, 1), 1
+        ),
+        "thread_us_least": round(float(update[F["RF_U_TICKS_LEAST"]]) * us, 1),
+        "host_ms_median": (
+            round(float(np.median([e["host_ms"] for e in applies])), 3)
+            if applies
+            else None
+        ),
+        "ok": bool(applies)
+        and all(word == 0 for word in words)
+        and served == len(applies)
+        and len(hashes) == 1,
+    }
 
 
 def live_tone(lights, args):
@@ -1656,6 +1757,21 @@ def main():
     )
     parser.add_argument(
         "--list-slots", type=int, default=0, help="0: card_thread's, from the triangles"
+    )
+    parser.add_argument(
+        "--apply-check",
+        type=int,
+        default=0,
+        help="APPLY loaded: N applies of the scene's transport set before the frames, "
+        "each y checked against its emulation",
+    )
+    parser.add_argument(
+        "--apply-alternate",
+        action="store_true",
+        help="APPLY loaded: an apply after each frame, each y checked",
+    )
+    parser.add_argument(
+        "--apply-cache", default=None, help="a folder for the transport set's w bytes"
     )
     parser.add_argument("--json", default=None)
     parser.add_argument(

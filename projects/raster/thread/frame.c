@@ -692,6 +692,7 @@ int kmx_main(int core) {
         RF_PUSH_BYTES,
         RF_SUN_BYTES,
         RF_TIMES_BYTES,
+        RF_UPDATE_BYTES,
     };
     void** regions = g_regions;
     for (int i = 0; i < (int)RF_REGIONS; i++) {
@@ -1099,6 +1100,8 @@ uint32_t kmx_program(const km_command_t* command) {
         case kHandlerUpdate:
             return g_set_up ? g_set_up : rf_update(command);
 #endif
+        case kHandlerApply:
+            return g_set_up ? g_set_up : serve_apply();
     }
     return 0;
 }

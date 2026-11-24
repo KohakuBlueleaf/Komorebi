@@ -6,7 +6,8 @@
 
 #include "kmx.h"
 
-/* Regions after frame.h's (RF_REGIONS), in this order */
+/* The update region (frame.h's last, the same numbers), then regions after frame.h's
+ * (RF_REGIONS), in this order */
 #define RF_R_UPDATE 10     /* the header: the apply's words 0 to 15, then RF_U_* */
 #define RF_R_ELEMENTS 11   /* the elements' arrays and the field's operator by row */
 #define RF_R_SHADOW 12     /* the shadow map's pages, fetched from the light pages */

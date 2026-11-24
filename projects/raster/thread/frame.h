@@ -18,6 +18,7 @@
 #define RF_DISPLAY_PAGES RM_TILES /* the display's pages: a page a tile */
 #define RF_HANDLER_SHADE 5u       /* kernels/shade.h */
 #define RF_HANDLER_LIGHT 6u       /* kernels/shade.h */
+#define RF_HANDLER_APPLY 7u       /* kernels/apply.h */
 #define RF_SHOW_RAW 1u            /* SHOW's a4: plane 0 word for word (kShowRaw) */
 /* The grid word: TX | TY << 16, 0 for 32 x 32; a8: the bank's word | TX << 4 | TY << 18
  * (kernels/grid.h); at most RM_TILES tiles, narrow (no RF_WIDE) 64 by 32. */
@@ -161,7 +162,21 @@
 /* the sun's camera page, then LIGHT's table: written by the host */
 #define RF_R_SUN 8
 #define RF_R_SUN_TIMES 9 /* serving: a row per SUN command, the last RF_TIMES_ROWS */
-#define RF_REGIONS 10u
+/* the update's header, written by the host (RF_U_*) */
+#define RF_R_UPDATE 10
+#define RF_REGIONS 11u
+
+/* The update region (the host's at the load): APPLY's a0 to a9, its group (0: none);
+ * the applies' last ticks, count, code, ticks' sum and least; then another's words. */
+#define RF_U_A0 0
+#define RF_U_GROUP 10
+#define RF_U_TICKS 11
+#define RF_U_SERVED 12
+#define RF_U_CODE 13
+#define RF_U_TICKS_SUM 14
+#define RF_U_TICKS_LEAST 15
+#define RF_U_OTHER 16
+#define RF_UPDATE_BYTES 4096u
 
 /* The sun region: a camera page a quadrant of the shadow map ((i, j) the (j n + i)-th),
  * n the quadrants a side, then LIGHT's table (kernels/shade.h; LIGHT's a1) */
@@ -253,3 +268,7 @@
 /* the grid word: a side 0, more tiles than RM_TILES (the capacity), or (narrow)
  * wider than the narrow words */
 #define RF_BAD_GRID 10u
+#define RF_NO_APPLY 11u /* an apply command to a load without APPLY (its group 0) */
+
+/* The thread's apply (apply.c): APPLY on the cores from the update region's header. */
+uint32_t serve_apply(void);

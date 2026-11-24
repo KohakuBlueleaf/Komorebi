@@ -1448,6 +1448,71 @@ the busy time, and the mean core's busy time over the slowest core's.
   time, cores within 2 % (2.69 M against 2.64 M). Without bands it was one tile of
   8,780 triangles on one core (3.82 M cycles, 2.83 ms).
 
+## APPLY
+
+APPLY is one apply y = M x of a scene's light-transport set (projects/transport) as a
+handler of these kernels (kernels/apply*.h*, apply.py), the frame program's compute
+configuration (HiFi4, fp32 accumulation). Its loops and steps are a copy of what the
+transport class compiles to; the sizes (OWN, KMAX, RANK, table pages) come from
+plan.sizes as build defines, and a set that does not fit is refused with the numbers.
+
+- Own program (`python -m projects.raster.apply <set> --cache <dir>`), card 1,
+  2026-11-24: Sponza against plan.emulate median 2.12e-5, p99 4.18e-4, most 4.26e-3,
+  2,612 us a command (the transport class on the same set: the same errors, 2,607 us);
+  Bistro interior 2.68e-5 / 2.79e-4 / 1.69e-3, 4,290 us.
+- The float32 sums are unpacked straight to Dst (`unpack_to_dest_mode`
+  UnpackToDestFp32, as the class sets for a float32 field). Through SrcA the copy keeps
+  10 mantissa bits: median 3.3e-4 and the sums 0.99966 of the emulation's.
+- The form used since (M1b): two read streams, x's pair at buffers 25, 26 and the
+  weights' at 27, 28, armed for an entry's V and again for its U^T; y and the profile
+  page without a stream (pack fills plain buffers at 32 and 33, mover B writes the
+  pages); the rest from 34. Nothing at 10 to 12 (RASTER_SPREAD's) or 29 to 31. y
+  bit-identical to the first form, 2,610 us (Sponza) and 4,287 us (Bistro).
+- `--windows`: every APPLY buffer is declared with one page and each CPU points its own
+  view at a window of a host buffer at the start of each command
+  (apply_window.hpp; math keeps no views). y is bit-identical to the whole buffers'.
+
+In the frame program (`live.py --apply-check N`, `--apply-alternate`) APPLY's windows
+lie over buffers that are dead between frames (apply.frame_hosts, apply.layout: x's
+pair in the page slots, then first fit decreasing). Each host's owner writes what it
+reads within its own command:
+
+- kCbShadeSlots: SHADE writes the white texel and zeroes the hash keys and the page
+  count at its start (shade_compute.hpp), LIGHT writes its zero texels and keys
+  (light_compute.hpp, shade_lit.hpp); the slots are then filled by the readers' asks.
+- kCbLightWork: LIGHT writes the index rows in the scan before the gather and the
+  field's index before its reads; the lit pass writes the empty slot, clears the
+  winners and writes keys, rows and slot offsets before it reads them (shade_lit.hpp).
+- kCbShadePlanes, kCbShadeTable, kCbShow: rings, written by the reader before compute
+  waits on them and pushed and popped within one command.
+
+The thread's `apply` (thread/apply.c, thread handler 4) submits APPLY from the
+`update` region's header (frame.h RF_U_*: a0 to a9, the group; apply.header fills it
+at the load), waits, and leaves its last ticks, count, code, ticks' sum and least in
+words 11 to 15 (read after the stop: a loaded run's regions are not read). Without the
+option the APPLY code is compiled out and the frames are unchanged.
+
+A frame's handlers write Dst directly (km::dst) and leave it; APPLY's first products in
+each Dst section added to that (an apply after a frame: 26 % of y wrong). The math
+thread now clears Dst whole at each APPLY start.
+
+Measured on card 1, 2026-11-24, `--light --indirect --check-light --frames 20 --push`:
+
+| scene | run | applies, y | thread us (mean / least) | frame ms | light check |
+|---|---|---|---|---|---|
+| Sponza | without APPLY | - | - | 14.059 | - |
+| Sponza | `--apply-check 8` | 8, M1's bits | 2,610.6 / 2,607.0 | 14.093 | equal |
+| Sponza | `--apply-alternate` | 20, M1's bits | 2,611.8 / 2,605.9 | 14.095 | equal |
+| Bistro int. | without APPLY | - | - | 20.516 | - |
+| Bistro int. | `--apply-check 8` | 8, M1's bits | 4,289.8 / 4,282.6 | 20.530 | equal |
+| Bistro int. | `--apply-alternate` | 20, M1's bits | 4,288.9 / 4,277.9 | 20.526 | equal |
+
+Vertex colours with `--apply-check 8`: 0 pixels differ on both scenes. With APPLY loaded
+the circular buffers take 1,060,736 B (1,021,696 without) and the kernels 203,728 B of
+the kernel buffer (162,640 without). projects/transport/README.md's 2,754 us is its
+leaves-of-256 set (381 entries a core at most); the set here has 398, and the class
+takes 2,607 us on it (card 1, 2026-11-24), APPLY 2,610 us.
+
 ## Not on the card yet
 
 Triangle setup, the per-tile counts and the scatter into the tile lists run on the

@@ -75,11 +75,16 @@ SHADE_H = KERNELS / "shade.h"
 SH = {
     name: int(value, 0) for name, value in lists.CONSTEXPR.findall(SHADE_H.read_text())
 }
+APPLY_H = KERNELS / "apply.h"
+A = {
+    name: int(value, 0) for name, value in lists.CONSTEXPR.findall(APPLY_H.read_text())
+}
 CLUSTER = 1
 PAGES_PER_ITEM = 5  # the frame's pages per tile (card.words)
 TILE_ROWS = 32  # the per-tile tables' rows: a capacity is a whole number of them
 WORK_LEAST = 256 << 10  # the thread's work region at the least (work_bytes)
 UPDATE_HANDLER = 3  # the thread's UPDATE (thread/update.c; update.py)
+APPLY_HANDLER = 4  # the thread's apply (thread/apply.c; apply.py)
 
 
 class Capacity(NamedTuple):
@@ -228,6 +233,7 @@ def same_numbers(held=None):
         "RF_SHOW_TABLE_BYTES": 4 * SHOW["kShowTableWords"],
         "RF_HANDLER_SHADE": SH["kHandlerShade"],
         "RF_HANDLER_LIGHT": SH["kHandlerLight"],
+        "RF_HANDLER_APPLY": A["kHandlerApply"],
         "RF_SHADE_MERGED_DEPTH": SH["kShadeMergedDepth"],
         "RF_SHADE_GLASS": SH["kShadeGlass"],
         "RF_LIGHT_LINEAR": SH["kLightLinear"],
@@ -317,11 +323,12 @@ def regions(
     glass=None,
     held=None,
     update=None,
+    apply_header=None,
 ):
     """The thread's regions in frame.h's order: the camera's page, then sizes (items,
     work, sums from the capacity `held`, by default program's); SHOW's block holds
-    `show_table` (live.py); the sun region `sun` (lit: light.sun_region); `profiles`,
-    `glass`: camera_region's; then `update`'s, when given (update.regions)."""
+    `show_table`; the sun region `sun` (light.sun_region); `profiles`, `glass`:
+    camera_region's; the update region (update_words), then `update`'s others."""
     held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
     sizes = thread_sizes(held)
     return {
@@ -339,8 +346,24 @@ def regions(
         "push": F["RF_PUSH_BYTES"],
         "sun": F["RF_SUN_BYTES"] if sun is None else np.asarray(sun, dtype=np.uint32),
         "sun_times": F["RF_TIMES_BYTES"],
-        **(update or {}),
+        "update": update_words(update, apply_header),
+        **{name: value for name, value in (update or {}).items() if name != "update"},
     }
+
+
+def update_words(update=None, apply_header=None):
+    """The update region (frame.h RF_R_UPDATE): words 0 to RF_U_OTHER - 1 the apply's
+    (`apply_header`), the others the field's update's (`update`'s "update"); its
+    bytes when neither is given."""
+    if update is None and apply_header is None:
+        return F["RF_UPDATE_BYTES"]
+    words = np.zeros(F["RF_UPDATE_BYTES"] // 4, dtype=np.uint32)
+    if update is not None:
+        words[:] = np.asarray(update["update"], dtype=np.uint32)
+    if apply_header is not None:
+        own = F["RF_U_OTHER"]
+        words[:own] = np.asarray(apply_header, dtype=np.uint32)[:own]
+    return words
 
 
 def shade_buffers():
@@ -484,14 +507,26 @@ def program(
     held=None,
     update=None,
     apply=False,
+    apply_parts=None,
+    apply_header=None,
 ):
     """The frame program: the passes' and the fill's kernels (kernels/frame_*.cpp),
-    their buffers, the frame thread on cluster 1, for the capacity `held` (by default
-    the default frame's or the scene's size's); with `show_table` it serves FRAME and
-    SUN, with `update` also UPDATE (update.py; `apply`: RF_APPLY); others: regions'."""
+    their buffers, the frame thread on cluster 1, for the capacity `held`; with
+    `show_table` it serves FRAME, SUN, apply, with `update` also UPDATE (update.py;
+    `apply`: RF_APPLY); `apply_parts` (apply.frame_parts) adds APPLY; else regions'."""
     held = held or capacity([scenes.frame_size(scene)], at_least=default_capacity())
     fill_program = card.program(held=held)
     passes_program = card_passes.program(held=held)
+    compile_args, compute = card.compile_args(), dict(fill_program.compute)
+    apply_buffers, apply_defines, apply_handlers = [], {}, {}
+    if apply_parts is not None:  # its tensors after the fill's, on both movers
+        compile_args = {
+            role: [*given, *apply_parts["args"]] for role, given in compile_args.items()
+        }
+        modes = {**compute.get("unpack_to_dest_mode", {})}
+        compute["unpack_to_dest_mode"] = {**modes, **apply_parts["unpack_to_dest_mode"]}
+        apply_buffers, apply_defines = apply_parts["buffers"], apply_parts["defines"]
+        apply_handlers = {"apply": A["kHandlerApply"]}
     frame_program = km.Program(
         "raster_frame",
         kernels={
@@ -505,10 +540,11 @@ def program(
                 SHOW["kCbShow"], "uint32", SHOW["kShowPageBytes"], SHOW["kShowPages"]
             ),
             *shade_buffers(),
+            *apply_buffers,
         ],
-        compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
-        compute=fill_program.compute,
-        defines={**card.spread_parts()[2], **defines(held)},
+        compile_args=compile_args,  # the fill's (and APPLY's) tensors: DRAM tensors'
+        compute=compute,
+        defines={**card.spread_parts()[2], **defines(held), **apply_defines},
         depth=1,
         handlers={
             **fill_program.handlers,
@@ -516,6 +552,7 @@ def program(
             "show": SHOW["kHandlerShow"],
             "shade": SH["kHandlerShade"],
             "light": SH["kHandlerLight"],
+            **apply_handlers,
         },
     )
     thread_defines = {
@@ -528,18 +565,19 @@ def program(
         **({"RF_UPDATE": "1"} if update is not None else {}),
         **({"RF_APPLY": "1"} if update is not None and apply else {}),
     }
-    handlers = {"frame": 1, "sun": 2}
-    sources = [THREAD / "frame.c", THREAD / "middle.c"]
+    handlers = {"frame": 1, "sun": 2, "apply": APPLY_HANDLER}
+    sources = [THREAD / name for name in ("frame.c", "middle.c", "update.c", "apply.c")]
     if update is not None:
         if show_table is None:
             raise ValueError("UPDATE is served: the program needs show_table")
         handlers["update"] = UPDATE_HANDLER
-        sources.append(THREAD / "update.c")
     frame_program.thread(
         cluster=CLUSTER,
         sources=sources,
         includes=[THREAD],
-        regions=regions(scene, workers, show_table, sun, profiles, glass, held, update),
+        regions=regions(
+            scene, workers, show_table, sun, profiles, glass, held, update, apply_header
+        ),
         words=words,
         deadline=10.0,
         defines=thread_defines,
