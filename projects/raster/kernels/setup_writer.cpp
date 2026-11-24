@@ -84,16 +84,29 @@ namespace {
         const uint32_t directory_address = command.a1, cores = command.a5;
         const uint32_t fill_cores = command.a6, lists_address = command.a7;
         const uint32_t bank = bank_word(command.a8);
+        // the frame's tiles, not the capacity's
+        const uint32_t tiles = grid_tiles(command.a8);
         const uint32_t space = get_write_ptr(kCbHist);
-        noc_async_read(
-            setup_pass::noc_address(bank, items_region_address, 0, 0, 0),
-            space,
-            kItemsBytes
+        // the parts of the region the frame's items use, each on 64 bytes: the tiles'
+        // words, the items' rows, the frame words and the items' words, the cores'
+        const uint32_t item_most = tiles + kBandItems;
+        static_assert(kItemRows % 64 == 0 && kFrameWordsAt % 64 == 0);
+        static_assert(kItemWordsAt % 64 == 0 && kCoreWordsAt % 64 == 0);
+        auto read_part = [&](uint32_t at, uint32_t bytes) {
+            noc_async_read(
+                setup_pass::noc_address(bank, items_region_address, 0, 0, at),
+                space + at,
+                (bytes + 63) & ~63u
+            );
+        };
+        read_part(0, 4 * tiles);
+        read_part(kItemRows, 2 * item_most);
+        read_part(
+            kFrameWordsAt, kItemWordsAt - kFrameWordsAt + 4 * kItemWords * item_most
         );
-        noc_async_read(
-            setup_pass::noc_address(bank, items_region_address, 0, 0, kFrameWordsAt),
-            space + kFrameWordsAt,
-            kItemsRegionBytes - kFrameWordsAt
+        read_part(
+            kCoreWordsAt,
+            kCoreWords * 4 * (fill_cores < kMaxFillCores ? fill_cores : kMaxFillCores)
         );
         if (!arrived()) {
             return false;
@@ -109,7 +122,7 @@ namespace {
         volatile tt_l1_ptr uint16_t*
             tile_of = (reinterpret_cast<volatile tt_l1_ptr uint16_t*>(space + kBaseAt));
         uint32_t item_count = 0;
-        for (uint32_t tile = 0; tile < kTiles; ++tile) {
+        for (uint32_t tile = 0; tile < tiles; ++tile) {
             const uint32_t first = items[tile] & 0xFFFF;
             const uint32_t items_in_tile = items[tile] >> 16;
             for (
@@ -238,6 +251,8 @@ namespace {
         const uint32_t counters_address = command.a1, blocks_word = command.a2;
         const uint32_t camera_address = command.a3, bank = bank_word(command.a8);
         const uint32_t across = grid_of(command.a8).across;  // tile ty TX + tx
+        // the frame's tiles in SUM's slices, not the capacity's
+        const uint32_t tiles = slice_tiles(command.a8);
         volatile tt_l1_ptr uint32_t* counters = km::l1(get_read_ptr(kCbCount));
         volatile tt_l1_ptr uint32_t* histogram_words = km::l1(get_read_ptr(kCbHist));
         volatile tt_l1_ptr uint16_t*
@@ -256,7 +271,7 @@ namespace {
                 heavy_space,
                 kHeavyBytes
             );
-            for (uint32_t i = 0; i < kTiles / 2; ++i) {
+            for (uint32_t i = 0; i < tiles / 2; ++i) {
                 counters[i] = 0;
             }
             if (!arrived()) {
@@ -276,15 +291,15 @@ namespace {
                 histogram_words[i] = 0;
             }
         } else {
-            for (uint32_t i = 0; i < 2 * kTiles; ++i) {
-                counters[i] = 0;
+            for (uint32_t i = 0; i < tiles; ++i) {  // entries, then rows at kTiles
+                counters[i] = counters[kTiles + i] = 0;
             }
         }
 #else
-        for (uint32_t i = 0; i < 2 * kTiles; ++i) {
-            counters[i] = 0;
+        for (uint32_t i = 0; i < tiles; ++i) {  // entries, then rows at kTiles
+            counters[i] = counters[kTiles + i] = 0;
         }
-        for (uint32_t i = 0; i < kHistBytes / 4; ++i) {
+        for (uint32_t i = 0; i < 16 * tiles; ++i) {  // 64 bytes a tile
             histogram_words[i] = 0;
         }
 #endif
@@ -369,11 +384,14 @@ namespace {
         asm volatile(
             "fence" ::: "memory"
         );  // the counters' stores land before the read
-        profile.bytes += kCountBytes;
+        // the frame's tiles' entries, and their rows at kTiles (SUM's slices)
+        const uint64_t counters_page = (
+            setup_pass::noc_address(0, counters_address, writer.me(), kCountBytes)
+        );
+        profile.bytes += 8 * tiles;
+        noc_async_write(get_read_ptr(kCbCount), counters_page, 4 * tiles);
         noc_async_write(
-            get_read_ptr(kCbCount),
-            setup_pass::noc_address(0, counters_address, writer.me(), kCountBytes),
-            kCountBytes
+            get_read_ptr(kCbCount) + 4 * kTiles, counters_page + 4 * kTiles, 4 * tiles
         );
         if ((blocks_word & kRanges) != 0 && bank != 0) {
             // the pack thread's costs, final with its last page (setup_compute.cpp)
@@ -651,7 +669,10 @@ bool setup_writer_pass(
         // totals, counting_cores cores; 32 cores at a time through one out page.
         constexpr uint32_t kBatch = 32;
         const uint32_t staging = get_write_ptr(kCbOut);
-        for (uint32_t slice = writer.me(); slice < kTiles / 16; slice += cores) {
+        // the frame's tiles; the totals laid for them: entries, then rows from 4 x
+        // tiles
+        const uint32_t tiles = slice_tiles(command.a8), slices = tiles / 16;
+        for (uint32_t slice = writer.me(); slice < slices; slice += cores) {
             uint32_t entries[16] = {}, row_counts[16] = {};
             for (
                 uint32_t first_core = 0; first_core < counting_cores;
@@ -725,7 +746,7 @@ bool setup_writer_pass(
             noc_async_write(
                 staging + 64,
                 setup_pass::noc_address(
-                    bank, totals_address, 0, 0, 4 * kTiles + 64 * slice
+                    bank, totals_address, 0, 0, 4 * tiles + 64 * slice
                 ),
                 64
             );
@@ -820,7 +841,11 @@ bool setup_writer_pass(
             noc_async_write(
                 staging,
                 setup_pass::noc_address(
-                    bank, totals_address, 0, 0, kSumsHeavyAt + 128 * heavy_tile
+                    bank,
+                    totals_address,
+                    0,
+                    0,
+                    8 * slice_tiles(command.a8) + 128 * heavy_tile  // after the rows
                 ),
                 128
             );

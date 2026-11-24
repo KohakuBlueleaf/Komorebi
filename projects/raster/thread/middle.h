@@ -55,31 +55,43 @@ typedef struct {
     uint32_t slot, mark, tile, count, first_row, end_row;
 } rm_mark;
 
+/* Bytes rm_lay lays for `tiles`: 32 a tile, 44 an item, the cores' and heavy tiles'
+ * arrays, 8 to spare an array (rm_lay names each). */
+#define RM_LAID_BYTES(tiles)                                                          \
+    (32u * (tiles) + 44u * ((tiles) + RM_BAND_ITEMS) + 4u + 28u * RM_MAX_CORES + 4u + \
+     256u * RM_MAX_HEAVY + 8u * 18u)
+
+/* The middle pass's arrays, laid one after another from `space` for the frame's tiles
+ * (rm_lay): a frame's walks over them lie the same whatever the capacity. */
 typedef struct {
-    uint64_t entries[RM_TILES], rows[RM_TILES]; /* over the setup cores */
-    uint64_t tile_cost[RM_TILES];
-    uint64_t cost[RM_MAX_ITEMS];
-    uint32_t order[RM_MAX_ITEMS];
-    uint32_t spare_order[RM_MAX_ITEMS];
-    uint32_t owner[RM_MAX_ITEMS];
-    uint32_t header[RM_MAX_ITEMS];
-    uint64_t load[RM_MAX_CORES];           /* each fill core's cost, rm_owners */
-    uint64_t heap[RM_MAX_CORES];           /* its heap of load << 8 | core */
-    uint32_t first_item[RM_MAX_CORES + 1]; /* each core's items in spare_order */
-    uint32_t next_slot[RM_MAX_ITEMS];      /* next slots while they are written */
-    uint64_t histograms[RM_MAX_HEAVY]
-                       [2 * RM_GROUPS]; /* heavy tiles' counts over the cores */
-    int32_t heavy_of[RM_TILES];         /* index among the heavy tiles, or -1 */
-    uint32_t slot_counts[RM_MAX_CORES],
-        item_counts[RM_MAX_CORES]; /* rm_compact's, per core */
+    uint64_t *entries, *rows, *tile_cost; /* per tile; entries, rows over the cores */
+    uint64_t* cost;                       /* per item */
+    uint32_t *order, *spare_order, *owner, *header;
+    uint64_t* load;       /* each fill core's cost, rm_owners */
+    uint64_t* heap;       /* its heap of load << 8 | core */
+    uint32_t* first_item; /* RM_MAX_CORES + 1: each core's items in spare_order */
+    uint32_t* next_slot;  /* per item: next slots while they are written */
+    uint64_t (*histograms)[2 * RM_GROUPS]; /* heavy tiles' counts over the cores */
+    int32_t* heavy_of; /* per tile: index among the heavy tiles, or -1 */
+    uint32_t *slot_counts, *item_counts; /* rm_compact's, per core */
+    rm_item* items;                      /* per item */
+    uint32_t* tile_item; /* tiles + 1: the items of a tile start at tile_item[tile] */
+    uint32_t laid;       /* the tiles they are laid for */
+    uint64_t space[(RM_LAID_BYTES(RM_TILES) + 7u) / 8u];
 } rm_scratch;
+
+/* The per-tile and per-item arrays laid from scratch->space for a frame of `tiles`
+ * (at most RM_TILES): a frame's arrays follow its tiles, not the capacity. */
+void rm_lay(rm_scratch* scratch, uint32_t tiles);
 
 /* The middle pass in parts for the four cores, ranges side by side: rm_costs (tiles),
  * rm_pick, rm_clear (fill cores), rm_hist, rm_layout, rm_next (items). */
 
-/* Entries, rows and cost of tiles [first_tile, end_tile) over the cores. */
+/* Entries, rows and cost of tiles [first_tile, end_tile) over the cores (a core's
+ * counters: entries a tile, then rows from rows_at; RM_COUNTERS words a core). */
 void rm_costs(
     const uint32_t* counters,
+    uint32_t rows_at,
     uint32_t cores,
     rm_scratch* scratch,
     uint32_t first_tile,

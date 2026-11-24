@@ -94,8 +94,6 @@ def test_thread_sizes(tmp_path, tiles):
         '#include "middle.h"\n#include "frame.h"\n'
         "typedef struct {\n"
         "    rm_scratch scratch;\n"
-        "    rm_item items[RM_MAX_ITEMS];\n"
-        "    uint32_t tile_item[RM_TILES + 1];\n"
         "    uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];\n"
         "    uint32_t ranges[RF_AREAS][RF_MAX_CORES + 1];\n"
         "    uint32_t cuts[RF_MAX_CORES + 1];\n"
@@ -123,8 +121,6 @@ def test_work_t_mirrors_frame_c():
     text = (THREAD / "frame.c").read_text()
     for line in (
         "rm_scratch scratch;",
-        "rm_item items[RM_MAX_ITEMS];",
-        "uint32_t tile_item[RM_TILES + 1];",
         "uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];",
         "uint32_t ranges[RF_AREAS][RF_MAX_CORES + 1];",
         "uint32_t cuts[RF_MAX_CORES + 1];",
@@ -134,17 +130,65 @@ def test_work_t_mirrors_frame_c():
 
 def test_capacities():
     capacity, held = card_thread.capacity, card_thread.Capacity
-    assert capacity([(1024, 1024)]) == held(lists.TILES, False)
-    assert capacity([(1280, 720)]) == held(928, False)
+    assert capacity([(1024, 1024)]) == held(lists.TILES, False)  # as before
+    assert capacity([(1280, 720)]) == held(1024, False)  # 920 tiles: the base step
     assert capacity([(1280, 720)], lit=True) == held(lists.TILES, False)  # SUN's
-    assert capacity([(1920, 1080)]) == held(2048, True)
-    assert capacity([(2560, 1440)]) == held(3616, True)
-    assert capacity([(3840, 2160)]) == held(8160, True)
+    assert capacity([(1920, 1080)]) == held(2048, True)  # 2,040 tiles
+    assert capacity([(2560, 1440)]) == held(4096, True)  # 3,600
+    assert capacity([(3840, 2160)]) == held(8192, True)  # 8,160
     assert capacity([(2048, 1024)]) == held(2048, False)  # the narrow words' most
     assert capacity([(32, 32)], at_least=held(2048, True)) == held(2048, True)
     assert card_thread.covers(held(2048, True), (1280, 720))
     assert not card_thread.covers(held(2048, False), (2080, 32))  # 65 tiles a row
+    assert card_thread.covers(held(3616, True), (2560, 1440))  # an L1 fallback's
     assert card_thread.default_capacity() == held(lists.TILES, False)
+
+
+def test_capacity_steps():
+    """The steps: the SUN quadrant's 1,024 tiles times 1, 1.5, 2, 3, 4, 6, 8, 12, 16;
+    a lit capacity at least the quadrant's; the default frame's 1,024 as before."""
+    base = card_thread.STEP_BASE
+    assert base == card_thread.GRID["kGridDefault"] ** 2 == lists.TILES
+    step_of = card_thread.step_of
+    steps = {920: 1024, 1024: 1024, 1025: 1536, 2040: 2048, 3616: 4096, 8160: 8192}
+    assert {tiles: step_of(tiles) for tiles in steps} == steps
+    assert [step_of(n * base // 2 + 1) for n in range(2, 9)] == [
+        1536, 2048, 3072, 3072, 4096, 4096, 6144,
+    ]  # fmt: skip
+    assert step_of(12 * base + 1) == 16 * base and step_of(32) == base
+    need = card_thread.need
+    assert need([(32, 32)]) == 32 and need([(32, 32)], lit=True) == base
+    assert card_thread.capacity([(32, 32)], lit=True).tiles == base  # lit's least
+    assert card_thread.capacity([(32, 32)]).tiles == base
+
+
+class FakeSession:
+    """l1_rows and l1 of a session: `fixed` bytes that do not grow with tiles (with
+    the slots' margin), `free` bytes for buffers."""
+
+    def __init__(self, fixed, free):
+        self.fixed, self.free = fixed, free
+
+    def l1_rows(self, held):  # the "program" is its capacity here
+        rows = card_thread.l1_tile_bytes(held)
+        fixed = self.fixed - card_thread.L1_SLOTS_MARGIN
+        return [("fixed", fixed), *rows.items()]
+
+    def l1(self):
+        return 0, self.free
+
+
+def test_l1_fallback():
+    """A step past a core's L1: the largest capacity that fits, when it holds the
+    need; the refusal (None, the load's) when not; nothing when the step fits."""
+    held = card_thread.Capacity(12288, True, True, CORES)  # 8,193 tiles' step
+    grows = sum(card_thread.l1_tile_bytes(held._replace(tiles=9728)).values())
+    session = FakeSession(1_000_000, 1_000_000 + grows + 10)  # 9,728 tiles fit
+    fallback = card_thread.l1_fallback(session, held, held, 8193)
+    assert fallback == held._replace(tiles=9728)
+    assert card_thread.l1_fallback(session, held, held, 9729) is None  # refused
+    fits = held._replace(tiles=8192)
+    assert card_thread.l1_fallback(session, fits, fits, 8160) is None  # it fits
 
 
 def test_frame_chunks():

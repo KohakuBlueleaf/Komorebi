@@ -16,8 +16,6 @@
 
 typedef struct {
     rm_scratch scratch;
-    rm_item items[RM_MAX_ITEMS];
-    uint32_t tile_item[RM_TILES + 1];
     uint32_t heavy[RM_MAX_HEAVY], bands[RM_MAX_HEAVY];
     /* COUNT's and SETUP's blocks of each core, per area of the camera's region */
     uint32_t ranges[RF_AREAS][RF_MAX_CORES + 1];
@@ -45,7 +43,7 @@ typedef struct {
 /* The middle pass's parts on the four cores: each a quarter of the tiles or items. */
 typedef struct {
     const uint32_t* counters;
-    uint32_t cores, workers, item_count, tiles;
+    uint32_t rows_at, cores, workers, item_count, tiles;
     work_t* work;
 } part_t;
 
@@ -54,6 +52,7 @@ static void costs_part(int core, void* arg) {
     const uint32_t quarter = (uint32_t)core;
     rm_costs(
         part->counters,
+        part->rows_at,
         part->cores,
         &part->work->scratch,
         part->tiles * quarter / 4,
@@ -125,6 +124,42 @@ static void merge_part(int core, void* arg) {
             part->item_count * (2 * quarter + 2) / 4
         );
     }
+}
+
+/* Parts of one region swept (flushed or invalidated) in one kmx_parallel call, part i
+ * on core i % 4: the frame's tiles' and items' words, not the capacity's region. */
+#define SWEEP_PARTS 8
+
+typedef struct {
+    int region;
+    uint32_t count;
+    uint64_t at[SWEEP_PARTS], bytes[SWEEP_PARTS];
+} sweep_t;
+
+static void sweep_add(sweep_t* sweep, uint64_t at, uint64_t bytes) {
+    if (sweep->count < SWEEP_PARTS && bytes) {
+        sweep->at[sweep->count] = at;
+        sweep->bytes[sweep->count++] = bytes;
+    }
+}
+
+/* [at, at + bytes) as two parts (two cores) */
+static void sweep_halves(sweep_t* sweep, uint64_t at, uint64_t bytes) {
+    const uint64_t half = (bytes / 2 + 63) & ~63ull;
+    sweep_add(sweep, at, half < bytes ? half : bytes);
+    sweep_add(sweep, at + half, half < bytes ? bytes - half : 0);
+}
+
+static void sweep_part(int core, void* arg) {
+    const sweep_t* sweep = (const sweep_t*)arg;
+    for (uint32_t part = (uint32_t)core; part < sweep->count; part += 4) {
+        kmx_invalidate_at(sweep->region, sweep->at[part], sweep->bytes[part]);
+    }
+}
+
+/* The parts swept (kmx_invalidate_at: a flush also writes back); 0, or the code. */
+static uint32_t sweep_run(sweep_t* sweep) {
+    return kmx_parallel(sweep_part, sweep) == KMX_OK ? 0u : RF_PARALLEL;
 }
 
 /* Fills `command` field by field (a struct assignment may call memset, which does not
@@ -297,6 +332,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     const uint32_t cores = frame->words[RF_W_CORES];
     const uint32_t workers = frame->words[RF_W_WORKERS];
     uint64_t mark = kmx_time();
+    rm_lay(&work->scratch, frame->tiles); /* the middle pass's arrays: the frame's */
 
     /* COUNT */
     km_command_t command;
@@ -339,12 +375,22 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         return code;
     }
 
-    /* the tiles to cut, and their histograms' sums */
-    kmx_invalidate(RF_R_SUMS);
+    /* the tiles to cut, and their histograms' sums: the frame's tiles' entries, then
+     * their rows, then the heavy tiles' sums, laid for the frame (SUM's slices) */
+    const uint32_t sum_tiles = (frame->tiles + 15) & ~15u;
+    sweep_t sweep;
+    sweep.region = RF_R_SUMS;
+    sweep.count = 0;
+    sweep_halves(&sweep, 0, 4u * sum_tiles);
+    sweep_halves(&sweep, 4u * sum_tiles, 4u * sum_tiles);
+    if (sweep_run(&sweep)) {
+        return RF_PARALLEL;
+    }
     frame->result[RF_O_TAKE] += elapsed(&mark);
     const uint32_t* sums = (const uint32_t*)regions[RF_R_SUMS];
     part_t part;
     part.counters = sums; /* the totals, as one core's counters */
+    part.rows_at = sum_tiles;
     part.cores = 1;
     part.workers = workers;
     part.tiles = frame->tiles;
@@ -403,8 +449,8 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         if (code) {
             return code;
         }
-        kmx_invalidate(RF_R_SUMS);
-        const uint32_t* heavy_sums = sums + RF_SUMS_HEAVY_AT / 4;
+        kmx_invalidate_at(RF_R_SUMS, 8u * sum_tiles, 128u * heavy_count);
+        const uint32_t* heavy_sums = sums + 2 * sum_tiles; /* HSUM's, after the rows */
         for (uint32_t heavy_index = 0; heavy_index < heavy_count; heavy_index++) {
             for (uint32_t group = 0; group < 2 * RM_GROUPS; group++) {
                 work->scratch.histograms
@@ -423,9 +469,9 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         work->bands,
         heavy_count,
         &work->scratch,
-        work->items,
+        work->scratch.items,
         &item_count,
-        work->tile_item,
+        work->scratch.tile_item,
         frame->tiles
     )) {
         return RF_NO_LAYOUT;
@@ -449,7 +495,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         rm_compact(
             workers,
             &work->scratch,
-            work->items,
+            work->scratch.items,
             item_count,
             items + RF_ITEM_WORDS_AT / 4,
             items + RF_CORE_WORDS_AT / 4
@@ -457,7 +503,7 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     );
     uint32_t mark_count = workers;
     for (uint32_t i = 0; i < item_count; i++) {
-        mark_count += work->items[i].total != 0;
+        mark_count += work->scratch.items[i].total != 0;
     }
     frame->result[RF_O_SLOTS] = slots;
     frame->result[RF_O_ITEMS] = item_count;
@@ -468,15 +514,19 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
     if (slots > frame->words[RF_W_LIST_SLOTS] || slots >= 1u << RM_BASE_SLOT_BITS) {
         return RF_LISTS_SMALL;
     }
-    rm_base(&work->scratch, work->items, item_count, items + RF_BASE_AT / 4);
+    rm_base(&work->scratch, work->scratch.items, item_count, items + RF_BASE_AT / 4);
     frame->result[RF_O_COMPACT] += elapsed(&mark);
-    for (uint32_t i = 0; i < RM_TILES; i++) {
-        const uint32_t first = work->tile_item[i];
-        items[i] = first | (work->tile_item[i + 1] - first) << 16;
+    for (uint32_t i = 0; i < frame->tiles; i++) { /* the frame's tiles alone */
+        const uint32_t first = work->scratch.tile_item[i];
+        items[i] = first | (work->scratch.tile_item[i + 1] - first) << 16;
     }
     uint16_t* rows = (uint16_t*)(items + RM_TILES);
     for (uint32_t i = 0; i < item_count; i++) {
-        rows[i] = (uint16_t)(work->items[i].first_row | work->items[i].end_row << 8);
+        rows[i] = (
+            (uint16_t)(
+                work->scratch.items[i].first_row | work->scratch.items[i].end_row << 8
+            )
+        );
     }
     items[RF_HPREFIX_ADDR_AT / 4] = frame->words[RF_W_HPREFIX];
     items[RF_SHADE_ADDR_AT / 4] = frame->words[RF_W_SHADE];
@@ -490,7 +540,19 @@ static uint32_t frame_once(frame_t* frame, work_t* work, void* const* regions) {
         );
     }
     frame->result[RF_O_PAGES] += elapsed(&mark);
-    kmx_flush(RF_R_ITEMS);
+    /* the parts written: the tiles' words, the items' rows, base words and words, the
+     * addresses and frame words, the cores' words */
+    sweep.region = RF_R_ITEMS;
+    sweep.count = 0;
+    sweep_halves(&sweep, RF_ITEM_WORDS_AT, 4u * RM_ITEM_WORDS * item_count);
+    sweep_add(&sweep, 0, 4u * frame->tiles);
+    sweep_add(&sweep, RF_BASE_AT, 4u * item_count);
+    sweep_add(&sweep, 4u * RM_TILES, 2u * item_count);
+    sweep_add(&sweep, RF_CORE_WORDS_AT, 4u * RM_CORE_WORDS * workers);
+    sweep_add(&sweep, RF_HPREFIX_ADDR_AT, RF_ITEM_WORDS_AT - RF_HPREFIX_ADDR_AT);
+    if (sweep_run(&sweep)) {
+        return RF_PARALLEL;
+    }
     frame->result[RF_O_GIVE] += elapsed(&mark);
     frame->result[RF_O_MIDDLE] = (
         frame->result[RF_O_TAKE] + frame->result[RF_O_HEAVY_MICROSECONDS] +
@@ -758,12 +820,10 @@ static uint32_t show(frame_t* frame, uint32_t raw, uint32_t across, uint32_t qua
     /* display_address, profile_address (raw: the shadow map's pages, none) */
     command.a1 = raw ? frame->words[RF_W_SUN_PAGES] : frame->words[RF_W_DISPLAY];
     command.a2 = raw ? 0 : frame->words[RF_W_SHOWPROF];
-    /* display_pages: a page a tile of the capacity; raw: the map's, across x across
-     * quadrants of 32 x 32 tiles */
+    /* display_pages: a page a tile of the frame (not of the capacity); raw: the map's,
+     * across x across quadrants of 32 x 32 tiles */
     command.a3 = (
-        raw
-            ? across * across * RF_SUN_TILES_ACROSS * RF_SUN_TILES_ACROSS
-            : RF_DISPLAY_PAGES
+        raw ? across * across * RF_SUN_TILES_ACROSS * RF_SUN_TILES_ACROSS : frame->tiles
     );
     command.a4 = raw ? RF_SHOW_RAW : 0;
     /* a8 becomes the block's word (kmx_block): SHOW takes no grid (show.h) */

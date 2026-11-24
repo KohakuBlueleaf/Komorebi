@@ -86,7 +86,8 @@ constexpr uint32_t kShadeBlockBytes = 512;
 constexpr uint32_t kRecShadeWord = 30;
 constexpr uint32_t kShadeWordKept = 0x10000000;
 constexpr uint32_t kHprefixPageBytes = 128 * kHeavyCapacity;  // 128 B a heavy tile
-// in SUM's totals (entries, then rows a tile): HSUM's, 128 bytes per heavy tile
+// SUM's totals' room: the frame's T tiles (16-tile slices) entries, rows from 4 T, then
+// HSUM's 128 bytes per heavy tile from 8 T (kSumsHeavyAt at the capacity: the most)
 constexpr uint32_t kSumsHeavyAt = 8 * kTiles;
 // Then PLACE's words: frame words, per item and per fill core (README.md); each part on
 // 64 bytes, as a DRAM read must start (one at 16 mod 64 returned the line's start).

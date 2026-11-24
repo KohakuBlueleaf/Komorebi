@@ -9,6 +9,7 @@ import math
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -391,6 +392,21 @@ class ListsRefused(ValueError):
         )
 
 
+class FramePages(NamedTuple):
+    """The display tensor's first `pages` (the frame's tiles), as a transfer takes a
+    tensor: a frame pushes and reads its own pages, not the capacity's."""
+
+    address: int
+    page_bytes: int
+    aligned_page_bytes: int
+    pages: int
+    in_dram: bool = True
+
+    @classmethod
+    def of(cls, tensor, pages):
+        return cls(tensor.address, tensor.page_bytes, tensor.aligned_page_bytes, pages)
+
+
 class Loop:
     """The scene loaded in `session`, its program running: a FRAME command a camera
     (`frame`); `materials`: shaded, `lights`: lit (`set_sun`, `set_tone`); `indirect`:
@@ -412,6 +428,7 @@ class Loop:
         card_field=False,
         apply=False,
         apply_set=None,
+        need=0,
     ):
         self.session = session
         # APPLY (apply.checked_set's set): its tensors made at the first load
@@ -426,6 +443,9 @@ class Loop:
         self.size = scenes.frame_size(scene)  # (W, H), set_size
         self.grid = card_thread.card_grid(self.size)  # (TX, TY)
         self.held = card_thread.capacity([self.size], lights is not None, held)
+        # the tiles the sizes asked need (`need`: --max-size's): a capacity in L1
+        # below its step holds at least them, else the load is refused
+        self.need = max(need, card_thread.need([self.size], lights is not None))
         self.push, self.list_slots, self.table = push, list_slots, table
         self.reloads = []  # set_size's reloads: sizes, capacities, seconds
         self.list_grown = {}  # a layer's lists' slots grown past list_slots' (frame)
@@ -710,23 +730,40 @@ class Loop:
             # the full histograms do not fit: COUNT counts the heavy tiles' again
             self.held = held = held._replace(recount=True)
             program = build(held)
+        fallback = card_thread.l1_fallback(session, program, held, self.need)
+        if fallback is not None:  # the step past L1: the largest capacity in it
+            self.held = fallback
+            self.tile_tensors()
+            return self.start(report, started)
         try:
-            self.running = running = session.load(program, deadline=1.0)
+            self.running = session.load(program, deadline=1.0)
         except km.L1BudgetError as error:
             size = scenes.frame_size(scene)
             raise card_thread.L1Refused.of_budget(held, size, error) from None
         report["load_s"] = round(time.perf_counter() - started, 3)
         report["capacity"] = card_thread.capacity_report(held, workers, self.dram())
         self.transfer = None
-        if self.push:
-            self.transfer = transfer = session.channel_transfer(self.display, push=True)
-            entry = transfer.entry
-            push_words = np.zeros(F["RF_PUSH_BYTES"] // 4, dtype=np.uint32)
-            push_words[F["RF_PUSH_HEADER"]] = entry.handler | entry.field << 24
-            push_words[F["RF_PUSH_GROUP"]] = entry.group[0] | entry.group[1] << 16
-            push_words[F["RF_PUSH_ARGS"] : F["RF_PUSH_ARGS"] + 10] = entry.args
-            running.thread.write("push", push_words)
+        self.arm_push(card_thread.card_grid(scenes.frame_size(scene)))
         self.pages = np.empty((held.tiles, SHOW["kShowPageBytes"]), dtype=np.uint8)
+
+    def arm_push(self, grid):
+        """With the push: the PUSH of a frame's display pages (the tiles of its `grid`
+        (TX, TY), not the capacity's) for the thread's push region, the last one's slot
+        given back."""
+        if not self.push:
+            return
+        if self.transfer is not None:
+            self.transfer.close()
+        across, down = grid
+        self.transfer = transfer = self.session.channel_transfer(
+            FramePages.of(self.display, across * down), push=True
+        )
+        entry = transfer.entry
+        push_words = np.zeros(F["RF_PUSH_BYTES"] // 4, dtype=np.uint32)
+        push_words[F["RF_PUSH_HEADER"]] = entry.handler | entry.field << 24
+        push_words[F["RF_PUSH_GROUP"]] = entry.group[0] | entry.group[1] << 16
+        push_words[F["RF_PUSH_ARGS"] : F["RF_PUSH_ARGS"] + 10] = entry.args
+        self.running.thread.write("push", push_words)
 
     def tensors(self):
         """Every tensor this load made, once each (the light profile: the surface's)."""
@@ -795,7 +832,10 @@ class Loop:
             return ms
         word = np.array([card_thread.grid_word((width, height))], dtype=np.uint32)
         self.running.thread.write("camera", word, F["RF_GRID_AT"])
+        tiles_changed = grid[0] * grid[1] != self.grid[0] * self.grid[1]
         self.size, self.grid = (width, height), grid
+        if tiles_changed:  # the push moves the new frame's pages
+            self.arm_push(grid)
         self.padded = None
         return (time.perf_counter() - began) * 1e3
 
@@ -806,18 +846,21 @@ class Loop:
         again)."""
         began = time.perf_counter()
         held = card_thread.capacity([size], self.lights is not None, self.held)
+        need = max(self.need, card_thread.need([size], self.lights is not None))
         card_thread.l1_check(held, size, self.session.l1()[1])  # before the stop
         if not stopped:
             self.running.stop()
         if self.transfer is not None:
             self.transfer.close()
         before, self.held = self.held, held
+        need_before, self.need = self.need, need
         self.scene = scenes.with_size(self.scene, size)
         report = {}
         try:
             self.load(report, again=True)
         except card_thread.L1Refused:
             self.held = before  # the old capacity again, the size as it was
+            self.need = need_before
             self.scene = scenes.with_size(self.scene, self.size)
             self.load({}, again=True)
             raise
@@ -864,7 +907,8 @@ class Loop:
                 running.submit("frame", cluster=CLUSTER, result=True), timeout=10.0
             )
             commanded = time.perf_counter()
-            self.session.read(self.display, out=self.pages)
+            tiles = self.grid[0] * self.grid[1]  # the frame's pages, not the capacity's
+            self.session.read(self.display, pages=tiles, out=self.pages[:tiles])
             read = time.perf_counter()
             self.picture(self.pages, image)
         else:
@@ -1206,6 +1250,7 @@ def loop(args):
             card_field=card_field,
             apply=not args.card_field_stepped,
             apply_set=ready,
+            need=card_thread.need([most], lights is not None),
         )
         workers = live.workers
         applies = []  # each apply command: when, word, ms, y's check

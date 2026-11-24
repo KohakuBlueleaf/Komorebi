@@ -53,8 +53,40 @@ static void sift_down(uint64_t* heap, uint32_t count) {
     heap[position] = moved;
 }
 
+/* `bytes` from *at (whole 8 bytes), *at moved past them. */
+static void* take(uint8_t** at, uint64_t bytes) {
+    void* taken = *at;
+    *at += (bytes + 7u) & ~(uint64_t)7u;
+    return taken;
+}
+
+void rm_lay(rm_scratch* scratch, uint32_t tiles) {
+    const uint64_t items = tiles + RM_BAND_ITEMS;
+    uint8_t* at = (uint8_t*)scratch->space;
+    scratch->entries = take(&at, 8 * (uint64_t)tiles);
+    scratch->rows = take(&at, 8 * (uint64_t)tiles);
+    scratch->tile_cost = take(&at, 8 * (uint64_t)tiles);
+    scratch->cost = take(&at, 8 * items); /* the sort's key, beside its orders */
+    scratch->order = take(&at, 4 * items);
+    scratch->spare_order = take(&at, 4 * items);
+    scratch->owner = take(&at, 4 * items);
+    scratch->header = take(&at, 4 * items);
+    scratch->load = take(&at, 8 * RM_MAX_CORES);
+    scratch->heap = take(&at, 8 * RM_MAX_CORES);
+    scratch->first_item = take(&at, 4 * (RM_MAX_CORES + 1));
+    scratch->next_slot = take(&at, 4 * items);
+    scratch->histograms = take(&at, 8 * 2 * RM_GROUPS * RM_MAX_HEAVY);
+    scratch->heavy_of = take(&at, 4 * (uint64_t)tiles);
+    scratch->slot_counts = take(&at, 4 * RM_MAX_CORES);
+    scratch->item_counts = take(&at, 4 * RM_MAX_CORES);
+    scratch->items = take(&at, sizeof(rm_item) * items);
+    scratch->tile_item = take(&at, 4 * ((uint64_t)tiles + 1));
+    scratch->laid = tiles;
+}
+
 void rm_costs(
     const uint32_t* counters,
+    uint32_t rows_at,
     uint32_t cores,
     rm_scratch* scratch,
     uint32_t first_tile,
@@ -69,7 +101,7 @@ void rm_costs(
         const uint32_t* core_counters = counters + core * RM_COUNTERS;
         for (uint32_t tile = first_tile; tile < end_tile; tile++) {
             scratch->entries[tile] += core_counters[tile];
-            scratch->rows[tile] += core_counters[RM_TILES + tile];
+            scratch->rows[tile] += core_counters[rows_at + tile];
         }
     }
     for (uint32_t tile = first_tile; tile < end_tile; tile++) {
@@ -125,7 +157,8 @@ uint32_t rm_heavy(
     uint32_t* heavy,
     uint32_t* bands
 ) {
-    rm_costs(counters, setup_cores, scratch, 0, RM_TILES);
+    rm_lay(scratch, RM_TILES);
+    rm_costs(counters, RM_TILES, setup_cores, scratch, 0, RM_TILES);
     return rm_pick(scratch, fill_cores, heavy, bands, RM_TILES);
 }
 
@@ -220,10 +253,10 @@ uint32_t rm_items(
     uint32_t* tile_item,
     uint32_t tiles
 ) {
-    if (heavy_count > RM_MAX_HEAVY || tiles > RM_TILES) {
+    if (heavy_count > RM_MAX_HEAVY || tiles > scratch->laid) {
         return 0;
     }
-    for (uint32_t tile = 0; tile < RM_TILES; tile++) {
+    for (uint32_t tile = 0; tile < tiles; tile++) { /* the frame's tiles alone */
         scratch->heavy_of[tile] = -1;
     }
     for (uint32_t heavy_index = 0; heavy_index < heavy_count; heavy_index++) {
@@ -269,9 +302,7 @@ uint32_t rm_items(
             );
         }
     }
-    for (uint32_t tile = tiles; tile <= RM_TILES; tile++) {
-        tile_item[tile] = item_count; /* beyond the grid: no items */
-    }
+    tile_item[tiles] = item_count; /* the last tile's end; beyond the grid: none */
     *items_found = item_count;
     return 1;
 }
@@ -548,6 +579,9 @@ uint32_t rm_middle(
     }
     if (heavy_count > RM_MAX_HEAVY) {
         return 0;
+    }
+    if (scratch->laid != RM_TILES) {
+        rm_lay(scratch, RM_TILES);
     }
     rm_clear(directory, 0, fill_cores);
     rm_hist(histograms, setup_cores, heavy_count, scratch);

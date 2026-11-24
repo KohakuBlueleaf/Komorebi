@@ -19,11 +19,22 @@ namespace {
         uint32_t& shade_address
     ) {
         const uint32_t items_address = command.a7, bank = bank_word(command.a8);
+        // the frame's tiles, not the capacity's
+        const uint32_t tiles = grid_tiles(command.a8);
         const uint32_t space = get_write_ptr(kCbHist);
         constexpr uint32_t kRead = kHprefixAddrAt - kBaseAt +
             64;  // base words, address
+        // the frame's items' base words, then the address (each on 64 bytes)
+        static_assert(kBaseAt % 64 == 0 && kHprefixAddrAt % 64 == 0);
         noc_async_read(
-            setup_pass::noc_address(bank, items_address, 0, 0, kBaseAt), space, kRead
+            setup_pass::noc_address(bank, items_address, 0, 0, kBaseAt),
+            space,
+            (4 * (tiles + kBandItems) + 63) & ~63u
+        );
+        noc_async_read(
+            setup_pass::noc_address(bank, items_address, 0, 0, kHprefixAddrAt),
+            space + (kHprefixAddrAt - kBaseAt),
+            64
         );
         if (!arrived()) {
             return false;
@@ -31,7 +42,7 @@ namespace {
         invalidate_l1_cache();
         volatile tt_l1_ptr uint32_t* items = km::l1(get_write_ptr(kCbItems));
         volatile tt_l1_ptr uint32_t* base_words = km::l1(space);
-        const uint32_t last = items[kTiles - 1];
+        const uint32_t last = items[tiles - 1];  // tiles past the grid: none
         const uint32_t item_count = (last & 0xFFFF) + (last >> 16);
         if (item_count > kSlotsBytes / 4) {
             return false;
@@ -70,7 +81,7 @@ namespace {
                 )
             );
         constexpr uint32_t kSlotMask = (1u << kBaseSlotBits) - 1;
-        for (uint32_t tile = kTiles; tile-- > 0;) {
+        for (uint32_t tile = tiles; tile-- > 0;) {
             const uint32_t first = items[tile] & 0xFFFF;
             const uint32_t items_in_tile = items[tile] >> 16;
             const uint32_t before = slots[tile];
@@ -141,15 +152,24 @@ void setup_reader_command(const km::Reader& reader, const km_command_t& command)
         if (!reserve(kCbSlots) || !reserve(kCbItems)) {
             return;
         }
+        // the frame's tiles' and items' words alone (each part on 64 bytes)
+        const uint32_t tiles = grid_tiles(command.a8);
+        const uint32_t item_bytes = 4 * (tiles + kBandItems);
+        static_assert(kItemRows % 64 == 0);
         noc_async_read(
             setup_pass::noc_address(0, slots_address, reader.me(), kSlotsBytes),
             get_write_ptr(kCbSlots),
-            kSlotsBytes
+            (item_bytes + 63) & ~63u
         );
         noc_async_read(
             setup_pass::noc_address(bank, items_address, 0, kItemsBytes),
             get_write_ptr(kCbItems),
-            kItemsBytes
+            (4 * tiles + 63) & ~63u
+        );
+        noc_async_read(
+            setup_pass::noc_address(bank, items_address, 0, kItemsBytes, kItemRows),
+            get_write_ptr(kCbItems) + kItemRows,
+            (item_bytes / 2 + 63) & ~63u
         );
         if (!arrived()) {
             return;

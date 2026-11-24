@@ -105,17 +105,38 @@ def narrow(grid):
     return across <= GRID["kNarrowAcross"] and down <= GRID["kNarrowDown"]
 
 
-def capacity(sizes, lit=False, at_least=None):
-    """The capacity that renders every frame size (W, H) of `sizes`: their most tiles
-    (and, lit, the SUN pass's quadrant of kGridDefault x kGridDefault tiles, rendered
-    into the eye's tensors) rounded up to TILE_ROWS; wide when one's grid passes the
-    narrow words; at least `at_least` (a Capacity) when given."""
-    grids = [scenes.frame_grid(size) for size in sizes]
-    tiles = max(across * down for across, down in grids)
+# the capacity's steps (step_of) from the SUN quadrant's tiles, the default frame's
+STEP_BASE = GRID["kGridDefault"] ** 2
+
+
+def step_of(tiles):
+    """The least step of at least `tiles`: STEP_BASE times 1, 1.5, 2, 3, 4, 6, 8, ...
+    (2^k and 1.5 x 2^k), so that a new frame size rarely builds the kernels again (a
+    frame's work follows its own tiles, not the capacity: kernels/grid.h)."""
+    step = STEP_BASE
+    while step < tiles:
+        if 3 * step // 2 >= tiles:
+            return 3 * step // 2
+        step *= 2
+    return step
+
+
+def need(sizes, lit=False):
+    """The tiles a load must hold to render every frame size (W, H) of `sizes`: their
+    most tiles (and, lit, the SUN pass's quadrant of kGridDefault x kGridDefault tiles,
+    rendered into the eye's tensors) rounded up to TILE_ROWS."""
+    tiles = max(across * down for across, down in map(scenes.frame_grid, sizes))
     if lit:
         tiles = max(tiles, GRID["kGridDefault"] ** 2)
-    tiles = -(-tiles // TILE_ROWS) * TILE_ROWS
-    wide = not all(narrow(grid) for grid in grids)
+    return -(-tiles // TILE_ROWS) * TILE_ROWS
+
+
+def capacity(sizes, lit=False, at_least=None):
+    """The capacity that renders every frame size (W, H) of `sizes`: their need
+    rounded up to its step (step_of); wide when one's grid passes the narrow words; at
+    least `at_least` (a Capacity) when given: a capacity never shrinks."""
+    tiles = step_of(need(sizes, lit))
+    wide = not all(narrow(scenes.frame_grid(size)) for size in sizes)
     if at_least is not None:  # and its recount (live.py --recount, or L1's)
         tiles, wide = max(tiles, at_least.tiles), wide or at_least.wide
         return Capacity(tiles, wide, at_least.recount, at_least.cores)
@@ -123,9 +144,10 @@ def capacity(sizes, lit=False, at_least=None):
 
 
 def covers(held, size, lit=False):
-    """True when the capacity `held` renders a frame of size (W, H)."""
-    asked = capacity([size], lit)
-    return asked.tiles <= held.tiles and (held.wide or not asked.wide)
+    """True when the capacity `held` renders a frame of size (W, H): its need (not its
+    step: a capacity L1 bounded below a step holds what it holds)."""
+    wide = not narrow(scenes.frame_grid(size))
+    return need([size], lit) <= held.tiles and (held.wide or not wide)
 
 
 def default_capacity():
@@ -421,6 +443,29 @@ L1_BYTES_A_TILE = 8 + 64 + 4 + 6  # l1_tile_bytes' growth per tile
 L1_BYTES_A_TILE_RECOUNT = 8 + 18 + 4 + 6  # and with recount (the items region's 18)
 
 
+def largest_fitting(held, fixed, free):
+    """The largest capacity in TILE_ROWS below `held`'s whose L1 (`fixed` bytes that do
+    not grow with tiles, and l1_tile_bytes) fits the `free` bytes; 0 when none does."""
+    most = 0
+    for tiles in range(TILE_ROWS, held.tiles, TILE_ROWS):
+        if fixed + sum(l1_tile_bytes(held._replace(tiles=tiles)).values()) <= free:
+            most = tiles
+    return most
+
+
+def l1_fallback(session, program, held, need):
+    """When `program` at the capacity `held` (a step) does not fit a core's L1
+    (fits_l1): the largest capacity that does with its buffers that do not grow with
+    tiles, if it holds the `need` tiles; None otherwise (it fits, or the load's
+    refusal as before)."""
+    if fits_l1(session, program):
+        return None
+    used = sum(size for _, size in session.l1_rows(program)) + L1_SLOTS_MARGIN
+    fixed = used - sum(l1_tile_bytes(held).values())
+    most = largest_fitting(held, fixed, session.l1()[1])
+    return held._replace(tiles=most) if need <= most < held.tiles else None
+
+
 class L1Refused(ValueError):
     """A load refused for a core's L1: the frame's size (W, H) and the capacity
     `held`, the bytes L1 needs (`used`) and leaves for buffers (`free`), the buffers
@@ -432,13 +477,7 @@ class L1Refused(ValueError):
         across, down = scenes.frame_grid(size)
         grows = l1_tile_bytes(held)
         rows = ", ".join(f"{name} {bytes_:,} B" for name, bytes_ in grows.items())
-        most = None
-        if fixed is not None:
-            most = 0
-            for tiles in range(TILE_ROWS, held.tiles, TILE_ROWS):
-                fewer = held._replace(tiles=tiles)
-                if fixed + sum(l1_tile_bytes(fewer).values()) <= free:
-                    most = tiles
+        most = None if fixed is None else largest_fitting(held, fixed, free)
         needs = "needs" if fixed is not None else "needs at least"
         fits = f" The largest capacity that fits: {most} tiles." if most else ""
         a_tile = L1_BYTES_A_TILE_RECOUNT if held.recount else L1_BYTES_A_TILE

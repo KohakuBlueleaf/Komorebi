@@ -41,3 +41,16 @@ inline Grid grid_of(uint32_t a8) {
     const uint32_t across = a8 >> 4 & 0x3FFF, down = a8 >> 18;
     return {across ? across : kGridDefault, down ? down : kGridDefault};
 }
+
+// The frame's tiles TX x TY of a8 (at most the capacity): what a frame's loops over
+// tiles and items cover; the capacity sizes the tables alone.
+inline uint32_t grid_tiles(uint32_t a8) {
+    const Grid grid = grid_of(a8);
+    const uint32_t tiles = grid.across * grid.down;
+    return tiles < kTileCapacity ? tiles : kTileCapacity;
+}
+
+// The same rounded up to the 16-tile slices SUM walks: COUNT's zeroing and counters.
+inline uint32_t slice_tiles(uint32_t a8) {
+    return (grid_tiles(a8) + 15) & ~15u;  // at most the capacity, a multiple of 32
+}

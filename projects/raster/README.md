@@ -1280,8 +1280,9 @@ is `TX x TY` pages and the host untiles and crops. The SUN pass sets the sun's o
 read at every frame, `Loop.set_size` changes the size between frames with no reload while
 it is within the capacity: one 4-byte write, 0.17 to 0.20 ms on the host (Sponza, plain
 and lit, 1,024 x 1,024 to 1,280 x 720 to 512 x 512 to 1,024 x 576 and back, each frame
-checked, card 1, 01:47). The push moves the whole display, a page a tile of the capacity
-(a transfer has no page range); the host-binned `run.py` path stays 1,024 x 1,024.
+checked, card 1, 01:47). The push moves the frame's display pages alone (a transfer of
+the display's first `TX x TY` pages, armed again when a size changes the tile count; the
+read path reads as many); the host-binned `run.py` path stays 1,024 x 1,024.
 
 Card 1, 2026-11-24 01:14 to 01:58, AICLK 1,350 MHz, `live.py --push --size S`, 20 frames,
 frames 0, 10, 19 checked: vertex colours 0 pixels differ at every size on Sponza and the
@@ -1317,10 +1318,15 @@ second.
 
 No number of tiles is written in the frame program: the kernels, the X280 thread, the
 tensors and the reference. Every per-tile table is sized from a capacity in tiles that the
-load chooses (`card_thread.capacity`): the most tiles of the sizes it renders, rounded up
-to a multiple of 32 (a lit load at least 1,024: the SUN pass renders a 32 x 32 quadrant
-into the eye's tensors). `live.py --max-size WxH` sets it; by default it is the size
-asked. It sizes the kernels' tables (`RASTER_TILES`, `kernels/grid.h`), the thread's
+load chooses (`card_thread.capacity`): the most tiles of the sizes it renders (a lit
+load at least 1,024: the SUN pass renders a 32 x 32 quadrant into the eye's tensors),
+rounded up to the next step of 1,024 (`STEP_BASE`, the quadrant's tiles) times 1, 1.5,
+2, 3, 4, 6, 8, 12, 16, ... (`step_of`), so that a new size rarely builds the kernels
+again; the default 1,024 x 1,024 frame's build is the one before. When a step does not
+fit a core's L1 but the tiles needed do, the load takes the largest capacity that fits
+(`card_thread.l1_fallback`); when they do not, the refusal below. A capacity never
+shrinks while a loop lives. `live.py --max-size WxH` asks for at least that size's step;
+by default it is the size asked. It sizes the kernels' tables (`RASTER_TILES`, `kernels/grid.h`), the thread's
 arrays and regions (`RM_TILES`, `thread/middle.h`, `frame.h`), the frame, surface and
 display tensors and the counters' and slots' pages. A size within the capacity changes
 between frames with no reload (`Loop.set_size`); a size past it reloads with a capacity
@@ -1333,6 +1339,43 @@ kept), the program built and loaded, the sun's pass again when the sun was moved
 vertex colours on Sponza (upload 0.12 s, load 0.59 s), 999 ms lit Sponza with the sun
 moved, 1,333 ms lit interior; back 0.2 ms; every frame after it checked, 0 pixels differ
 or `ok`. In the viewer (05:00) 0.8 to 2.8 s past the capacity, 0.2 to 0.3 ms within it.
+
+The capacity sizes tables, tensors and regions and nothing else: every loop, zeroing,
+read and page count of a frame runs over the frame's tiles (`kernels/grid.h`
+`grid_tiles`, `slice_tiles` in SUM's 16-tile slices): COUNT's zeroing and counters, SUM's
+slices, PLACE's and SETUP's reads of the items region, the thread's items words and the
+sweeps of its regions, SHOW's page count, the push. Where a frame's arrays lie follows
+the frame too: the thread's middle-pass arrays are laid one after another for the
+frame's tiles from the start of their block (`rm_lay`, `thread/middle.c`), and SUM's and
+HSUM's totals start at bytes `4 T` and `8 T` of the sums region (T: the frame's tiles to
+16). Card 1, 2026-11-24 12:42 to 12:58, `live.py --size 1280x720` with `--push` (vertex
+colours) or `--light --indirect`, 200 frames, card frame ms, and before this change
+(main, 09:55 to 10:00):
+
+| scene | frame | `--max-size` | capacity | card frame | COUNT / middle / SETUP / FILL | push | before: capacity, frame |
+|---|---|---|---|---:|---|---:|---|
+| Sponza | colours | - | 1,024 | 4.54 | 0.61 / 0.48 / 0.82 / 1.34 | 0.26 | 928, 4.57 |
+| Sponza | colours | 2560x1440 | 4,096 wide | 4.54 | 0.61 / 0.48 / 0.81 / 1.36 | 0.26 | 3,616, 5.59 |
+| Sponza | colours | 3840x2160 | 8,192 wide, recount | 5.05 | 0.58 / 0.45 / 0.81 / 1.36 | 0.26 | 8,160, 8.07 |
+| Sponza | lit, indirect | - | 1,024 | 12.43 | 0.72 / 0.99 / 1.10 / 1.38 | | 1,024, 12.41 |
+| Sponza | lit, indirect | 2560x1440 | 4,096 wide | 12.41 | 0.72 / 0.97 / 1.09 / 1.40 | | 3,616, 13.16 |
+| Sponza | lit, indirect | 3840x2160 | 8,192 wide, recount | 12.35 | 0.62 / 0.93 / 1.09 / 1.40 | | 8,160, 14.44 |
+| Bistro interior | colours | - | 1,024 | 8.08 | 1.68 / 0.57 / 2.14 / 2.41 | 0.26 | 928, 8.11 |
+| Bistro interior | colours | 2560x1440 | 4,096 wide | 8.09 | 1.68 / 0.57 / 2.12 / 2.44 | 0.26 | 3,616, 9.17 |
+| Bistro interior | colours | 3840x2160 | 8,192 wide, recount | 9.75 | 1.68 / 0.53 / 2.12 / 2.44 | 0.26 | 8,160, 12.81 |
+| Bistro interior | lit, indirect | - | 1,024 | 20.77 | 1.82 / 1.75 / 2.36 / 2.60 | | 1,024, 20.72 |
+| Bistro interior | lit, indirect | 2560x1440 | 4,096 wide | 20.71 | 1.80 / 1.71 / 2.34 / 2.63 | | 3,616, 21.82 |
+| Bistro interior | lit, indirect | 3840x2160 | 8,192 wide, recount | 22.39 | 1.78 / 1.65 / 2.35 / 2.63 | | 8,160, 25.53 |
+
+The middle pass is the same at every capacity (within 1 %, or faster). What remains at
+8,192 tiles is the recount's second COUNT (HIST 0.58 to 1.83 ms here): lit interior at
+capacity 1,024 with `--max-size 2080x32` 20.71 ms, with `--recount` too 22.42 ms (11:18);
+the wide words cost 0.03 ms. Lit interior with no `--max-size`, three runs: 20.77,
+20.76, 20.76 ms (main 20.72). Before the arrays followed the frame, the middle pass was
+slower where its capacity-sized arrays lay at power-of-two strides (lit interior at
+8,192: the cut 0.40 -> 1.34 ms; Sponza colours 3,840 x 2,160: 28.33 ms, middle 7.46).
+Now a 3,840 x 2,160 frame, Sponza colours at 8,192 tiles: 24.79 ms, middle 3.91 (cut
+0.37), against 24.93 ms, middle 4.09 (cut 0.63) at 8,160 before (13:02).
 
 Two builds of the box words: narrow (today's words, a grid of at most 64 by 32 tiles:
 6-bit tile columns, 10-bit rows, float16 box columns) and wide (a wider grid: 32-bit
@@ -1381,6 +1424,7 @@ does):
 | narrow words, 64 x 32 tiles | - | nothing: a wider grid loads wide | - |
 | `RM_MAX_CORES` 248, heap core 8 bits | fill cores | the card's cores | `RF_BAD_ARGS` |
 | SUN quadrant, 32 x 32 tiles | - | a lit capacity is at least 1,024 tiles | - |
+| a frame of exactly a power-of-two tiles (4,096 x 2,048: 128 x 64 = 8,192) | - | the X280's cut is slow: Sponza colours 27.73 ms, middle 7.01 (cut 2.60, costs 1.12) against 24.79, middle 3.91 (cut 0.37, costs 0.30) at 3,840 x 2,160 (8,160 tiles), both at capacity 8,192 (card 1, 13:03) | slower, correct |
 | `RF_TIMES_ROWS` 256 | frames' times kept | measurement only | older rows overwritten |
 
 The only refusals are for memory, with the numbers (`card_thread.L1Refused`, the
