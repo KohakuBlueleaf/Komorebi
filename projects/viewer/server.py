@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image
 
 from projects.viewer import renderers
+from projects.viewer.camera import camera_of, pose_of
 from reference import lights as light_data
 
 HERE = Path(__file__).resolve().parent
@@ -54,39 +55,6 @@ def log(message):
 
 # The camera: 16 numbers as reference/scenes.py lays them out: eye (0:3), right (3:6),
 # up (6:9), forward (9:12), focal, centre x, centre y, near (12:16); y is up.
-
-
-def pose_of(camera):
-    """The pose of a camera: position, yaw (about y, from +z toward +x) and pitch
-    (above the horizon), from its forward direction."""
-    camera = np.asarray(camera, dtype=np.float64)
-    fx, fy, fz = camera[9:12] / np.linalg.norm(camera[9:12])
-    return {
-        "position": [float(value) for value in camera[0:3]],
-        "yaw": math.atan2(fx, fz),
-        "pitch": math.asin(max(-1.0, min(1.0, fy))),
-    }
-
-
-def camera_of(own, pose):
-    """The 16 numbers of `pose`: position and the orientation from yaw and pitch (right
-    = forward x y, up = right x forward, as reference/scenes.py makes them); focal,
-    centre and near the scene's own camera's."""
-    yaw, pitch = pose["yaw"], pose["pitch"]
-    forward = np.array(
-        [
-            math.cos(pitch) * math.sin(yaw),
-            math.sin(pitch),
-            math.cos(pitch) * math.cos(yaw),
-        ]
-    )
-    right = np.cross(forward, np.array([0.0, 1.0, 0.0]))
-    right /= np.linalg.norm(right)
-    up = np.cross(right, forward)
-    camera = np.array(own, dtype=np.float32)
-    camera[0:3] = pose["position"]
-    camera[3:6], camera[6:9], camera[9:12] = right, up, forward
-    return camera
 
 
 def parse_pose(body):

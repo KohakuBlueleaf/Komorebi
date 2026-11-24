@@ -13,6 +13,7 @@ the server encodes it as JPEG and sends it down the page's stream.
 | file | what it is |
 |---|---|
 | `server.py` | the web server (Python's `http.server` only) and the render loop, on the main thread, that owns the card's session |
+| `camera.py` | a pose from a camera's 16 numbers and back; needs no card and no image library |
 | `renderers.py` | `Raster`, `RasterTextured` (`--shade`, offered on scenes with a materials file), `RasterLit` (`--light`, offered on scenes with a materials and a lighting file), `RasterGi` (`--light --indirect`, offered where the scene also has an indirect file) and `Raytrace`: `open(scene, size)`, `frame(camera_words) -> (image, card_ms)`, `set_size(size)`, `close()`, on the `Loop` class of each project's `live.py` |
 | `page.html` | the page: the stream, the numbers, the selects and the controls; no external files |
 | `check.py` | the check without a browser |

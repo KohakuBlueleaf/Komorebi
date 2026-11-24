@@ -1,13 +1,10 @@
-"""The viewer's camera from a pose (projects/viewer/server.py camera_of): a right-handed
+"""The viewer's camera from a pose (projects/viewer/camera.py camera_of): a right-handed
 frame with y up, and a scene's own pose gives back the scene's own camera."""
 
 import numpy as np
-import pytest
 
+from projects.viewer import camera as server
 from reference import public, scenes
-
-pytest.importorskip("PIL")  # the server encodes its frames with Pillow
-server = pytest.importorskip("projects.viewer.server")
 
 
 def own_cameras():
