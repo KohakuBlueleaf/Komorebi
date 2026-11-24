@@ -33,9 +33,10 @@ from komorebi.dsl.compile.tiles import wholes
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import Block, Line
-from komorebi.program.several import COMPUTE_FLAGS
+from komorebi.program.several import COMPUTE_FLAGS, IF_PRESENT, RVV
 
 TILE_ELEMENTS = 32 * 32
+RAW_ALIGN = 16  # a raw field's page: whole 16 B (the NoC's and L1's alignment)
 
 
 def handler_methods(cls):
@@ -72,18 +73,19 @@ def compile_class(
     reserved=(),
     islands=(1, 0),
     share_pairs=False,
+    indices=64,
 ):
     """Compiles each handler of `cls`; `plan` sizes, `tensors` an example of each tensor
     parameter, `l1` the bytes for buffers, `constants` their values, `handlers` the sets
     (handler_variants), `reserved` indices left to others, `islands` the session's (a
-    tree's slots); `share_pairs`: handlers of other blocks share read pairs (layout)."""
+    tree's slots), `share_pairs` (layout), `indices` the chip's buffer indices."""
     methods = handler_methods(cls)
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
     compiled = Compiled(cls.__name__, source)
     compiled.cls = cls
     compiled.reserved, compiled.share_pairs = set(reserved), share_pairs
-    compiled.islands = tuple(islands)
+    compiled.islands, compiled.indices = tuple(islands), indices
     declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
@@ -98,7 +100,13 @@ def compile_class(
         for name in compiled.fields
         if isinstance(inspect.getattr_static(cls, name, None), front.Own)
     }
+    compiled.raw = {
+        name for name in compiled.own if inspect.getattr_static(cls, name).raw
+    }
     for name, value in list(compiled.fields.items()):
+        if name in compiled.raw:
+            raw_checked(compiled, name, value)
+            continue
         if word_field(value) and name in compiled.own:
             raise field_refused(
                 compiled,
@@ -240,15 +248,16 @@ class MergedPart:
     prefix: str
 
 
-def compile_merged(name, parts, l1=None):
-    """Compiles the handlers of several classes as ONE program: each handler's lines
-    read its own class's constants, plan and tensors; a field of one name in two
-    classes is one field when declared alike, else refused naming both. Returns the
-    Compiled and the example tensors by the names its kernels give them."""
+def compile_merged(name, parts, l1=None, indices=64):
+    """Compiles the handlers of several classes as ONE program (`indices` the chip's
+    buffer indices): each handler's lines read its own class's constants, plan and
+    tensors; a field of one name in two classes is one field when declared alike;
+    returns the Compiled and the example tensors by the names its kernels give them."""
     methods = [method for part in parts for _, method in part.methods]
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
     compiled = Compiled(name, source)
+    compiled.indices = indices
     merged_fields(compiled, parts)
     compiled.field_users = field_users(methods, compiled.fields)
     for method in methods:
@@ -325,19 +334,25 @@ def merged_fields(compiled, parts):
             )
             own = inspect.getattr_static(part.cls, field_name, None)
             push = own.push if isinstance(own, front.Own) else "none"
-            if field_name in owners and owners[field_name][1:] != (made, push):
+            raw = isinstance(own, front.Own) and own.raw
+            if field_name in owners and owners[field_name][1:] != (made, push, raw):
                 raise Refused(
                     f"{compiled.name}: field {field_name} is {owners[field_name][1]} "
                     f"in {owners[field_name][0]} and {made} in {part.cls.__name__}; "
                     "a field of one name is one field: declare it alike, or rename "
                     "one"
                 )
-            owners[field_name] = (part.cls.__name__, made, push)
+            owners[field_name] = (part.cls.__name__, made, push, raw)
             compiled.fields[field_name] = made
             compiled.field_files.setdefault(field_name, file_of(part.cls))
             if isinstance(own, front.Own):
                 compiled.own[field_name] = own.push
+            if raw:
+                compiled.raw.add(field_name)
     for field_name, value in list(compiled.fields.items()):
+        if field_name in compiled.raw:
+            raw_checked(compiled, field_name, value)
+            continue
         if word_field(value):  # as compile_class: words in each core's row
             if field_name in compiled.own:
                 raise field_refused(
@@ -486,6 +501,8 @@ def class_compute(cls, compiled):
                 f"{where} {key!r}: the host API has no such option; give "
                 f"math_fidelity or one of {', '.join(COMPUTE_FLAGS)}"
             )
+        if key == RVV and value == IF_PRESENT:  # as a hand program's: where present
+            continue
         if not isinstance(value, bool):
             raise Refused(f"{where} {key!r} = {value!r}: a flag; give True or False")
         if key == "fp32_dest_acc_en" and not value:
@@ -584,9 +601,47 @@ def field_refused(compiled, name, why, instead):
     return Refused(f"{compiled.name}.{name}{where}: {why}; {instead}")
 
 
+def raw_checked(compiled, name, value):
+    """A raw field's declaration: pages x items, of a format with item bytes."""
+    if value.format.itemsize == 0:
+        raise field_refused(
+            compiled,
+            name,
+            f"a raw field of {value.format.dtype}: a block format has a tile's bytes "
+            "only",
+            "give km.u32, km.fp32, km.bf16 or km.fp16",
+        )
+    if len(value.shape) < 2:
+        raise field_refused(
+            compiled,
+            name,
+            "a raw field is pages x items: give both",
+            f"declare it km.L1[format, pages, items] = km.{spelling('own')}(raw=True)",
+        )
+
+
+def raw_pages(compiled, name, value, solved):
+    """A raw field's (page bytes, pages): its first size its pages, the product of
+    the others times the format's item bytes a page's bytes (16 B or more, whole
+    16 B)."""
+    items = math.prod(solved[n] if isinstance(n, str) else n for n in value.shape[1:])
+    page_bytes = items * value.format.itemsize
+    if page_bytes < RAW_ALIGN or page_bytes % RAW_ALIGN:
+        raise field_refused(
+            compiled,
+            name,
+            f"a raw field's page of {page_bytes} B: a page is whole {RAW_ALIGN} B, "
+            f"{RAW_ALIGN} B or more",
+            "give items a page whose bytes are a multiple of 16",
+        )
+    first = value.shape[0]
+    return page_bytes, solved[first] if isinstance(first, str) else first
+
+
 def bind_fields(compiled, plan, l1):
-    """Each field a buffer of whole tiles; its shape's symbols from the plan, and one
-    symbol left unknown solved as the largest that fits the L1 the others leave."""
+    """Each field a buffer of whole tiles (a raw field's: pages of its own bytes);
+    its shape's symbols from the plan, and one symbol left unknown solved as the
+    largest that fits the L1 the others leave."""
     unknown, user = set(), {}
     for name, value in compiled.fields.items():
         symbols = [n for n in value.shape if isinstance(n, str) and n not in plan]
@@ -597,6 +652,15 @@ def bind_fields(compiled, plan, l1):
         unknown |= set(symbols)
         for symbol in symbols:
             user.setdefault(symbol, name)
+        items = [n for n in symbols if name in compiled.raw and n in value.shape[1:]]
+        if items:
+            raise field_refused(
+                compiled,
+                name,
+                f"{items[0]} is solved against the L1, and a raw field's solved "
+                "size is its first, its pages",
+                f"give {items[0]} in the {spelling('plan')}, or make it the pages",
+            )
     if len(unknown) > 1:
         raise field_refused(
             compiled,
@@ -617,36 +681,42 @@ def bind_fields(compiled, plan, l1):
             )
         solved[symbol] = solve(compiled, symbol, plan, l1, user[symbol])
     for name, value in compiled.fields.items():
-        elements = field_elements(value, solved)
-        if elements % TILE_ELEMENTS:
-            raise field_refused(
-                compiled,
-                name,
-                f"{elements} items are not whole tiles ({TILE_ELEMENTS} a tile)",
-                "give sizes whose product is a multiple of 1,024",
-            )
-        page_bytes = value.format.tile_bytes
+        raw = name in compiled.raw
+        if raw:
+            page_bytes, pages = raw_pages(compiled, name, value, solved)
+        else:
+            elements = field_elements(value, solved)
+            if elements % TILE_ELEMENTS:
+                raise field_refused(
+                    compiled,
+                    name,
+                    f"{elements} items are not whole tiles ({TILE_ELEMENTS} a tile)",
+                    "give sizes whose product is a multiple of 1,024",
+                )
+            page_bytes, pages = value.format.tile_bytes, elements // TILE_ELEMENTS
         shape = " x ".join(
             f"{n} = {solved[n]}" if isinstance(n, str) else str(n) for n in value.shape
         )
         buffer = Buffer(
             f"kField{camel(name)}",
             "field",
-            layout.next_index(compiled),
+            layout.next_index(compiled, upper=name in compiled.own),
             None,
             value.format.dtype,
             page_bytes,
-            (elements // TILE_ELEMENTS,),
+            (pages,),
             1,
             f"field {name}: {value.format.dtype}, {shape}"
             + (
                 "; own: used by bodies, not filled by a line"
                 if name in compiled.own
                 else ""
-            ),
+            )
+            + ("; raw pages" if raw else ""),
         )
+        buffer.own, buffer.raw = name in compiled.own, raw
         layout.added(compiled, buffer)
-        if name in compiled.own and value.format.dtype == "float32":
+        if name in compiled.own and value.format.dtype == "float32" and not raw:
             compiled.unpack_fp32.add(buffer.name)  # unpacked to DST as float32
         for n in value.shape:
             if isinstance(n, str):
@@ -688,9 +758,16 @@ def solve(compiled, symbol, plan, l1, name):
     used = sum(sum(b.pages) * b.page_bytes for b in compiled.buffers)
     fixed, per = 0, 0  # without the symbol, and per unit of it: 1/1,024ths of bytes
     step = 1
-    for value in compiled.fields.values():
+    for name, value in compiled.fields.items():
         items = field_elements(value, {**plan, symbol: 1})
         rest = items * value.format.tile_bytes
+        if name in compiled.raw:  # pages x a page's bytes, no whole tiles
+            rest = items * value.format.itemsize * TILE_ELEMENTS
+            if symbol in value.shape:
+                per += rest
+            else:
+                fixed += rest
+            continue
         if symbol in value.shape:
             per += rest
             step = math.lcm(step, TILE_ELEMENTS // math.gcd(items, TILE_ELEMENTS))

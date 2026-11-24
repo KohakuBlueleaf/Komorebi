@@ -93,7 +93,9 @@ NAMES = {
         "the rectangle, an argument after the parameters",
         None,
     ),
-    "own": Name("own", "f: km.L1[...] = km.own(push=): a field only bodies use", None),
+    "own": Name(
+        "own", "f: km.L1[...] = km.own(push=, raw=): a field only bodies use", None
+    ),
     "pair": Name(
         "Pair",
         "p = km.Pair(format, pages, write=False): a buffer pair hand kernels stream",

@@ -630,7 +630,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
 | `for i in range(n):` | a loop | a loop |
 | `km.cxx("...", takes=[n], on="mover_b")` | the C++ as written, on the CPU `on` names (Inline bodies) | compute's three CPUs when `on` is not given; `on="unpack"`, `"math"`, `"pack"`: that CPU's alone |
-| `class P(km.Program, compute={...})` | | the compute kernel's options, by the host API's names, over the ones the class's lines set |
+| `class P(km.Program, compute={...})` | | the compute kernel's options, by the host API's names, over the ones the class's lines set (`"enable_trisc2_rvv": "if_present"` as a hand program's) |
 | `class P(km.Program, defines={...})`, and `P(..., defines={...})` | the kernels' defines (the make's over the class's) | the same |
 | `km.cxx(..., at="start")`, `at="end"` | the body at the kernel's start (after `km::Movement`) or after its run | after the start-up, before the commands; or after the run |
 | `class P(km.Program, startup=km.Startup("a", "b", "out", order="reverse"))` | | `compute_kernel_hw_startup<SrcOrder::Reverse>` of those fields' buffers, in place of the default |
@@ -750,8 +750,9 @@ such programs), and the build report names the pair `shared by <handlers>`. A re
 arrival buffer 118 float32 tiles by owner (a slot for each other core of a 119-core
 group), by tree a slot of n tiles for each round (7, or the bits of S - 1 in groups of
 S); a broadcast's buffer `window` blocks of the pages it casts. Buffer indices are
-0 up for reads, 8 up for arrivals, broadcasts and fields, 16 up for writes; 26 to 31
-are the runtime's. Compute's tiles are in DST as float32; a float32 buffer is unpacked
+0 up for reads, 8 up for arrivals, broadcasts and fields, 16 up for writes, to 25; 26 to
+31 are the runtime's, and an own field past 25 takes 32 up ([A body's own
+buffer](#a-bodys-own-buffer)). Compute's tiles are in DST as float32; a float32 buffer is unpacked
 to it unrounded.
 
 ## Inline bodies
@@ -838,6 +839,37 @@ refused. The pack and unpack CPUs share no variable, so state written in place n
 token from the writer to the reader (`step` above), as the attention pass's has. A
 body that copies from buffers of two formats sets the unpacker's format before each
 copy (`reconfig_data_format_srca(total)`): `copy_init` keeps the one it finds.
+
+**A raw field.** `km.own(push=..., raw=True)` makes an own field a plain buffer of raw
+pages, not tiles: its first size is its pages, and the product of the others times the
+format's item bytes is a page's bytes.
+
+```python
+MESH_PAGES = km.constant(4)
+mesh: km.L1[km.u32, MESH_PAGES, 704] = km.own(push="mover_a", raw=True)  # 4 x 2,816 B
+hist: km.L1[km.u32, 1, 16384] = km.own(push=None, raw=True)  # 1 page of 65,536 B
+```
+
+Its format is one with item bytes (`km.u32`, `km.fp32`, `km.bf16`, `km.fp16`), a page
+whole 16 B and 16 B or more; nothing of a tile applies (no whole tiles, no unpack to DST
+for a float32 one). The header gives `kField<Name>` (its index), `kField<Name>Pages` and
+`kField<Name>PageBytes`. A size is an int, a constant of the class or a symbol of the
+plan; the one symbol the build solves may be its first size (its pages, each a page's
+bytes of L1), and the L1 table counts it as pages x page bytes. Bodies use it as any own
+field, a `km.cxx` body's `takes=` or a `km.kernel` handler's files, and `km.Startup` may
+name it; a line that names it otherwise is refused ("a raw field: bodies use it"). A
+merge carries it as an own field.
+
+**Indices past 25.** A field takes the lowest free index from 8 to 25; when none of
+them is free, an own field takes the lowest free index from 32 up, never 33 (the link cores' on a
+session of several islands), to the chip's last (`Device.buffer_indices()` of the make's
+session, else 63; a chip of 32 indices has none past 25). When a stream's pair, a
+declared pair or another buffer finds no free index in its range, the own field holding
+the highest index of that range moves to the upper indices, until it fits; a field a
+line fills, writes or sums stays below 26. The runtime's clean-up after a give-up covers
+the indices below 29: an own field at 32 or above is not rewound after a give-up, so a
+body that leaves pages in one clears it itself. A switching run and an added class
+refuse a program with a buffer at 32 or above, naming the buffer.
 
 ### A body on a reduce's sum
 
@@ -1283,6 +1315,12 @@ reads and writes, and a hand kernel's are its own C++), and `Run.chain` of a cal
 a dynamic handler in the class; an island session's make; `handlers=` listing it; and,
 at the handler's line, `overlay=`, `stamps=`, `direct=` or `in_place=`, a body that is
 not a docstring or `pass`, and a region, rectangle or constant parameter.
+
+The example's second hand handler, `note`, takes a raw field: `record: km.L1[km.u32, 1,
+64] = km.own(push="pack", raw=True)` is one page of 256 B that its pack file fills and
+pushes and its writer file waits for, writes to the core's page of a tensor and frees,
+by `kFieldRecord` and `kFieldRecordPages` of the header. Its files are its own, so the
+gate's code is unchanged; on the card all 64 words of every core's record are right.
 
 Measured (card 1, [33_kernel_handler](../../examples/33_kernel_handler/README.md)):
 the gate's two files as a handler of a class beside a DSL handler, 12 cores, 64 tiles a
@@ -2432,7 +2470,7 @@ A field is declared on the class with its format and shape; a symbol of the shap
 declared in the class's body, `TILES = km.symbol()` (or `km.constant()`), and used as
 `count: km.L1[km.fp32, TILES, 32, 32]`; a size may be a constant of the class too,
 each program's value ([Constants](#constants)). Each field is a buffer of whole tiles, index 8
-up. A symbol is the plan's; one symbol left unknown is solved as the largest for which
+up to 25 (an own field past them 32 up, [A body's own buffer](#a-bodys-own-buffer)). A symbol is the plan's; one symbol left unknown is solved as the largest for which
 the fields and the buffers fit `l1`, and the report prints it.
 
 A field is filled from a stream of a page range, of its own tiles' count, or of a
@@ -3472,6 +3510,20 @@ Many: km.Pair p13 (read) needs pair kPairP13, and indices 0 to 25 have no two fr
 gates_other: km.Pair a_in is (bfloat16, pages=32, write=False) in Gates and (float32, pages=32, write=False) in Other; a pair of one name is one pair: declare it alike, or rename one
 ```
 
+A raw field's refusals and the indices', from
+[test_raw_fields.py](../../tests/core/dsl/test_raw_fields.py):
+
+```text
+One.words, line 106, `words: km.L1[km.u32, 64] = km.own(raw=True)`: a raw field is pages x items: give both; declare it km.L1[format, pages, items] = km.own(raw=True)
+Block.blocks, line 109, `blocks: km.L1[km.bfp8_b, 1, 64] = km.own(raw=True)`: a raw field of bfp8_b: a block format has a tile's bytes only; give km.u32, km.fp32, km.bf16 or km.fp16
+Odd.odd, line 112, `odd: km.L1[km.bf16, 1, 3] = km.own(raw=True)`: a raw field's page of 6 B: a page is whole 16 B, 16 B or more; give items a page whose bytes are a multiple of 16
+Items.items, line 116, `items: km.L1[km.u32, 2, ITEMS] = km.own(raw=True)`: ITEMS is solved against the L1, and a raw field's solved size is its first, its pages; give ITEMS in the plan, or make it the pages
+Lined.drain, line 123, `pages = km.Stream(self.table, mover="B")`: self.table is a raw field: bodies use it; take it in a body, km.cxx(..., takes=[self.table]), or in a km.kernel handler's files
+km.own(raw='yes'): raw= is True (a raw field: pages x items, raw pages) or False
+Fields50: more buffers and fields than the indices: 49 buffers take 49 indices, and a class has 57 of the chip's 64 (0 to 25, and 32 up but 33); declare fewer fields, or split the class
+Fields19: more buffers and fields than the indices: 18 buffers take 18 indices, and a class has 26 of the chip's 32 (0 to 25); declare fewer fields, or split the class
+```
+
 A tensor not in whole tiles is refused at the make, or at a submit, where a reduction
 or a product along its padded axis could take its padding in (a `ProgramError` naming
 the handler, the line, the tensor's shapes and the handler that wrote the padding;
@@ -3726,7 +3778,7 @@ would take:
   subblock over rows in the streams' block layout, about 80 lines.
 - An operand computed on the product's line (`project(xb + yb, wb)`, `(p0 + p1) @ W`,
   `x @ (W + dW)`): refused at its line. It would need a staging buffer a side (one
-  block of L1, a buffer index of the class's 26), compute adding the blocks into it
+  block of L1, a buffer index of 0 to 25, a buffer compute unpacks), compute adding the blocks into it
   each turn, and the unpacker's formats set again between the add and the product
   each block (the cost on the card not measured). Today: write the sum to a tensor
   and stream that, one more write and read of the left side in DRAM (small beside W

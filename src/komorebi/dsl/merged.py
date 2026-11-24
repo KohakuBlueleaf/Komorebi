@@ -558,7 +558,9 @@ def build(self):
     room = made.direct_room(
         type(self), handlers.values(), given, self.chain_wanted, room
     )
-    compiled, tensors = compiler.compile_merged(self.cname, parts, room)
+    compiled, tensors = compiler.compile_merged(
+        self.cname, parts, room, made.chip_indices(session)
+    )
     self.compiled = compiled
     compiled.handler_sources = handler_sources(self, compiled)
     walked = made.chain_made(
@@ -627,6 +629,7 @@ def build(self):
     self.port_handlers = set(compiled.port_handlers)
     self.constant_handlers = set_lists(self)  # each listed set's merged handler
     program_args = made.rectangle_of(self, compiled) if compiled.rectangle else None
+    self.raw_indices = {b.index_a for b in compiled.buffers if b.raw}  # an add-on's
     if compiled.word_fields:
         program_args = made.words_of(compiled, tensors, program_args)
     buffers = []
@@ -634,7 +637,11 @@ def build(self):
         if buffer.index_b is None:
             buffers.append(
                 km_program.Buffer(
-                    buffer.index_a, buffer.dtype, buffer.page_bytes, buffer.pages[0]
+                    buffer.index_a,
+                    buffer.dtype,
+                    buffer.page_bytes,
+                    buffer.pages[0],
+                    buffer.name,
                 )
             )
         else:

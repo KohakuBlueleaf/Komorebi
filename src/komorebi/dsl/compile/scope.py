@@ -5,6 +5,7 @@ expression reads."""
 import ast
 
 from komorebi.dsl.compile.source import refuse
+from komorebi.dsl.front.names import spelling
 
 
 def assigned_names(frame):
@@ -22,14 +23,23 @@ def assigned_names(frame):
     return {name for name, count in counts.items() if count > 1}
 
 
-def field_name(frame, node):
-    """The field `node` is (`self.name`), or None."""
+def field_name(frame, node, body=False):
+    """The field `node` is (`self.name`), or None; a raw field refused but in a
+    body's takes (`body`)."""
     if (
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
         and node.value.id == "self"
         and node.attr in frame.compiled.fields
     ):
+        if node.attr in frame.compiled.raw and not body:
+            refuse(
+                frame.where,
+                node,
+                f"self.{node.attr} is a raw field: bodies use it",
+                f"take it in a body, km.cxx(..., takes=[self.{node.attr}]), or in a "
+                f"km.{spelling('kernel')} handler's files",
+            )
         return node.attr
     return None
 

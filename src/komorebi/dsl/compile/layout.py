@@ -9,6 +9,8 @@ from komorebi.dsl.front.names import spelling
 # Circular buffer indices: reads from 0, writes from 16, the others from 8, to 25 (26
 # to 31 are the runtime's: messages 26-28, tokens 29-30, trace 31).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
+# Own fields past 25: from 32 to the chip's last index, never 33 (KM_LINK_CB).
+FIRST_UPPER, LINK_INDEX, INDICES = 32, 33, 64
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
 # Items a read half holds (double buffering on each mover and one more each), and a
 # write half.
@@ -17,13 +19,18 @@ WRITE_ITEMS = 2
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 
 
+def taken_indices(compiled):
+    """The indices the program's buffers and the reserved ones take."""
+    taken = {b.index_a for b in compiled.buffers} | {
+        b.index_b for b in compiled.buffers if b.index_b is not None
+    }
+    return taken | compiled.reserved
+
+
 def free_index(compiled, first, pair=False):
     """The first index from `first` that no buffer and no reserved index takes; for a
     `pair`, the first even step from `first` whose index and the next are both free."""
-    taken = {b.index_a for b in compiled.buffers} | {
-        b.index_b for b in compiled.buffers
-    }
-    taken |= compiled.reserved
+    taken = taken_indices(compiled)
     index = first
     if pair:
         while index in taken or index + 1 in taken:
@@ -40,12 +47,47 @@ def added(compiled, buffer):
     return buffer
 
 
-def next_index(compiled):
-    """The next index of a field or another single buffer."""
+def next_index(compiled, upper=False):
+    """The next index of a field or another single buffer: the first free from 8 to
+    25; past them an own field's (`upper`) is the first free of the upper ones
+    (upper_index), another's room an own field makes (make_room)."""
     index = free_index(compiled, FIRST_OTHER)
-    if index > LAST_INDEX:
-        raise Refused(f"{compiled.name}: more buffers and fields than the indices")
-    return index
+    while index > LAST_INDEX and not upper and make_room(compiled, FIRST_OTHER):
+        index = free_index(compiled, FIRST_OTHER)
+    if index <= LAST_INDEX:
+        return index
+    if upper:
+        return upper_index(compiled)
+    raise Refused(f"{compiled.name}: more buffers and fields than the indices")
+
+
+def upper_index(compiled):
+    """The first index from 32 that no buffer takes, never 33, below the chip's
+    indices (compiled.indices); refused past them with the counts."""
+    taken = taken_indices(compiled)
+    for index in range(FIRST_UPPER, compiled.indices):
+        if index != LINK_INDEX and index not in taken:
+            return index
+    upper = [i for i in range(FIRST_UPPER, compiled.indices) if i != LINK_INDEX]
+    raise Refused(
+        f"{compiled.name}: more buffers and fields than the indices: "
+        f"{len(compiled.buffers)} buffers take {len(taken)} indices, and a class has "
+        f"{LAST_INDEX + 1 + len(upper)} of the chip's {compiled.indices} (0 to "
+        f"{LAST_INDEX}{f', and {FIRST_UPPER} up but {LINK_INDEX}' if upper else ''}); "
+        "declare fewer fields, or split the class"
+    )
+
+
+def make_room(compiled, first, last=LAST_INDEX):
+    """Room for a buffer that finds no free index from `first` to `last`: the own
+    field holding the highest of them moves to the upper indices (upper_index);
+    False when no own field is there."""
+    held = [b for b in compiled.buffers if b.own and first <= b.index_a <= last]
+    if not held:
+        return False
+    moved = max(held, key=lambda buffer: buffer.index_a)
+    moved.index_a = upper_index(compiled)
+    return True
 
 
 class SharedPair:
@@ -91,6 +133,8 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=
     else:
         first = FIRST_READ if role == "read" else FIRST_WRITE
         index = free_index(compiled, first, pair=True)
+        while index + 1 > LAST_INDEX and make_room(compiled, first):
+            index = free_index(compiled, first, pair=True)
         buffer = Buffer(
             name,
             role,
@@ -136,6 +180,8 @@ def declared_pair(compiled, attribute, role, dtype, page_bytes, pages, what):
     name = f"kPair{camel(attribute)}"
     first = FIRST_READ if role == "read" else FIRST_WRITE
     index = free_index(compiled, first, pair=True)
+    while index + 1 > LAST_INDEX and make_room(compiled, first):
+        index = free_index(compiled, first, pair=True)
     if index + 1 > LAST_INDEX:
         pairs = [b for b in compiled.buffers if b.index_b is not None]
         held = "; ".join(
@@ -198,6 +244,8 @@ def out_buffer(compiled, name, dtype, page_bytes, pages, what, item=None):
                 return buffer
         name += "b"
     index = free_index(compiled, FIRST_WRITE)
+    while index > LAST_INDEX and make_room(compiled, FIRST_WRITE):
+        index = free_index(compiled, FIRST_WRITE)
     if index > LAST_INDEX:
         raise Refused(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, "out", index, None, dtype, page_bytes, (pages,), 1, what)
@@ -210,7 +258,10 @@ def other_buffer(compiled, name, role, dtype, page_bytes, pages, what):
     for buffer in compiled.buffers:
         if buffer.name == name:
             return buffer
+    last = LAST_INDEX if role == "field" else FIRST_WRITE - 1
     index = free_index(compiled, FIRST_OTHER)
+    while index > last and make_room(compiled, FIRST_OTHER, last):
+        index = free_index(compiled, FIRST_OTHER)
     if index >= FIRST_WRITE and role != "field":
         raise Refused(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, role, index, None, dtype, page_bytes, (pages,), 1, what)

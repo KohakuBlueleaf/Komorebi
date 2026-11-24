@@ -46,6 +46,11 @@ class Mixed(km.Program):
   movers.
 - `kernels/gate_compute.hpp`: `gate_k::gate_compute`, example 22's `compute.cpp` as
   a function, called on the three compute CPUs.
+- `kernels/note_pack.hpp` and `kernels/note_writer.hpp`: `note_k::note_pack` and
+  `note_k::note_writer`, the second hand handler `note`, on the class's raw field
+  `record` (`km.own(push="pack", raw=True)`, one page of 256 B): the pack CPU fills
+  the page (word 0 the core's rank, word 1 `tiles`, word 2 `0x4B4D5241`, word i = i
+  after) and pushes it, mover B writes it to the core's page of `records` and frees it.
 - `kernels/hand/`: the same two functions as a hand program of their own (`--hand`):
   `hand.h` holds the names the class's header gives them, at the class's values;
   `movement.cpp` and `compute.cpp` each a `kernel_main` calling them. It is built
@@ -64,7 +69,8 @@ runs first, and every `gate` command of the class must give its output word for 
 (`hand_words_exact`). Both are judged by the hand
 program's check against float64 (relative 2^-6 plus 2^-10). A command's time is its
 event's, and the median of `--calls` is printed. The JSON line's `ok` keys say each
-run was right.
+run was right. After these runs the script calls `note` once and checks all 64 words of
+every core's record (`note` in the JSON line, and one line of output).
 
 ## Numbers
 
@@ -82,10 +88,11 @@ python kernel_handler.py --cores 12 --hand --merged
 |---|---|---|---|---|---|
 | example 22's own program (a different program: 16-bit Dst, blocks of 8) | gate | 0 | | 76.72 µs | |
 | the hand program (`--hand`: float32 Dst, blocks of 4) | gate | 0 | | 94.28 µs | 40,068 B |
-| class `Mixed` | gate | 0 | every word, 5 of 5 commands | 94.44 µs | 50,668 B |
+| class `Mixed` | gate | 0 | every word, 5 of 5 commands | 94.44 µs | 52,568 B (50,668 B without `note`) |
 | class `Mixed` | add | 0 | | 23.76 µs | |
+| class `Mixed` | note | 0 of 64 words a core | | 2.74 µs | |
 | class `AddOnly` (`--add-alone`) | add | 0 | | 23.32 µs | |
-| `GateOnly` and `AddOnly` merged | gate | 0 | every word, 5 of 5 | 94.46 µs (hand 94.22) | 50,668 B |
+| `GateOnly` and `AddOnly` merged | gate | 0 | every word, 5 of 5 | 94.46 µs (hand 94.22) | 52,568 B (50,668 B without `note`) |
 | `GateOnly` and `AddOnly` merged | add | 0 | | 23.74 µs | |
 
 The 20 alternations of gate and add were right in both forms (40 commands, 0 wrong,

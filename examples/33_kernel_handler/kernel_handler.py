@@ -1,8 +1,7 @@
 """A hand-written kernel as a handler of a class: `gate` is example 22's kernels as
-functions (km.kernel), beside `add` in the DSL, in one class or in two merged, and
-(--hand) the same functions as a hand program of the class's compute options. Every
-command's output is checked. One JSON line. Example: python kernel_handler.py --hand
-"""
+functions (km.kernel), beside `add` in the DSL, in one class or in two merged, (--hand)
+as a hand program; `note` a second one on a raw field. Every command's output is
+checked. One JSON line. Example: python kernel_handler.py --hand"""
 
 import argparse
 import json
@@ -22,12 +21,20 @@ sys.path.insert(0, str(HERE.parent / "22_gate"))
 import gate as hand  # noqa: E402  (the hand program, its values and its check)
 
 ALTERNATIONS = 20  # gate then add, each checked
+RECORD_WORDS = 64  # a core's record: one page of the raw field, of records
+MARK = 0x4B4D5241  # word 2 of each record
 # The gate's hand kernels: one function a role, gate_k::gate_movement on both movers
 # and gate_k::gate_compute on the three compute CPUs.
 GATE = km.kernel(
     movement="kernels/gate_movement.hpp",
     compute="kernels/gate_compute.hpp",
     entry="gate_k::gate",
+)
+# note's: the record page filled on the pack CPU, written by mover B.
+NOTE = km.kernel(
+    writer="kernels/note_writer.hpp",
+    pack="kernels/note_pack.hpp",
+    entry="note_k::note",
 )
 
 
@@ -45,6 +52,7 @@ class Mixed(km.Program):
     a_in = km.Pair(km.bf16, pages=BLOCK * 4)  # four blocks a half
     b_in = km.Pair(km.bf16, pages=BLOCK * 4)
     result = km.Pair(km.bf16, pages=BLOCK * 4, write=True)
+    record: km.L1[km.u32, 1, RECORD_WORDS] = km.own(push="pack", raw=True)  # 256 B
 
     @km.handler(GATE)
     def gate(
@@ -56,6 +64,10 @@ class Mixed(km.Program):
         pattern: km.Pattern,
     ):
         """out = silu(a) * b."""
+
+    @km.handler(NOTE)
+    def note(self, records: km.Tensor, tiles: int):
+        """records' page rank = the core's record, by way of the raw field."""
 
     @km.handler
     def add(
@@ -84,6 +96,7 @@ class GateOnly(km.Program):
     a_in = km.Pair(km.bf16, pages=BLOCK * 4)
     b_in = km.Pair(km.bf16, pages=BLOCK * 4)
     result = km.Pair(km.bf16, pages=BLOCK * 4, write=True)
+    record: km.L1[km.u32, 1, RECORD_WORDS] = km.own(push="pack", raw=True)  # 256 B
 
     @km.handler(GATE)
     def gate(
@@ -95,6 +108,10 @@ class GateOnly(km.Program):
         pattern: km.Pattern,
     ):
         """out = silu(a) * b."""
+
+    @km.handler(NOTE)
+    def note(self, records: km.Tensor, tiles: int):
+        """records' page rank = the core's record, by way of the raw field."""
 
 
 class AddOnly(km.Program):
@@ -144,7 +161,8 @@ class Bench:
 
     def __init__(self, session, run, tensors, args, cores, words=None):
         self.session, self.run, self.args, self.cores = session, run, args, cores
-        self.a, self.b, self.outs, self.wanted = tensors
+        self.a, self.b, self.outs, self.wanted = tensors[:4]
+        self.records = tensors[4] if len(tensors) > 4 else None
         self.pages, self.words = cores * args.tiles, words
 
     def call(self, name, handler):
@@ -186,6 +204,27 @@ class Bench:
             record["hand_words_exact"] = all(call[4] for call in calls)
         return record
 
+    def noted(self, handler):
+        """One command of `handler` (note) into records: every core's 64 words."""
+        records = self.records
+        self.session.write(records, np.zeros((self.cores, 4 * RECORD_WORDS), np.uint8))
+        words = (records, self.args.tiles)
+        event = self.run.wait(
+            self.run.submit(handler, (0, self.cores), args=words), timeout=30.0
+        )
+        (pages,) = self.session.read(records)
+        got = pages.view(np.uint32).reshape(self.cores, RECORD_WORDS)
+        want = np.tile(np.arange(RECORD_WORDS, dtype=np.uint32), (self.cores, 1))
+        want[:, 0] = np.arange(self.cores)  # the core's rank, then tiles, the mark
+        want[:, 1], want[:, 2] = self.args.tiles, MARK
+        right = int((got == want).all(axis=1).sum())
+        hand.log(f"note: {right} of {self.cores} cores' {RECORD_WORDS} words right")
+        return {
+            "ok": event.kind == "done" and right == self.cores,
+            "cores_right": right,
+            "microseconds": event.microseconds,
+        }
+
     def alternated(self, handlers):
         """gate then add, ALTERNATIONS times, each judged."""
         calls = [
@@ -214,18 +253,20 @@ def tensors_of(session, args, cores):
     a_values, b_values = hand.floats(a_bits), hand.floats(b_bits)
     wanted = {"gate": hand.reference(a_values, b_values), "add": a_values + b_values}
     wanted["hand"] = wanted["gate"]
-    return a, b, outs, wanted
+    records = session.empty((cores, RECORD_WORDS), "uint32")  # a page a core
+    return a, b, outs, wanted, records
 
 
 def made(session, args, tensors):
     """The program (Mixed, or GateOnly and AddOnly merged) and its handlers."""
-    a, b, outs, _ = tensors
+    a, b, outs, _, records = tensors
     given = {"a": a, "b": b, "out": outs["gate"], "log": hand.log}
     if not args.merged:
-        return Mixed(**given), {"gate": Mixed.gate, "add": Mixed.add}
-    gate, add = GateOnly(**given), AddOnly(**given)
+        program = Mixed(**given, records=records)
+        return program, {"gate": Mixed.gate, "add": Mixed.add, "note": Mixed.note}
+    gate, add = GateOnly(**given, records=records), AddOnly(**given)
     merged = km.merge(gate, add, session=session, log=hand.log)
-    return merged, {"gate": gate.gate, "add": add.add}
+    return merged, {"gate": gate.gate, "add": add.add, "note": gate.note}
 
 
 def hand_program(tensors, compute):
@@ -257,7 +298,7 @@ def hand_program(tensors, compute):
 
 def run_hand(session, args, cores, tensors, compute):
     """The hand program's GATE --calls times: its record and its output's words."""
-    a, b, outs, _ = tensors
+    a, b, outs = tensors[:3]
     program = hand_program((a, b, outs["hand"]), compute)
     run = session.load(program)
     try:
@@ -306,6 +347,7 @@ def main():
             report["gate"] = bench.timed("gate", handlers["gate"])
             report["add"] = bench.timed("add", handlers["add"])
             report["alternate"] = bench.alternated(handlers)
+            report["note"] = bench.noted(handlers["note"])
         finally:
             run.stop()
         if args.add_alone:
@@ -318,7 +360,7 @@ def main():
                 run.stop()
     report["ok"] = all(
         report[key]["ok"]
-        for key in ("hand", "gate", "add", "alternate", "add_alone")
+        for key in ("hand", "gate", "add", "alternate", "note", "add_alone")
         if key in report
     )
     print(json.dumps(power.clocked(report), default=float), flush=True)

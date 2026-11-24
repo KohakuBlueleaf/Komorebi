@@ -385,9 +385,12 @@ def header_name(compiled):
 
 def mixed_formats(compiled):
     """(the formats compute unpacks are more than one, those it packs are): a
-    kernel of one of each sets them once at its start."""
+    kernel of one of each sets them once at its start. A raw field's pages are no
+    tiles compute unpacks."""
     unpacked, packed = set(), set()
     for buffer in compiled.buffers:
+        if buffer.raw:
+            continue
         if buffer.role in ("read", "field", "arrival", "broadcast"):
             unpacked.add(buffer.dtype)
             if buffer.name in compiled.summed_fields:  # sums packed into the field

@@ -14,7 +14,7 @@ from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use, padding
 from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.compile.handler import kernel_handler
-from komorebi.dsl.compile.layout import padded_rings
+from komorebi.dsl.compile.layout import INDICES, make_room, padded_rings
 from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
     camel,
@@ -274,7 +274,16 @@ def make(
     room = direct_room(cls, compiler.handler_methods(cls), tensors, chain, room)
     islands = islands_of(session)
     compiled = compiler.compile_class(
-        cls, plan, tensors, room, values, sets, reserved, islands, not found
+        cls,
+        plan,
+        tensors,
+        room,
+        values,
+        sets,
+        reserved,
+        islands,
+        not found,
+        chip_indices(session),
     )
     if found:
         first_use.reserve(
@@ -318,6 +327,7 @@ def make(
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
     self.word_fields = dict(compiled.word_fields)
+    self.raw_indices = {b.index_a for b in compiled.buffers if b.raw}  # an add-on's
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
     keyed = constants_keyed(cls, values)
@@ -363,7 +373,11 @@ def make(
         if buffer.index_b is None:
             buffers.append(
                 km_program.Buffer(
-                    buffer.index_a, buffer.dtype, buffer.page_bytes, buffer.pages[0]
+                    buffer.index_a,
+                    buffer.dtype,
+                    buffer.page_bytes,
+                    buffer.pages[0],
+                    buffer.name,
                 )
             )
         else:
@@ -662,6 +676,13 @@ def islands_of(session):
         return (1, 0)
     count = len(graph.islands)
     return (count, max(graph.count(i) for i in range(count)))
+
+
+def chip_indices(session):
+    """The buffer indices of the session's chip (Device.buffer_indices; an island
+    session's first island's), 64 without a session or before its device opens."""
+    device = getattr(reserve_of(session)[0], "device", None) if session else None
+    return int(device.buffer_indices()) if device is not None else INDICES
 
 
 def runtime_bytes(session, trace):
@@ -1410,6 +1431,11 @@ def header(compiled):
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
                     f"constexpr uint32_t {buffer.name}Pages = {buffer.pages[0]};",
                 ]
+                if buffer.raw:  # raw pages: a page's bytes are its own
+                    lines.append(
+                        f"constexpr uint32_t {buffer.name}PageBytes = "
+                        f"{buffer.page_bytes};"
+                    )
             elif buffer.role == "broadcast":
                 window = buffer.pages[0] // buffer.block
                 lines += [
@@ -1849,12 +1875,13 @@ def direct_prepared(cls, compiled, tensors, handlers):
             f"{cls.__name__}: direct inputs of tiles of {sorted(sizes)} bytes; one "
             "landing area takes one tile size"
         )
-    used = {b.index_a for b in compiled.buffers} | {
-        b.index_b for b in compiled.buffers if b.index_b is not None
-    }
+    used = used_indices(compiled)
     # built for islands: the link cores' own buffer index is theirs (KM_LINK_CB)
     links = {abi.headers()["KM_LINK_CB"]} if compiled.islands[0] > 1 else set()
     index = next((i for i in range(DIRECT_LAST, -1, -1) if i not in used | links), None)
+    while index is None and make_room(compiled, 0, DIRECT_LAST):  # an own field up
+        used = used_indices(compiled)
+        index = next(i for i in range(DIRECT_LAST, -1, -1) if i not in used | links)
     if index is None:
         raise ProgramError(
             f"{cls.__name__}: no buffer index from {DIRECT_LAST} down is free for the "
@@ -1878,6 +1905,13 @@ def direct_prepared(cls, compiled, tensors, handlers):
             what="a direct input's landing area (km_chain.hpp chain_send, DirectOr)",
         )
     )
+
+
+def used_indices(compiled):
+    """The indices the class's buffers take."""
+    return {b.index_a for b in compiled.buffers} | {
+        b.index_b for b in compiled.buffers if b.index_b is not None
+    }
 
 
 def chain_prepared(cls, compiled):
@@ -1995,6 +2029,9 @@ def in_place_prepared(cls, compiled, declared, key, used):
     blocks = [letters[b % len(letters)] for b in range(tiles // block)]
     pages = tuple(max(blocks.count(half), 1) * block for half in "AB")
     free = [i for i in range(IN_PLACE_LAST) if i not in used]
+    while len(free) < 2 and make_room(compiled, 0, IN_PLACE_LAST - 1):
+        used = used_indices(compiled)  # an own field moved up
+        free = [i for i in range(IN_PLACE_LAST) if i not in used]
     if len(free) < 2:
         raise ProgramError(
             f"{label}: the stream's own pair needs two buffers under "

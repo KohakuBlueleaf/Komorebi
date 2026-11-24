@@ -246,22 +246,27 @@ OWN_PUSHERS = ("mover_a", "mover_b", "pack")
 
 
 class Own:
-    """`p: km.L1[format, *shape] = km.own(push=...)`: a field only bodies use, never
-    filled, waited for or freed by a line. `push` the one CPU whose bodies push it
-    (OWN_PUSHERS), None for one written in place and never pushed; not given, the
-    build finds it from the bodies (one CPU at most)."""
+    """`p: km.L1[format, *shape] = km.own(push=..., raw=...)`: a field only bodies use.
+    `push` the one CPU whose bodies push it (OWN_PUSHERS), None for one written in
+    place and never pushed; not given, the build finds it from the bodies. `raw` True:
+    a raw field, its first size its pages and the others' items a page (not tiles)."""
 
-    def __init__(self, push="found"):
+    def __init__(self, push="found", raw=False):
         if push != "found" and push is not None and push not in OWN_PUSHERS:
             raise ProgramError(
                 f"km.{spelling('own')}(push={push!r}): push= is the one CPU that "
                 f"pushes it ({', '.join(map(repr, OWN_PUSHERS))}) or None"
             )
-        self.push = push
+        if not isinstance(raw, bool):
+            raise ProgramError(
+                f"km.{spelling('own')}(raw={raw!r}): raw= is True (a raw field: pages "
+                "x items, raw pages) or False"
+            )
+        self.push, self.raw = push, raw
 
 
-def own(push="found"):
-    return Own(push)
+def own(push="found", raw=False):
+    return Own(push, raw)
 
 
 class Pair:

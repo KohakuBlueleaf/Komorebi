@@ -200,7 +200,7 @@ def inline(frame, node, call, name=None):
     for item in takes:
         if take_constant(frame, item, bound):
             continue
-        field = scope.field_name(frame, item)
+        field = scope.field_name(frame, item, body=True)
         if field in frame.compiled.own:
             take_own(frame, node, field, where, text, bound)
             continue
@@ -289,7 +289,7 @@ def kernel_takes(frame, node, takes, gives, name):
             "drop gives= and the name",
         )
     for item in takes:
-        if scope.field_name(frame, item) not in frame.compiled.own:
+        if scope.field_name(frame, item, body=True) not in frame.compiled.own:
             refuse(
                 frame.where,
                 node,

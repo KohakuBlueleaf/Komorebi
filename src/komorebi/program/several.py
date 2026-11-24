@@ -122,7 +122,7 @@ def plan(spec, cores):
     if ranges is not None:  # one build of the runtime's kernels serves every group
         _same_nocs(programs, "programs whose groups switch")
     for program in programs if ranges is not None else ():
-        high = [b.index for b in program.buffers if b.index >= SWITCH_BUFFERS]
+        high = [b for b in program.buffers if b.index >= SWITCH_BUFFERS]
         if high:
             raise ProgramError(switch_refusal(program, high))
         if runs_chains(program):
@@ -154,15 +154,22 @@ def runs_chains(program):
 
 
 def switch_refusal(program, high):
-    """The refusal of a program with buffers at 32 or above in a switching run: each
-    buffer by index, why, and the way round."""
-    named = ", ".join(map(str, high))
+    """The refusal of a program with buffers at 32 or above (`high`) in a switching
+    run: each buffer by its name and index, why, and the way round."""
+    named = ", ".join(buffer_named(buffer) for buffer in high)
     return (
         f"{program.name}: buffer {named}: a run whose groups switch program sets up "
         f"each core's buffers for every program by a mask of one word, indices 0 to "
         f"{SWITCH_BUFFERS - 1}, and {'it sits' if len(high) == 1 else 'they sit'} at "
         f"{SWITCH_BUFFERS} or above; run the program in a run of its own"
     )
+
+
+def buffer_named(buffer):
+    """A buffer as a refusal names it: its name (an own field's kField<Name>) and
+    index, or its index."""
+    name = getattr(buffer, "name", "")
+    return f"{name} ({buffer.index})" if name else str(buffer.index)
 
 
 def chain_switch_refusal(program):

@@ -43,6 +43,8 @@ class Buffer:
     padded: bool = False  # a read pair handlers of other blocks share (KM_RING_PADDED)
     items: list = field(default_factory=list)  # an out buffer's item widths
     declared: bool = False  # a km.Pair of the class: hand kernels stream it
+    own: bool = False  # an own field's: it may move to the upper indices (layout)
+    raw: bool = False  # a raw field's: pages of its own bytes, not tiles
 
 
 @dataclass
@@ -293,10 +295,14 @@ class CompilerOnly:
     # loops are cases of the dynamic handler's loop, by the handler a message names.
     folded: dict = field(default_factory=dict)
     own: dict = field(default_factory=dict)  # an own field -> its push (front.Own)
+    raw: set = field(default_factory=set)  # the own fields declared raw=True
     pushers: dict = field(default_factory=dict)  # own field -> {CPU: (handler, line)}
     # field -> (its producer: "fill" or "product", handler, line, the line's text)
     producers: dict = field(default_factory=dict)
     reserved: set = field(default_factory=set)  # indices left to other programs
+    indices: int = (
+        64  # the chip's buffer indices (the make's session's; layout.INDICES)
+    )
     share_pairs: bool = False  # handlers of other blocks may share a read pair
     # The class's constants (km.constant) by name: this program's values; a symbol's
     # only where the plan gives it (declared_constants).

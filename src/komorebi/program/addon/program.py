@@ -370,8 +370,13 @@ def own_recipes(run, program, recipes):
         for name in SIZES:
             have = _table(text, name)
             if have is not None:
+                raw = getattr(program, "raw_indices", set())
                 for buffer in program.buffers:
-                    have[buffer.index] = formats.tile_bytes(buffer.format)
+                    have[buffer.index] = (  # a raw field's: its page's bytes
+                        buffer.page_bytes
+                        if buffer.index in raw
+                        else formats.tile_bytes(buffer.format)
+                    )
                 text = _with_table(text, name, have)
         digest = hashlib.sha256(text.encode()).hexdigest()[:16]
         made = cache / digest
@@ -517,10 +522,13 @@ def refused(run, program, island=False):
         return programs.chain_switch_refusal(program)
     runtime = {cb[0] for cb in run.backend._runtime_cbs()} | {run.backend.slot_index}
     clash = sorted({b.index for b in program.buffers} & runtime)
-    if clash or any(b.index >= programs.SWITCH_BUFFERS for b in program.buffers):
+    high = [b for b in program.buffers if b.index >= programs.SWITCH_BUFFERS]
+    if clash or high:
+        named = ", ".join(map(programs.buffer_named, high))
         return (
             f"{program.name}: buffer indices {clash or 'from 32'}: the runtime's own "
             f"(in a switch run a program's buffers are 0 to 31, not {sorted(runtime)})"
+            + (f"; at 32 or above: {named}" if high else "")
         )
     try:
         check_families(

@@ -44,6 +44,7 @@ class Kept:
     made: dict
     reserved: frozenset = frozenset()
     islands: tuple = (1, 0)
+    indices: int = 64  # the chip's buffer indices the make's compile took
 
 
 def opted(cls, handlers):
@@ -110,6 +111,7 @@ def reserve(cls, compiled, found, plan, tensors, room, values, sets, reserved=()
             replaced(sets, name, wanted),
             reserved,
             compiled.islands,
+            indices=compiled.indices,
         )
         sized = {buffer.index_a: buffer for buffer in other.buffers}
         for buffer in compiled.buffers:
@@ -159,6 +161,7 @@ def kept(program, compiled, found, made_with, built, session, l1, trace):
         {},
         frozenset(reserved),
         compiled.islands,
+        compiled.indices,
     )
     program.slots(bytes=SLOT_BYTES)
     if session is not None:
@@ -365,6 +368,7 @@ def compile_set(program, method, wanted, key):
         sets,
         kept_.reserved,
         kept_.islands,
+        indices=kept_.indices,
     )
     variant = result.variants[method.name][0][1]
     where = f"{cls.__name__}.{variant.name}"
