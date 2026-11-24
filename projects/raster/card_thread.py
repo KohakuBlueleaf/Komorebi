@@ -366,6 +366,21 @@ def update_words(update=None, apply_header=None):
     return words
 
 
+def frame_buffers(held, fill_program=None, passes_program=None):
+    """The frame program's buffers but APPLY's, for the capacity `held`: the fill's,
+    the passes', SHOW's ring, SHADE's (program's)."""
+    fill_program = fill_program or card.program(held=held)
+    passes_program = passes_program or card_passes.program(held=held)
+    return [
+        *fill_program.buffers,
+        *passes_program.buffers,
+        km.Buffer(
+            SHOW["kCbShow"], "uint32", SHOW["kShowPageBytes"], SHOW["kShowPages"]
+        ),
+        *shade_buffers(),
+    ]
+
+
 def shade_buffers():
     """SHADE's buffers (kernels/shade.h): planes, table, asks, answers, the page slots
     and the white texel's page, the pack thread's space and its lit space."""
@@ -533,15 +548,7 @@ def program(
             role: KERNELS / f"frame_{role}.cpp"
             for role in ("reader", "compute", "writer")
         },
-        buffers=[
-            *fill_program.buffers,
-            *passes_program.buffers,
-            km.Buffer(
-                SHOW["kCbShow"], "uint32", SHOW["kShowPageBytes"], SHOW["kShowPages"]
-            ),
-            *shade_buffers(),
-            *apply_buffers,
-        ],
+        buffers=[*frame_buffers(held, fill_program, passes_program), *apply_buffers],
         compile_args=compile_args,  # the fill's (and APPLY's) tensors: DRAM tensors'
         compute=compute,
         defines={**card.spread_parts()[2], **defines(held), **apply_defines},

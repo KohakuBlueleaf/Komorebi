@@ -37,6 +37,7 @@ TONE_EXPOSURE_FACTOR = 1.5
 TONE_SATURATION_STEP = 0.15
 BOUNCES = 0  # the passes posted to a renderer with indirect light (the scene's: 2)
 BOUNCES_REFUSED = 4  # out of range: refused (400, its reason)
+FIELD_ON_CARD = ("sponza_overview",)  # raster-gi: the field updated on the card there
 
 
 def get(url, timeout=10.0):
@@ -64,36 +65,58 @@ def status_of(call):
 
 
 class Reader(threading.Thread):
-    """Reads the multipart stream's JPEG parts until `stop`."""
+    """Reads the multipart stream's JPEG parts until `stop`. A pause up to FOLLOW_S
+    (a reload's build) is waited out; a closed or broken stream is opened again
+    (`breaks`: each, why); `error` when no frame came for FOLLOW_S."""
 
     def __init__(self, url):
         super().__init__(daemon=True)
         self.url, self.frames, self.numbers = url, [], []
-        self.stop, self.error = threading.Event(), None
+        self.stop, self.error, self.breaks = threading.Event(), None, []
+        self.arrived = 0.0  # the last frame's time
 
     def run(self):
-        try:
-            response = urllib.request.urlopen(self.url, timeout=5.0)
-            with response:
-                while not self.stop.is_set():
-                    line = response.readline()
-                    if not line:
-                        break
-                    if not line.startswith(b"--"):
-                        continue
-                    headers = {}
-                    while True:
-                        line = response.readline().strip()
-                        if not line:
-                            break
-                        name, _, value = line.decode().partition(":")
-                        headers[name.strip().lower()] = value.strip()
-                    data = response.read(int(headers["content-length"]))
-                    self.frames.append(data)
-                    self.numbers.append(int(headers.get("x-frame", -1)))
-        except Exception as error:  # noqa: BLE001 - a timeout after the stop ends it
-            if not self.stop.is_set():
-                self.error = f"{type(error).__name__}: {error}"
+        last = time.monotonic()  # the last frame, or the start
+        while not self.stop.is_set():
+            try:
+                with urllib.request.urlopen(self.url, timeout=FOLLOW_S) as response:
+                    self.read(response)
+                if self.stop.is_set():
+                    return
+                self.breaks.append("closed")
+            except TimeoutError as error:  # no byte for FOLLOW_S
+                if not self.stop.is_set():
+                    self.error = f"{type(error).__name__}: {error}"
+                return
+            except Exception as error:  # noqa: BLE001 - broken: opened again
+                if self.stop.is_set():
+                    return
+                self.breaks.append(f"{type(error).__name__}: {error}")
+            if self.frames:
+                last = max(last, self.arrived)
+            if time.monotonic() - last > FOLLOW_S:
+                self.error = f"no frame for {FOLLOW_S} s: {self.breaks[-1]}"
+                return
+            time.sleep(0.5)
+
+    def read(self, response):
+        while not self.stop.is_set():
+            line = response.readline()
+            if not line:
+                return
+            if not line.startswith(b"--"):
+                continue
+            headers = {}
+            while True:
+                line = response.readline().strip()
+                if not line:
+                    break
+                name, _, value = line.decode().partition(":")
+                headers[name.strip().lower()] = value.strip()
+            data = response.read(int(headers["content-length"]))
+            self.frames.append(data)
+            self.numbers.append(int(headers.get("x-frame", -1)))
+            self.arrived = time.monotonic()
 
 
 def wait_running(base, token, renderer, scene):
@@ -187,12 +210,21 @@ def run_case(base, token, renderer, scene):
         fps_median=sorted(fps)[len(fps) // 2] if fps else None,
         statuses=sorted(statuses),
         stream_error=reader.error,
+        stream_breaks=reader.breaks,
     )
     knobs = {"size": size, "sun": sun, "tone": tone, "indirect": switch}
     knobs["bounces"] = passes
     case.update({name: knob for name, knob in knobs.items() if knob is not None})
+    # /state names where the field is updated: "card" on FIELD_ON_CARD for raster-gi
+    case["field_on"] = [now.get("field_on", "absent"), now.get("field_reason")]
+    field_ok = "field_on" in now and (
+        renderer != "raster-gi"
+        or scene not in FIELD_ON_CARD
+        or now["field_on"] == "card"
+    )
     case["ok"] = bool(
-        taken == POSES
+        field_ok
+        and taken == POSES
         and len(reader.frames) >= 2
         and sizes == {tuple(state["size"])}
         and differ
@@ -223,19 +255,24 @@ def size_case(base, token, state, reader):
 
     def follow(size):
         """Seconds until /state shows `size` and a frame of it arrived (None: not in
-        FOLLOW_S), and /state then."""
+        FOLLOW_S), /state then, and what was missing when it timed out."""
         posted, frames = time.monotonic(), len(reader.frames)
+        shown = framed = False
         while time.monotonic() - posted < FOLLOW_S:
             now = json.loads(get(f"{base}/state?token={token}")[1])
-            if now["size"] == list(size) and any(
+            shown = now["size"] == list(size)
+            framed = framed or any(
                 Image.open(io.BytesIO(data)).size == tuple(size)
                 for data in reader.frames[frames:]
-            ):
-                return round(time.monotonic() - posted, 2), now
+            )
+            if shown and framed:
+                return round(time.monotonic() - posted, 2), now, None
             time.sleep(0.05)
-        return None, now
+        missing = [] if shown else ["/state's size"]
+        missing += [] if framed else ["a frame of that size"]
+        return None, now, " and ".join(missing)
 
-    case = {"start": list(start), "frames_before": count}
+    case = {"start": list(start), "frames_before": count, "timed_out": []}
     code, body = answer(TOO_BIG)
     case["refused"] = {"code": code, "answer": body}
     if not state.get("sizes"):
@@ -247,6 +284,8 @@ def size_case(base, token, state, reader):
     while time.monotonic() - posted < FOLLOW_S and not now.get("size_refused"):
         now = json.loads(get(f"{base}/state?token={token}")[1])
         time.sleep(0.05)
+    if not now.get("size_refused"):
+        case["timed_out"].append(f"{TOO_BIG[0]}x{TOO_BIG[1]}: no size_refused")
     case["refused"].update(reason=now.get("size_refused"), size=now["size"])
     refused_ok = (
         code == 200
@@ -257,7 +296,9 @@ def size_case(base, token, state, reader):
     case["sizes"] = []
     for size in (RESIZE, BEYOND, start):
         code = answer(size)[0]
-        follow_s, now = follow(size)
+        follow_s, now, missing = follow(size)
+        if missing:
+            case["timed_out"].append(f"{size[0]}x{size[1]}: no {missing}")
         case["sizes"].append(
             {
                 "size": list(size),

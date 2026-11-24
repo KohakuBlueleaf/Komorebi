@@ -14,6 +14,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi.bench import power
+from komorebi.program import several as programs
 from projects.raster import card, card_thread, lists
 from projects.transport import plan as pl
 from projects.transport import run as transport_run
@@ -35,13 +36,63 @@ class SetRefused(ValueError):
     """A set whose APPLY buffers do not fit a core's L1: the numbers."""
 
 
+ENCODING = (
+    1  # w's encoding (plan.encode_weights): a cached file of another is made again
+)
+SET_KEYED = ("blocks.npz", "weights.f32")  # the files a cached w depends on
+
+
+def cache_folder(choice, data):
+    """The folder of the cached w files: <data>/cache/apply/ for `choice` None or
+    "default", none for "none", else `choice`."""
+    if choice in (None, "default"):
+        return Path(data) / "cache" / "apply"
+    return None if choice == "none" else Path(choice)
+
+
+def weights_file(folder, cores, cache):
+    """A set's cached w in the folder `cache` (None: no cache): <scene>_<key>.npy, the
+    key of SET_KEYED's sizes and modification times, `cores`, ENCODING."""
+    if cache is None:
+        return None
+    folder = Path(folder)
+    stats = [(folder / name).stat() for name in SET_KEYED]
+    text = json.dumps(
+        [[st.st_size, st.st_mtime_ns] for st in stats] + [int(cores), ENCODING]
+    )
+    key = hashlib.sha256(text.encode()).hexdigest()[:16]
+    scene = folder.name.removesuffix("_transport")
+    return Path(cache) / f"{scene}_{key}.npy"
+
+
+def encoded(s, path):
+    """w's bytes (plan.encode_weights): read from `path` when it is there, else made
+    and written there whole (a temporary name, then renamed); the scene's files of
+    other keys removed."""
+    if path is not None and path.exists():
+        return np.load(path, mmap_mode="r")
+    raw = pl.encode_weights(s, None)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(path.name + ".part")
+        with open(part, "wb") as out:
+            np.save(out, raw)
+        part.replace(path)
+        scene = path.name.rsplit("_", 1)[0]
+        for stale in path.parent.glob(f"{scene}_*.npy"):
+            if stale != path and stale.name.rsplit("_", 1)[0] == scene:
+                stale.unlink()
+    return raw
+
+
 def prepare(folder, cores=120, cache=None):
-    """The set in `folder` dealt to `cores` cores: (set, tables, sizes, w's bytes)."""
+    """The set in `folder` dealt to `cores` cores: (set, tables, sizes, w's bytes),
+    w cached in the folder `cache` (weights_file; None: none)."""
     s = pl.load(folder)
     first = pl.deal(s, cores)
     _, pages = pl.weight_pages(s)
     t = pl.tables(s, first, pages - 1)
-    raw = pl.encode_weights(s, cache)
+    raw = encoded(s, weights_file(folder, cores, cache))
     return s, t, pl.sizes(s, t), raw
 
 
@@ -152,28 +203,60 @@ def host_bytes(sizes, block=BLOCK):
     return -(-end // 4096) * 4096
 
 
-def frame_hosts():
-    """The frame buffers APPLY's windows lie over, in order ([(name, index, bytes)]):
-    the page slots (and the white texel's page), LIGHT's work, the planes, the table,
-    SHOW's ring; each written by its owner before it reads it (README, "APPLY")."""
+def dead_buffers():
+    """The frame buffers dead between a frame's commands, APPLY's windows' room, in
+    order ({index: name}): the page slots (and the white texel's page), SHADE's work,
+    LIGHT's work, the planes, the table, SHOW's ring; each written by its owner before
+    it reads it within each of its commands (README, "APPLY")."""
     sh, show = card_thread.SH, card_thread.SHOW
-    slots = sh["kTexPageBytes"] * (sh["kShadeSlots"] + 1)
-    planes = card_thread.K["kOutPageBytes"] * sh["kShadePlanePages"]
+    names = ("kCbShadeSlots", "kCbShadeWork", "kCbLightWork", "kCbShadePlanes")
+    rows = {sh[name]: name for name in names + ("kCbShadeTable",)}
+    rows[show["kCbShow"]] = "kCbShow"
+    return rows
+
+
+def frame_runs(cbs, dead, align=programs.CB_ALIGN):
+    """The host ranges of the buffers `cbs` ((index, format, page bytes, pages)): each
+    a maximal run of `dead` buffers ({index: name}) that follow one another at
+    programs.buffer_layout's addresses (a gap inside a run unused), as (names joined
+    by "+", the first's index, the run's bytes), the run of `dead`'s first first."""
+    placed, _ = programs.buffer_layout(sorted(cbs), 0, align)
+    runs, run = [], None
+    for index in sorted(placed):
+        at, size = placed[index][:2]
+        if index in dead and run is not None and at == -(-run[2] // align) * align:
+            run[1].append(index)
+            run[2] = at + size
+        elif index in dead:
+            run = [at, [index], at + size]
+            runs.append(run)
+        else:
+            run = None
+    rank = {index: place for place, index in enumerate(dead)}
+    runs.sort(key=lambda run: min(rank[index] for index in run[1]))
     return [
-        ("kCbShadeSlots", sh["kCbShadeSlots"], slots),
-        ("kCbLightWork", sh["kCbLightWork"], sh["kLightWorkBytes"]),
-        ("kCbShadePlanes", sh["kCbShadePlanes"], planes),
-        ("kCbShadeTable", sh["kCbShadeTable"], sh["kShadeTableBytes"]),
-        ("kCbShow", show["kCbShow"], show["kShowPageBytes"] * show["kShowPages"]),
+        ("+".join(dead[index] for index in members), members[0], end - start)
+        for start, members, end in runs
     ]
 
 
-def frame_parts(sizes, block=BLOCK):
-    """APPLY in the frame program (card_thread.program's `apply`): its buffers one page
-    each, the build defines (sizes, windows over frame_hosts()), its float32 sums
-    unpacked to Dst, the movers' tensor arguments, the windows. SetRefused when the
-    set does not fit."""
-    windows = layout(sizes, frame_hosts(), block)
+def frame_hosts(buffers):
+    """The host ranges APPLY's windows lie over in a frame program of `buffers` (its
+    buffers but APPLY's, card_thread.frame_buffers): frame_runs of dead_buffers()."""
+    halves = [
+        half
+        for item in buffers
+        for half in (item.halves() if isinstance(item, km.BufferPair) else [item])
+    ]
+    return frame_runs(programs.program_cbs(halves), dead_buffers())
+
+
+def frame_parts(sizes, buffers, block=BLOCK):
+    """APPLY in the frame program of `buffers` (card_thread.program's `apply_parts`;
+    `buffers`: card_thread.frame_buffers): its buffers one page each, the build defines
+    (sizes, windows over frame_hosts), its float32 sums unpacked to Dst, the movers'
+    tensor arguments, the windows. SetRefused when the set does not fit."""
+    windows = layout(sizes, frame_hosts(buffers), block)
     return {
         "buffers": declared(sizes, block, windows=True),
         "defines": {**defines(sizes, block), **window_defines(windows)},
@@ -306,6 +389,32 @@ def scene_set(scene, data):
     )
 
 
+SET_FILES = ("blocks.npz", "weights.f32", "perm.npy")  # what field_set reads
+
+
+def field_set(scene, data, cores, cache="default"):
+    """A scene's transport set made ready for the field's update in the thread
+    (live.py --card-field; w cached as cache_folder(`cache`) says): {folder, set,
+    tables, sizes, raw, x (0)}; FileNotFoundError naming the files missing."""
+    folder = scene_set(scene, data)
+    missing = [str(folder / name) for name in SET_FILES if not (folder / name).exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"the field's update on the card needs {scene}'s transport set: "
+            f"missing {', '.join(missing)}"
+        )
+    s, t, sizes, raw = prepare(folder, cores, cache_folder(cache, data))
+    x = np.zeros((pl.TILE * s.tiles, 3), np.float32)
+    return {
+        "folder": str(folder),
+        "set": s,
+        "tables": t,
+        "sizes": sizes,
+        "raw": raw,
+        "x": x,
+    }
+
+
 def checked_set(folder, cores, cache=None):
     """A set made ready to apply and check on the host: {folder, set, tables, sizes,
     raw (w's bytes), x, lit, emulated}."""
@@ -349,7 +458,7 @@ def parse():
 def main():
     args = parse()
     name = Path(args.folder).name
-    cache = Path(args.cache) / f"{name}_w.npy" if args.cache else None
+    cache = Path(args.cache) if args.cache else None
     s, t, sizes, raw = prepare(args.folder, args.cores, cache)
     report = {"set": name, "sizes": sizes, "l1_buffers": l1_bytes(sizes)}
     report["windows"] = args.windows

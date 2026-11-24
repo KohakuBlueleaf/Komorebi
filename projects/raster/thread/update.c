@@ -353,13 +353,16 @@ static void pack_part(int core, void* arg) {
 }
 
 /* The pass's apply E = M x on the cores: APPLY with the update region's words 0 to 10
- * (a0 to a9, the group), submitted and waited for. 0, or the code to report. */
+ * (a0 to a9, the group: 0 none), submitted and waited for. 0, or the code to report. */
 static uint32_t apply_pass(const volatile uint32_t* header) {
 #ifndef RF_APPLY
     (void)header;
     return RF_NO_APPLY;
 #else
     const uint32_t group = header[RF_U_APPLY_GROUP];
+    if (group == 0) {
+        return RF_NO_APPLY;
+    }
     km_command_t command;
     kmx_command(&command, 0, RF_HANDLER_APPLY, group & 0xFFFFu, group >> 16);
     command.a0 = header[RF_U_APPLY_A0 + 0];

@@ -9,6 +9,7 @@ import contextlib
 import numpy as np
 
 import komorebi as km
+from projects.raster import apply as raster_apply
 from projects.raster import card as raster_card
 from projects.raster import card_thread as raster_thread
 from projects.raster import live as raster_live
@@ -55,6 +56,8 @@ class Renderer:
     tone_own = None  # a lit renderer: the scene's tone (exposure, saturation, curve)
     indirect = None  # raster-gi: the indirect switch (True: on)
     bounces = None  # raster-gi: the field's bounce passes in force (0 to 3)
+    field_on = None  # raster-gi: where the field is updated, "card" or "host"
+    field_reason = None  # raster-gi on the host: why ("no transport set", a refusal)
     sizes = True  # takes a frame size (set_size)
 
     @staticmethod
@@ -76,8 +79,9 @@ class Renderer:
         return check_size(size) if self.sizes else (SIDE, SIDE)
 
     def field_s(self):
-        """Seconds the last update of the indirect light's field took on the host (None
-        before the first, or without the field)."""
+        """Seconds the last update of the indirect light's field took as the host sees
+        it, the card's UPDATE's included (None before the first, or without the
+        field)."""
         return None
 
     def close(self):
@@ -103,6 +107,10 @@ class Raster(Renderer):
 
     terms = raster.TERMS  # the lit loop's terms
 
+    def loop_options(self, session, scene_name):
+        """The loop's further options (live.Loop's keywords)."""
+        return {}
+
     def open(self, scene_name, size=(SIDE, SIDE)):
         self.close()
         scene, _ = raster_run.load(scene_name)
@@ -123,6 +131,7 @@ class Raster(Renderer):
                     materials,
                     lights,
                     self.terms,
+                    **self.loop_options(session, scene_name),
                 )
             except raster_thread.L1Refused as error:
                 raise SizeRefused(str(error)) from None
@@ -227,20 +236,44 @@ class RasterLit(RasterTextured):
 
 class RasterGi(RasterLit):
     """projects/raster/live.py's `--push --light --indirect` path: LIGHT with the
-    field's indirect light; a sun change remakes the field on the host."""
+    field's indirect light; a sun or passes change remakes the field, on the card
+    (`--card-field`: UPDATE, APPLY) when the scene has a transport set, else on the
+    host."""
 
     name = "raster-gi"
     terms = raster.TERMS + ("indirect",)
 
+    def loop_options(self, session, scene_name):
+        """The card's update (live.Loop's card_field) with the scene's transport set,
+        when field_on is "card"; none else."""
+        if self.field_on != "card":
+            return {}
+        cores = raster_card.workers(session)
+        ready = raster_apply.field_set(scene_name, native.data_dir(), cores)
+        return {"card_field": True, "apply": True, "apply_set": ready}
+
     def open(self, scene_name, size=(SIDE, SIDE)):
+        """The loop with the card's update when the scene has a transport set and
+        APPLY takes it; else the host's, field_reason saying why."""
         self.indirect = self.bounces = None
-        super().open(scene_name, size)
+        folder = raster_apply.scene_set(scene_name, native.data_dir())
+        if all((folder / name).exists() for name in raster_apply.SET_FILES):
+            self.field_on, self.field_reason = "card", None
+            try:
+                super().open(scene_name, size)
+            except raster_apply.SetRefused as error:  # the host's update then
+                self.field_on, self.field_reason = "host", str(error)
+                super().open(scene_name, size)
+        else:
+            self.field_on, self.field_reason = "host", "no transport set"
+            super().open(scene_name, size)
         self.indirect = True
         self.bounces = int(self.live.lights.get("bounces", light_data.BOUNCES))
 
     def set_bounces(self, bounces):
-        """The field's bounce passes (0 to 3): the field recomputed on the host and
-        written, applied to the next frame (no reload). Returns the host's ms."""
+        """The field's bounce passes (0 to 3): the field remade (the card's UPDATE, or
+        the host's) and written, applied to the next frame (no reload). Returns the
+        host's ms."""
         ms = self.live.set_bounces(bounces)
         self.bounces = int(bounces)
         return ms

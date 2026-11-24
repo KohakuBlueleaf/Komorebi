@@ -1045,39 +1045,184 @@ and L0 = base + albedo / pi x (sun x irradiance + sky), runs the passes E_p = M 
 values by row (float32 products, double sums, the reference's order), the scale, the
 texels (sqrt-coded 11/11/9, round half to even), stores the field pages into the light
 pages and writes LIGHT's unit and scale words. Steps (a0): 0 the whole update, 1
-sources to x of pass 1, 2 a pass, 3 the finish. A pass is `apply_pass()`: the cores'
-APPLY with `RF_APPLY`; without it (today) the host does `indirect.apply` on x between
-steps ("stepped"), so with bounces > 0 the field is the card's but the passes are the
-host's. The four X280 cores share every loop (`kmx_parallel`); regions and tensors are
-sized from the scene. Without `--card-field` nothing changes.
+sources to x of pass 1, 2 a pass, 3 the finish. The four X280 cores share every loop
+(`kmx_parallel`); regions and tensors are sized from the scene. Without `--card-field`
+nothing changes.
 
-Card 1, 2026-11-24 (`live.py`, and a script that reads the thread's regions back):
+A pass is `apply_pass()`: the thread stores x into APPLY's x tensor, submits APPLY (the
+next section) from the `update` region's words 0 to 10 and waits, fetches y from
+APPLY's y tensor, adds it and makes the next x. So with `--card-field` the thread is
+built with `RF_APPLY` and step 0 runs the whole update on the card at any count of
+passes; APPLY's codes come back as the update's. The x and y tensors are APPLY's
+(apply.tensors, with w and the tables; update.passes_tensors checks their pages), x in
+plan.x_tiles' layout, y as the transport project reads it. The scene's transport set
+must be there (`<data>/public/<scene>_transport/`); without it the load is refused,
+naming the missing files, and a set whose APPLY buffers do not fit is refused with
+APPLY's numbers. `--card-field-stepped` builds without `RF_APPLY`: the host does
+`indirect.apply` (float32) on x between the steps, for comparison.
 
-- Sources (step 1 at 30,60 / 120,40 / 200,25, elements with luminance > 1e-4): sky
-  and L0 against the reference with the card's map, relative luminance error median
-  2e-9 to 7e-8, p99 1.5e-7 to 7.5e-7, most 3.9e-7 (Sponza) to 1.4e-5 (Modern hall);
-  x of pass 1 against bf16 of the reference's L0: share equal 0.999986 to 1, at most
-  1 code.
-- 0 bounces (step 0): texels against `light.field_of` share equal 0.99986 to 0.99999,
-  at most 1 code a channel, scale within 2.2e-7. `--light --indirect --bounces 0 --sun
-  120,40 --check-light`: ok, the light check's dictionaries equal to the run without
-  `--card-field` (all three scenes).
-- 1 to 3 bounces, stepped: against `field_of` (float passes) share equal 0.98 to 0.99
-  (Sponza), 0.89 (Bistro interior), 0.77 to 0.81 (Modern hall), at most 2 / 4 / 1
-  codes, scale within 2.7e-3; against the same passes fed bf16 x as the card's x
-  tiles are, 0.99996 to 1, at most 1 code, scale equal or within 2.1e-7.
-  `--check-light` ok for 1, 2, 3 on all three.
-- Times, the whole update at 0 bounces (thread ms: fetch / sources / rows / pack /
-  store / total): Sponza 0.36 / 40 / 21 / 28 / 0.13 / 89, Bistro interior 0.36 / 27 /
-  27 to 33 / 39 / 0.34 / 94 to 100, Modern hall 0.36 / 38 to 39 / 22 to 28 / 43 / 1.04
-  / 105 to 112; the host's wait 0.18 to 0.20 s. The first update also zeroes the pages
-  and x tiles (6 / 15 / 44 ms). Stepped at 1 / 2 / 3 bounces, host s (of it the host's
-  apply): Sponza 0.70 (0.49) / 1.21 (0.99) / 1.69 (1.46), Bistro interior 0.98 (0.76)
-  / 2.36 (2.12) / 2.64 (2.39), Modern hall 1.10 (0.84) / 1.65 (1.37) / 2.38 (2.08).
-- Without `--card-field`: vertex colours 0 pixels differ (Sponza, Bistro interior),
-  `--light --indirect --check-light` dictionaries equal to the base tree's, card frame
-  4.815 / 4.816, 14.088 / 14.086, 7.754 / 7.754, 20.526 / 20.522 ms (base / new).
-  Thread image 42,832 B without UPDATE, 48,560 B with it, of 126,976 B.
+The set's weights are encoded to bfp8_b tiles on the host (plan.encode_weights) and kept
+on disk: `<KR_DATA>/cache/apply/<scene>_<key>.npy`, made on first use, the key of what
+w depends on (the sizes and modification times of the set's `blocks.npz` and
+`weights.f32`, the cores it is dealt to, apply.ENCODING); a file of another key is made
+again (written under a temporary name, then renamed). `--apply-cache DIR` puts it in
+DIR, `--apply-cache none` turns it off; the viewer uses the default. Host seconds
+(`apply.field_set`, 2026-11-24), first open (encoding, written) / second (read):
+Sponza 16.3 / 1.5 (458,512,704 B), Bistro interior 29.3 / 2.0 (842,437,440 B), breakfast
+room 13.0 / 0.9, salle de bain 22.6 / 1.9, Modern hall 25.7 / 2.1, Modern living room
+22.0 / 2.0.
+
+APPLY's sizes (OWN, KMAX, RANK, table pages) and its windows' places are build defines,
+so the frame kernels are built for each set and each capacity: a scene's first open, and
+its first reload at another capacity, build them once (9.2 to 9.4 s, card 1,
+2026-11-24) and the build cache keeps them (0.02 to 0.08 s after). As run-time words the
+windows (APPLY_HOST_*, APPLY_AT_*, APPLY_PAGES_*: read only in apply_window) could come
+from the command; KMAX is the x stream's span and pages in KM_STREAM and the reserve and
+pop counts, OWN sizes pack's own-tile mask (`touched[kApplyOwnWords]`), RANK and OWN the
+reserves of t and the sums: those would need a largest size compiled in.
+
+The update region (4,096 B, index 10, frame.h's last): words 0 to 15 APPLY's (0 to 9 the
+command words, 10 the group, 11 to 15 the thread `apply` command's ticks, count and
+code), 16 on the field's (update.h RF_U_*), from word 256 the times rows: each update's
+parts in ticks and, a pass, its store of x, apply, fetch of y and next x
+(update.times, read after the stop).
+
+Card 1, 2026-11-24, sun 120,40, the whole update on the card against `light.field_of`
+with the card's shadow map (float passes), and against the stepped mode in the same
+load (share of texels equal, the largest code difference of a channel, the scale's
+relative difference); every update's code 0:
+
+| scene | bounces | card vs field_of | card vs stepped | stepped vs field_of |
+|---|---|---|---|---|
+| Sponza | 0 | 0.99998, 1, 2.1e-7 | - | - |
+| Sponza | 1 / 2 / 3 | 0.962 / 0.961 / 0.962, 9 / 5 / 6, 2.1e-7 / 1.1e-7 / 1.1e-7 | 0.963 / 0.962 / 0.962, 9 / 5 / 6, 0 to 1.1e-7 | 0.990, 1, 2.1e-7 |
+| Bistro interior | 0 | 0.99994, 1, 2.1e-7 | - | - |
+| Bistro interior | 1 / 2 / 3 | 0.603 / 0.586 / 0.589, 7 / 6 / 7, 2.9e-3 | 0.659 / 0.645 / 0.646, 7 / 6 / 7, 2.3e-3 | 0.89, 2, 6.3e-4 |
+| Modern hall | 0 | 0.99998, 1, 7.6e-8 | - | - |
+| Modern hall | 1 / 2 / 3 | 0.864 / 0.836 / 0.826, 10 / 10 / 9, 1.3e-3 / 1.4e-3 / 1.4e-3 | 0.856 / 0.836 / 0.827, 10 / 8 / 8, 1.3e-3 to 1.5e-3 | 0.81 / 0.78 / 0.77, 4, 2.7e-3 |
+
+The card's passes multiply bfp8_b weights by bf16 x (APPLY's error against the float
+apply: the next section); the stepped mode's float32 apply on bf16 x. `--light
+--indirect --bounces 1/2/3 --card-field --sun 120,40 --check-light`: ok on all three
+scenes; its dictionaries beside the host's update's (`--card-field` left out): the
+shares over 2 / 4 / 8 differ by at most 2e-6 (Sponza, Bistro interior) and 2.6e-4 /
+2.6e-5 / 0 (Modern hall), the largest error the same.
+
+Times (thread ms, the whole update; fetch / sources / rows / pack / store / total, then
+a pass's store / apply / fetch / next), the host's wait for it (s, of which the
+commands), and the host's own update (`update_field`, s) in the same load:
+
+| scene | bounces | thread parts, ms | a pass, ms | host's wait, s | host's update, s |
+|---|---|---|---|---|---|
+| Sponza | 0 / 1 / 2 / 3 | 0.36 / 41 / 21 / 33 / 0.13, total 99 (first: +3 fetch, +6 zero) / 107 / 122 / 127 | 0.07 / 2.61 / 0.13 / 4 to 10 | 0.19 to 0.24 (0.10 to 0.13) | 0.14 / 0.65 / 1.12 / 1.60 |
+| Bistro interior | 0 / 1 / 2 / 3 | 0.36 / 27 / 27 to 34 / 39 to 42 / 0.34, total 118 (first) / 109 / 136 / 140 | 0.08 / 4.29 / 0.14 / 1 to 18 | 0.20 to 0.23 (0.11 to 0.14) | 0.16 / 0.98 / 1.66 / 2.41 |
+| Modern hall | 0 / 1 / 2 / 3 | 0.36 / 39 / 22 / 44 / 1.04, total 154 (first, +44 zero) / 118 / 131 / 141 | 0.08 / 3.81 / 0.16 / 5 to 11 | 0.21 to 0.25 (0.12 to 0.15) | 0.21 / 0.87 / 1.57 / 2.27 |
+
+The stepped mode at 1 / 2 / 3 passes: 0.69 / 1.20 / 1.69 s (Sponza), 0.97 / 1.73 / 2.88
+(Bistro interior), 0.90 / 1.62 / 2.31 (Modern hall), most of it the host's apply. Of the
+host's wait about 90 ms is outside the commands (writing the sun's words), not measured
+apart.
+
+The sun moved through 10 positions (`--frames 100 --sun-path 10 --check-light`): every
+update's code 0, the checked frames 0, 50, 99 ok on all three scenes; the host waits
+0.20 to 0.27 s an update (the host's update 1.1 / 1.7 / 1.6 s); card frame ms 14.084 /
+20.628 / 13.837 against 14.043 / 20.608 / 13.831 without `--card-field` (APPLY's
+buffers and kernels loaded: +0.04, +0.02, +0.01 ms).
+
+With APPLY loaded a core has less L1 for the per-tile tables: Sponza `--card-field` at
+1920 x 1080 runs (`--check-light` ok, 23.0 ms); at 3840 x 2160 the load is refused: "a
+core's L1 needs 1,348,672 B of 1,324,992 B ... The largest capacity that fits: 7488
+tiles" (8,160 needed); without `--card-field` that size loads (74.7 ms).
+
+Without `--card-field` the frames are unchanged: vertex colours 0 pixels differ (Sponza,
+Bistro interior), `--light --indirect --check-light` dictionaries equal to the tree
+before the join's, card frame 4.815 / 4.814, 7.756 / 7.755, 14.056 / 14.058, 20.520 /
+20.512 ms (before / after).
+
+### APPLY
+
+APPLY is one apply y = M x of a scene's light-transport set (projects/transport) as a
+handler of these kernels (kernels/apply*.h*, apply.py), the frame program's compute
+configuration (HiFi4, fp32 accumulation). Its loops and steps are a copy of what the
+transport class compiles to; the sizes (OWN, KMAX, RANK, table pages) come from
+plan.sizes as build defines, and a set that does not fit is refused with the numbers.
+
+- Own program (`python -m projects.raster.apply <set> --cache <dir>`), card 1,
+  2026-11-24: Sponza against plan.emulate median 2.12e-5, p99 4.18e-4, most 4.26e-3,
+  2,612 us a command (the transport class on the same set: the same errors, 2,607 us);
+  Bistro interior 2.68e-5 / 2.79e-4 / 1.69e-3, 4,290 us.
+- The float32 sums are unpacked straight to Dst (`unpack_to_dest_mode`
+  UnpackToDestFp32, as the class sets for a float32 field). Through SrcA the copy keeps
+  10 mantissa bits: median 3.3e-4 and the sums 0.99966 of the emulation's.
+- The form used since (M1b): two read streams, x's pair at buffers 25, 26 and the
+  weights' at 27, 28, armed for an entry's V and again for its U^T; y and the profile
+  page without a stream (pack fills plain buffers at 32 and 33, mover B writes the
+  pages); the rest from 34. Nothing at 10 to 12 (RASTER_SPREAD's) or 29 to 31. y
+  bit-identical to the first form, 2,610 us (Sponza) and 4,287 us (Bistro).
+- `--windows`: every APPLY buffer is declared with one page and each CPU points its own
+  view at a window of a host buffer at the start of each command
+  (apply_window.hpp; math keeps no views). y is bit-identical to the whole buffers'.
+
+In the frame program (`live.py --apply-check N`, `--apply-alternate`, and each pass
+of `--card-field`) APPLY's windows lie over buffers that are dead between frames. A
+host range is a run of dead buffers that follow one another in L1, by the addresses
+the program's buffer layout gives (apply.frame_runs over card_thread.frame_buffers:
+index order, 64-byte starts; a window may span a run's buffers, an alignment gap
+inside a run unused). The lit frame's runs: kCbShadeSlots, kCbShadeWork, kCbLightWork
+(22 to 24, 638,976 B) and kCbShow, kCbShadePlanes, kCbShadeTable (13 to 15, 139,264 B);
+x's pair in the first, then first fit decreasing (apply.layout). Each buffer's owner
+writes what it reads within its own command:
+
+- kCbShadeSlots: SHADE writes the white texel and zeroes the hash keys and the page
+  count at its start (shade_compute.hpp), LIGHT writes its zero texels and keys
+  (light_compute.hpp, shade_lit.hpp); the slots are then filled by the readers' asks.
+- kCbShadeWork: SHADE, the lit pass and LIGHT each lay their `Pages` over it at a
+  command's start and zero the hash keys (shade_compute.hpp, shade_lit.hpp,
+  light_compute.hpp); a slot and its `used` entry are written when a key goes in,
+  before any read (`slot_of`), `clear` reads only the entries of this command; SHADE's
+  index rows and a row's keys are written by the scan before the gather reads them.
+  No reader or writer kernel names it.
+- kCbLightWork: LIGHT writes the index rows in the scan before the gather and the
+  field's index before its reads; the lit pass writes the empty slot, clears the
+  winners and writes keys, rows and slot offsets before it reads them (shade_lit.hpp).
+- kCbShadePlanes, kCbShadeTable, kCbShow: rings, written by the reader before compute
+  waits on them and pushed and popped within one command.
+
+The thread's `apply` (thread/apply.c, thread handler 4) submits APPLY from the
+`update` region's header (frame.h RF_U_*: a0 to a9, the group; apply.header fills it
+at the load), waits, and leaves its last ticks, count, code, ticks' sum and least in
+words 11 to 15 (read after the stop: a loaded run's regions are not read). Without the
+option the APPLY code is compiled out and the frames are unchanged.
+
+A frame's handlers write Dst directly (km::dst) and leave it; APPLY's first products in
+each Dst section added to that (an apply after a frame: 26 % of y wrong). The math
+thread now clears Dst whole at each APPLY start.
+
+Measured on card 1, 2026-11-24, `--light --indirect --check-light --frames 20 --push`:
+
+| scene | run | applies, y | thread us (mean / least) | frame ms | light check |
+|---|---|---|---|---|---|
+| Sponza | without APPLY | - | - | 14.059 | - |
+| Sponza | `--apply-check 8` | 8, M1's bits | 2,610.6 / 2,607.0 | 14.093 | equal |
+| Sponza | `--apply-alternate` | 20, M1's bits | 2,611.8 / 2,605.9 | 14.095 | equal |
+| Bistro int. | without APPLY | - | - | 20.516 | - |
+| Bistro int. | `--apply-check 8` | 8, M1's bits | 4,289.8 / 4,282.6 | 20.530 | equal |
+| Bistro int. | `--apply-alternate` | 20, M1's bits | 4,288.9 / 4,277.9 | 20.526 | equal |
+
+With the runs (card 1, 2026-11-24, the same runs again): Sponza's windows are the
+ones above (all in kCbShadeSlots), Bistro interior's now all in the first run (to
+630,784 B, into kCbShadeWork and kCbLightWork); `--apply-check 8` and
+`--apply-alternate`: y cb9feed3b96afc27 (Sponza, 2,612.1 / 2,609.0 and 2,609.1 / 2,604.8
+us) and 6958d5f4dbfc0443 (Bistro, 4,290.9 / 4,286.0 and 4,289.5 / 4,282.4 us), M1's
+bits every time, the light checks equal to the runs without APPLY. Modern hall's set
+(OWN 35, KMAX 95, RANK 11, 657,408 B) fits only so: its table pages and the ready pages
+lie in the second run.
+
+Vertex colours with `--apply-check 8`: 0 pixels differ on both scenes. With APPLY loaded
+the circular buffers take 1,060,736 B (1,021,696 without) and the kernels 203,728 B of
+the kernel buffer (162,640 without). projects/transport/README.md's 2,754 us is its
+leaves-of-256 set (381 entries a core at most); the set here has 398, and the class
+takes 2,607 us on it (card 1, 2026-11-24), APPLY 2,610 us.
 
 ## The interactive loop
 
@@ -1447,71 +1592,6 @@ the busy time, and the mean core's busy time over the slowest core's.
 - 10^6 (1.64): triangle setup, bound by the core submitting immediates: 55 % of all busy
   time, cores within 2 % (2.69 M against 2.64 M). Without bands it was one tile of
   8,780 triangles on one core (3.82 M cycles, 2.83 ms).
-
-## APPLY
-
-APPLY is one apply y = M x of a scene's light-transport set (projects/transport) as a
-handler of these kernels (kernels/apply*.h*, apply.py), the frame program's compute
-configuration (HiFi4, fp32 accumulation). Its loops and steps are a copy of what the
-transport class compiles to; the sizes (OWN, KMAX, RANK, table pages) come from
-plan.sizes as build defines, and a set that does not fit is refused with the numbers.
-
-- Own program (`python -m projects.raster.apply <set> --cache <dir>`), card 1,
-  2026-11-24: Sponza against plan.emulate median 2.12e-5, p99 4.18e-4, most 4.26e-3,
-  2,612 us a command (the transport class on the same set: the same errors, 2,607 us);
-  Bistro interior 2.68e-5 / 2.79e-4 / 1.69e-3, 4,290 us.
-- The float32 sums are unpacked straight to Dst (`unpack_to_dest_mode`
-  UnpackToDestFp32, as the class sets for a float32 field). Through SrcA the copy keeps
-  10 mantissa bits: median 3.3e-4 and the sums 0.99966 of the emulation's.
-- The form used since (M1b): two read streams, x's pair at buffers 25, 26 and the
-  weights' at 27, 28, armed for an entry's V and again for its U^T; y and the profile
-  page without a stream (pack fills plain buffers at 32 and 33, mover B writes the
-  pages); the rest from 34. Nothing at 10 to 12 (RASTER_SPREAD's) or 29 to 31. y
-  bit-identical to the first form, 2,610 us (Sponza) and 4,287 us (Bistro).
-- `--windows`: every APPLY buffer is declared with one page and each CPU points its own
-  view at a window of a host buffer at the start of each command
-  (apply_window.hpp; math keeps no views). y is bit-identical to the whole buffers'.
-
-In the frame program (`live.py --apply-check N`, `--apply-alternate`) APPLY's windows
-lie over buffers that are dead between frames (apply.frame_hosts, apply.layout: x's
-pair in the page slots, then first fit decreasing). Each host's owner writes what it
-reads within its own command:
-
-- kCbShadeSlots: SHADE writes the white texel and zeroes the hash keys and the page
-  count at its start (shade_compute.hpp), LIGHT writes its zero texels and keys
-  (light_compute.hpp, shade_lit.hpp); the slots are then filled by the readers' asks.
-- kCbLightWork: LIGHT writes the index rows in the scan before the gather and the
-  field's index before its reads; the lit pass writes the empty slot, clears the
-  winners and writes keys, rows and slot offsets before it reads them (shade_lit.hpp).
-- kCbShadePlanes, kCbShadeTable, kCbShow: rings, written by the reader before compute
-  waits on them and pushed and popped within one command.
-
-The thread's `apply` (thread/apply.c, thread handler 4) submits APPLY from the
-`update` region's header (frame.h RF_U_*: a0 to a9, the group; apply.header fills it
-at the load), waits, and leaves its last ticks, count, code, ticks' sum and least in
-words 11 to 15 (read after the stop: a loaded run's regions are not read). Without the
-option the APPLY code is compiled out and the frames are unchanged.
-
-A frame's handlers write Dst directly (km::dst) and leave it; APPLY's first products in
-each Dst section added to that (an apply after a frame: 26 % of y wrong). The math
-thread now clears Dst whole at each APPLY start.
-
-Measured on card 1, 2026-11-24, `--light --indirect --check-light --frames 20 --push`:
-
-| scene | run | applies, y | thread us (mean / least) | frame ms | light check |
-|---|---|---|---|---|---|
-| Sponza | without APPLY | - | - | 14.059 | - |
-| Sponza | `--apply-check 8` | 8, M1's bits | 2,610.6 / 2,607.0 | 14.093 | equal |
-| Sponza | `--apply-alternate` | 20, M1's bits | 2,611.8 / 2,605.9 | 14.095 | equal |
-| Bistro int. | without APPLY | - | - | 20.516 | - |
-| Bistro int. | `--apply-check 8` | 8, M1's bits | 4,289.8 / 4,282.6 | 20.530 | equal |
-| Bistro int. | `--apply-alternate` | 20, M1's bits | 4,288.9 / 4,277.9 | 20.526 | equal |
-
-Vertex colours with `--apply-check 8`: 0 pixels differ on both scenes. With APPLY loaded
-the circular buffers take 1,060,736 B (1,021,696 without) and the kernels 203,728 B of
-the kernel buffer (162,640 without). projects/transport/README.md's 2,754 us is its
-leaves-of-256 set (381 entries a core at most); the set here has 398, and the class
-takes 2,607 us on it (card 1, 2026-11-24), APPLY 2,610 us.
 
 ## Not on the card yet
 

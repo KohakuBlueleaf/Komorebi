@@ -209,6 +209,7 @@ class Viewer:
         self.bounces_serial = 0
         self.bounces = None
         self.field_s = None
+        self.field_on = self.field_reason = None  # raster-gi: card or host, and why
         # the frame's size: asked (a load takes it), posted not applied and its serial,
         # the frames', the last change's ms, the last refusal's reason (memory) or None
         self.size_asked = size
@@ -332,6 +333,8 @@ class Viewer:
                 "indirect": self.indirect,
                 "bounces": self.bounces,
                 "field_s": None if self.field_s is None else round(self.field_s, 3),
+                "field_on": self.field_on,
+                "field_reason": self.field_reason,
                 "size": None if self.size is None else list(self.size),
                 "size_asked": list(self.size_asked),
                 "size_ms": None if self.size_ms is None else round(self.size_ms, 3),
@@ -493,6 +496,7 @@ class Viewer:
             self.tone = self.tone_own = self.tone_pending = None
             self.indirect = self.indirect_pending = None
             self.bounces = self.bounces_pending = self.field_s = None
+            self.field_on = self.field_reason = None
             self.size = self.size_ms = self.size_pending = self.size_refused = None
             size = self.size_asked
         name, scene = selected
@@ -515,6 +519,8 @@ class Viewer:
             self.tone = self.tone_own = renderer.tone_own  # and its tone
             self.indirect = renderer.indirect  # raster-gi: on
             self.bounces = renderer.bounces  # raster-gi: the scene's passes
+            self.field_on = renderer.field_on  # raster-gi: "card" or "host"
+            self.field_reason = renderer.field_reason
             self.size = renderer.size  # the size asked, or the renderer's only one
         log(f"opened {name} on {scene} at {renderer.size[0]} x {renderer.size[1]}")
         return renderer

@@ -94,7 +94,7 @@
 #define RF_STEP_FINISH 3u  /* the field, its pages, the table words */
 
 /* Codes after frame.h's */
-#define RF_NO_APPLY 11u /* built without RF_APPLY: the passes need the host's apply */
+#define RF_NO_APPLY 11u /* no RF_APPLY, or group 0: the host applies between steps */
 /* the words or regions do not hold the update, or a step out of turn */
 #define RF_BAD_UPDATE 12u
 #define RF_COPY 13u /* a fetch or a store did not finish */

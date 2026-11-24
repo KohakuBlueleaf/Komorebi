@@ -1,5 +1,5 @@
 """The indirect field's update on the frame thread (`thread/update.c`, UPDATE; README
-"The field's update in the thread"): its regions, words and x, y tensors, the sun's
+"The field's update in the thread"): its regions, words, x and y (APPLY's), the sun's
 words, the steps with the host's apply between them, the times rows, and the
 reference's numbers to check it by (`expected`)."""
 
@@ -184,15 +184,18 @@ def work_layout(model):
     return offsets, at
 
 
-def tensors(session, model):
-    """The passes' x (bf16 tiles, plan.x_tiles' layout) and y (float32 tiles)."""
-    c = counts(model)
-    return {
-        "x": session.tensor(
-            plan.x_tiles(np.zeros((c["n"], 3), F32)), "bfloat16", "tile"
-        ),
-        "y": session.empty((TILE, TILE * c["tiles"]), "float32", "tile"),
-    }
+def passes_tensors(made, model):
+    """The passes' x and y: APPLY's (apply.tensors: x bf16 tiles in plan.x_tiles'
+    layout, y float32 tiles), a tile a page; ValueError when not the model's tiles."""
+    tiles = counts(model)["tiles"]
+    pair = {"x": (made["x"], X_PAGE), "y": (made["y"], Y_PAGE)}
+    for name, (tensor, page) in pair.items():
+        if tensor.pages != tiles or tensor.page_bytes != page:
+            raise ValueError(
+                f"APPLY's {name}: {tensor.pages} pages of {tensor.page_bytes} B, the "
+                f"field's update needs {tiles} of {page} B"
+            )
+    return {"x": made["x"], "y": made["y"]}
 
 
 def sun_words(lights, bounces):

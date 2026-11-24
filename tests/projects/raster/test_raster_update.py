@@ -3,7 +3,10 @@ from a small field: the operator by row gives indirect.field_values' sums, the r
 places give light.field_pages' pages, the regions hold their arrays at the offsets
 the header names, update.h's numbers are the ones they stand for."""
 
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 
 from projects.raster import light, update
 from reference import indirect
@@ -136,3 +139,19 @@ def test_the_sun_words_and_the_tiles():
         at = (column >> 4) * 256 + c * 16 + (column & 15)
         assert pages[i // 32, at] == y[i, c]
     assert light_data.bounce_count(update.U["RF_U_BOUNCES_MAX"]) == 3
+
+
+def test_the_passes_tensors_are_applys_of_the_models_tiles():
+    """x and y are APPLY's tensors (a bf16 tile, a float32 tile a page), as many pages
+    as the model's tiles; others refused."""
+    model = small_model()
+    tiles = update.counts(model)["tiles"]
+    made = {
+        "x": SimpleNamespace(pages=tiles, page_bytes=update.X_PAGE),
+        "y": SimpleNamespace(pages=tiles, page_bytes=update.Y_PAGE),
+        "w": None,
+    }
+    assert update.passes_tensors(made, model) == {"x": made["x"], "y": made["y"]}
+    made["y"] = SimpleNamespace(pages=tiles + 1, page_bytes=update.Y_PAGE)
+    with pytest.raises(ValueError, match="APPLY's y"):
+        update.passes_tensors(made, model)

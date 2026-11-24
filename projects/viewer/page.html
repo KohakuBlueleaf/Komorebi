@@ -213,6 +213,7 @@ const ROWS = [
   ["frame", "frame number"], ["sun", "sun az, el"], ["sun_ms", "SUN pass ms"],
   ["field_s", "field update s"], ["exposure", "exposure"], ["saturation", "saturation"],
   ["curve", "curve"], ["bounces", "passes"], ["indirect", "indirect"],
+  ["field_on", "field update on"],
 ];
 const cells = {}, heads = {};
 for (const [key, label] of ROWS) {
@@ -247,11 +248,13 @@ function renderStatus(state) {
     bounces: fixed(state.bounces, 0),
     indirect: state.indirect === null || state.indirect === undefined ? "-" :
       (state.indirect ? "on" : "off"),
+    field_on: state.field_on || "-",
   };
   for (const [key] of ROWS) {
     cells[key].textContent = values[key];
     cells[key].title = values[key];
   }
+  cells.field_on.title = state.field_reason || values.field_on;
   heads.ms.textContent = state.card_ms_label || "frame ms (host)";
   cells.state.className = status === "running" || status === "loading" ? "" : "bad";
   const note = status === "running" || status === "loading" ? postError : status;

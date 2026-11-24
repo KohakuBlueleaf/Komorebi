@@ -115,9 +115,11 @@ Requests: `GET /` the page; `GET /stream` the frames; `POST /pose`
 "scene_serial": n}`, raster-lit); `GET /state` (the numbers, the status, the renderers
 and scenes offered, the scene box's diagonal, the scene's first pose; raster-lit: `sun`,
 `sun_own`, `sun_ms`; raster-lit and raster-gi: `tone`, `tone_own`; raster-gi:
-`indirect`, `bounces` (the passes in force; null for the other renderers) and `field_s`
-(the seconds the last update of the field took on the host, a sun change's or a
-count's; null before the first)); `POST /tone` (`{"exposure": e, "saturation": s, "curve": 0 or 1,
+`indirect`, `bounces` (the passes in force; null for the other renderers), `field_s`
+(the seconds the last update of the field took as the host sees it, a sun change's or
+a count's; null before the first), `field_on` ("card" or "host": where the field is
+updated) and `field_reason` (null on the card; on the host "no transport set" or
+APPLY's refusal)); `POST /tone` (`{"exposure": e, "saturation": s, "curve": 0 or 1,
 "scene_serial": n}`, raster-lit and raster-gi: exposure clamped to 0.25 to 8,
 saturation to 0 to 2); `POST /indirect` (`{"on": true or false, "scene_serial": n}`,
 raster-gi); `POST /bounces` (`{"bounces": n, "scene_serial": s}`, n 0 to 3, raster-gi;
@@ -141,8 +143,15 @@ below the horizon), and the header shows the sun and the last SUN pass's ms. Car
 the frame and `/state` named it on all three scenes; SUN pass 8.6 ms (Sponza), 10.3
 (Bistro interior), 21.5 (Bistro exterior), host side included.
 
-raster-gi has the same sliders; its sun change also remakes the indirect field on the
-host and writes its pages (`Loop.update_field`) before the next frame. Card 1,
+raster-gi has the same sliders; its sun change, and a passes change, also remakes the
+indirect field before the next frame. When the scene has a transport set
+(`<data>/public/<scene>_transport/`) and APPLY's buffers fit, the loop is opened with
+`card_field` (`live.py --card-field`): the frame thread's UPDATE makes the field on the
+card from the card's shadow map, its passes' applies by APPLY on the cores
+(`Loop.card_update`), and `field_s` is that update's seconds as the host waits for it.
+Otherwise the host remakes the field and writes its pages (`Loop.update_field`), and
+`/state`'s `field_reason` says why; the status table's row "field update on" shows
+"card" or "host" (the reason as its title). With the host's update, card 1,
 2026-11-23 23:19 to 23:23, `check.py` (`ok`, every case): the sun change took 1,639 ms
 (Sponza) and 3,402 ms (Bistro interior) in the render loop, the first frame with the new
 sun came 1.7 and 3.5 s after the post (`follow_s`); frame ms (host) 14.9 and 23.6.
@@ -179,7 +188,21 @@ the passes); the other renderers must refuse a passes post with 400. Each case a
 16384 x 16384 (512 x 512 tiles: a rasterizer takes it and `/state` shows the L1 refusal
 with the size kept; the ray tracer 400), then on a rasterizer 1024 x 576, 1920 x 1080
 (past the capacity: a reload) and the start's size, each followed by `/state` and a frame
-of that size; the ray tracer must refuse 1024 x 576 with 400.
+of that size; the ray tracer must refuse 1024 x 576 with 400. The stream reader waits
+out a pause as long as FOLLOW_S (a reload's build) and opens the stream again when it
+closes (`stream_breaks`); a size step that times out is named in the case's
+`timed_out` (the size, and whether `/state` or a frame of it was missing). raster-gi's
+cases also check `/state`'s `field_on`: present, and "card" on Sponza.
+
+Card 1, 2026-11-24 14:49 to 14:57, server on 127.0.0.1:8769, the build cache and the
+weights' cache warm: `check.py` `ok`, all 32 cases, no stream break. raster-gi, a case
+(open to the next open) 26 s (Sponza), 32 (Bistro interior), 24 (breakfast room), 33
+(salle de bain), 27 (Modern hall), 31 (Modern living room); its open 5.1 to 11.7 s;
+`field_on` "card" on all six; the sun change shown with a frame after it in 0.32 to
+1.39 s, the passes in 0.26 to 1.35 s with `field_s` 0.19 to 0.26; the 1920 x 1080
+reload 1.5 to 2.4 s. A scene's first open, or first reload at a capacity, builds its
+frame kernels once (about 9.3 s; projects/raster/README.md "The field's update in the
+thread").
 
 Card 1, 2026-11-24 01:52 to 01:56, server `--size 1280x720` (default) on 127.0.0.1:8766,
 `check.py` `ok`, every case: the rasterizers' frames 1,280 x 720 on every scene, the size

@@ -416,6 +416,7 @@ class Loop:
         self.session = session
         # APPLY (apply.checked_set's set): its tensors made at the first load
         self.apply_set, self.apply_made = apply_set, None
+        self.apply_windows = None  # APPLY's windows of the load (apply.frame_parts)
         self.scene, self.materials, self.lights, self.terms = (
             scene,
             materials,
@@ -442,6 +443,8 @@ class Loop:
             raise ValueError("the field's update in the thread needs the term indirect")
         if card_field and update.same_numbers():
             raise ValueError(f"update.h differs: {update.same_numbers()}")
+        if card_field and apply_set is None:  # x and y are APPLY's
+            raise ValueError("the field's update in the thread needs a transport set")
         if lights is not None and "indirect" in terms:
             self.field = light.field_of(lights)
             self.shadow = lights["shadow_map"]  # the map the field was made with
@@ -560,9 +563,21 @@ class Loop:
                 tiles=held.tiles,
             )
             self.light_profile = self.surface["profile"]
+        if self.apply_set is not None and self.apply_made is None:
+            ready = self.apply_set  # APPLY's x, w, y, tables, profile pages
+            self.apply_made = apply.tensors(
+                session,
+                ready["set"],
+                ready["tables"],
+                ready["raw"],
+                ready["x"],
+                workers,
+            )
         self.update_tensors = None
-        if self.card_field:  # the passes' x and y (update.py)
-            self.update_tensors = update.tensors(session, self.field["model"])
+        if self.card_field:  # the passes' x and y: APPLY's (update.py)
+            self.update_tensors = update.passes_tensors(
+                self.apply_made, self.field["model"]
+            )
         self.masked = self.glass = self.glass_surface = None
         for name in ("masked", "glass"):
             if prepared is None or f"{name}_blocks" not in prepared:
@@ -662,22 +677,20 @@ class Loop:
                 workers,
                 self.bounces(),
             )
-        applied = {}  # APPLY's parts and the update region's words 0 to 15
-        if self.apply_set is not None:
-            ready = self.apply_set
-            if self.apply_made is None:
-                self.apply_made = apply.tensors(
-                    session, ready["set"], ready["tables"], ready["raw"], ready["x"],
-                    workers,
-                )  # fmt: skip
-            applied = {
-                "apply_parts": apply.frame_parts(ready["sizes"]),
-                "apply_header": apply.header(self.apply_made, workers),
-            }
         report["upload_s"] = round(time.perf_counter() - started, 3)
         started = time.perf_counter()
 
         def build(held):
+            applied = {}  # APPLY's parts (over held's buffers) and words 0 to 15
+            if self.apply_set is not None:  # its tensors made with the others
+                parts = apply.frame_parts(
+                    self.apply_set["sizes"], card_thread.frame_buffers(held)
+                )
+                self.apply_windows = parts["windows"]
+                applied = {
+                    "apply_parts": parts,
+                    "apply_header": apply.header(self.apply_made, workers),
+                }
             return card_thread.program(
                 scene,
                 words,
@@ -733,6 +746,7 @@ class Loop:
         for name in ("uploaded", "shaded", "surface", "masked", "glass"):
             walk(getattr(self, name, None))
         walk(getattr(self, "update_tensors", None))
+        walk(getattr(self, "apply_made", None))
         walk(
             [
                 getattr(self, name, None)
@@ -1128,13 +1142,20 @@ def loop(args):
         raise SystemExit("--indirect-switch flips the field of an --indirect frame")
     if args.bounces is not None and not args.indirect:
         raise SystemExit("--bounces sets the passes of an --indirect frame's field")
-    if args.card_field and not args.indirect:
+    card_field = args.card_field or args.card_field_stepped
+    if card_field and not args.indirect:
         raise SystemExit("--card-field updates an --indirect frame's field")
-    if args.card_field:
+    if card_field and (args.apply_check or args.apply_alternate):
+        raise SystemExit(
+            "--apply-check checks APPLY's y of the set's x: no --card-field"
+        )
+    if args.card_field_stepped:
         report["card_field"] = {  # without RF_APPLY the host applies between steps
             "mode": "stepped: the host's float apply (indirect.apply) between "
             "UPDATE's steps, no RF_APPLY; 0 passes: the whole update in the thread"
         }
+    elif card_field:
+        report["card_field"] = {"mode": "thread: RF_APPLY, each pass's APPLY"}
     if toned:  # set_tone before the first frame; the reference with the same numbers
         tone = live_tone(lights, args)
         lights = {**lights, **tone}
@@ -1152,12 +1173,22 @@ def loop(args):
     applying = args.apply_check or args.apply_alternate
     with km.Session(log=card.log) as session:
         ready = None
+        folder = apply.scene_set(args.scene, native.data_dir())
+        cache = args.apply_cache  # w's cache folder (apply.cache_folder)
         if applying:  # the scene's transport set, dealt to the cores, emulated
-            folder = apply.scene_set(args.scene, native.data_dir())
-            cache = None
-            if args.apply_cache:
-                cache = Path(args.apply_cache) / f"{folder.name}_w.npy"
-            ready = apply.checked_set(folder, card.workers(session), cache)
+            ready = apply.checked_set(
+                folder,
+                card.workers(session),
+                apply.cache_folder(cache, native.data_dir()),
+            )
+        elif card_field:  # the set's x, w, y: the passes' (refused when missing)
+            try:
+                ready = apply.field_set(
+                    args.scene, native.data_dir(), card.workers(session), cache
+                )
+            except FileNotFoundError as error:
+                raise SystemExit(str(error)) from None
+        if ready is not None:
             report["apply_set"] = {"folder": ready["folder"], "sizes": ready["sizes"]}
         live = Loop(
             session,
@@ -1172,7 +1203,8 @@ def loop(args):
             card_thread.capacity([most], lights is not None)._replace(
                 recount=args.recount
             ),
-            card_field=args.card_field,
+            card_field=card_field,
+            apply=not args.card_field_stepped,
             apply_set=ready,
         )
         workers = live.workers
@@ -1181,8 +1213,7 @@ def loop(args):
             applying
         ):  # x is the set's x.npy (made at the load); the applies before frames
             report["apply_windows"] = {
-                name: list(window)
-                for name, window in apply.frame_parts(ready["sizes"])["windows"].items()
+                name: list(window) for name, window in live.apply_windows.items()
             }
         applies += [
             {"before_frame": 0, **live.apply_once()} for _ in range(args.apply_check)
@@ -1289,7 +1320,7 @@ def loop(args):
         live.stop()
         running = live.running
         report["status"] = card.check_run(running, workers, 0, [])
-        if args.card_field:  # UPDATE's times rows since the last load
+        if card_field:  # UPDATE's times rows since the last load
             report["card_field"]["updates"] = update.times(
                 running.thread.read("update")
             )
@@ -1726,7 +1757,13 @@ def main():
         "--card-field",
         action="store_true",
         help="with --indirect: the field's update after a sun or bounce change by "
-        "the frame thread's UPDATE (without RF_APPLY its passes' applies on the host)",
+        "the frame thread's UPDATE, each pass's apply APPLY (the transport set's)",
+    )
+    parser.add_argument(
+        "--card-field-stepped",
+        action="store_true",
+        help="--card-field with the passes' applies on the host between UPDATE's "
+        "steps (no RF_APPLY), for comparison",
     )
     parser.add_argument(
         "--indirect-switch",
@@ -1771,7 +1808,10 @@ def main():
         help="APPLY loaded: an apply after each frame, each y checked",
     )
     parser.add_argument(
-        "--apply-cache", default=None, help="a folder for the transport set's w bytes"
+        "--apply-cache",
+        default=None,
+        help="the folder of the transport set's cached w (default <KR_DATA>/cache/apply"
+        ", 'none': no cache)",
     )
     parser.add_argument("--json", default=None)
     parser.add_argument(
