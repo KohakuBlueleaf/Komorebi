@@ -732,7 +732,9 @@
    "radius": 10.0,
    "size": 0.1,
    "emissive_scale": 1.0,
-   "exposure": 1.0,
+   "exposure": 2.0,
+   "saturation": 1.15,
+   "curve": 1,
    "shadow_bias": 3.0,
    "elements": 50000
   },
@@ -800,7 +802,9 @@
    "radius": 50.0,
    "size": 1.0,
    "emissive_scale": 10.0,
-   "exposure": 1.0,
+   "exposure": 2.0,
+   "saturation": 1.15,
+   "curve": 1,
    "shadow_bias": 3.0,
    "elements": 50000
   },
@@ -868,7 +872,9 @@
    "radius": 5.0,
    "size": 0.1,
    "emissive_scale": 4.575,
-   "exposure": 1.0,
+   "exposure": 2.0,
+   "saturation": 1.15,
+   "curve": 1,
    "shadow_bias": 3.0,
    "elements": 50000
   },
@@ -947,7 +953,9 @@
    "radius": 5.0,
    "size": 0.1,
    "emissive_scale": 114.425,
-   "exposure": 1.0,
+   "exposure": 2.0,
+   "saturation": 1.15,
+   "curve": 1,
    "shadow_bias": 3.0,
    "elements": 50000
   },

@@ -31,7 +31,10 @@ SUN_TURN = (
     90.0  # the sun's move: its azimuth turned by this, its elevation SUN_ELEVATION
 )
 SUN_ELEVATION = 40.0
-TONE = (2.0, 1.15, 1)  # the tone posted: exposure, saturation, filmic
+# the tone posted, from the scene's own (/state tone_own): exposure times this,
+# saturation plus this, and the other curve, so it always differs from the own
+TONE_EXPOSURE_FACTOR = 1.5
+TONE_SATURATION_STEP = 0.15
 BOUNCES = 0  # the passes posted to a renderer with indirect light (the scene's: 2)
 BOUNCES_REFUSED = 4  # out of range: refused (400, its reason)
 
@@ -153,9 +156,9 @@ def run_case(base, token, renderer, scene):
     if state.get("sun_own"):
         sun = sun_case(base, token, state, reader)
     if state.get("tone_own"):
-        tone = knob_case(
-            base, token, state, reader, "/tone", tone_body(), "tone", list(TONE)
-        )
+        body = tone_body(state["tone_own"])
+        want = [body["exposure"], body["saturation"], body["curve"]]
+        tone = knob_case(base, token, state, reader, "/tone", body, "tone", want)
     passes = bounces_case(base, token, state, reader)  # before the switch turns it off
     if state.get("indirect") is not None:
         switch = knob_case(
@@ -282,10 +285,16 @@ def size_case(base, token, state, reader):
     return case
 
 
-def tone_body():
-    """The tone TONE as /tone takes it."""
-    exposure, saturation, curve = TONE
-    return {"exposure": exposure, "saturation": saturation, "curve": curve}
+def tone_body(own):
+    """The tone posted as /tone takes it: from the scene's own (exposure, saturation,
+    curve), the exposure times TONE_EXPOSURE_FACTOR, the saturation plus
+    TONE_SATURATION_STEP and the other curve."""
+    exposure, saturation, curve = own
+    return {
+        "exposure": exposure * TONE_EXPOSURE_FACTOR,
+        "saturation": saturation + TONE_SATURATION_STEP,
+        "curve": 1 - int(curve),
+    }
 
 
 def knob_case(base, token, state, reader, path, body, key, want):
