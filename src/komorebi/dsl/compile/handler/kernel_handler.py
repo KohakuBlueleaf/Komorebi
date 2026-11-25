@@ -30,13 +30,18 @@ KERNEL_CPUS = {
     "movement": ("mover_a", "mover_b"),
     "compute": ("unpack", "math", "pack"),
 }
-# Dst cleared whole on the math CPU (projects/raster/kernels/apply_compute.hpp).
+# Dst cleared whole on the math CPU (projects/raster/kernels/apply_compute.hpp); on
+# Wormhole ZEROACC takes three operands (tt_llk_wormhole_b0 ckernel.h zeroacc()).
 CLEAR_DST = (
     "#if defined(TRISC_MATH)\n"
     "ckernel::addr_mod_t{.srca = {.incr = 0}, .srcb = {.incr = 0}, "
     ".dest = {.incr = 0}}\n"
     "    .set(ADDR_MOD_1);\n"
+    "#if defined(ARCH_WORMHOLE)\n"
+    "TTI_ZEROACC(p_zeroacc::CLR_ALL, ADDR_MOD_1, 0);\n"
+    "#else\n"
     "TTI_ZEROACC(p_zeroacc::CLR_ALL, DST_ACCUM_MODE, 0, ADDR_MOD_1, 0);\n"
+    "#endif\n"
     "TTI_STALLWAIT(p_stall::STALL_SFPU | p_stall::STALL_SYNC, p_stall::MATH);\n"
     "#endif"
 )

@@ -1,15 +1,19 @@
 """A handler whose body is hand-written kernel files (km.kernel) beside DSL handlers:
-its call on each role's CPUs, the files' include lines, the declared pairs (km.Pair)
-and constants in the header, the state a DSL handler sets at its entry, a merged
-build, and each refusal (no card; the files in kernel_hand/ are only included)."""
+its call on each role's CPUs, the files' include lines, the pairs (km.Pair) and
+constants in the header, the state a DSL handler sets at its entry (its Dst clear
+built for Wormhole on the mock, tree lane), a merged build, each refusal (no card)."""
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import komorebi as km
+from komorebi.device import mock
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.errors import ProgramError
@@ -359,3 +363,39 @@ def test_pairs_past_the_indices_and_two_ways_in_a_merge_are_refused():
     )
     with pytest.raises(Refused, match=r"km.Pair a_in is \(bfloat16, pages=32, "):
         km.merge(made(Gates), made(Other), log=lambda line: None)
+
+
+# A mock load on Wormhole of a merge with a hand handler (not clean) beside DSL
+# handlers (test_shared_buffers.hand_merge): its compute built with the entry's lines.
+WORMHOLE_LOAD = """
+import sys
+sys.path[:0] = sys.argv[1:]
+import komorebi as km
+from test_shared_buffers import hand_merge
+
+with km.Session() as session:
+    session.load(hand_merge(session=session)).stop()
+"""
+
+
+@pytest.mark.tree
+def test_the_entry_s_clear_of_dst_builds_for_wormhole(tmp_path):
+    here = Path(__file__).parent
+    env = dict(os.environ, **{mock.ACTIVE: "1"})
+    env[mock.MOCK] = str(mock.descriptor((0,), "wormhole_b0"))
+    env[mock.MEMORY] = str(tmp_path / "kernel_buffer.json")
+    env["TT_VISIBLE_DEVICES"] = "0"
+    env.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(km.__file__).parents[1]), env.get("PYTHONPATH", "")]
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", WORMHOLE_LOAD, str(here), str(here / "constants")],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "TTI_ZEROACC" not in done.stdout + done.stderr, done.stderr[-3000:]
+    assert done.returncode == 0, done.stderr[-3000:]
