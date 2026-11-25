@@ -212,13 +212,15 @@ def test_dsl_handlers_set_the_startup_state_beside_a_kernel_not_clean():
     text = made(Mixed).built.files["compute.cpp"]
     add = case(text, "Add")
     assert add.index("reconfig_data_format(0, 0);") < add.index("const uint32_t tiles")
-    assert "pack_reconfig_data_format(16);" in add
+    assert "km::pack_format<16>();" in add and "pack_reconfig_data_format" not in add
     assert "TTI_ZEROACC(p_zeroacc::CLR_ALL, DST_ACCUM_MODE, 0, ADDR_MOD_1, 0);" in add
     assert add.index("#if defined(TRISC_MATH)") < add.index("TTI_ZEROACC")
     assert "TTI_ZEROACC" not in case(text, "Gate")
     assert '#include "api/compute/reconfig_data_format.h"' in text
+    assert '#include "komorebi/device/core/km_pack_format.hpp"' in text
     clean = made(Clean).built.files["compute.cpp"]
     assert "TTI_ZEROACC" not in clean and "reconfig_data_format" not in clean
+    assert "pack_format" not in clean
 
 
 def test_a_merged_build_numbers_and_includes_once():

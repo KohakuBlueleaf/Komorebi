@@ -1379,9 +1379,13 @@ buffer](#a-bodys-own-buffer)).
 the packer's formats and Dst other than the start-up set them. In a program with a
 `km.kernel` handler not made `clean=True` and a DSL handler, each DSL handler's compute
 case begins with the start-up's formats set again (the runtime form's lines,
-`reconfig_data_format` and `pack_reconfig_data_format` of the program's first input
-and output buffers; with a `km.Startup`, of its fields) and Dst cleared whole on the
-math CPU (`TTI_ZEROACC(p_zeroacc::CLR_ALL, ...)`). `clean=True` states that the kernel
+`reconfig_data_format` and `km::pack_format` of the program's first input and output
+buffers; with a `km.Startup`, of its fields) and Dst cleared whole on the math CPU
+(`TTI_ZEROACC(p_zeroacc::CLR_ALL, ...)`). `km::pack_format<index>()`
+(`device/core/km_pack_format.hpp`) is the library's `pack_reconfig_data_format(index)`
+with the index a template argument: the buffer's formats and tile shape are constants
+and the call is always inline, so the pack CPU holds no copy of the build's tables
+however many handlers set them. `clean=True` states that the kernel
 leaves them as the start-up set them, and a program whose kernel handlers are all
 clean, or that has no DSL handler, gets none of it. A hand kernel sets up what it
 needs itself.
@@ -3445,7 +3449,7 @@ How the class runs in this form:
 - **Compute.** `compute.cpp`'s switch is compute's `km_program`. The runtime runs the
   hardware start-up on the program's first buffer below 16 and its first from 16 when a
   group loads it. Each command first sets those two buffers' formats again
-  (`reconfig_data_format`, `pack_reconfig_data_format`): in a list, the core's last
+  (`reconfig_data_format`, `km::pack_format`): in a list, the core's last
   command may have been another program's
   ([hazards](hazards.md#formats-another-program-left-on-the-same-cores)).
 - **Buffers.** The class's buffers are the program's (the same indices, formats and

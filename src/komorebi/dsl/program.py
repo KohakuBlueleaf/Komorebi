@@ -1286,11 +1286,14 @@ def runtime_compute_source(compiled):
             f"{INDENT * 2}km_case(command);",
             f"{INDENT}}}",
         ]
+    start = start_formats(compiled)
+    packs = any(kernel_handler.PACK_FORMAT in line for line in start)
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// its part on compute, under the runtime's compute kernel.",
         *compute_includes(compiled),
         '#include "api/compute/reconfig_data_format.h"',
+        *([kernel_handler.PACK_FORMAT_HEADER] if packs else []),
         '#include "komorebi/device/core/km_program.hpp"',
         *(
             ['#include "komorebi/device/movement/km_chain.hpp"']
@@ -1300,7 +1303,7 @@ def runtime_compute_source(compiled):
         f'#include "{header_name(compiled)}"',
         "",
         "void km_program(km::Compute& compute, const km_command_t& command) {",
-        *start_formats(compiled),
+        *start,
         *switch,
         "}",
         *runtime_start(compiled, "compute"),
@@ -1327,7 +1330,7 @@ def start_formats(compiled):
     if inputs:
         lines.append(f"{INDENT}reconfig_data_format({inputs[0]}, {inputs[0]});")
     if outputs:
-        lines.append(f"{INDENT}pack_reconfig_data_format({outputs[0]});")
+        lines.append(f"{INDENT}{kernel_handler.PACK_FORMAT}<{outputs[0]}>();")
     return lines if len(lines) > 1 else []
 
 

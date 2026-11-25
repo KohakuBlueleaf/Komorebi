@@ -41,6 +41,10 @@ CLEAR_DST = (
     "#endif"
 )
 FORMATS_HEADER = '#include "api/compute/reconfig_data_format.h"'
+# The packer set for a buffer whose index is a constant: the library's call with the
+# index a template argument, forced inline (device/core/km_pack_format.hpp).
+PACK_FORMAT = "km::pack_format"
+PACK_FORMAT_HEADER = '#include "komorebi/device/core/km_pack_format.hpp"'
 
 
 def lowered(frame):
@@ -200,8 +204,9 @@ def entered(compiled, formats, builds):
     if compiled.entered or not entry_state(compiled):
         return
     compiled.entered = True
-    if FORMATS_HEADER not in compiled.body_includes["compute"]:
-        compiled.body_includes["compute"].append(FORMATS_HEADER)
+    for header in (FORMATS_HEADER, PACK_FORMAT_HEADER):
+        if header not in compiled.body_includes["compute"]:
+            compiled.body_includes["compute"].append(header)
     lines = [
         "// the start-up's formats and a clear Dst again: a hand kernel may have "
         "changed them"
@@ -211,7 +216,7 @@ def entered(compiled, formats, builds):
         names = [f"kField{camel(name)}" for name in startup.fields]
         second = names[1] if len(names) == 3 else names[0]
         lines.append(f"reconfig_data_format({names[0]}, {second});")
-        lines.append(f"pack_reconfig_data_format({names[-1]});")
+        lines.append(f"{PACK_FORMAT}<{names[-1]}>();")
     else:
         lines += [line.strip() for line in formats[1:]]
     head = Line("\n".join([*lines, CLEAR_DST]))
