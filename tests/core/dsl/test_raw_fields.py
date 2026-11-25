@@ -1,7 +1,7 @@
 """An own field of raw pages (km.own(raw=True)) and buffer indices past 25: its buffer,
 header lines, L1 and solved pages, each refusal, fields at 32 up (never 33), room made
-by moving an own field up, a merge, the vector option "if_present", and a kernel
-handler's call on a raw field (no card; the files in kernel_hand/ are only included)."""
+by moving an own field up, a merge, two fields of one header name, "if_present", a
+kernel handler's call on a raw field (no card; kernel_hand/'s files only included)."""
 
 import pytest
 
@@ -216,6 +216,48 @@ def test_a_merge_refusal_of_one_field_says_what_differs():
     text = merge_refused(Raw, Tiled)  # raw= alone differs
     assert "raw pages in Raw, tiles in Tiled" in text
     assert "Field(" not in text and "push=" not in text and text.endswith(one)
+
+
+class Both(Gated):
+    out: km.L1[km.bf16, 2, 32, 32] = km.own()
+    out_pages: km.L1[km.bf16, 1, 32, 32] = km.own()
+
+
+class OutPages(km.Program):
+    out_pages: km.L1[km.bf16, 1, 32, 32] = km.own()
+
+    @km.handler(GATE)
+    def other(self, n: int):
+        pass
+
+
+def test_two_fields_that_give_the_header_one_name_are_refused_naming_both():
+    shared = "field out and field out_pages both give the header kFieldOutPages"
+    text = refused(Both)
+    assert text.startswith("Both.out_pages, line ")
+    assert text.endswith(
+        f"`out_pages: km.L1[km.bf16, 1, 32, 32] = km.own()`: {shared}; rename one"
+    )
+
+    class Out(Gated):
+        out: km.L1[km.bf16, 2, 32, 32] = km.own()
+
+    assert merge_refused(Out, OutPages).endswith(f"{shared}; rename one")
+
+    class RawBytes(Gated):  # a raw field's third name
+        out: km.L1[km.u32, 1, 64] = km.own(push="pack", raw=True)
+        out_page_bytes: km.L1[km.bf16, 1, 32, 32] = km.own()
+
+    assert "give the header kFieldOutPageBytes; rename one" in refused(RawBytes)
+
+    class Alike(Gated):  # names that only look alike
+        out: km.L1[km.bf16, 2, 32, 32] = km.own()
+        outpages2: km.L1[km.bf16, 1, 32, 32] = km.own()
+        out_page_bytes: km.L1[km.bf16, 1, 32, 32] = km.own()  # out is not raw
+
+    header = made(Alike).built.files["alike.h"]
+    for name in ("kFieldOutPages", "kFieldOutpages2Pages", "kFieldOutPageBytesPages"):
+        assert f"constexpr uint32_t {name} = " in header
 
 
 def test_the_vector_option_if_present_is_accepted():

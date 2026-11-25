@@ -688,10 +688,37 @@ def raw_pages(compiled, name, value, solved):
     return page_bytes, solved[first] if isinstance(first, str) else first
 
 
+def field_header_names(compiled, name):
+    """The names field `name` gives the program's header (program.buffer_lines):
+    kField<Name> (its index), kField<Name>Pages, a raw field's kField<Name>PageBytes."""
+    base = f"kField{camel(name)}"
+    return [base, f"{base}Pages"] + (
+        [f"{base}PageBytes"] if name in compiled.raw else []
+    )
+
+
+def header_names_checked(compiled):
+    """Two fields (of one class, or of two classes of a merge) that give the header one
+    name refused, naming both and the name: the kernels would not compile."""
+    given = {}
+    for name in compiled.fields:
+        for header_name in field_header_names(compiled, name):
+            if header_name in given:
+                raise field_refused(
+                    compiled,
+                    name,
+                    f"field {given[header_name]} and field {name} both give the "
+                    f"header {header_name}",
+                    "rename one",
+                )
+            given[header_name] = name
+
+
 def bind_fields(compiled, plan, l1):
     """Each field a buffer of whole tiles (a raw field's: pages of its own bytes);
     its shape's symbols from the plan, and one symbol left unknown solved as the
     largest that fits the L1 the others leave."""
+    header_names_checked(compiled)
     unknown, user = set(), {}
     for name, value in compiled.fields.items():
         symbols = [n for n in value.shape if isinstance(n, str) and n not in plan]

@@ -2556,7 +2556,12 @@ A field is declared on the class with its format and shape; a symbol of the shap
 declared in the class's body, `TILES = km.symbol()` (or `km.constant()`), and used as
 `count: km.L1[km.fp32, TILES, 32, 32]`; a size may be a constant of the class too,
 each program's value ([Constants](#constants)). Each field is a buffer of whole tiles, index 8
-up to 25 (an own field past them 32 up, [A body's own buffer](#a-bodys-own-buffer)). A symbol is the plan's; one symbol left unknown is solved as the largest for which
+up to 25 (an own field past them 32 up, [A body's own buffer](#a-bodys-own-buffer)).
+The header names it `kField<Name>` (its index) and `kField<Name>Pages`, a raw field
+also `kField<Name>PageBytes` (`<Name>` the field's name, each part between `_`
+capitalized): two fields that give it one name (`out` and `out_pages`), in one class or
+in two classes of a merge, are refused at the make, naming both and the name ("rename
+one"). A symbol is the plan's; one symbol left unknown is solved as the largest for which
 the fields and the buffers fit `l1`, and the report prints it.
 
 A field is filled from a stream of a page range, of its own tiles' count, or of a
@@ -3602,7 +3607,7 @@ Many: km.Pair p13 (read) needs pair kPairP13, and indices 0 to 25 have no two fr
 gates_other: km.Pair a_in is (bfloat16, pages=32, write=False) in Gates and (float32, pages=32, write=False) in Other; a pair of one name is one pair: declare it alike, or rename one
 ```
 
-A raw field's refusals and the indices', from
+A raw field's refusals, the indices' and the header names', from
 [test_raw_fields.py](../../tests/core/dsl/test_raw_fields.py):
 
 ```text
@@ -3614,6 +3619,7 @@ Lined.drain, line 123, `pages = km.Stream(self.table, mover="B")`: self.table is
 km.own(raw='yes'): raw= is True (a raw field: pages x items, raw pages) or False
 Fields50: more buffers and fields than the indices: 49 buffers take 49 indices, and a class has 57 of the chip's 64 (0 to 25, and 32 up but 33); declare fewer fields, or split the class
 Fields19: more buffers and fields than the indices: 18 buffers take 18 indices, and a class has 26 of the chip's 32 (0 to 25); declare fewer fields, or split the class
+Both.out_pages, line 224, `out_pages: km.L1[km.bf16, 1, 32, 32] = km.own()`: field out and field out_pages both give the header kFieldOutPages; rename one
 ```
 
 The refusals of the ways of sharing buffers and of a constant named as a handler's name
