@@ -3,7 +3,7 @@ class's list, which every handler's buffers join in the order they are asked for
 buffer is shared by name across handlers and grown in place)."""
 
 from komorebi.dsl.compile.cxx import camel
-from komorebi.dsl.compile.records import Buffer, Refused
+from komorebi.dsl.compile.records import Buffer, Unfit
 from komorebi.dsl.front.names import spelling
 
 # Circular buffer indices: reads from 0, writes from 16, the others from 8, to 25 (26
@@ -17,6 +17,10 @@ PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
 READ_ITEMS = 4
 WRITE_ITEMS = 2
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
+BY_SHAPE, SHARED_INDICES = 2, 3  # the ways handlers share buffers (shared.py)
+# A call's buffer's index while its handlers compile at shared indices (the third way):
+# from here up, outside the chip's; shared.assign gives each handler's its own.
+VIRTUAL = 1000
 
 
 def taken_indices(compiled):
@@ -47,6 +51,22 @@ def added(compiled, buffer):
     return buffer
 
 
+def virtual(compiled):
+    """The next index past every call's buffer's (VIRTUAL up), for a buffer of one
+    call when the class is built at shared indices."""
+    taken = [i for i in taken_indices(compiled) if i is not None and i >= VIRTUAL]
+    return max(taken, default=VIRTUAL - 1) + 1
+
+
+def scoped(compiled, buffer):
+    """`buffer` is of one call of a handler: the handler compiling names it (its
+    users)."""
+    buffer.scoped = True
+    if compiled.current is not None and compiled.current not in buffer.users:
+        buffer.users.append(compiled.current)
+    return buffer
+
+
 def next_index(compiled, upper=False):
     """The next index of a field or another single buffer: the first free from 8 to
     25; past them an own field's (`upper`) is the first free of the upper ones
@@ -58,7 +78,7 @@ def next_index(compiled, upper=False):
         return index
     if upper:
         return upper_index(compiled)
-    raise Refused(f"{compiled.name}: more buffers and fields than the indices")
+    raise Unfit(f"{compiled.name}: more buffers and fields than the indices")
 
 
 def upper_index(compiled):
@@ -69,7 +89,7 @@ def upper_index(compiled):
         if index != LINK_INDEX and index not in taken:
             return index
     upper = [i for i in range(FIRST_UPPER, compiled.indices) if i != LINK_INDEX]
-    raise Refused(
+    raise Unfit(
         f"{compiled.name}: more buffers and fields than the indices: "
         f"{len(compiled.buffers)} buffers take {len(taken)} indices, and a class has "
         f"{LAST_INDEX + 1 + len(upper)} of the chip's {compiled.indices} (0 to "
@@ -107,8 +127,16 @@ class SharedPair:
 
 def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=None):
     """The program's pair `number` of `role`, made or grown; a read pair of another
-    handler's block shared (SharedPair), its halves `items` of the largest block."""
+    handler's block shared (SharedPair), its halves `items` of the largest block. Built
+    by shape (the second way), a pair of the role, format and page bytes another
+    handler has that this one does not use yet, whatever its number."""
     name = f"k{role.capitalize()}{number}"
+    if compiled.step == BY_SHAPE:
+        shaped = by_shape(compiled, role, dtype, page_bytes, block, handler)
+        taken = {b.name for b in compiled.buffers}
+        while shaped is None and name in taken:
+            name += "b"
+        name = name if shaped is None else shaped.name
     for buffer in compiled.buffers:
         if buffer.name == name:
             if (buffer.dtype, buffer.page_bytes, buffer.block) != (
@@ -126,15 +154,18 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=
                 if first.startswith("shared by "):
                     first = first.split("; ", 1)[1]
                 buffer.what = f"shared by {', '.join(buffer.handlers)}; {first}"
-                return SharedPair(buffer, block)
+                return SharedPair(scoped(compiled, buffer), block)
             if handler not in buffer.handlers:
                 buffer.handlers.append(handler)
-            return buffer
+            return scoped(compiled, buffer)
     else:
         first = FIRST_READ if role == "read" else FIRST_WRITE
-        index = free_index(compiled, first, pair=True)
-        while index + 1 > LAST_INDEX and make_room(compiled, first):
+        if compiled.step == SHARED_INDICES:  # shared.assign gives it its indices
+            index = virtual(compiled)
+        else:
             index = free_index(compiled, first, pair=True)
+            while index + 1 > LAST_INDEX and make_room(compiled, first):
+                index = free_index(compiled, first, pair=True)
         buffer = Buffer(
             name,
             role,
@@ -146,13 +177,33 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=
             block,
             what,
         )
-        if index + 1 > LAST_INDEX:
-            raise Refused(no_pair(compiled, name, role, handler, first))
+        if index + 1 > LAST_INDEX and compiled.step != SHARED_INDICES:
+            raise Unfit(no_pair(compiled, name, role, handler, first))
         buffer.handlers = [handler]
-        return added(compiled, buffer)
+        return added(compiled, scoped(compiled, buffer))
     return pair(
         compiled, role, f"{number}b", dtype, page_bytes, block, items, what, handler
     )
+
+
+def by_shape(compiled, role, dtype, page_bytes, block, handler):
+    """The second way's pair for a stream: one of `role`, `dtype` and `page_bytes`
+    that the handler compiling does not use yet, of this block or (a read pair, as
+    shareable) another; None: none."""
+    for buffer in compiled.buffers:
+        if (
+            buffer.index_b is None
+            or buffer.declared
+            or (buffer.role, buffer.dtype, buffer.page_bytes)
+            != (role, dtype, page_bytes)
+            or compiled.current in buffer.users
+        ):
+            continue
+        if buffer.block == block or shareable(
+            compiled, buffer, role, (dtype, page_bytes), handler
+        ):
+            return buffer
+    return None
 
 
 def no_pair(compiled, name, role, handler, first):
@@ -190,7 +241,7 @@ def declared_pair(compiled, attribute, role, dtype, page_bytes, pages, what):
             for b in pairs
         )
         singles = len(compiled.buffers) - len(pairs) + len(compiled.reserved)
-        raise Refused(
+        raise Unfit(
             f"{compiled.name}: km.{spelling('pair')} {attribute} ({role}) needs pair "
             f"{name}, and "
             f"indices {first} to {LAST_INDEX} have no two free side by side: "
@@ -217,9 +268,11 @@ def padded_rings(compiled):
 def shareable(compiled, buffer, role, page_format, handler):
     """Whether a handler's read stream of another block may take `buffer`: a make
     that shares pairs, a read pair of the same format and page, streamed by other
-    handlers only, none with a block given at each submit (handler None)."""
+    handlers only, none with a block given at each submit (handler None); not at
+    shared indices (each handler's pairs are its own there)."""
     return (
         compiled.share_pairs
+        and compiled.step != SHARED_INDICES
         and role == "read"
         and buffer.role == "read"
         and (buffer.dtype, buffer.page_bytes) == page_format
@@ -241,31 +294,40 @@ def out_buffer(compiled, name, dtype, page_bytes, pages, what, item=None):
             most = max(buffer.pages[0], pages)
             if (buffer.items or [buffer.pages[0]]) == [item] and most % item == 0:
                 buffer.pages = (most,)
-                return buffer
+                return scoped(compiled, buffer)
         name += "b"
-    index = free_index(compiled, FIRST_WRITE)
-    while index > LAST_INDEX and make_room(compiled, FIRST_WRITE):
+    if compiled.step == SHARED_INDICES:  # shared.assign gives it its index
+        index = virtual(compiled)
+    else:
         index = free_index(compiled, FIRST_WRITE)
-    if index > LAST_INDEX:
-        raise Refused(f"{compiled.name}: more buffers than the indices")
+        while index > LAST_INDEX and make_room(compiled, FIRST_WRITE):
+            index = free_index(compiled, FIRST_WRITE)
+        if index > LAST_INDEX:
+            raise Unfit(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, "out", index, None, dtype, page_bytes, (pages,), 1, what)
     buffer.items = [item]
-    return added(compiled, buffer)
+    return added(compiled, scoped(compiled, buffer))
 
 
-def other_buffer(compiled, name, role, dtype, page_bytes, pages, what):
-    """The buffer `name` (an arrival, a broadcast's, a field's ...), made once."""
+def other_buffer(compiled, name, role, dtype, page_bytes, pages, what, call=False):
+    """The buffer `name` (an arrival, a broadcast's, a field's ...), made once; `call`:
+    a buffer of one call of a handler (a table of entries')."""
     for buffer in compiled.buffers:
         if buffer.name == name:
-            return buffer
+            return scoped(compiled, buffer) if call else buffer
+    if call and compiled.step == SHARED_INDICES:  # shared.assign gives it its index
+        buffer = Buffer(
+            name, role, virtual(compiled), None, dtype, page_bytes, (pages,), 1, what
+        )
+        return added(compiled, scoped(compiled, buffer))
     last = LAST_INDEX if role == "field" else FIRST_WRITE - 1
     index = free_index(compiled, FIRST_OTHER)
     while index > last and make_room(compiled, FIRST_OTHER, last):
         index = free_index(compiled, FIRST_OTHER)
     if index >= FIRST_WRITE and role != "field":
-        raise Refused(f"{compiled.name}: more buffers than the indices")
+        raise Unfit(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, role, index, None, dtype, page_bytes, (pages,), 1, what)
-    return added(compiled, buffer)
+    return added(compiled, scoped(compiled, buffer) if call else buffer)
 
 
 def block_step(rows, row_step):

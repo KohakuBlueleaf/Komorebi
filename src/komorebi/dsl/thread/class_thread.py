@@ -21,6 +21,7 @@ from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.files import (
     TEXT_KEY_CHARS,
     camel,
+    handler_defines,
     put,
     thread_header,
     thread_header_name,
@@ -247,7 +248,7 @@ def merged(program, compiled, tensors):
 
 def merged_parts(program, compiled, tensors):
     """The parts of a merged program's thread header (merged)."""
-    handlers, constants = [], {}
+    handlers, constants, named = [], {}, {}
     for (index, own), method in program.methods.items():
         source = program.classes[index]
         given = source.given["tensors"]
@@ -272,6 +273,11 @@ def merged_parts(program, compiled, tensors):
         )
         for name, value in source.given["constants"].items():
             constants[f"{source.cls.__name__.upper()}_{name.upper()}"] = value
+            named[f"{source.cls.__name__.upper()}_{name.upper()}"] = (
+                source.cls.__name__,
+                name,
+            )
+    constants_met(compiled, named)
     return Parts(compiled, ordered(compiled, tensors), handlers, constants, ())
 
 
@@ -296,9 +302,30 @@ def class_parts(program, compiled, tensors, opted):
         f"{prefix}_{name.upper()}": value
         for name, value in program.constant_values.items()
     }
+    constants_met(
+        compiled,
+        {
+            f"{prefix}_{name.upper()}": (compiled.name, name)
+            for name in program.constant_values
+        },
+    )
     return Parts(
         compiled, ordered(compiled, tensors), handlers, constants, tuple(opted)
     )
+
+
+def constants_met(compiled, named):
+    """Refuses a class constant whose name in the thread header (`named`: define ->
+    (its class, the constant)) is one a handler's names there (handler_defines)."""
+    for handler in compiled.handlers:
+        for define, _ in handler_defines(compiled, handler):
+            if define in named:
+                cls, constant = named[define]
+                raise ProgramError(
+                    f"{cls}: constant {constant} is {define} in the thread header "
+                    f"({thread_header_name(compiled)}), and handler {handler} gives "
+                    "that name too; rename the constant"
+                )
 
 
 def chained(program, thread, tensors, parts, where):

@@ -762,6 +762,26 @@ not seen. A body pushes an own field (`km.own(push=...)`).
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
 
+### Two handlers that give an index other pages on one core
+
+**The hazard.** At shared indices of other pages
+([When a class's buffers do not fit](classes.md#when-a-classs-buffers-do-not-fit)) two
+handlers' buffers of one call share indices with other pages and page bytes. Commands of
+one set of pages overlap on a core as any commands do, but a command of another set
+cannot start its lines while the one before still holds pages at those indices.
+
+**The rule.** Commands of handlers that give an index other pages do not overlap on a
+core: the reader does not hand such a command on until the writer has completed every
+command before and every index of the old and the new set is empty (the packer stores
+its counter late; equal counters say the store has landed), then zeroes their counters;
+each other CPU sets its own interfaces and its copies of the counters to zero at the
+handler's entry. A run that alternates such handlers pays the change at each command
+(about 6 µs a command on 12 and on 120 cores,
+[example 34](../../examples/34_shared_buffers/README.md)); runs of one set do not.
+
+**The guard.** The reader's wait is timed and gives up as the runtime's waits do, after
+the clean-up of the command before. A class with a chain does not take this way.
+
 ### A buffer half drained by compute in one command and by a mover in another
 
 **The hazard.** The draining side has the same counter problem as the filling side.

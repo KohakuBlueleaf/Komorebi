@@ -327,6 +327,9 @@ namespace km {
     constexpr uint32_t kLandWrite = 5;    // a slot's pages written into DRAM
     constexpr uint32_t kLandNone = 6;     // no landing on this load
     constexpr uint32_t kLandGen = 7;      // the core's generation row written (drops)
+    // A change of pages at shared indices (km_shared_indices.hpp): the reader waiting
+    // for the four and the indices to empty, or a CPU waiting for the reader's go.
+    constexpr uint32_t kWhereShare = 99;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -428,7 +431,8 @@ namespace km {
                 kWhereFarDram,
                 kWhereNear,
                 kWhereColl,
-                kWhereLand
+                kWhereLand,
+                kWhereShare
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
@@ -1442,6 +1446,18 @@ namespace km {
 
         void consume(uint32_t cb) const {
             consumes_ |= cb < kClearBuffers ? 1u << cb : 0;
+        }
+
+        // A change of pages at shared indices (km_shared_indices.hpp): the buffers of
+        // `mask` set up anew, filled and drained by no one yet.
+        void forget(uint32_t mask) const {
+            consumes_ &= ~mask;
+            if ((produces_ & mask) != 0) {
+                produces_ &= ~mask;
+                KM_GUARDED(
+                    (control(KM_CONTROL_LIVE)[kLvProduces + producer()] = produces_)
+                );
+            }
         }
 
         // The command's end: the producer's counts, the commands left; after a give-up,

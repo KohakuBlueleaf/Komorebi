@@ -258,7 +258,7 @@ def entries_table(frame, node, call):
     pushed = layout.other_buffer(
         frame.compiled,
         f"kEntries{number}", "word", dtype, page_bytes, 1, f"{what} (mover A's, "
-        "to compute)",
+        "to compute)", call=True,
     )  # fmt: skip
     own = layout.other_buffer(
         frame.compiled,
@@ -268,6 +268,7 @@ def entries_table(frame, node, call):
         page_bytes,
         1,
         f"{what} (mover B's)",
+        call=True,
     )
     for buffer in (pushed, own):
         buffer.page_bytes = max(buffer.page_bytes, page_bytes)

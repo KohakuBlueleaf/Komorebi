@@ -520,6 +520,8 @@ def refused(run, program, island=False):
         )
     if programs.runs_chains(program):
         return programs.chain_switch_refusal(program)
+    if programs.shared_indices(program):
+        return programs.shared_refusal(program, "an added")
     runtime = {cb[0] for cb in run.backend._runtime_cbs()} | {run.backend.slot_index}
     clash = sorted({b.index for b in program.buffers} & runtime)
     high = [b for b in program.buffers if b.index >= programs.SWITCH_BUFFERS]

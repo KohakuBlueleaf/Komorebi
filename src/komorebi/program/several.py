@@ -122,6 +122,8 @@ def plan(spec, cores):
     if ranges is not None:  # one build of the runtime's kernels serves every group
         _same_nocs(programs, "programs whose groups switch")
     for program in programs if ranges is not None else ():
+        if shared_indices(program):
+            raise ProgramError(shared_refusal(program, "a run whose groups switch"))
         high = [b for b in program.buffers if b.index >= SWITCH_BUFFERS]
         if high:
             raise ProgramError(switch_refusal(program, high))
@@ -137,6 +139,23 @@ def plan(spec, cores):
         cores,
         owners[0] if owners else None,
         ranges is not None,
+    )
+
+
+def shared_indices(program):
+    """Whether a made class's handlers give an index other pages, set at a handler's
+    entry (the third way of komorebi.dsl.compile.shared)."""
+    return bool(getattr(program, "shared_indices", False))
+
+
+def shared_refusal(program, what):
+    """The refusal of a program whose handlers give an index other pages in `what` (a
+    switching run, an add-on)."""
+    return (
+        f"{program.name}: its handlers give an index other pages, set at a handler's "
+        f"entry, which {what} program does not do (a switch sets a program's buffers "
+        "once); run it in a run of its own, or give its handlers' streams the same "
+        "pages so its buffers fit as one set or by shape"
     )
 
 

@@ -12,6 +12,11 @@ class Refused(ProgramError):
     """A line the compiler does not take: the line and what to write instead."""
 
 
+class Unfit(Refused):
+    """The buffers do not fit the indices or the L1: the build tries the next way of
+    sharing them among the handlers (komorebi.dsl.compile.shared)."""
+
+
 @dataclass
 class Param:
     """A handler parameter: its kind ("tensor", "int", "pattern") and command word."""
@@ -45,6 +50,10 @@ class Buffer:
     declared: bool = False  # a km.Pair of the class: hand kernels stream it
     own: bool = False  # an own field's: it may move to the upper indices (layout)
     raw: bool = False  # a raw field's: pages of its own bytes, not tiles
+    # a buffer of one call of a handler (a stream's pair, a table of entries', an out
+    # buffer): with shared indices, at an index of the common set in each handler
+    scoped: bool = False
+    users: list = field(default_factory=list)  # the handlers that name it
 
 
 @dataclass
@@ -207,6 +216,7 @@ class CompiledText:
     kernel_files: dict = field(default_factory=lambda: {"movement": {}, "compute": {}})
     kernel_constants: dict = field(default_factory=dict)  # kConst<Name>: its value
     entered: bool = False  # a DSL handler's entry state added (kernel_handler)
+    shares: object = None  # the shared indices (shared.Shares), or None
     builds: str | None = None  # the build folders' folder: include paths from there
 
 
@@ -304,6 +314,10 @@ class CompilerOnly:
         64  # the chip's buffer indices (the make's session's; layout.INDICES)
     )
     share_pairs: bool = False  # handlers of other blocks may share a read pair
+    # How the handlers share buffers (komorebi.dsl.compile.shared): 1 one set for the
+    # program, 2 by shape, 3 shared indices (a call's buffers take no index yet)
+    step: int = 1
+    current: str | None = None  # the handler compiling (a call's buffers' users)
     # The class's constants (km.constant) by name: this program's values; a symbol's
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)

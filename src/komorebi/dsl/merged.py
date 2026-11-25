@@ -8,6 +8,7 @@ import inspect
 
 from komorebi.dsl import compiler, first_use
 from komorebi.dsl import program as made
+from komorebi.dsl.compile import shared
 from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.records import Compiled, Refused
 from komorebi.dsl.front import front
@@ -517,8 +518,23 @@ def markers(self, given, overlay):
 
 
 def build(self):
-    """The classes compiled as one program; the files written; this made a Program
-    of them, as komorebi.dsl.program.make makes one class."""
+    """The classes compiled as one program by the first way of sharing their
+    handlers' buffers that fits (komorebi.dsl.compile.shared)."""
+    self.tried_compiled = None
+    overlays = [m.name for m in self.methods.values() if m.overlay]
+    chain = self.chain_wanted or made.chain_methods(type(self))
+    shared.attempted(
+        self.cname,
+        lambda step: build_at(self, step),
+        lambda: "chain" if chain else shared.third_refused("kernel", None, overlays),
+        lambda: self.tried_compiled,
+    )
+
+
+def build_at(self, step):
+    """The classes compiled as one program, their handlers sharing buffers the way
+    `step` says; the files written; this made a Program of them, as
+    komorebi.dsl.program.make makes one class."""
     sources, log = self.classes, self.log
     session, l1, trace = self.session_made, self.l1_made, self.trace_made
     if session is not None:
@@ -559,9 +575,9 @@ def build(self):
         type(self), handlers.values(), given, self.chain_wanted, room
     )
     compiled, tensors = compiler.compile_merged(
-        self.cname, parts, room, made.chip_indices(session)
+        self.cname, parts, room, made.chip_indices(session), step
     )
-    self.compiled = compiled
+    self.compiled = self.tried_compiled = compiled
     compiled.handler_sources = handler_sources(self, compiled)
     walked = made.chain_made(
         self, type(self), compiled, self.chain_wanted, given, handlers
@@ -674,6 +690,7 @@ def build(self):
     )
     self.built_defines = dict(self.defines)  # the build's own (fits_kernels)
     self.built = built
+    self.shared_indices = shared.shared_indices(compiled)  # set at a handler's entry
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too

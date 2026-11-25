@@ -190,6 +190,13 @@ namespace km {
     static_assert(kSideReaderDone == kDoneReader, "the writer waits the reader's word");
 #endif
 
+#if defined(KM_SHARE_GATED)
+    // A program at shared indices (km_shared_indices.hpp): its gate, before the reader
+    // hands a command on (km::share_gate for a command of other pages). False: gave up.
+    class Reader;
+    inline bool share_gated(Reader& reader, const volatile km_command_t* job);
+#endif
+
     class Reader : public Core {
     public:
         Reader() : Core(kRoleReader), trace_(args()) {
@@ -412,7 +419,7 @@ namespace km {
         }
 
         // When compute and writer took the last command: the next one into
-        // KM_CONTROL_JOB and a token to each. nullptr: a wait gave up (they get EXIT).
+        // KM_CONTROL_JOB and, once gated, a token to each. nullptr: a wait gave up.
         const km_command_t* next() {
             const Args& arguments = args();
             const uint32_t code = poll_at(
@@ -515,6 +522,12 @@ namespace km {
                 hand_off_exit();
                 return nullptr;
             }
+#if defined(KM_SHARE_GATED)
+            if (!share_gated(*this, job)) {  // recorded; compute and writer get EXIT
+                hand_off_exit();
+                return nullptr;
+            }
+#endif
             trace_.put(sequence, kTraceSeen, taken);
             trace_.put(sequence, kTraceExtra, passes);
             add_sat(state() + kStRuns, 1);
@@ -869,6 +882,24 @@ namespace km {
                 l1(control_ + KM_CONTROL_LIVE)[kLvLine] = kRoleUnpack << 16 |
                     (line & 0xFFFFu);
                 command_gave_up(control_, kStCompute, code, where, slot_, sequence_);
+            }));
+        }
+
+        // A change of pages at shared indices (km_shared_indices.hpp): the buffers of
+        // `mask` set up anew, filled and drained by no one yet.
+        void forget(uint32_t mask) const {
+            consumes_ &= ~mask;
+            PACK(({
+                if ((produces_ & mask) != 0) {
+                    produces_ &= ~mask;
+                    KM_GUARDED(
+                        (
+                            l1(
+                                control_ + KM_CONTROL_LIVE
+                            )[kLvProduces + kProducerPack] = (produces_)
+                        )
+                    );
+                }
             }));
         }
 

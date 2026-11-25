@@ -13,9 +13,10 @@ from komorebi import _env, abi, formats
 from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use, padding
 from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.compile import shared
 from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.layout import INDICES, make_room, padded_rings
-from komorebi.dsl.compile.records import Buffer
+from komorebi.dsl.compile.records import Buffer, Unfit
 from komorebi.dsl.files import (
     camel,
     put,
@@ -236,11 +237,43 @@ def make(
     beside=(),
     **tensors,
 ):
-    """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (`trace` the load's) or `l1`; `rect`, `nocs` a broadcast's;
-    `defines`; `handlers` constants' sets; `broadcast_wait`, `guard` a Program's;
-    `chain` the walk; `chain_stamps` its stamps; `form`; `beside` programs beside it.
-    """
+    """Makes the class (make_at) by the first way of sharing its handlers' buffers
+    that fits the indices and the L1 (komorebi.dsl.compile.shared)."""
+    given = {k: v for k, v in locals().items() if k not in ("self", "tensors")}
+    self.tried_compiled, self.third_way = None, None
+    shared.attempted(
+        type(self).__name__,
+        lambda step: make_at(self, step, **given, **tensors),
+        lambda: self.third_way,
+        lambda: self.tried_compiled,
+    )
+
+
+def make_at(
+    self,
+    step,
+    plan=None,
+    l1=None,
+    depth=4,
+    log=print,
+    rect=None,
+    nocs=None,
+    session=None,
+    trace=0,
+    defines=None,
+    handlers=None,
+    broadcast_wait=False,
+    guard=True,
+    chain=False,
+    chain_stamps=False,
+    form="kernel",
+    beside=(),
+    **tensors,
+):
+    """Compiles the class, its buffers shared the way `step` says (compile.shared):
+    `tensors` an example of each tensor parameter, `plan` sizes by name; `session` or
+    `l1`; `rect`, `nocs`, `defines`, `handlers`, `broadcast_wait`, `guard`, `chain`,
+    `chain_stamps`, `form`, `beside` as a Program's make takes them."""
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
     thread_tensors = class_thread.tensors_given(tensors)
@@ -263,6 +296,17 @@ def make(
     values, tensors = constants_given(cls, plan, tensors)
     handlers, self.up_to_given = up_to_made(cls, handlers, rect)  # km.UPTO
     handlers, found = first_use.opted(cls, handlers)  # km.ANY: first use allowed
+    overlays = [m.name for m in compiler.handler_methods(cls) if m.overlay]
+    dynamic = [
+        m.name
+        for m in compiler.handler_methods(cls)
+        if compiler.arrive_of(compiler.source_of(m.function)[0])
+    ]
+    self.third_way = (
+        "chain"
+        if chain or chain_methods(cls)
+        else shared.third_refused(form, found, overlays, ", ".join(dynamic) or None)
+    )
     sets = handler_sets(cls, handlers)
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
@@ -284,7 +328,9 @@ def make(
         islands,
         not found,
         chip_indices(session),
+        step,
     )
+    self.tried_compiled = compiled
     if found:
         first_use.reserve(
             cls, compiled, found, plan, tensors, room, values, sets, reserved
@@ -424,6 +470,7 @@ def make(
     )
     self.built = built
     self.log = log
+    self.shared_indices = shared.shared_indices(compiled)  # set at a handler's entry
     self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
     class_thread.made(self, cls, compiled, tensors, thread_words, found, thread_tensors)
@@ -1307,6 +1354,7 @@ def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     never is); `make` is sources_key, reported; `key` names the folder instead (a first
     use's); `thread` is class_thread's base header; an equal file is not written."""
     builds = Path(compiled.source).resolve().parent / BUILD
+    shared.assign(compiled)
     kernel_handler.entered(compiled, start_formats(compiled), builds)
     files = {
         header_name(compiled): header(compiled),
@@ -1408,60 +1456,65 @@ def header(compiled):
             lines.append(f"constexpr uint32_t k{cls}{camel(word)} = {index};")
     lines += kernel_handler.constant_lines(compiled)
     for buffer in compiled.buffers:
-        lines.append("")
-        lines.append(f"// {buffer.what}")
-        if buffer.declared:  # a km.Pair: its pair and pages
-            lines += kernel_handler.pair_lines(buffer)
-            continue
-        if buffer.index_b is None:
-            if buffer.role == "arrival":
-                slots = buffer.pages[0]
-                lines.append(
-                    f"constexpr km::Arrival {buffer.name} = "
-                    f"{{{buffer.index_a}, {slots}, {buffer.block}}};"
-                )
-                lines += [  # a reduce of another part's pages: slot k at k x per
-                    f"constexpr km::Arrival {buffer.name}Per{per} = "
-                    f"{{{buffer.index_a}, {slots}, {per}}};"
-                    for per in buffer.pers
-                    if per != buffer.block
-                ]
-            elif buffer.role == "field":
-                lines += [
-                    f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
-                    f"constexpr uint32_t {buffer.name}Pages = {buffer.pages[0]};",
-                ]
-                if buffer.raw:  # raw pages: a page's bytes are its own
-                    lines.append(
-                        f"constexpr uint32_t {buffer.name}PageBytes = "
-                        f"{buffer.page_bytes};"
-                    )
-            elif buffer.role == "broadcast":
-                window = buffer.pages[0] // buffer.block
-                lines += [
-                    f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
-                    f"constexpr uint32_t {buffer.name}Pages = {buffer.block};",
-                    f"constexpr uint32_t {buffer.name}Window = {window};",
-                ]
-            elif buffer.role == "word":
-                lines += [
-                    f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
-                    f"constexpr uint32_t {buffer.name}Bytes = {buffer.page_bytes};",
-                ]
-            else:
-                lines.append(f"constexpr uint32_t {buffer.name} = {buffer.index_a};")
-            continue
-        lines.append(
-            f"constexpr km::BufferPair {buffer.name} = "
-            f"{{{buffer.index_a}, {buffer.index_b}}};"
-        )
-        lines.append(f"constexpr uint32_t {buffer.name}Block = {buffer.block};")
-        for constant, letters in buffer.patterns.items():
-            lines.append(
-                f'constexpr km::Pattern {constant} = km::pattern("{letters}");'
-            )
+        lines += buffer_lines(buffer)
+    lines += shared.header_lines(compiled, buffer_lines)
     lines += format_macros(compiled)
     return "\n".join(lines) + "\n"
+
+
+def buffer_lines(buffer):
+    """A buffer's lines in the header: its line's text, its index (a pair's two) and
+    what its kind adds (pages, block, patterns)."""
+    lines = ["", f"// {buffer.what}"]
+    if buffer.declared:  # a km.Pair: its pair and pages
+        lines += kernel_handler.pair_lines(buffer)
+        return lines
+    if buffer.index_b is None:
+        if buffer.role == "arrival":
+            slots = buffer.pages[0]
+            lines.append(
+                f"constexpr km::Arrival {buffer.name} = "
+                f"{{{buffer.index_a}, {slots}, {buffer.block}}};"
+            )
+            lines += [  # a reduce of another part's pages: slot k at k x per
+                f"constexpr km::Arrival {buffer.name}Per{per} = "
+                f"{{{buffer.index_a}, {slots}, {per}}};"
+                for per in buffer.pers
+                if per != buffer.block
+            ]
+        elif buffer.role == "field":
+            lines += [
+                f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
+                f"constexpr uint32_t {buffer.name}Pages = {buffer.pages[0]};",
+            ]
+            if buffer.raw:  # raw pages: a page's bytes are its own
+                lines.append(
+                    f"constexpr uint32_t {buffer.name}PageBytes = "
+                    f"{buffer.page_bytes};"
+                )
+        elif buffer.role == "broadcast":
+            window = buffer.pages[0] // buffer.block
+            lines += [
+                f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
+                f"constexpr uint32_t {buffer.name}Pages = {buffer.block};",
+                f"constexpr uint32_t {buffer.name}Window = {window};",
+            ]
+        elif buffer.role == "word":
+            lines += [
+                f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
+                f"constexpr uint32_t {buffer.name}Bytes = {buffer.page_bytes};",
+            ]
+        else:
+            lines.append(f"constexpr uint32_t {buffer.name} = {buffer.index_a};")
+        return lines
+    lines.append(
+        f"constexpr km::BufferPair {buffer.name} = "
+        f"{{{buffer.index_a}, {buffer.index_b}}};"
+    )
+    lines.append(f"constexpr uint32_t {buffer.name}Block = {buffer.block};")
+    for constant, letters in buffer.patterns.items():
+        lines.append(f'constexpr km::Pattern {constant} = km::pattern("{letters}");')
+    return lines
 
 
 def format_macros(compiled):
@@ -1570,6 +1623,7 @@ def compute_source(compiled, walk=True):
         first_out = writes[0].name
         if writes[0].index_b is not None:
             first_out += ".mover_a"
+    first_in, first_out = shared.startup(compiled, first_in, first_out)
     lines += [
         f"{INDENT}km::Compute compute;",
         INDENT + startup_line(compiled, first_in, first_out),
@@ -1603,6 +1657,7 @@ def summary(compiled, folder, files, l1):
         )
     for name, value in sorted(compiled.constants.items()):
         report.append(f"  {spelling('plan')}: {name} = {value}")
+    report += shared.report_lines(compiled)
     report += tile_costs(compiled)
     report += product_costs(compiled)
     if not dst_is_fp32(compiled):  # what km.fp32 in the class's sums means here
@@ -1631,7 +1686,7 @@ def summary(compiled, folder, files, l1):
         largest = "; ".join(  # by name, so the line that holds it is plain
             f"{b.name} {size} B ({b.dtype}, {b.what})" for size, b in sizes[:4]
         )
-        raise ProgramError(
+        raise Unfit(
             f"{compiled.name}: its buffers take {total} B, {l1} B left: "
             f"give smaller blocks in the plan, or smaller fields; the largest: "
             f"{largest}"

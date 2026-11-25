@@ -156,6 +156,7 @@ nav:
       - examples/31_swiglu/README.md
       - examples/32_islands_l1/README.md
       - examples/33_kernel_handler/README.md
+      - examples/34_shared_buffers/README.md
   - IR:
       - ir/checks.md
       - ir/operations.md

@@ -42,24 +42,34 @@ def thread_header(compiled):
     """The C header of an X280 thread that submits the class's commands: each
     handler's number, the place of each of its words, their count, and whether its
     command asks for the leader's result."""
-    prefix = compiled.name.upper()
     lines = [
         f"/* {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         " * its handlers' numbers and each command word's place (a0 is 0), for a",
         " * thread's commands (kmx_submit). */",
         "#pragma once",
     ]
-    for name, number in compiled.handlers.items():
-        handler = f"{prefix}_{name.upper()}"
-        words = compiled.words[name]
+    for name in compiled.handlers:
         lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
-        lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
-        for place, (word, kind) in enumerate(words):
-            suffix = {"pages": "_PAGES", "bank": "_BANK", "columns": "_COLUMNS"}.get(
-                kind, ""
-            )
-            lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
-        lines.append(f"#define {handler}_WORDS {len(words)}u")
-        if name in compiled.results:
-            lines.append(f"#define {handler}_RESULT 1u /* KM_FLAG_RESULT */")
+        lines += [
+            f"#define {define} {value}"
+            for define, value in handler_defines(compiled, name)
+        ]
     return "\n".join(lines) + "\n"
+
+
+def handler_defines(compiled, name):
+    """Handler `name`'s names in the thread header and their values: its number,
+    each word's place, the words' count, whether its command asks for the result."""
+    prefix = compiled.name.upper()
+    handler = f"{prefix}_{name.upper()}"
+    words = compiled.words[name]
+    defines = [(f"{prefix}_HANDLER_{name.upper()}", f"{compiled.handlers[name]}u")]
+    for place, (word, kind) in enumerate(words):
+        suffix = {"pages": "_PAGES", "bank": "_BANK", "columns": "_COLUMNS"}.get(
+            kind, ""
+        )
+        defines.append((f"{handler}_{word.upper()}{suffix}", f"{place}u"))
+    defines.append((f"{handler}_WORDS", f"{len(words)}u"))
+    if name in compiled.results:
+        defines.append((f"{handler}_RESULT", "1u /* KM_FLAG_RESULT */"))
+    return defines

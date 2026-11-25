@@ -71,6 +71,7 @@ WHERES = (
     "Near",
     "Coll",
     "Land",
+    "Share",
 )
 # kColl*: why a collective's guard gave up
 COLLS = ("Stale", "Gen", "None")

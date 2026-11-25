@@ -7,6 +7,7 @@ from pathlib import Path
 
 from komorebi import abi, layout
 from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
+from komorebi.dsl.compile import shared
 from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.layout import REGION_PAGE
 from komorebi.dsl.files import (
@@ -388,7 +389,7 @@ def mixed_formats(compiled):
     kernel of one of each sets them once at its start. A raw field's pages are no
     tiles compute unpacks."""
     unpacked, packed = set(), set()
-    for buffer in compiled.buffers:
+    for buffer in shared.format_buffers(compiled):  # at shared indices, theirs too
         if buffer.raw:
             continue
         if buffer.role in ("read", "field", "arrival", "broadcast"):
@@ -434,6 +435,7 @@ def cases(compiled, nodes_of, ending, depth, kernel):
         line = compiled.lines[name]
         lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
         if name not in compiled.overlays:
+            lines += shared.entry_lines(compiled, name, kernel, pad + INDENT * 2)
             lines += render(prune(nodes_of[name]), depth + 2)
         elif kernel == "movement" or has_part(nodes_of[name]):  # the reader loads
             inner = pad + INDENT * 2
@@ -620,9 +622,13 @@ def movement_source(compiled):
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
+        *shared.gate_lines(compiled, "define"),
         *movement_includes(compiled),
     ]
-    lines += [f'#include "{header_name(compiled)}"']
+    lines += [
+        f'#include "{header_name(compiled)}"',
+        *shared.gate_lines(compiled, "gate"),
+    ]
     lines += [*kernel_handler.include_lines(compiled, "movement"), ""]
     lines += ["void kernel_main() {", *(INDENT + a for a in tensor_aliases(compiled))]
     lines += [f"{INDENT}km::Movement movement;"]

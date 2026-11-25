@@ -752,8 +752,83 @@ group), by tree a slot of n tiles for each round (7, or the bits of S - 1 in gro
 S); a broadcast's buffer `window` blocks of the pages it casts. Buffer indices are
 0 up for reads, 8 up for arrivals, broadcasts and fields, 16 up for writes, to 25; 26 to
 31 are the runtime's, and an own field past 25 takes 32 up ([A body's own
-buffer](#a-bodys-own-buffer)). Compute's tiles are in DST as float32; a float32 buffer is unpacked
-to it unrounded.
+buffer](#a-bodys-own-buffer)). These 26 indices hold the class's buffers; when they do
+not fit, the build shares them among the handlers
+([When a class's buffers do not fit](#when-a-classs-buffers-do-not-fit)). Compute's
+tiles are in DST as float32; a float32 buffer is unpacked to it unrounded.
+
+### When a class's buffers do not fit
+
+A handler's buffers of ONE CALL are its streams' pairs, its tables of entries' buffers
+and its out buffers (a sum or a step's states written to a page): nothing of them is
+kept from one call to the next. Every other buffer is the PROGRAM's: fields, own fields,
+`km.Pair`, the word and arrival buffers of broadcasts, reduces and words handed between
+the movers, the landing area, a chain's and messages' buffers, and the runtime's (26 to
+31). The build takes three ways in turn, the first that fits the indices and the L1;
+there is no option for it.
+
+1. **As one set for the program**: every buffer at an index of its own, by the rule
+   above. A class that fits builds to the same text as it always did.
+2. **Shared by shape**: a handler's stream takes a pair another handler already has of
+   the same role, format and page bytes, when it is not one of its own streams' (a
+   read pair of another block too, its halves the largest block's, `KM_RING_PADDED`; a
+   write pair of the same block only); tables of entries alike. Nothing runs for it on
+   the card.
+3. **At shared indices of other pages**: each handler's buffers of one call take indices
+   of one common set (read pairs from 0, the others in their ranges, to 25, after the
+   program's buffers), ordered by role, format, page bytes and block, so equal buffers of
+   two handlers take one index. Each index is declared once, as large as its largest use
+   (its own address, no other region). A handler's pages and page bytes at each index
+   are set at its entry. Handlers whose pages agree at every index they share are one
+   set of pages. An index compute unpacks or packs through has one format among its
+   handlers (plain pages and words are free of it): a buffer skips an index of another
+   format.
+
+When none fits, the make is refused naming the handler with the most buffers, its count,
+and what each way said. The build report (`program.txt`) gives the way taken; for the
+second, the pairs shared and their handlers; for the third, each index's bytes and each
+handler's pages at it, each set of pages, and that commands of handlers that give an
+index other pages do not overlap on a core:
+
+```text
+  buffers: shared by shape (way 2 of 3)
+    kRead0 (buffers 0, 1, 1024 B + 1024 B): shared by turn0, turn1, turn2
+  buffers: at shared indices of other pages (way 3 of 3); commands of handlers that give an index other pages do not overlap on a core
+    buffer 0: 4096 B; first 4 x 256 B, second 4 x 512 B, third 4 x 1024 B
+    pages 1 (first): 10 buffers
+```
+
+At the third way the header gives each CPU the rows of the indices it sets
+(`kShare<n>Rows`: index, pages, a page's bytes, 16 bits each when the program's fit
+them): the movers every row, unpack all but the written ones, pack the written ones, math
+none. `kShareTables` gives each set's rows, their count and its mask of indices,
+`kShareOf<Handler>` the handler's set (0 for none), `km_share_of` a command's set, and
+each handler's buffer names (`kRead0`, `kWrite0`...) are in a namespace of the handler,
+so its lines read as at the first way. Each of a core's five CPUs keeps the set of pages
+it is set for (`komorebi/device/core/km_shared_indices.hpp`). The reader holds a
+command whose handler has another set before it hands the command on
+(`km::share_gate`): it waits until the core has finished every command before (the
+writer completed it) and every index of the old and the new set is empty (a counter
+store a CPU makes late has landed), zeroes their counters and sets its own interfaces.
+Every other CPU, at the handler's entry, sets its own interfaces (pages, page bytes, each
+at its index's own base) and its copies of the counters to zero, without a wait
+(`km::share_set`, one out-of-line function a CPU). That wait is timed and gives up
+as the runtime's waits do. A command of the CPU's set, or of a handler without one,
+costs a compare. [Example 34](../../examples/34_shared_buffers/README.md) measures a
+change at 5.88 µs a command on 12 cores and 6.14 µs on 120, the median of five runs
+(Blackhole p150a, card 1, 2026-11-25: on 12 cores `first` and `second` alternating,
+225.02 µs a command, against 183.48 and 255.42 µs each alone, each the median). Commands of handlers that
+give an index other pages do not overlap on a core
+([hazards](hazards.md#two-handlers-that-give-an-index-other-pages-on-one-core)).
+
+A class with a chain takes the first two ways only (a chain's cores go on from one call
+to the next without waiting); its refusal names the handlers and each two streams that
+could not share, with their page bytes. The third way is not taken, and the refusal
+says why, for the runtime's form, a set compiled at its first use (`km.ANY`), a handler
+with `overlay=`, and a dynamic handler (its movers are the runtime's); a program at the
+third way is refused in a switching run and when added to a live run. Merges (the
+merged class takes the ways in turn), islands, X280 threads and `km.kernel` handlers
+(which have no buffer of one call) work with all three.
 
 ## Inline bodies
 
@@ -864,7 +939,9 @@ field, a `km.cxx` body's `takes=` or a `km.kernel` handler's files, and `km.Star
 name it; a line that names it otherwise is refused ("a raw field: bodies use it"). A
 merge carries it as an own field.
 
-**Indices past 25.** A field takes the lowest free index from 8 to 25; when none of
+**Indices past 25.** A field takes the lowest free index from 8 to 25 (at shared
+indices, of the indices the program's buffers take,
+[When a class's buffers do not fit](#when-a-classs-buffers-do-not-fit)); when none of
 them is free, an own field takes the lowest free index from 32 up, never 33 (the link cores' on a
 session of several islands), to the chip's last (`Device.buffer_indices()` of the make's
 session, else 63; a chip of 32 indices has none past 25). When a stream's pair, a
@@ -2841,7 +2918,10 @@ kernels, so the C and the class cannot drift apart. It holds:
   program's at the merged number), the place of each of its words (a0 is 0), their
   count, and whether its command asks for the leader's result, as before;
 - the program field (`kProgram<Name>` in a run of several programs, else 0) and the
-  class's constants at this make (`WORKCLUSTER_MAX_ROUNDS`);
+  class's constants at this make (`WORKCLUSTER_MAX_ROUNDS`); a constant whose name
+  there is one a handler gives too (`<NAME>_<HANDLER>_WORDS`, `<NAME>_<HANDLER>_RESULT`,
+  `<NAME>_HANDLER_<HANDLER>`, a word's place) is refused at the make: rename the
+  constant;
 - the load's words: each tensor of the make, its address, as a word the load gives the
   thread after the thread's own (`<NAME>_WORD_STATE`), its pages, and
   `<name>_state_dram(first)`, the `kmx_dram` that `kmx_fetch` and `kmx_store` take;
@@ -3526,6 +3606,22 @@ Lined.drain, line 123, `pages = km.Stream(self.table, mover="B")`: self.table is
 km.own(raw='yes'): raw= is True (a raw field: pages x items, raw pages) or False
 Fields50: more buffers and fields than the indices: 49 buffers take 49 indices, and a class has 57 of the chip's 64 (0 to 25, and 32 up but 33); declare fewer fields, or split the class
 Fields19: more buffers and fields than the indices: 18 buffers take 18 indices, and a class has 26 of the chip's 32 (0 to 25); declare fewer fields, or split the class
+```
+
+The refusals of the ways of sharing buffers and of a constant named as a handler's name
+in the thread header, from
+[test_shared_buffers.py](../../tests/core/dsl/test_shared_buffers.py) (each way's own
+text after the colon shortened to `...`):
+
+```text
+Crowded: its buffers fit neither as one set, nor by shape, nor at shared indices of other pages; many has the most buffers, 26 (kRead0, kRead1, ..., kRead12) (as one set for the program and shared by shape: ...; at shared indices of other pages: Crowded.floats: its kRead0b (float32 (to Dst as float32)) finds no index from 0 to 25: index 0 is uint32 in another handler, and an index compute unpacks or packs through has one format among the handlers; give the buffers one format, or split the class)
+Three: a class with a chain shares buffers as one set or by shape only, and its buffers fit neither: handlers first, second, third; streams that could not share: first's kWrite0 (uint32, 256 B) and second's kWrite0b (uint32, 512 B), first's kRead0 (uint32, 256 B) and second's kRead0b (uint32, 512 B), ...; a chain's cores go on from one call to the next without waiting; give these streams the same pages, or run the calls as commands (as one set for the program and shared by shape: ...)
+Three: its buffers fit neither as one set nor by shape, and form="runtime": a program's parts in the runtime's form do not set a handler's pages at its entry (shared indices of other pages); make it in the kernel form, or give its streams the same pages (...)
+Overlaid: its buffers fit neither as one set nor by shape, and part with overlay=: a handler's overlay parts do not set a handler's pages at its entry (shared indices of other pages); make it without overlay=, or give its streams the same pages (...)
+AnySize: its buffers fit neither as one set nor by shape, and km.ANY: a set compiled at its first use takes the load's buffers and does not set its pages at its entry; list the sets (handlers=), or give its streams the same pages (...)
+three: its handlers give an index other pages, set at a handler's entry, which a run whose groups switch program does not do (a switch sets a program's buffers once); run it in a run of its own, or give its handlers' streams the same pages so its buffers fit as one set or by shape
+three: its handlers give an index other pages, set at a handler's entry, which an added program does not do (a switch sets a program's buffers once); run it in a run of its own, or give its handlers' streams the same pages so its buffers fit as one set or by shape
+Met: constant GATE_WORDS is MET_GATE_WORDS in the thread header (met_thread.h), and handler gate gives that name too; rename the constant
 ```
 
 A tensor not in whole tiles is refused at the make, or at a submit, where a reduction

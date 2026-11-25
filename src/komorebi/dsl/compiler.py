@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import abi
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import layout, shared
 from komorebi.dsl.compile.casts.messages import arrive_of
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst.dst_code import (
@@ -24,6 +24,7 @@ from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
     Refused,
+    Unfit,
 )
 from komorebi.dsl.compile.source import (
     file_of,
@@ -74,11 +75,12 @@ def compile_class(
     islands=(1, 0),
     share_pairs=False,
     indices=64,
+    step=1,
 ):
     """Compiles each handler of `cls`; `plan` sizes, `tensors` an example of each tensor
     parameter, `l1` the bytes for buffers, `constants` their values, `handlers` the sets
-    (handler_variants), `reserved` indices left to others, `islands` the session's (a
-    tree's slots), `share_pairs` (layout), `indices` the chip's buffer indices."""
+    (handler_variants), `reserved` indices left to others, `islands` the session's,
+    `share_pairs` (layout), `indices` the chip's indices, `step` (compile.shared)."""
     methods = handler_methods(cls)
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
@@ -86,6 +88,17 @@ def compile_class(
     compiled.cls = cls
     compiled.reserved, compiled.share_pairs = set(reserved), share_pairs
     compiled.islands, compiled.indices = tuple(islands), indices
+    compiled.step = step
+    try:
+        return compiled_class(compiled, cls, methods, plan, tensors, l1, constants,
+                              handlers)  # fmt: skip
+    except Unfit as unfit:
+        unfit.compiled = compiled
+        raise
+
+
+def compiled_class(compiled, cls, methods, plan, tensors, l1, constants, handlers):
+    """compile_class's work on `compiled`."""
     declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
@@ -154,10 +167,12 @@ def compile_handler(compiled, method, names, plan, tensors):
     front.HandlerMethod: its command words, its rectangles' tile widths, and whether
     it returns a word (as far as the compile got when it refuses)."""
     frame = None
+    compiled.current = method.name  # the buffers of one call it names (their users)
     try:
         frame = handler_compile.frame_of(compiled, method, names, plan, tensors)
         handler_compile.run(frame)
     finally:
+        compiled.current = None
         method.widths = frame.widths if frame is not None else {}
         method.bounds = frame.bounds if frame is not None else []
         if frame is not None and frame.words is not None:
@@ -248,16 +263,25 @@ class MergedPart:
     prefix: str
 
 
-def compile_merged(name, parts, l1=None, indices=64):
+def compile_merged(name, parts, l1=None, indices=64, step=1):
     """Compiles the handlers of several classes as ONE program (`indices` the chip's
-    buffer indices): each handler's lines read its own class's constants, plan and
-    tensors; a field of one name in two classes is one field when declared alike;
-    returns the Compiled and the example tensors by the names its kernels give them."""
+    buffer indices, `step` the way they share buffers): each handler reads its own
+    class's constants, plan and tensors; a field of one name in two classes is one field
+    when declared alike; returns the Compiled and the example tensors by their names."""
     methods = [method for part in parts for _, method in part.methods]
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
     compiled = Compiled(name, source)
-    compiled.indices = indices
+    compiled.indices, compiled.step = indices, step
+    try:
+        return merged_compiled(compiled, name, parts, l1, methods)
+    except Unfit as unfit:
+        unfit.compiled = compiled
+        raise
+
+
+def merged_compiled(compiled, name, parts, l1, methods):
+    """compile_merged's work on `compiled`."""
     merged_fields(compiled, parts)
     compiled.field_users = field_users(methods, compiled.fields)
     for method in methods:
@@ -755,7 +779,7 @@ def field_elements(value, solved):
 def solve(compiled, symbol, plan, l1, name):
     """The largest value of `symbol` for which every field is whole tiles and the
     fields and buffers fit `l1` bytes."""
-    used = sum(sum(b.pages) * b.page_bytes for b in compiled.buffers)
+    used = shared.used_bytes(compiled)  # at shared indices, each index's largest
     fixed, per = 0, 0  # without the symbol, and per unit of it: 1/1,024ths of bytes
     step = 1
     for name, value in compiled.fields.items():
