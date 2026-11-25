@@ -768,7 +768,11 @@ that binds no name is not braced, so the names it declares are seen by the bodie
 it on its CPU (a walk's state on pack, set up before a loop and read in it). Its first
 lines that are `#include` lines go to the top of its kernel for every CPU of it;
 `include=["path"]` puts a header under the body's CPU's `#if` alone (a header only
-the pack CPU compiles). A `#line` before the body points the compiler's messages at
+the pack CPU compiles). A relative path of either (`./` or `../`) is relative to the
+class's own build folder (`build/<name>-<digest>/` beside its file); a merge keeps its
+meaning, writing it as the path from the merged program's build folder to that file
+(an absolute path, a `<...>` and a path the include paths find are kept as written;
+a `km.kernel` handler's files are named from the build folder already). A `#line` before the body points the compiler's messages at
 the Python line, in the handler's own file (in a `km.merge` of classes from several
 files too). The text is a string, a string constant of the class's module, or a
 sum of them (`km.cxx(HEADERS + GIVE_UP + "...")`: one body in several handlers); for a

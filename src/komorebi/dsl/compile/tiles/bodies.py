@@ -3,8 +3,10 @@ takes and gives by the table of the classes reference, at its kernel's start or 
 and the words of pack alone that must not steer it."""
 
 import ast
+import os
 import re
 import textwrap
+from pathlib import Path
 
 from komorebi.dsl.compile import (
     expressions,
@@ -213,9 +215,9 @@ def inline(frame, node, call, name=None):
         pack_words_steer(frame, node, text, takes)
     kernel = "compute" if mover is None else "movement"
     guard = CPU_GUARDS.get(on)
-    entries = [line.strip() for line in lines[:included]]
+    entries = [rebased(frame, line.strip()) for line in lines[:included]]
     for path in includes:  # the body's CPU's alone
-        entry = f'#include "{path}"'
+        entry = rebased(frame, f'#include "{path}"')
         entries.append(entry if guard is None else f"#if {guard}\n{entry}\n#endif")
     for entry in entries:
         if entry not in frame.compiled.body_includes[kernel]:
@@ -276,6 +278,28 @@ def kernel_at(frame, node, value):
             'write at="start" or at="end"',
         )
     return value.value
+
+
+BUILD_FOLDER = (
+    "build"  # a class's build folders' folder beside its file (program.BUILD)
+)
+# An include of a relative path ("./" or "../"): from the class's own build folder.
+RELATIVE_INCLUDE = re.compile(r'^#include "(\.\.?/[^"]*)"$')
+
+
+def rebased(frame, entry):
+    """`entry`, an #include line of a body, as it means from the class's own build
+    folder (<its file's folder>/build/<name>-<digest>/): in a program built beside
+    another file (a merge), its relative path from that program's build folder; an
+    absolute path, a <...> or a path the include paths find, as it is."""
+    found = RELATIVE_INCLUDE.match(entry)
+    own = Path(frame.where.file).resolve().parent
+    base = Path(frame.compiled.source).resolve().parent
+    if found is None or own == base:
+        return entry
+    target = os.path.normpath(own / BUILD_FOLDER / "-" / found.group(1))
+    path = Path(os.path.relpath(target, base / BUILD_FOLDER / "-")).as_posix()
+    return f'#include "{path}"'
 
 
 def kernel_takes(frame, node, takes, gives, name):
