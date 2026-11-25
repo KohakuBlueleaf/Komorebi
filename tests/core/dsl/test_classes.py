@@ -7,13 +7,14 @@ from pathlib import Path
 import pytest
 
 import komorebi as km
-from komorebi import formats
+from komorebi import abi, formats
 from komorebi.device.tensor import Tensor
+from komorebi.dsl import program
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.program import compute_options
-from komorebi.errors import ProgramError
+from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import overlay
 from komorebi.session.session import Session
 
@@ -483,18 +484,66 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
         log=lines.append, session=Budget(1_000_000), source=tensor("bfloat16")
     )
     assert "  plan: TILES = 240" in alone.built.report
-    assert "  plan: TILES = 213" in loaded.built.report  # 27 tiles the runtime's
+    assert "  plan: TILES = 225" in loaded.built.report  # 15 tiles the runtime's
     table = lines[-1]
     for row in ("control block and overlay area", "host transfer buffer"):
         assert row in table
     most = f"{overlay.SERVICE_SLOT_MOST:,}"
     assert f"slots: service (reader), 1 x {most} B (at most)" in table
-    left = 900848 - overlay.SERVICE_SLOT_MOST  # the L1 left less the service's reserve
+    left = 950000 - overlay.SERVICE_SLOT_MOST  # the L1 left less the service's reserve
     with pytest.raises(ProgramError, match=f"its buffers take 999424 B, {left} B"):
         Unsolved(
             log=lambda line: None,
             session=Budget(1_000_000),
             plan={"TILES": 240},
+            source=tensor("bfloat16"),
+        )
+
+
+class LargePage(Budget):
+    """A session whose largest DRAM page the load's transfer chunk takes only when a
+    program's buffers leave room for two of it (else 16 KiB)."""
+
+    largest_page = 46592
+
+
+class Paged(km.Program):
+    PAGES = km.constant(1)
+    table: km.L1[km.u32, PAGES, 1024] = km.own(push=None, raw=True)
+
+    @km.handler
+    def step(self, source: km.Tensor):
+        for tile in km.Stream(source.pages(0, 1)):
+            km.cxx("pack_tile<true>(0, kFieldTable, 1);", takes=[tile], on="pack")
+
+
+def test_a_class_s_buffers_are_made_against_the_transfer_row_the_load_gives_them():
+    free, tokens = 1_000_000, 2 * abi.headers()["kTokenBytes"]
+    least = LargePage(free).l1_rows(program.Unbuilt())
+    assert ("host transfer buffer", 32848) in least  # the 16 KiB chunk's, at the make
+    room = free - sum(size for _, size in least) - overlay.SERVICE_SLOT_MOST
+    largest = room - 2 * (LargePage.largest_page - 16384)  # the largest page's room
+    lines = []
+    fits = Paged(
+        log=lines.append, session=LargePage(free), PAGES=225, source=tensor("bfloat16")
+    )
+    taken = sum(b.page_bytes * b.pages for b in fits.buffers)
+    assert largest < taken <= room  # the largest page's row would refuse it
+    assert "host transfer buffer                        32,848 B" in lines[-1]
+    assert f"  L1: the buffers take {taken} B of {room} B left for buffers" in (
+        fits.built.report
+    )
+    past = made(Paged, PAGES=232, source=tensor("bfloat16"))  # no session: built
+    rows = LargePage(free).l1_rows(past)
+    buffers, others = rows[0][1] - tokens, sum(size for _, size in rows[1:])
+    with pytest.raises(L1BudgetError):  # the load's table refuses it
+        program.l1_checked(past, LargePage(free), free, 0, lambda line: None)
+    left = free - others - overlay.SERVICE_SLOT_MOST - tokens  # that table's
+    with pytest.raises(ProgramError, match=f"its buffers take {buffers} B, {left} B"):
+        Paged(
+            log=lambda line: None,
+            session=LargePage(free),
+            PAGES=232,
             source=tensor("bfloat16"),
         )
 

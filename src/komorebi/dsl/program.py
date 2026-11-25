@@ -710,9 +710,12 @@ def defines_checked(name, defines):
 
 class Unbuilt:
     """A program of no buffers, threads or overlays: what the runtime takes of a core's
-    L1 whatever the program's buffers (runtime_bytes)."""
+    L1 whatever the program's buffers (runtime_bytes). Its host transfer row is the
+    least the load gives (`unbuilt`: the 16 KiB chunk), raised only when a program's
+    buffers leave room (session.tensor_bytes._transfer_chunk_of)."""
 
     buffers, threads, overlays = (), {}, {}
+    unbuilt = True
 
 
 def islands_of(session):

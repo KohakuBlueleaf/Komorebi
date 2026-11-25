@@ -94,7 +94,9 @@ def _transfer_chunk_of(largest_page, l1, asked, held, switch, trace_cap, control
     at most half of what a core has left after its buffers (`l1`: the session's). A run
     with overlays, or whose groups switch program, keeps the default: slots to place."""
     page = max(largest_page, _state_page())
-    if switch or any(each.overlays for each in held):
+    # and so does a class before its buffers are made (dsl.program.Unbuilt): the least
+    # row, raised only when they leave room, so the make refuses no class the load takes
+    if switch or any(each.overlays or getattr(each, "unbuilt", False) for each in held):
         return channel_module.CHUNK_DEFAULT
     buffers = max(
         sum(buffer.page_bytes * buffer.pages for buffer in each.buffers)

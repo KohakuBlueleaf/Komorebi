@@ -102,7 +102,12 @@ logs a part over the reserve. The host transfer row is the load's own: its chunk
 the page of the dispatcher's state area (40,960 B), which every load makes before the
 transfer buffer. On card 0 split in two, example 01's class: the build's table and the
 load's are equal in every row but the slot (45,056 B reserved, 39,552 B loaded): host
-transfer buffer 82,000 B in both (the build counted 32,848 B before).
+transfer buffer 82,000 B in both (the build counted 32,848 B before). The room a
+class's buffers are made against (a field's last symbol takes it, "its buffers take
+... B, ... B left" refuses past it) counts that row at its least, the 16 KiB chunk's
+(32,848 B): the load takes the larger page's chunk only when the program's buffers
+leave room for two of it, so a class whose buffers the load takes is not refused for
+the row of a program of none; the build's table then counts the row its buffers give.
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` sixteen hex
 digits of the generated files' names and text (not of the make's inputs: the plan,
@@ -2724,8 +2729,9 @@ take their defaults); make each class with its sets and merge the made programs
   one class's: a pair is shared by handlers of one role, format, page and block, as
   between the handlers of one class, so the L1 they take is at least each class's.
   The build's L1 check refuses what does not fit, with the bytes: the gate class's
-  `BLOCK = 8` merged with Linear asks 1,642,496 B of the 1,414,272 B left; at
-  `BLOCK = 2` the gate's streams share Linear's pairs and add nothing.
+  `BLOCK = 9` merged with Linear asks 1,683,456 B as one set and 1,384,448 B at shared
+  indices, of the 1,372,096 B left; `BLOCK = 8` fits only at shared indices (1,363,968
+  B); at `BLOCK = 2` the gate's streams share Linear's pairs and add nothing.
 - **Where the code lives.** Resident unless marked: `overlay=[...]` and
   `resident=[...]` name handlers (a name, a merged name, a source's handler) or whole
   sources (a made program, a class), and `@km.handler(overlay=True / False)` is a
