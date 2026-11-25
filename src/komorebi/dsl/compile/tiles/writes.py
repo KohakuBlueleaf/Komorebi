@@ -157,9 +157,12 @@ def take_write(frame, node, name, value, bound, before, after):
                 "give the write stream the loop's block=",
             )
         page_streams.loop_fed(frame, node, name, value)
+        if state.get("body_pushed"):  # a second stream bodies fill: names of its own
+            state.setdefault("own_out", set()).add(value.cxx)
         state["body_pushed"] = True
         number = frame.stream_loops[-1]
-        out, room, tile = f"km_out{number}", f"km_room{number}", f"km_tile{number}"
+        out, room = page_streams.out_names(number, value, state)
+        tile = f"km_tile{number}"
         ring = f"get_local_cb_interface({out})"
         bound.append(
             f"const uint32_t {name} = {room} ? ({ring}.fifo_wr_ptr + {tile} * "

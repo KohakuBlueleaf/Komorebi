@@ -172,6 +172,24 @@ def test_a_write_stream_a_loops_bodies_fill():
         )
 
 
+class TwoOuts(km.Program):
+    @km.handler
+    def mix(self, a: km.Tensor, s: km.Tensor, x: km.Tensor):
+        total = km.Stream(s.items(first=0, count=4, size=256), write=True)
+        mixed = km.Stream(x.items(first=0, count=4, size=256), write=True)
+        for item in km.Stream(a.items(first=0, count=4, size=256)):
+            km.cxx("mix(item, total, mixed);", takes=[item, total, mixed], on="pack")
+
+
+def test_a_loops_body_fills_two_write_streams():
+    program = TwoOuts(
+        l1=1 << 20, log=lambda line: None, a=words(), s=words(), x=words()
+    )
+    text = program.built.files["compute.cpp"]
+    for name in ("km_out0", "km_room0", "km_write1_out", "km_write1_room"):
+        assert text.count(f" {name} = ") == 1  # each stream's names declared once
+
+
 def grid(dtype, rows, columns):
     """A tensor of tiles, rows x columns of them."""
     page = 2048 if dtype == "bfloat16" else 4096
