@@ -709,6 +709,8 @@ class LoadMixin:
             self._starting = None
             if launched:
                 backend.read_back(stop_grid=True)  # the kernel never stopped it
+            elif backend is not None:  # nothing launched: the L1 it took given back,
+                backend.release_l1()  # else a later build counts it as the session's
             raise
         run = self._made_run(backend, dispatch, program, batch, placed, owner)
         run._deadline_s = deadline  # a runtime command's time to find cores free
@@ -933,7 +935,7 @@ class LoadMixin:
         process._hook_exit(self.log)
         process._LIVE.add(self)
         self._starting = dispatches
-        backends, launched = [], False
+        backends, launched, first = [], False, None
         try:
             for cluster in range(len(dispatches), len(rows)):
                 dispatches.append(
@@ -1080,6 +1082,9 @@ class LoadMixin:
             if launched:
                 for backend in backends:  # the kernels never stopped the grid
                     backend.read_back(stop_grid=True)
+            elif first is not None:  # nothing launched: the L1 they took given back
+                for backend in (first, *backends):  # (the islands' copies of first)
+                    backend.release_l1()
             raise
         runs = self._island_runs(backends, graph, rows, program, batch)
         for run in runs:

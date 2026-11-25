@@ -29,10 +29,19 @@ as `linear_gate`). Both classes name tensors `a`, `b` and `out` with different
 examples (768 pages; 1,024 x 4,096 tiles): Linear's are the kernel's `linear_a`,
 `linear_b`, `linear_out`, which its handlers' lines name in a block of their own.
 
-The gate's `BLOCK` is 2 here, not its default 8. At 8 the merged program asks
-1,642,496 B of L1 for its buffers, of the 1,414,272 B left, and the build refuses it:
-the gate's three pairs of 8-tile blocks are not Linear's. At 2 the gate's streams share
-Linear's pairs (the same role, format, page and block) and add no buffer.
+The gate's `BLOCK` is 2 here, not its default 8. Card 1, 2026-11-25, `--beside
+--gate-block 8`: the build makes the merged program only at shared indices of other
+pages (1,363,968 B of the 1,372,048 B left; 1,642,496 B as one set: the gate's three
+pairs of 8-tile blocks are not Linear's), and the load refuses it: its kernels take
+99,936 B of the 97 KiB (99,328 B) kernel buffer. The load places `linear_gate`, then
+`gate_gate`, then `split` as an overlay; a handler's overlay parts do not set its pages
+at its entry, so each of those builds needs 1,642,496 B, as one set or by shape
+(1,372,032 B left), and the handler stays resident, and the load ends with `KernelSizeError`
+(`Session(kernel_bytes=100992)` would hold the kernels). The same command a second
+time ends the same: the script gives the session its kernel buffer, so no size is
+remembered. At 9 the build itself refuses it (1,683,456 B as one set, 1,384,448 B at
+shared indices, of 1,372,096 B, a run without `--beside`). At 2 the gate's streams
+share Linear's pairs (the same role, format, page and block) and add no buffer.
 
 On a mock device (the build of each load, the JIT cache the card would use):
 
