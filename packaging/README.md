@@ -1,7 +1,7 @@
 # Packaging
 
-Komorebi 0.5.2 is `komorebi-tt` 0.5.2 and `komorebi-runtime` 0.81.1.4 on PyPI
-(`pip install "komorebi-tt[runtime]"`), and the GitHub release `v0.5.2` with both
+Komorebi 0.5.3 is `komorebi-tt` 0.5.3 and `komorebi-runtime` 0.81.1.4 on PyPI
+(`pip install "komorebi-tt[runtime]"`), and the GitHub release `v0.5.3` with both
 wheels, for one card model, the Blackhole P150A (0.1.0 was the first; the runtime is
 the build of 0.2.0). The release workflow builds and tests both wheels, and publishes
 them only on a `v*` tag push or when it is started by hand with `publish: true` ([the release workflow](#the-release-workflow)).

@@ -3,7 +3,7 @@
 The tt-metal build that Komorebi runs on, as one platform wheel with a locator. It is
 the one copy of the runtime that `komorebi-tt` (and later `kohakutt`) depend on, so that
 both can run in one process on one card. Nothing of Komorebi's programming model is in
-it. It is on PyPI as `komorebi-runtime` (0.81.1.4, with Komorebi 0.2.0, 0.3.0, 0.4.0, 0.5.0, 0.5.1 and 0.5.2, for
+it. It is on PyPI as `komorebi-runtime` (0.81.1.4, with Komorebi 0.2.0, 0.3.0, 0.4.0, 0.5.0, 0.5.1, 0.5.2 and 0.5.3, for
 one card model); `pip install "komorebi-tt[runtime]"` installs it.
 
 | File | What it is |
