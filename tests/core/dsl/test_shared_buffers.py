@@ -492,6 +492,29 @@ def test_past_the_three_ways_the_refusal_names_the_handler_of_most_buffers():
     ) in text
 
 
+class Spill(km.Program):
+    """A handler of six write pairs: indices 16 to 25 hold five."""
+
+    @km.handler
+    def spill(self, a: km.Tensor, s: km.Tensor):
+        o0 = km.Stream(s.items(first=0, count=8, size=256), write=True)
+        o1 = km.Stream(s.items(first=8, count=8, size=256), write=True)
+        o2 = km.Stream(s.items(first=16, count=8, size=256), write=True)
+        o3 = km.Stream(s.items(first=24, count=8, size=256), write=True)
+        o4 = km.Stream(s.items(first=32, count=8, size=256), write=True)
+        o5 = km.Stream(s.items(first=40, count=8, size=256), write=True)
+        for item in km.Stream(a.items(first=0, count=8, size=256)):
+            km.cxx("", takes=[item, o0, o1, o2, o3, o4, o5], on="pack")
+
+
+def test_a_write_stream_s_refusal_names_its_handler():
+    with pytest.raises(Refused) as raised:
+        Spill(l1=1 << 20, log=quiet, a=words(), s=words())
+    text = str(raised.value)
+    assert "spill's write stream needs pair kWrite5" in text
+    assert "kWrite0 16-17 (uint32, spill)" in text and "None" not in text
+
+
 def test_a_switching_run_and_an_added_program_refuse_shared_indices():
     program = three()
     assert several.shared_indices(program)

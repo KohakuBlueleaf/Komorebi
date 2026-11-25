@@ -836,6 +836,7 @@ def write_stream(frame, node, name, call):
         block,
         WRITE_ITEMS,
         f"line {node.lineno}: {line_text(frame.where, node)}",
+        frame.method.name,
     )
     block_word(frame, node, buffer, word)
     pattern_text = handler_buffers.pattern_cxx(frame, buffer, pattern, letters)

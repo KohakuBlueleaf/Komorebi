@@ -181,6 +181,43 @@ def test_a_merge_carries_a_raw_field():
     assert "kFieldRecordPageBytes = 256;" in merged.built.files["first_second.h"]
 
 
+def merge_refused(first, second):
+    """The refusal of a merge of `first` and `second` (made first)."""
+    with pytest.raises(ProgramError) as raised:
+        km.merge(made(first), made(second), log=lambda line: None)
+    return str(raised.value)
+
+
+def test_a_merge_refusal_of_one_field_says_what_differs():
+    class Packed(Gated):
+        record: km.L1[km.u32, 1, 64] = km.own(push="pack", raw=True)
+
+    class Moved(km.Program):
+        record: km.L1[km.u32, 1, 64] = km.own(push="mover_a", raw=True)
+
+        @km.handler(GATE)
+        def other(self, n: int):
+            pass
+
+    class Raw(Gated):
+        record: km.L1[km.u32, 1, 1024] = km.own(push="pack", raw=True)
+
+    class Tiled(km.Program):
+        record: km.L1[km.u32, 1, 1024] = km.own(push="pack")  # a tile of one shape
+
+        @km.handler(GATE)
+        def other(self, n: int):
+            pass
+
+    one = "a field of one name is one field: declare it alike, or rename one"
+    text = merge_refused(Packed, Moved)  # push= alone differs
+    assert "push='pack' in Packed and push='mover_a' in Moved" in text
+    assert "Field(" not in text and "pages" not in text and text.endswith(one)
+    text = merge_refused(Raw, Tiled)  # raw= alone differs
+    assert "raw pages in Raw, tiles in Tiled" in text
+    assert "Field(" not in text and "push=" not in text and text.endswith(one)
+
+
 def test_the_vector_option_if_present_is_accepted():
     class Vector(Gated, compute={"enable_trisc2_rvv": "if_present"}):
         pass

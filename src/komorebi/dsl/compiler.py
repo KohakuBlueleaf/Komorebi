@@ -343,6 +343,31 @@ def merged_compiled(compiled, name, parts, l1, methods):
     return compiled, tensors
 
 
+def field_differences(first, second):
+    """What differs between two classes' declarations of one field name, each
+    (class, made field, push, raw), in the author's words: the format and shape, then
+    `push=`, then raw pages or tiles."""
+    (one, made_one, push_one, raw_one), (two, made_two, push_two, raw_two) = (
+        first,
+        second,
+    )
+
+    def pushed(push):
+        if push == "none":
+            return "not km.own()"
+        return "push= not given" if push == "found" else f"push={push!r}"
+
+    found = []
+    if made_one != made_two:
+        found.append(f"{made_one} in {one} and {made_two} in {two}")
+    if push_one != push_two:
+        found.append(f"{pushed(push_one)} in {one} and {pushed(push_two)} in {two}")
+    if raw_one != raw_two:
+        kinds = {True: "raw pages", False: "tiles"}
+        found.append(f"{kinds[raw_one]} in {one}, {kinds[raw_two]} in {two}")
+    return "; ".join(found)
+
+
 def merged_fields(compiled, parts):
     """The fields of every class of a merged program, each shape by its own class's
     constants; one name in two classes one field when declared alike."""
@@ -360,11 +385,12 @@ def merged_fields(compiled, parts):
             push = own.push if isinstance(own, front.Own) else "none"
             raw = isinstance(own, front.Own) and own.raw
             if field_name in owners and owners[field_name][1:] != (made, push, raw):
+                differs = field_differences(
+                    owners[field_name], (part.cls.__name__, made, push, raw)
+                )
                 raise Refused(
-                    f"{compiled.name}: field {field_name} is {owners[field_name][1]} "
-                    f"in {owners[field_name][0]} and {made} in {part.cls.__name__}; "
-                    "a field of one name is one field: declare it alike, or rename "
-                    "one"
+                    f"{compiled.name}: field {field_name} is {differs}; a field of "
+                    "one name is one field: declare it alike, or rename one"
                 )
             owners[field_name] = (part.cls.__name__, made, push, raw)
             compiled.fields[field_name] = made

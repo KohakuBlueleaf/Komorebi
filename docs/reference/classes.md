@@ -2717,8 +2717,10 @@ take their defaults); make each class with its sets and merge the made programs
   second class's is the kernel's `<class>_<name>`, and its handlers' lines name it in
   a block of their own (`using A = LinearA;`).
 - **Fields and buffers.** A field of one name in two classes is one field when declared
-  alike (format and shape, by each class's constants), else refused naming both:
-  `field sums is Field(...) in Sums and Field(...) in Wider`. The streams' buffers are
+  alike (format and shape, by each class's constants, and an own field's `push=` and
+  `raw=`), else refused naming both and what differs:
+  `field sums is Field(...) in Sums and Field(...) in Wider`, `push='pack' in Sums and
+  push='mover_a' in Wider`, `raw pages in Sums, tiles in Wider`. The streams' buffers are
   one class's: a pair is shared by handlers of one role, format, page and block, as
   between the handlers of one class, so the L1 they take is at least each class's.
   The build's L1 check refuses what does not fit, with the bytes: the gate class's
