@@ -20,9 +20,12 @@ too: one chip, and the chips of a Galaxy as islands
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.5.1 is on PyPI (as `komorebi-tt`), with handlers that share their stream and table
-buffers when a class's do not fit, and messages across islands that compile again
-([release notes](docs/releases/0.5.1.md)); 0.5.0 brought a handler that is a
+0.5.2 is on PyPI (as `komorebi-tt`), with the make that no longer refuses a class's
+buffers the load takes, a failed load that gives back the L1 it took, and two fields
+whose header names meet refused at the make ([release notes](docs/releases/0.5.2.md));
+0.5.1 brought handlers that share their stream and table buffers when a class's do not
+fit, and messages across islands that compile again
+([0.5.1](docs/releases/0.5.1.md)); 0.5.0 brought a handler that is a
 hand-written kernel (`km.kernel`), the chips of a Wormhole Galaxy as islands, and
 collectives that refuse after a give-up until the host clears them
 ([0.5.0](docs/releases/0.5.0.md)).
@@ -60,7 +63,7 @@ kmr doctor
 The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
 or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-From a clone, for what is on `main` after 0.5.1 and for Wormhole (it needs a tt-metal source tree at
+From a clone, for what is on `main` after 0.5.2 and for Wormhole (it needs a tt-metal source tree at
 the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
 runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 

@@ -44,7 +44,7 @@ from komorebi.program.description import Buffer, BufferPair, Handler, KernelSize
 from komorebi.program.movement import Pattern
 from komorebi.program.overlay import OverlayError
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     "Buffer",
