@@ -12,7 +12,7 @@ from pathlib import Path
 
 from komorebi import _env
 from komorebi.dsl import compiler
-from komorebi.dsl.files import text_key
+from komorebi.dsl.files import builds, text_key
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
 from komorebi.errors import L1BudgetError, ProgramError
@@ -295,7 +295,7 @@ def compiled(program, method, wanted):
 
 def folder_of(program, method, wanted):
     """The build folder of `method` at `wanted` on `program`'s load, where the class's
-    build writes (beside its first handler's source): build/<class>-<folder_key>."""
+    build writes (files.builds of its first handler's source): <class>-<folder_key>."""
     cls = type(program)
     methods = compiler.handler_methods(cls)
     files = sorted(
@@ -304,8 +304,8 @@ def folder_of(program, method, wanted):
     )
     sources = [Path(name).read_bytes() for name in files]
     key = folder_key(program.first_use.key, method.name, wanted, sources)
-    folder = Path(inspect.getsourcefile(methods[0].function)).resolve().parent
-    return folder / "build" / f"{cls.__name__.lower()}-{key}"
+    folder = builds(inspect.getsourcefile(methods[0].function))
+    return folder / f"{cls.__name__.lower()}-{key}"
 
 
 def folder_key(load, name, wanted, sources, code=None):

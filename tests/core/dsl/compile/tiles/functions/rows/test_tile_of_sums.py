@@ -11,6 +11,7 @@ from chain_fixture import Pages, quiet
 import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
+from komorebi.dsl.files import builds
 from komorebi.errors import ProgramError
 
 HERE = Path(__file__).resolve().parent
@@ -72,7 +73,7 @@ class Again(InDst):
 def compute_of(cls):
     cls(l1=1 << 20, log=quiet, **tensors())
     folder = sorted(
-        (HERE / "build").glob(f"{cls.__name__.lower()}-*"),
+        builds(HERE / "-").glob(f"{cls.__name__.lower()}-*"),
         key=lambda p: p.stat().st_mtime,
     )[-1]
     return (folder / "compute.cpp").read_text()

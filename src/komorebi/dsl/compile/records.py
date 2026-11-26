@@ -217,7 +217,6 @@ class CompiledText:
     kernel_constants: dict = field(default_factory=dict)  # kConst<Name>: its value
     entered: bool = False  # a DSL handler's entry state added (kernel_handler)
     shares: object = None  # the shared indices (shared.Shares), or None
-    builds: str | None = None  # the build folders' folder: include paths from there
 
 
 @dataclass

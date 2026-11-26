@@ -168,7 +168,7 @@ def test_files_are_included_after_the_class_header_once_under_their_cpus():
     files = made(Split).built.files
     movement = files["movement.cpp"].split("\n")
     header = movement.index('#include "split.h"')
-    built = "../../" + HAND
+    built = f"{(Path(__file__).resolve().parent / HAND).as_posix()}/"
     assert movement[header + 1 : header + 7] == [
         f'#include "{built}reader.hpp"',
         "#if !defined(COMPILE_FOR_BRISC)",
@@ -231,7 +231,8 @@ def test_a_merged_build_numbers_and_includes_once():
     merged = km.merge(made(Gates), made(Adds), log=lambda line: None)
     assert merged.compiled.handlers == {"gate": 1, "add": 2, "again": 3}
     text = merged.built.files["movement.cpp"]
-    assert text.count(f'#include "../../{HAND}movement.hpp"') == 1
+    hand = (Path(__file__).resolve().parent / HAND / "movement.hpp").as_posix()
+    assert text.count(f'#include "{hand}"') == 1
     pair = [b for b in merged.compiled.buffers if b.name == "kPairAIn"]
     assert len(pair) == 1 and (pair[0].index_a, pair[0].index_b) == (2, 3)
     with pytest.raises(ProgramError, match=r"overlay= marks Gates.gate, a km.kernel"):

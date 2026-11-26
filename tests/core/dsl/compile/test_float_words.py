@@ -11,6 +11,7 @@ from chain_fixture import Pages, quiet
 import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
+from komorebi.dsl.files import builds
 from komorebi.errors import ProgramError
 
 HERE = Path(__file__).resolve().parent
@@ -60,7 +61,7 @@ class Divided(km.Program):
 def folder_of(cls):
     cls(l1=1 << 20, log=quiet, **tensors())
     return sorted(
-        (HERE / "build").glob(f"{cls.__name__.lower()}-*"),
+        builds(HERE / "-").glob(f"{cls.__name__.lower()}-*"),
         key=lambda p: p.stat().st_mtime,
     )[-1]
 

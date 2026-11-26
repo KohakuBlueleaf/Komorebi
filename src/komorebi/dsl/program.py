@@ -18,6 +18,7 @@ from komorebi.dsl.compile.handler import kernel_handler
 from komorebi.dsl.compile.layout import INDICES, make_room, padded_rings
 from komorebi.dsl.compile.records import Buffer, Unfit
 from komorebi.dsl.files import (
+    builds,
     camel,
     put,
     text_key,
@@ -97,7 +98,6 @@ from komorebi.islands import local as island_local
 from komorebi.program import description as km_program
 from komorebi.program import overlay
 
-BUILD = "build"
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
 # A give-up of compute at a check, not a wait: its line (kLvLine) is one of compute's
@@ -1355,13 +1355,12 @@ def sources_key(
 
 
 def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
-    """Writes the class's files into build/<name>-<digest>/ beside its source, `digest`
+    """Writes the class's files into <name>-<digest>/ (files.builds), `digest`
     text_key of the files (equal text is one folder, whoever made it; text that differs
     never is); `make` is sources_key, reported; `key` names the folder instead (a first
     use's); `thread` is class_thread's base header; an equal file is not written."""
-    builds = Path(compiled.source).resolve().parent / BUILD
     shared.assign(compiled)
-    kernel_handler.entered(compiled, start_formats(compiled), builds)
+    kernel_handler.entered(compiled, start_formats(compiled))
     files = {
         header_name(compiled): header(compiled),
         thread_header_name(compiled): thread_header(compiled),
@@ -1384,8 +1383,7 @@ def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     for name, text in files.items():
         files[name] = resume_lines(text, name)
     digest = text_key(files)
-    folder = Path(compiled.source).resolve().parent / BUILD
-    folder = folder / f"{compiled.name.lower()}-{key or digest}"
+    folder = builds(compiled.source) / f"{compiled.name.lower()}-{key or digest}"
     folder.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
         put(folder / name, text)

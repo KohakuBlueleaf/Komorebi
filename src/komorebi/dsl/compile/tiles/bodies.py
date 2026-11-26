@@ -280,26 +280,22 @@ def kernel_at(frame, node, value):
     return value.value
 
 
-BUILD_FOLDER = (
-    "build"  # a class's build folders' folder beside its file (program.BUILD)
-)
-# An include of a relative path ("./" or "../"): from the class's own build folder.
+# A relative include is read from <its file's folder>/build/<name>-<digest>/, where a
+# class's build folder was before it moved into the cache directory (files.builds).
+BUILD_FOLDER = "build"
 RELATIVE_INCLUDE = re.compile(r'^#include "(\.\.?/[^"]*)"$')
 
 
 def rebased(frame, entry):
-    """`entry`, an #include line of a body, as it means from the class's own build
-    folder (<its file's folder>/build/<name>-<digest>/): in a program built beside
-    another file (a merge), its relative path from that program's build folder; an
+    """`entry`, an #include line of a body: a relative path, read from
+    <its file's folder>/build/<name>-<digest>/, as the absolute path of that file; an
     absolute path, a <...> or a path the include paths find, as it is."""
     found = RELATIVE_INCLUDE.match(entry)
-    own = Path(frame.where.file).resolve().parent
-    base = Path(frame.compiled.source).resolve().parent
-    if found is None or own == base:
+    if found is None:
         return entry
-    target = os.path.normpath(own / BUILD_FOLDER / "-" / found.group(1))
-    path = Path(os.path.relpath(target, base / BUILD_FOLDER / "-")).as_posix()
-    return f'#include "{path}"'
+    own = Path(frame.where.file).resolve().parent
+    target = Path(os.path.normpath(own / BUILD_FOLDER / "-" / found.group(1)))
+    return f'#include "{target.as_posix()}"'
 
 
 def kernel_takes(frame, node, takes, gives, name):

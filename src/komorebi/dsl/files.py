@@ -1,9 +1,10 @@
-"""The files of a class's build folder: the folder named by its files' text, a file
-written only when its text differs, the X280 thread's header of the class's commands."""
+"""The files of a class's build folder: where it is, the folder named by its files'
+text, a file written only when its text differs, the X280 thread's header."""
 
 import hashlib
 from pathlib import Path
 
+from komorebi.device import native
 from komorebi.program.overlay import write_into
 
 TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
@@ -11,6 +12,14 @@ TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its te
 
 def camel(name):
     return "".join(part.capitalize() for part in name.split("_"))
+
+
+def builds(source):
+    """The folder of a class's build folders in the cache directory (KMR_CACHE):
+    classes/<folder>-<hash>, one a folder of class sources (`source`: a class file)."""
+    folder = Path(source).resolve().parent
+    named = hashlib.sha256(str(folder).encode()).hexdigest()[:8]
+    return native.cache_directory() / "classes" / f"{folder.name}-{named}"
 
 
 def text_key(files):

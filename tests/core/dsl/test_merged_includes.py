@@ -1,6 +1,6 @@
-"""A body's include= in a merge (no card): a relative path means what it means from
-its class's own build folder, so a merged program's kernels, built beside the first
-class's file, name the same files; a class built alone keeps its text."""
+"""A body's include= in a merge (no card): a relative path means what it meant from
+<its class's file's folder>/build/<name>-<digest>/, and every program's kernels name
+that file by its absolute path, a class built alone and a merge alike."""
 
 import importlib.util
 import re
@@ -73,10 +73,10 @@ def quiet(line):
 
 
 def included(built):
-    """Each quoted #include of the built kernels, as a path from the build folder."""
+    """Each quoted #include of an absolute path in the built kernels."""
     found = []
     for name in ("movement.cpp", "compute.cpp"):
-        found += re.findall(r'^#include "(\.\.?/[^"]*)"$', built.files[name], re.M)
+        found += re.findall(r'^#include "(/[^"]*)"$', built.files[name], re.M)
     return found
 
 
@@ -92,18 +92,15 @@ def test_a_merge_keeps_each_class_s_relative_includes_pointing_at_its_files(tmp_
             cls(l1=1 << 20, log=quiet, a=words())
             for cls in (first.First, second.Second)
         ]
-        for program, wanted in zip(
-            alone, (["../../one.hpp"], ["../../two.hpp", "../../../two_more.hpp"])
-        ):
-            assert sorted(included(program.built)) == sorted(wanted)  # as written
+        root = tmp_path.resolve()
+        one, two = [str(root / "a/one.hpp")], [str(root / "b/c/d/two.hpp")]
+        two.append(str(root / "b/c/two_more.hpp"))
+        for program, wanted in zip(alone, (one, two)):
+            assert sorted(included(program.built)) == sorted(wanted)
         merged = km.merge(*alone, l1=1 << 20, log=quiet)
         derived = both.Both(l1=1 << 20, log=quiet, a=words())
         for program in (merged, derived):
-            folder = program.built.folder
-            paths = included(program.built)
-            assert len(paths) == 3, paths
-            for path in paths:
-                assert (folder / path).resolve().is_file(), (folder, path)
+            assert sorted(included(program.built)) == sorted(one + two)
             text = program.built.files["compute.cpp"]
             assert "#include <stdint.h>" in text
     finally:

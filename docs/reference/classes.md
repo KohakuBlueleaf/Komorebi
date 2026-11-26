@@ -109,7 +109,11 @@ class's buffers are made against (a field's last symbol takes it, "its buffers t
 leave room for two of it, so a class whose buffers the load takes is not refused for
 the row of a program of none; the build's table then counts the row its buffers give.
 
-The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` sixteen hex
+The build writes `<name>-<hash>/` in the cache directory (`KMR_CACHE`, else
+`build/komorebi/` in a checkout, else `~/.cache/komorebi`; [builds](host.md#builds)),
+under `classes/<folder>-<path hash>/`: one such folder for each folder of class
+sources, named by that folder's name and eight hex digits of its path (until 0.5.3 it
+was `build/` beside the class's source). `<hash>` is sixteen hex
 digits of the generated files' names and text (not of the make's inputs: the plan,
 the tensors, the constants and the sets that give a file its text are in the text): two
 instances whose files are equal share one folder, whoever made them and whatever else
@@ -292,7 +296,7 @@ becomes the handler's overlay parts (`<set>/movement.cpp`, `<set>/compute.cpp`),
 are added to the run by `run.addon(..., handler=True)`
 ([overlays](overlays.md#code-added-to-a-live-run)). Then the command is submitted
 with the added number. Later submits of the set find it added. The files go into
-`build/<class>-use<key>/`: the key holds the load's folder and make key, the handler, the set's
+`<class>-use<key>/` in the class's folder under `KMR_CACHE`: the key holds the load's folder and make key, the handler, the set's
 values, the class's source files and a hash of the package's Python source (the class
 compiler that wrote them: a changed compiler compiles the set again). A later process that makes the same program finds
 them there (their digest, kept in `first_use.json`, is compared with the files) and reads the set's words from it, so nothing is compiled.
@@ -848,11 +852,12 @@ that binds no name is not braced, so the names it declares are seen by the bodie
 it on its CPU (a walk's state on pack, set up before a loop and read in it). Its first
 lines that are `#include` lines go to the top of its kernel for every CPU of it;
 `include=["path"]` puts a header under the body's CPU's `#if` alone (a header only
-the pack CPU compiles). A relative path of either (`./` or `../`) is relative to the
-class's own build folder (`build/<name>-<digest>/` beside its file); a merge keeps its
-meaning, writing it as the path from the merged program's build folder to that file
-(an absolute path, a `<...>` and a path the include paths find are kept as written;
-a `km.kernel` handler's files are named from the build folder already). A `#line` before the body points the compiler's messages at
+the pack CPU compiles). A relative path of either (`./` or `../`) is read from
+`build/<name>-<digest>/` beside the class's file, where the build folder was before
+it moved under `KMR_CACHE`, and is written as the absolute path of that file, in a
+class built alone and in a merge alike (an absolute path, a `<...>` and a path the
+include paths find are kept as written; a `km.kernel` handler's files are named by
+their absolute paths too). A `#line` before the body points the compiler's messages at
 the Python line, in the handler's own file (in a `km.merge` of classes from several
 files too). The text is a string, a string constant of the class's module, or a
 sum of them (`km.cxx(HEADERS + GIVE_UP + "...")`: one body in several handlers); for a
@@ -1345,8 +1350,8 @@ the handler's `def` line.
 Each file is `#include`d once a kernel source, after the class's own header (so it
 uses the header's names): the movers' files in the movement source, compute's in the
 compute source, with no `#if` when every CPU of that source uses it, else under the
-`#if` of each CPU that does. The include line is the file's path from the build folder
-(`build/<name>-<digest>/`), so it is in the generated text and the build key
+`#if` of each CPU that does. The include line is the file's absolute path, so it is in
+the generated text and the build key
 ([Making and calling](#making-and-calling)); nothing else is added to the key: an edit
 of an included file rebuilds the kernels by tt-metal's dependency hash of each object
 (the folder's name unchanged).
@@ -2995,7 +3000,7 @@ static inline void workcluster_step(
 ```
 
 The thread is made and its C built at the make, before any card job: the header the
-thread was built with is in a folder of its own (`build/<name>-<hash>/thread-<hash>/`),
+thread was built with is in a folder of its own (`<name>-<hash>/thread-<hash>/` in the build folder),
 put first among its includes. The make refuses a region parameter that names no
 region of the class. It also refuses C that names a handler, a tensor or a region
 the program lacks. The message gives the class's line, the C's errors with their

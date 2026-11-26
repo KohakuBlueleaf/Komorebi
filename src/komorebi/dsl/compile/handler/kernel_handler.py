@@ -4,7 +4,6 @@ names, Lines pruned and rendered), the files' include lines, the header's km.Pai
 constant lines, the state a DSL handler sets at its entry beside one, its refusals."""
 
 import ast
-import os
 from pathlib import Path
 
 from komorebi.dsl.compile.casts.messages import arrive_of
@@ -200,12 +199,10 @@ def constants_kept(compiled, listed):
     compiled.kernel_constants = kept
 
 
-def entered(compiled, formats, builds):
-    """Before the files are written: the build folders' folder (`builds`, the include
-    paths' base), and, beside a km.kernel handler not clean=True, each DSL handler's
-    compute case begun with the start-up's formats (`formats`, start_formats') and Dst
-    cleared."""
-    compiled.builds = str(builds)
+def entered(compiled, formats):
+    """Before the files are written: beside a km.kernel handler not clean=True, each DSL
+    handler's compute case begun with the start-up's formats (`formats`,
+    start_formats') and Dst cleared."""
     if compiled.entered or not entry_state(compiled):
         return
     compiled.entered = True
@@ -240,12 +237,12 @@ def entry_state(compiled):
 
 
 def include_lines(compiled, source):
-    """The #include of each hand file of `source` ("movement" or "compute"), after
-    the class's header: once, under the #if of each CPU using it unless all do."""
+    """The #include of each hand file of `source` ("movement" or "compute") by its
+    absolute path, after the class's header: once, under the #if of each CPU using it
+    unless all do."""
     lines = []
-    base = Path(compiled.builds or Path(compiled.source).resolve().parent) / "-"
     for path, cpus in compiled.kernel_files[source].items():
-        text = f'#include "{Path(os.path.relpath(path, base)).as_posix()}"'
+        text = f'#include "{Path(path).resolve().as_posix()}"'
         if set(cpus) == set(KERNEL_CPUS[source]):
             lines.append(text)
             continue

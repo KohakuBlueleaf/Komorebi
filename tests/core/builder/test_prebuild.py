@@ -19,6 +19,7 @@ import komorebi
 from komorebi import abi, cli
 from komorebi.builder import prebuild
 from komorebi.device import chips, mock, remembered
+from komorebi.dsl.files import builds
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands_graph
 from komorebi.program import thread as thread_module
@@ -584,12 +585,13 @@ print(made.built.digest, remembered.program_key(made, "card"))
 
 
 def test_a_class_script_prebuilt_and_run_by_a_relative_path_has_one_files_key(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     """The #line of an inline body names the script's file: a prebuild runs it as the
     interpreter does, so its files key and its remembered program key are a run's."""
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "scaled.py").write_text(SCALED)
+    monkeypatch.setenv("KMR_CACHE", str(tmp_path / "cache"))
     env = dict(os.environ, PYTHONPATH=str(Path(komorebi.__file__).parents[1]))
     env.pop(mock.ACTIVE, None)
     run = [sys.executable, "sub/scaled.py"]
@@ -602,7 +604,8 @@ def test_a_class_script_prebuilt_and_run_by_a_relative_path_has_one_files_key(
         assert done.returncode == 0, done.stderr
         keys.append(done.stdout.split())
     assert keys[0] == keys[1]
-    (folder,) = (tmp_path / "sub" / "build").iterdir()
+    assert not (tmp_path / "sub" / "build").exists()  # under KMR_CACHE
+    (folder,) = builds(tmp_path / "sub" / "scaled.py").iterdir()
     assert (
         f'"{(tmp_path / "sub" / "scaled.py").resolve()}"'
         in (folder / "compute.cpp").read_text()
