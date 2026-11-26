@@ -338,6 +338,12 @@ LISTED_MAX = 32  # cores a not-reported group lists by index before "and n more"
 # an inspected core whose control area lacks this run's magic and tag (`not_there`): in
 # no known state, so not "left"; a give-up resets it
 NOT_THERE = "its control area is not there (no kernel of this run is running on it)"
+# a reset core's gave-up words: what the deadline's inspect read, before the reset
+RECOVERED_WORDS = (
+    "the gave-up words above were read at the deadline, before the reset: kept in "
+    "this error's cores, run.given_up(handle) and run.recoveries, no longer in "
+    "run.state() after the stop"
+)
 
 
 def _indices(cores):
@@ -411,7 +417,8 @@ class CommandTimeout(KernelFailed):
             else "timed out; not reported"
         )
         back = (
-            f"; recovered (reset and loaded again): {unit} {list(recovered)}"
+            f"; recovered (reset and loaded again): {unit} {list(recovered)}; "
+            f"{RECOVERED_WORDS}"
             if recovered
             else ""
         )

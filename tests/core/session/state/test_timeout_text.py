@@ -101,3 +101,37 @@ def test_a_core_without_this_runs_magic_is_named_apart_and_counted_among_the_res
     assert "recovered (reset and loaded again): cores [36, 60]" in text
     other = device_state.inspect(block, H, tag=0x6545)["cores"]  # another run's tag
     assert all(core["not_there"] for core in other)
+
+
+def test_a_reset_cores_gave_up_word_is_named_with_where_it_is_kept():
+    head, record = H["KMD_INSPECT_HEAD"] // 4, H["KMD_INSPECT_RECORD"] // 4
+    block = np.zeros(head + record * 2, np.uint32)
+    block[H["KMD_I_MARK"]], block[H["KMD_I_KIND"]] = (
+        H["KMD_INSPECT_MARK"],
+        H["KMD_INSPECT_TIMEOUT"],
+    )
+    block[H["KMD_I_COUNT"]] = block[H["KMD_I_DONE"]] = 2
+    block[H["KMD_I_SEQUENCE"]] = 1
+    state_at = H["KMD_INSPECT_STATE"] // 4
+    for core in range(2):
+        line = block[head + core * record :]
+        line[H["KMD_IR_CORE"]] = core
+        line[H["KMD_IR_FLAGS"]] = H["KMD_INSPECT_READ"]
+        line[state_at + H["kStMagic"]] = H["kStateMagic"] | 0x6543 << 8 | core
+    # core 1's reader gave up by its own limit in port, then the deadline reset it
+    line = block[head + record :]
+    line[state_at + H["kStReader"]] = H["kGaveLimit"] | H["kWherePort"] << 8
+    line[state_at + H["kStReaderSequence"]] = 1
+    line[H["KMD_IR_FLAGS"]] |= H["KMD_INSPECT_RESET"]
+    cores = device_state.inspect(block, H, tag=0x6543)["cores"]
+    reset = [core["core"] for core in cores if core["reset"]]
+    text = str(CommandTimeout(2, 0, 1, (0, 2), cores, given_up=True, recovered=reset))
+    assert "core 1 reader gave up (limit) in port" in text
+    assert text.endswith(
+        "recovered (reset and loaded again): cores [1]; the gave-up words above were "
+        "read at the deadline, before the reset: kept in this error's cores, "
+        "run.given_up(handle) and run.recoveries, no longer in run.state() after the "
+        "stop"
+    )
+    kept = str(CommandTimeout(2, 0, 1, (0, 2), cores, given_up=True))
+    assert "gave-up words" not in kept  # no core reset: run.state() still has them

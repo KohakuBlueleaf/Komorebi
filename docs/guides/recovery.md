@@ -90,13 +90,19 @@ trade: its cost against these steps.
     ```text
     command <handle> was given up, the run goes on; at the deadline: slot <slot>,
     sequence <n>, group first <first> count <count>; cores: core <c> reader waits in
-    <where>; recovered (reset and loaded again): cores [<c>]
+    <where>; recovered (reset and loaded again): cores [<c>]; the gave-up words above
+    were read at the deadline, before the reset: kept in this error's cores,
+    run.given_up(handle) and run.recoveries, no longer in run.state() after the stop
     ```
 
     Each core of the group is named with the wait of each of its kernels (`reader waits in
     port`, `writer waits in data`, the where names of the
     [runtime reference](../reference/runtime.md#gave-up-and-where-codes)), or `no give-up
-    recorded`. The `recovered` part is there only when the dispatcher reset cores. A time-out
+    recorded`. The `recovered` part is there only when the dispatcher reset cores. A core
+    whose own wait gave up before the deadline is named so (`core 1 reader gave up
+    (limit) in port`): the deadline's inspect reads every core of the group before the
+    reset, and the reset writes the core's control area again, so these words are the
+    only record of that give-up. A time-out
     that was not given up says `timed out; not reported` and lists the cores that did not
     report: the run is stopped and read back, and cannot be used again. On islands, the text
     starts `island i:`, `error.island` is i, `<handle>` is the ticket, and the cores are
@@ -109,7 +115,9 @@ trade: its cost against these steps.
 
 3. **Keep going, or look at the core.** After a given-up command the next command on the
    same cores runs as usual. `run.state()` after the stop lists, per core, the first
-   give-up of each kernel: `deadline` with the where code of the wait.
+   give-up of each kernel: `deadline` with the where code of the wait. A core the
+   dispatcher reset lists none of the give-ups before its reset: those are in the
+   `CommandTimeout` (`error.cores`, `run.given_up(handle)`, `run.recoveries`).
 
 4. **Reset one core yourself.** `run.reset_core(core)` puts one core of a loaded run in
    reset, writes what the open writes for it (firmware, its tables, the boot jump), waits
