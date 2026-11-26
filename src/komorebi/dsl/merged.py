@@ -315,7 +315,7 @@ class Shared:
 def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=None,
                session=None, trace=0, defines=None, handlers=None,
                broadcast_wait=False, guard=True, overlay=(), resident=(),
-               chain=False,
+               chain=False, out_of_line=False,
                **given):  # fmt: skip
     """Makes a class merging classes: the make's keywords as one class's (a constant
     to each class that declares it; a constant two classes declare differently is
@@ -369,7 +369,7 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
                     "plan": own_plan, "tensors": tensors, "constants": values,
                     "sets": {}, "depth": depth, "rect": rect, "nocs": nocs,
                     "defines": kept, "broadcast_wait": broadcast_wait,
-                    "guard": guard,
+                    "guard": guard, "out_of_line": out_of_line,
                 },  # fmt: skip
             )
         )
@@ -628,6 +628,12 @@ def build_at(self, step):
         for key, value in source.given["constants"].items()
     }
     keyed["overlays"] = sorted(compiled.overlays)
+    lines = {bool(source.given.get("out_of_line")) for source in sources}
+    if len(lines) > 1:
+        raise ProgramError(f"{self.cname}: out_of_line differs between the classes")
+    compiled.out_of_line = lines.pop()
+    if compiled.out_of_line:
+        keyed["out_of_line"] = True
     if walked:
         keyed[spelling("chain")] = True
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}

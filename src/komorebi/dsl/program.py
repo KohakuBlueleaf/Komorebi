@@ -235,6 +235,7 @@ def make(
     chain_stamps=False,
     form="kernel",
     beside=(),
+    out_of_line=False,
     **tensors,
 ):
     """Makes the class (make_at) by the first way of sharing its handlers' buffers
@@ -268,12 +269,13 @@ def make_at(
     chain_stamps=False,
     form="kernel",
     beside=(),
+    out_of_line=False,
     **tensors,
 ):
     """Compiles the class, its buffers shared the way `step` says (compile.shared):
     `tensors` an example of each tensor parameter, `plan` sizes by name; `session` or
     `l1`; `rect`, `nocs`, `defines`, `handlers`, `broadcast_wait`, `guard`, `chain`,
-    `chain_stamps`, `form`, `beside` as a Program's make takes them."""
+    `chain_stamps`, `form`, `beside`, `out_of_line` as a Program's make takes them."""
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
     thread_tensors = class_thread.tensors_given(tensors)
@@ -353,7 +355,7 @@ def make_at(
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
         "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
         "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
-        "guard": guard,
+        "guard": guard, "out_of_line": out_of_line,
     }  # fmt: skip
     padded = padded_rings(compiled)  # not km.merge's: its compile shares no pair
     if padded:  # read pairs handlers of other blocks share (km_core.hpp ring_pad)
@@ -377,6 +379,9 @@ def make_at(
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
     keyed = constants_keyed(cls, values)
+    compiled.out_of_line = bool(out_of_line)
+    if compiled.out_of_line:
+        keyed["out_of_line"] = True
     if sets:  # the listed sets of the handlers' constant parameters
         keyed[spelling("handlers")] = sorted(
             (name, [sorted(one.items()) for one in listed])

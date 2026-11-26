@@ -76,10 +76,11 @@ run.submit(
 | `guard` | as a `Program`'s ([host](host.md#program)), `True` by default: `False` builds the kernels without a command's deadline, give-up and inspect ([hazards](hazards.md#a-wait-that-never-completes)), in a build folder of its own |
 | `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
 | `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
+| `out_of_line` | `False` by default. `True`: each resident handler's case body is a function of its own that the compiler never inlines (a lambda the case calls; a `break` that left the case returns), so the frame of the handler switch holds no handler's locals and a handler entered from it, a hand kernel's call above all, does not stand on another handler's. Costs a call a command and code: [dense_class](../../experiments/language/dense_class/README.md)'s `Linear` merged with a class whose `km.kernel` handler calls a chain of 976 B needs 1,344 B of stack on mover B where it needed 1,808 (the chain under the switch's 480 B), 1,200 B on the math CPU where 1,312, for 4,404 B more code in all, the unpack CPU's (a mock build). In a build folder of its own; the classes of a merge give one value |
 
-These sixteen names (`plan`, `l1`, `depth`, `log`, `rect`, `nocs`, `session`, `trace`,
+These seventeen names (`plan`, `l1`, `depth`, `log`, `rect`, `nocs`, `session`, `trace`,
 `defines`, `handlers`, `broadcast_wait`, `guard`, `chain`, `chain_stamps`, `form`,
-`beside`) are the make's own keywords, so a tensor parameter of one of them is refused
+`beside`, `out_of_line`) are the make's own keywords, so a tensor parameter of one of them is refused
 at the parameter ("`depth` is one of the class's make options (...): a tensor of that
 name cannot be given to Cls(...)"; rename it). An int or float word of such a name is a
 command word and is not refused.

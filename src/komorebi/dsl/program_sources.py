@@ -434,6 +434,9 @@ def cases(compiled, nodes_of, ending, depth, kernel):
     for name in compiled.handlers:
         line = compiled.lines[name]
         lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
+        if name not in compiled.overlays and compiled.out_of_line:
+            lines += out_of_line(compiled, name, nodes_of, ending, depth, kernel)
+            continue
         if name not in compiled.overlays:
             lines += shared.entry_lines(compiled, name, kernel, pad + INDENT * 2)
             lines += render(prune(nodes_of[name]), depth + 2)
@@ -461,6 +464,38 @@ def cases(compiled, nodes_of, ending, depth, kernel):
     lines.append(f"{pad}{INDENT * 2}{ending}")
     lines.append(pad + "}")
     return lines
+
+
+def out_of_line(compiled, name, nodes_of, ending, depth, kernel):
+    """A case's body as a lambda never inlined, which the case calls (out_of_line=True):
+    the frame the switch is in holds none of the body's locals."""
+    pad, inner = INDENT * (depth + 2), INDENT * (depth + 3)
+    call = "return [&]()" if kernel == "movement" else "[&]()"
+    body = shared.entry_lines(compiled, name, kernel, inner)
+    body += render(prune(nodes_of[name]), depth + 3)
+    lines = [f"{pad}{call} __attribute__((noinline)) {{", *case_breaks(body)]
+    if kernel == "movement":
+        return [*lines, f"{inner}{ending}", f"{pad}}}();", f"{INDENT * (depth + 1)}}}"]
+    return [*lines, f"{pad}}}();", f"{pad}{ending}", f"{INDENT * (depth + 1)}}}"]
+
+
+LOOP = re.compile(r"\s*(\}\s*)?(for|while|do|switch)\b")
+
+
+def case_breaks(lines):
+    """`lines` of a case's body with each `break;` that leaves the case (no loop or
+    switch around it) made `return;`: the body is a function of its own there."""
+    out, openers = [], []
+    for line in lines:
+        text = line.strip()
+        if text.startswith("}"):
+            openers = openers[:-1]
+        if text == "break;" and not any(openers):
+            line = line.replace("break;", "return;")
+        if text.endswith("{"):
+            openers.append(bool(LOOP.match(line)))
+        out.append(line)
+    return out
 
 
 def stamped(compiled, name, inner):

@@ -15,6 +15,7 @@ import pytest
 import komorebi as km
 from komorebi.device import mock
 from komorebi.device.tensor import Tensor
+from komorebi.dsl import program_sources
 from komorebi.dsl.compile.records import Refused
 from komorebi.errors import ProgramError
 
@@ -364,6 +365,31 @@ def test_pairs_past_the_indices_and_two_ways_in_a_merge_are_refused():
     )
     with pytest.raises(Refused, match=r"km.Pair a_in is \(bfloat16, pages=32, "):
         km.merge(made(Gates), made(Other), log=lambda line: None)
+
+
+def test_out_of_line_makes_each_case_body_a_function_and_breaks_returns():
+    plain, lined = made(Mixed), made(Mixed, out_of_line=True)
+    assert "noinline" not in case(plain.built.files["compute.cpp"], "Add")
+    assert plain.built.folder != lined.built.folder  # the option keys the build
+    movement = case(lined.built.files["movement.cpp"], "Add")
+    assert "return [&]() __attribute__((noinline)) {" in movement
+    assert (
+        movement.rstrip().endswith("}();\n            }".strip()) or "}();" in movement
+    )
+    compute = case(lined.built.files["compute.cpp"], "Gate")
+    assert "[&]() __attribute__((noinline)) {" in compute
+    assert compute.index("}();") < compute.rindex("break;")
+    body = [
+        "    if (x) {", "        break;", "    }", "    for (;;) {",
+        "        if (y) {", "            break;", "        }", "    }",
+    ]  # fmt: skip
+    assert program_sources.case_breaks(body) == [
+        *body[:1],
+        "        return;",
+        *body[2:],
+    ]
+    with pytest.raises(ProgramError, match="out_of_line differs"):
+        km.merge(made(Gates), made(Adds, out_of_line=True), log=lambda line: None)
 
 
 # A mock load on Wormhole of a merge with a hand handler (not clean) beside DSL

@@ -217,6 +217,8 @@ class CompiledText:
     kernel_constants: dict = field(default_factory=dict)  # kConst<Name>: its value
     entered: bool = False  # a DSL handler's entry state added (kernel_handler)
     shares: object = None  # the shared indices (shared.Shares), or None
+    # out_of_line=True: each resident case's body a function of its own (a lambda)
+    out_of_line: bool = False
 
 
 @dataclass

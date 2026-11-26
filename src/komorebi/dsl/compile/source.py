@@ -80,6 +80,7 @@ MAKE_OPTIONS = (
     "chain_stamps",
     "form",
     "beside",
+    "out_of_line",
 )
 
 
