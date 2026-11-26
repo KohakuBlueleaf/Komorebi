@@ -120,11 +120,20 @@ def test_an_l1_tensors_pages_go_to_the_ranks_that_hold_them():
     assert not ch.fits(l1._replace(address=0x40000 - PAGE + 16), 4, L1, 8)
 
 
-def routed(pages, page=PAGE, run=None, channel=True):
+def held_l1(taken=0, top=L1):
+    """A module whose device has 1 MiB of L1 for buffers below `top`, the session's
+    own L1 buffers taking `taken` bytes of it from the top."""
+    return SimpleNamespace(
+        kernel_buffer=lambda device: (0, 1 << 20, top),
+        lowest_l1=lambda device: top - taken if taken else 0,
+    )
+
+
+def routed(pages, page=PAGE, run=None, channel=True, taken=0):
     """The way a read of `pages` pages takes in a session that is not opened."""
     session = Session(channel=REGION.bytes)
     session.channel = np.zeros(REGION.bytes, np.uint8) if channel else None
-    session.l1 = lambda: (0, 1 << 20)  # what a core has left for buffers
+    session._module = held_l1(taken)  # what a core has left for buffers
     session.run = run
     tensor = SimpleNamespace(in_dram=True, aligned_page_bytes=page, pages=1000)
     return session._transfer_way([tensor], 0, pages)
@@ -138,6 +147,11 @@ def test_a_read_goes_through_the_run_the_kernel_or_the_device():
     assert routed(20, channel=False) is None
     assert routed(20, page=32 << 10) == "launch"  # a page over a chunk: its own chunk
     assert routed(20, page=600 << 10) is None  # two of them do not fit the L1
+    assert routed(20, page=480 << 10) == "launch"
+    assert routed(20, page=480 << 10, taken=64 << 10) is None  # below its L1 buffers
+    edge = ((1 << 20) - 64) // 2  # two pages and the slot fill the L1 exactly
+    assert routed(20, page=edge) is None  # the buffer adds a DRAM line, the report 64 B
+    assert routed(20, page=edge - 64) == "launch"
     assert routed(20, run=live) is None  # the run has no transfer buffer
     live.backend.transfer = SimpleNamespace(chunk=16 << 10)
     assert routed(1, run=live) == "run"
@@ -210,3 +224,36 @@ def test_the_state_area_holds_the_same_pages_in_every_bank(monkeypatch):
     for banks in (8, 12):  # a Blackhole card's 32 pages, a Wormhole chip's 48
         tensor_bytes._state_area(SimpleNamespace(dram_banks=banks))
         assert made[-1] == (tensor_bytes.STATE_PAGES_A_BANK * banks, page)
+
+
+def test_the_transfer_kernels_buffer_is_one_page_however_large_its_chunk():
+    made = []
+    launch = SimpleNamespace(
+        kernel=lambda *args, **kwargs: None, cb=lambda *args: made.append(args)
+    )
+    session = Session(channel=REGION.bytes)
+    session._module = SimpleNamespace(Launch=lambda device: launch)
+    session._transfer_launch([(0, 0, 0, 0)], [], 512 << 10)  # a 512 KiB page
+    ((_, index, _, page, total),) = made
+    # tt-metal counts a buffer's pages in 16 bits: 16 B pages made 65,544 of them
+    assert (index, page, total) == (0, 1_048_704, 1_048_704)
+
+
+def test_a_live_write_in_pieces_stays_inside_the_tensors_bank_bytes():
+    session = Session(channel=REGION.bytes)
+    session.channel = np.zeros(REGION.bytes, np.uint8)
+    session._dram_banks = 8
+    sent = []
+    session._transfer_way = lambda tensors, first, pages: "run"
+    session._transfer = lambda view, first, pages, way, push: sent.append(
+        (view.pages, first, pages)
+    )
+    aligned, pieces = 512 << 10, 32  # one page of 512 KiB, a run's chunk of 16 KiB
+    tensor = SimpleNamespace(
+        address=0x1000, aligned_page_bytes=aligned, page_bytes=aligned, pages=1
+    )
+    session._write_pieces(tensor, np.zeros((1, aligned), np.uint8), 0, pieces)
+    assert sum(pages for _, _, pages in sent) == pieces
+    # piece j of page 0 is the view's page 8 j: the view holds 8 x 32 pages
+    assert all(first + pages <= view for view, first, pages in sent)
+    assert sent[0][0] == 8 * pieces

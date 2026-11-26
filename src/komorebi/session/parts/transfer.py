@@ -27,6 +27,15 @@ from komorebi.session.channel_transfer import ChannelTransfer
 LAUNCH_MIN_BYTES = 80 << 10
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
+REPORT_BYTES = 64  # a core's row of the launch's report (16 words), in L1
+
+
+def launch_bytes(chunk):
+    """The transfer kernel's buffer on a core: two chunks, the word slot and the bytes
+    that align its start to a DRAM line."""
+    return (
+        2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"] + channel_module.DRAM_LINE
+    )
 
 
 class TransferMixin:
@@ -197,12 +206,16 @@ class TransferMixin:
         aligned = tensor.aligned_page_bytes
         rows = np.zeros((len(pages), aligned), np.uint8)
         rows[:, : tensor.page_bytes] = pages
+        # the view's pages cover every bank's bytes: each bank holds pages / banks
+        # pages rounded up, the same in all banks (a piece's index reaches past pages)
+        banks = self.dram_banks
         view = SimpleNamespace(
             address=tensor.address, page_bytes=aligned // pieces,
-            aligned_page_bytes=aligned // pieces, pages=tensor.pages * pieces,
+            aligned_page_bytes=aligned // pieces,
+            pages=banks * -(-tensor.pages // banks) * pieces,
             in_dram=True, shard_grid=None,
         )  # fmt: skip
-        for at, part in tensor_bytes.split_pages(start, rows, pieces, self.dram_banks):
+        for at, part in tensor_bytes.split_pages(start, rows, pieces, banks):
             for done, step in channel_module.rounds(
                 len(part), view.aligned_page_bytes, self._region
             ):
@@ -230,6 +243,19 @@ class TransferMixin:
                 f"page through the run's transfer buffer; this tensor's page is "
                 f"{tensor.aligned_page_bytes:,} B and splits into no equal pieces of "
                 f"whole {tensor_bytes.DRAM_PIECE_ALIGN} B within it"
+            )
+        page = tensor.aligned_page_bytes
+        size = launch_bytes(
+            channel_module.chunk_bytes(page, channel_module.CHUNK_DEFAULT)
+        )
+        no_run = run is None or run.stopped
+        room = self._launch_room() - REPORT_BYTES if no_run and tensor.in_dram else size
+        if size > room:
+            return (
+                f"a page range without a run is moved by the transfer kernel, whose "
+                f"buffer for pages of {page:,} B is {size:,} B of each core's L1 (two "
+                f"pages, the word slot and a DRAM line); {room:,} B are free below the "
+                "session's L1 buffers: write the whole tensor"
             )
         return (
             "a page range, or a write while a run is loaded, goes through the run's "
@@ -263,10 +289,13 @@ class TransferMixin:
             return "run" if fits and run.alive() else None
         if self._starting is not None:
             return None
+        size = launch_bytes(
+            channel_module.chunk_bytes(largest, channel_module.CHUNK_DEFAULT)
+        )
         if largest > channel_module.CHUNK_DEFAULT and (
-            channel_module.chunk_for(largest, self.l1()[1]) is None
+            size > self._launch_room() - REPORT_BYTES
         ):
-            return None  # two pages do not fit a core's L1
+            return None  # two pages do not fit below the session's L1 buffers
         total = sum(
             dram.page_range(first, pages, tensor.pages)[1] * tensor.aligned_page_bytes
             for tensor in tensors
@@ -431,7 +460,17 @@ class TransferMixin:
         else:
             grid = l1.shard_grid
             places, cores = channel_module.l1_cores(transfer.first, count, grid[0])
-        report = self.empty((grid[0] * grid[1], 16), "uint32", shard_grid=grid)
+        report = self.empty(
+            (grid[0] * grid[1], REPORT_BYTES // 4), "uint32", shard_grid=grid
+        )
+        size, room = launch_bytes(transfer.chunk), self._launch_room()
+        if size > room:  # tt-metal would refuse the launch: its buffer meets L1's
+            report.free()
+            raise ChannelError(
+                f"a transfer of pages of {transfer.page:,} B needs {size:,} B of each "
+                f"core's L1 for the transfer kernel's buffer (two pages, the word slot "
+                f"and a DRAM line); {room:,} B are free below the session's L1 buffers"
+            )
         args = [
             (x, y, [report.address, int(push), rank, count, *transfer.args()])
             for rank, (x, y) in enumerate(places)
@@ -457,14 +496,23 @@ class TransferMixin:
                 "in time, 4 PCIe routing left, -1 not finished)"
             )
 
+    def _launch_room(self):
+        """The bytes of a core's L1 the transfer kernel's buffer can take: from the
+        buffers' base up to the session's lowest L1 buffer (L1's top when none)."""
+        _, free, top = (int(v) for v in self._module.kernel_buffer(self.device))
+        lowest = int(self._module.lowest_l1(self.device)) or top
+        return lowest - (top - free)
+
     def _transfer_launch(self, cores, args, chunk):
         """The transfer kernel's launch on `cores` with `args`, chunks of `chunk`."""
         launch = self._module.Launch(self.device)
         include = abi.headers().abi.parents[2]
         source = include.parent / "kernels" / "host_transfer.cpp"
         launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
-        # the two chunks and the slot, from the buffer's first 64-aligned address
-        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64 + channel_module.DRAM_LINE)
+        # the two chunks and the slot, from the buffer's first 64-aligned address, as
+        # one page: tt-metal counts a buffer's pages in 16 bits (65,535 at most)
+        size = launch_bytes(chunk)
+        launch.cb(cores, 0, "uint32", size, size)
         return launch
 
     def _transfer_kernel_built(self):
