@@ -92,6 +92,7 @@ class Upload:
     data: bytes = field(default=b"", repr=False)
     graph: object = field(default=None, repr=False)  # the Graph, for names
     valid: bool = field(default=True, repr=False)  # the host's check passes
+    started: bool = field(default=False, repr=False)  # a start was sent
 
 
 @dataclass(eq=False)
@@ -214,12 +215,13 @@ class Engines:
     def upload(self, content, kind=None):
         self.run._check_alive()
         graph = None
+        settle = self.run._handler  # a handler's number in this run, as submit
         if isinstance(content, stream_module.Stream):
-            data, kind = content.encode(), "stream"
-            self.run.check_templates(content.templates())
+            data, kind = content.encode(settle), "stream"
+            self.run.check_templates(content.templates(settle))
         elif isinstance(content, graph_module.Graph):
-            data, kind, graph = content.encode(), "graph", content
-            self.run.check_templates(content.templates())
+            data, kind, graph = content.encode(settle), "graph", content
+            self.run.check_templates(content.templates(settle))
         else:
             data = bytes(content)
             if kind not in ("stream", "graph"):
@@ -294,6 +296,7 @@ class Engines:
                 f"the {upload.kind} at {upload.offset} is {upload.state}"
             )
         self._free_req(upload.req)
+        upload.started = True
         if upload.kind == "stream":
             if bindings or kept is not None:
                 raise ValueError("a stream takes no bindings and is never kept")
@@ -315,6 +318,16 @@ class Engines:
             None,
         )
         if upload is None:
+            if any(
+                candidate.kind == "graph"
+                and candidate.req == req
+                and not candidate.started
+                for candidate in self.uploads
+            ):
+                raise ValueError(
+                    f"the graph with req {req} was uploaded and has not run yet: "
+                    "start it (run.start(upload)); restart runs a kept graph again"
+                )
             raise ValueError(f"no kept graph that is not running has req {req}")
         engine = EngineHandle("graph", req, upload, restart=True)
         args = [req, 0, self.constants["KM_GRAPH_RUN_KEPT"]]

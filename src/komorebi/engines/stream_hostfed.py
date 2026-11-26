@@ -24,9 +24,10 @@ def run_hostfed(run, stream, bindings=None, timeout=10.0):
     within `timeout` seconds."""
     if bindings:
         raise ValueError("a stream takes no bindings")
-    data = (
-        stream.encode() if isinstance(stream, stream_module.Stream) else bytes(stream)
-    )
+    if isinstance(stream, stream_module.Stream):
+        data = stream.encode(run._handler)  # its handlers' numbers in this run
+    else:
+        data = bytes(stream)
     bad = stream_module.check(data, len(data))
     if bad:
         raise stream_module.StreamFormatError(bad)

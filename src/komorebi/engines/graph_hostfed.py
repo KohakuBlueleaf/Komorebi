@@ -26,7 +26,7 @@ def run_hostfed(run, graph, bindings=None, timeout=10.0, engine=None):
     for a Graph, else a list); returns a `HostfedResult`. A command's timeout ends the
     graph with reason 8; WaitTimeout if it does not end within `timeout` seconds."""
     if isinstance(graph, graph_module.Graph):
-        data = graph.encode()
+        data = graph.encode(run._handler)  # its handlers' numbers in this run
         if bindings is None or isinstance(bindings, dict):
             bindings = graph.binding_values(**(bindings or {}))
     else:

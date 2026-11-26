@@ -75,10 +75,18 @@ bindings = graph.binding_values(iteration=0)
   registers 0 to n - 1, with every binding and constant in it. Every binding must be
   given (`graph.binding_names` lists them, in their registers' order). Registers not in
   the block start at 0 at every run.
-- Identical command templates are shared; a graph has at most 64 distinct ones.
-- `graph.encode()` gives the upload; `Graph.decode(data)` is its inverse (registers by
-  number, binding names lost) and raises `GraphFormatError` for an upload the check
-  rejects.
+- A command keeps the handler it was given (a `km.Handler`, a class's handler). Its
+  number and program field are settled against the run's programs when the graph is
+  uploaded (`run.upload`) or run host-fed (`run.run_hostfed`), as `run.submit` settles
+  them: a source's own handler in a run of a merged program is its number there, and a
+  graph built for one run is right in another. A plain number is written as given.
+- Identical command templates are shared (two handlers of one number of two programs
+  are two); a graph has at most 64 distinct ones.
+- `graph.encode()` gives the upload with each handler as built (its own number and
+  program field); `graph.encode(settle)` and `graph.templates(settle)` with each
+  handler's `(number, program field)` from `settle(handler)` (a run's upload passes
+  its own). `Graph.decode(data)` is its inverse (registers by number, binding names
+  and handlers lost) and raises `GraphFormatError` for an upload the check rejects.
 
 ## Running: rounds and the executor
 

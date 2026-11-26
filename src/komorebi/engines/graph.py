@@ -264,6 +264,7 @@ class Graph:
         self._check_fields()
         self.nodes = []
         self._templates = []
+        self._handlers = []  # each template's handler as given; None when decoded
         self._template_index = {}
         self._names = {}
         self._consts = {}
@@ -453,17 +454,21 @@ class Graph:
             count_register,
             len(patch),
         )
-        if template not in self._template_index:
+        key = (template, _owner(handler))
+        if key not in self._template_index:
             if len(self._templates) >= MAX_TEMPLATES:
                 raise ValueError(f"more than {MAX_TEMPLATES} distinct templates")
-            self._template_index[template] = len(self._templates)
+            self._template_index[key] = len(self._templates)
             self._templates.append(template)
-        return self._template_index[template]
+            self._handlers.append(stream_module.kept_handler(handler))
+        return self._template_index[key]
 
     # encoding
 
-    def templates(self):
-        return list(self._templates)
+    def templates(self, settle=None):
+        """The command templates; `settle(handler)` gives (number, program field) of
+        each kept handler (a run's: Run._handler), else the words as built."""
+        return stream_module.settled(self._templates, self._handlers, settle)
 
     def rows(self):
         """The node table and edge list as encoded, CPU micro-ops resolved."""
@@ -492,8 +497,9 @@ class Graph:
             )
         return rows, edges, ops
 
-    def encode(self):
-        """The upload: header, nodes, edges, micro-ops, templates, each line-padded."""
+    def encode(self, settle=None):
+        """The upload: header, nodes, edges, micro-ops, templates, each line-padded;
+        `settle` as in `templates`."""
         self._check_fields()
         rows, edges, ops = self.rows()
         again = NONE if self._again is None else self._again.index
@@ -527,7 +533,7 @@ class Graph:
             for operation in ops
         )
         data += bytes(-len(ops) * stream_module.UOP_BYTES % LINE)
-        for template in self._templates:
+        for template in self.templates(settle):
             data += struct.pack("<16I", *template.rec)
             data += stream_module.TAIL.pack(
                 *template.arg,
@@ -558,7 +564,10 @@ class Graph:
         if header["again_register"] != NONE:
             graph._again = Register(header["again_register"])
         graph._templates = list(templates)
-        graph._template_index = {template: i for i, template in enumerate(templates)}
+        graph._handlers = [None] * len(templates)
+        graph._template_index = {
+            (template, None): i for i, template in enumerate(templates)
+        }
         predecessors = [[] for _ in rows]
         for predecessor, row in enumerate(rows):
             for successor in edges[
@@ -588,6 +597,14 @@ class Graph:
         if isinstance(bindings, dict) or bindings is None:
             bindings = self.binding_values(**(bindings or {}))
         return simulate(self.encode(), bindings=bindings, **options)
+
+
+def _owner(handler):
+    """What tells two handlers of one number apart: a Handler's program, a class's
+    handler (`Class.name`) itself; None for a number (stream.kept_handler)."""
+    if hasattr(handler, "program"):
+        return id(handler.program)
+    return id(handler) if hasattr(handler, "function") else None
 
 
 def _resolve(operation, start, op_count):

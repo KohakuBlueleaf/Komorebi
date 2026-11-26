@@ -6,6 +6,7 @@ import struct
 import pytest
 from fake_port import FakeBackend, FakePort
 
+import komorebi as km
 from komorebi import abi
 from komorebi.engines import graph as graph_module
 from komorebi.engines import stream as stream_module
@@ -248,6 +249,65 @@ def test_a_kept_graph_runs_again_with_other_bindings_then_is_dropped():
     assert again.registers == (want[0] & 0xFFFFFF, want[1]) == (45, 40)
     run.release(upload)
     assert port.kept == {} and run.upload(sum_stream()).offset == 0
+
+
+def test_restart_of_a_graph_never_started_names_start():
+    run, _ = make_run()
+    upload = run.upload(two_branches(keep=True))
+    with pytest.raises(ValueError, match=r"req 9 was uploaded and has not run yet: st"):
+        run.restart(9)
+    run.wait_engine(run.start(upload, {"it": 2}), timeout=1.0)
+    assert run.wait_engine(run.restart(9, {"it": 40}), timeout=1.0).kind == "end"
+
+
+def test_a_graphs_handler_is_settled_against_the_run_it_is_uploaded_to(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("KMR_CACHE", str(tmp_path / "cache"))
+    sums, scales = (programmed(tmp_path, name) for name in ("sums", "scales"))
+    merged = km.merge(sums, scales, log=lambda line: None)
+    graph = graph_module.Graph(req=9)
+    graph.command(scales.handler("scale"), group=(0, 8))
+    assert graph.templates()[0].rec[1] & 0xFF == 1  # the source's own, as given
+    for programs, want in (([merged], (3, 0)), ([sums, scales], (1, 1))):
+        run = Run(FakeBackend(EngineKernel()), (12, 10), programs=programs)
+        word = graph_module.Graph.decode(run.upload(graph).data).templates()[0].rec[1]
+        assert (word & 0xFF, word >> 24) == want
+
+
+def test_a_streams_handler_is_settled_against_the_run_it_is_uploaded_to(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("KMR_CACHE", str(tmp_path / "cache"))
+    sums, scales = (programmed(tmp_path, name) for name in ("sums", "scales"))
+    merged = km.merge(sums, scales, log=lambda line: None)
+    stream = stream_module.Stream(req=7)
+    stream.submit(scales.handler("scale"), (0, 8))
+    stream.submit(2, (0, 8))  # a plain number: written as given
+    stream.halt(stream.registers(1)[0])
+    assert [t.rec[1] & 0xFF for t in stream.templates()] == [1, 2]
+    for programs, want in (([merged], (3, 0)), ([sums, scales], (1, 1))):
+        run = Run(FakeBackend(EngineKernel()), (12, 10), programs=programs)
+        uploaded = stream_module.Stream.decode(run.upload(stream).data).templates()
+        words = [template.rec[1] for template in uploaded]
+        assert [(word & 0xFF, word >> 24) for word in words] == [want, (2, 0)]
+
+
+def programmed(tmp_path, name):
+    """A program in the runtime's form whose kernels do nothing, handlers 1 and 2."""
+    folder = tmp_path / name
+    folder.mkdir()
+    for kernel, kind in (("reader", "Reader"), ("writer", "Writer"), ("compute", "")):
+        (folder / f"{kernel}.cpp").write_text(
+            f"void km_program(km::{kind or 'Compute'}& kernel, "
+            "const km_command_t& command) {}\n"
+        )
+    return km.Program(
+        name,
+        kernels=folder,
+        buffers=[km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16)],
+        handlers={"scale" if name == "scales" else "sum": 1, "empty": 2},
+    )
 
 
 def test_wait_engine_times_out_and_cancel_ends_the_stream():

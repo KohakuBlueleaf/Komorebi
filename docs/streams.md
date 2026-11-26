@@ -78,7 +78,16 @@ all are done.
   `count` 1.
 - `stream.enqueue(handler, count, args=[...], exclusive=False, result=False)`: the same through the
   job queue; `count` is an integer or a register and the allocator chooses `first`.
-- `stream.encode()` gives the upload bytes; `Stream.decode(data)` is its inverse and raises
+- A `submit` or `enqueue` keeps the handler it was given (a `km.Handler`, a class's
+  handler). Its number and program field are settled against the run's programs when
+  the stream is uploaded (`run.upload`) or run host-fed (`run.run_hostfed`), as
+  `run.submit` settles them: a source's own handler in a run of a merged program is its
+  number there, and a stream built before a run, or for another, is right in the run it
+  meets. A plain number is written as given.
+- `stream.encode()` gives the upload bytes with each handler as built (its own number
+  and program field); `stream.encode(settle)` and `stream.templates(settle)` with each
+  handler's `(number, program field)` from `settle(handler)` (a run's upload passes its
+  own). `Stream.decode(data)` is its inverse (handlers lost) and raises
   `StreamFormatError` for an upload the check rejects.
 
 The builder rejects what the check would reject, and names the field: `max_steps`,

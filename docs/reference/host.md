@@ -142,7 +142,10 @@ writer), 31 (the trace) and 32 (a chain's words); a program uses 0 to 28.
 names its program (`.program`). `submit`, `submit_many`, `graph.command` and a stream's
 `submit` take it, and put the program's place in the run, the **program field**, into
 bits 24 to 31 of the command's header word (`.field`; 0 is the run's first or only
-program). A name or a plain number is a handler of the run's first program, so a run of
+program). A stream and a graph keep the handler they were given and settle it against
+the run's programs when they are uploaded ([streams](../streams.md#building-a-stream),
+[graphs](../graphs.md#building-a-graph)). A name or a
+plain number is a handler of the run's first program, so a run of
 one program is written as before. Each program numbers its handlers 1 to 239 on its own:
 two programs may both have handler 1.
 
@@ -979,10 +982,10 @@ and no new upload.
 
 | Call | What it does |
 |---|---|
-| `upload(stream_or_graph, kind=None)` | encodes a `Stream` or a `Graph` (or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to reject, with its error event |
+| `upload(stream_or_graph, kind=None)` | encodes a `Stream` or a `Graph` (its handlers settled against this run's programs, as `submit` settles them; or takes its encoded bytes, with `kind` `"stream"` or `"graph"`) and writes it into the upload region as whole lines, at the first free place; returns an `Upload` (`offset`, `bytes`, `kind`, `req`, `keep`, `state`). Several uploads live side by side. An upload that does not fit raises `ValueError` before anything is written. The host checks nothing else: a bad upload is the kernel's to reject, with its error event |
 | `release(upload, timeout=10.0)` | frees an upload's lines. A running one is rejected; a kept graph is first dropped (`CANCEL`, then its cancelled event, both within `timeout`) |
 | `start(upload, bindings=(), kept=None, timeout=10.0)` | sends `KM_HANDLER_RUN` and returns an `EngineHandle`. A graph takes `bindings`: a dict by name for a graph uploaded from a `Graph` (its constants are added, as `binding_values` does), or a list of up to 16 words; they go to one line of the region, freed at the end. `kept=True` or `False` rewrites the header's keep bit first; None leaves it. Another running or kept engine with the same `req` raises `ValueError`. When the kernel does not answer the RUN within `timeout` it raises `EngineTimeout` with the handle marked `unknown`: the engine may have started, and `cancel` (or `stop`) settles it |
-| `restart(req, bindings=(), timeout=10.0)` | runs the kept graph with `req` again with new bindings (`KM_HANDLER_RUN`, `a2 = 2`) |
+| `restart(req, bindings=(), timeout=10.0)` | runs the kept graph with `req` again with new bindings (`KM_HANDLER_RUN`, `a2 = 2`). A graph uploaded and never started raises `ValueError` saying it has not run yet and naming `start`; no kept graph of that `req` that is not running raises `ValueError` too |
 | `cancel(handle, timeout=10.0)` | sends `KM_HANDLER_CANCEL`; the engine then ends with its error event, reason `cancelled`. Nothing is sent for an engine that has ended. For an `unknown` handle it also learns the RUN's answer: raises `EngineRejected` if the RUN was rejected (it never ran); otherwise the engine runs or has ended as usual. `EngineTimeout` if the CANCEL is not answered |
 | `wait_engine(handle, timeout=10.0)` | waits for the engine's end and returns its `EngineEvent`; raises `EngineError` for an error event, `EngineTimeout` when `timeout` passes (the engine may still run), `KernelFailed` if the kernel finished |
 | `run_hostfed(graph, bindings=None, timeout=10.0)` | runs a graph or a stream on the host instead, its commands through the host ring: the same commands and registers as in the kernel ([graphs](../graphs.md#host-fed)); for a stream, the simulator's interpreter, `commands[i].node` the program counter of the `SUBMIT` or `ENQUEUE`, `runs` 1 |

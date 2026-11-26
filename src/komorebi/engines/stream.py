@@ -5,7 +5,7 @@ The constants repeat `km_stream.h`; a test compares them.
 
 import struct
 from collections import namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from komorebi import abi
 from komorebi.dsl import first_use
@@ -199,6 +199,7 @@ class Stream:
         self._check_fields()
         self._body = []
         self._templates = []
+        self._handlers = []  # each template's handler as given; None when decoded
         self._consts = {}
         self._next_register = 0
 
@@ -364,6 +365,7 @@ class Stream:
             words[2] |= _group_field(group_size, "count") << 16
         arg = [entry[0] for entry in patch] + [0] * (PATCHES - len(patch))
         register = [entry[1] for entry in patch] + [0] * (PATCHES - len(patch))
+        self._handlers.append(kept_handler(handler))
         self._templates.append(
             Template(
                 tuple(words),
@@ -413,11 +415,14 @@ class Stream:
             out.append(operation)
         return out
 
-    def templates(self):
-        return list(self._templates)
+    def templates(self, settle=None):
+        """The command templates; `settle(handler)` gives (number, program field) of
+        each kept handler (a run's: Run._handler), else the words as built."""
+        return settled(self._templates, self._handlers, settle)
 
-    def encode(self):
-        """The upload: header, micro-ops, templates, each part padded to a line."""
+    def encode(self, settle=None):
+        """The upload: header, micro-ops, templates, each part padded to a line;
+        `settle` as in `templates`."""
         self._check_fields()
         ops = self.uops()
         if len(ops) > MAX_OPS:
@@ -440,7 +445,7 @@ class Stream:
             for operation in ops
         )
         data += bytes(_lines(len(ops) * UOP_BYTES))
-        for template in self._templates:
+        for template in self.templates(settle):
             data += struct.pack("<16I", *template.rec)
             data += TAIL.pack(
                 *template.arg,
@@ -466,6 +471,7 @@ class Stream:
             header["req"],
         )
         stream._body, stream._templates = _parse(data, header)
+        stream._handlers = [None] * len(stream._templates)
         return stream
 
     def simulate(self, **options):
@@ -479,6 +485,29 @@ def built_for(handler, args, where):
     if not hasattr(handler, "method") and not hasattr(handler, "function"):
         return handler  # not a class's handler: nothing to pick
     return first_use.words_handler(handler, [args], None, where)
+
+
+def kept_handler(handler):
+    """What a stream or graph keeps of a command's handler to settle it against a run:
+    a Handler or a class's handler (`Class.name`); None for a number (as given)."""
+    kept = hasattr(handler, "program") or hasattr(handler, "function")
+    return handler if kept else None
+
+
+def settled(templates, handlers, settle):
+    """`templates` with each kept handler's number and program field from
+    `settle(handler)` (None: as built)."""
+    if settle is None:
+        return list(templates)
+    out = []
+    for template, handler in zip(templates, handlers, strict=True):
+        if handler is not None:
+            number, program = settle(handler)
+            words = list(template.rec)
+            words[1] = number | words[1] & 0xFF00 | program << 24
+            template = replace(template, rec=tuple(words))
+        out.append(template)
+    return out
 
 
 def program_field(handler):
