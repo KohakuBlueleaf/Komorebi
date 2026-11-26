@@ -2378,7 +2378,8 @@ static int peers_open(void) {
     return 1;
 }
 
-/* The lead tells the others its kmx_main returned; every window is closed. */
+/* The lead tells the others it ended kmx_main and serving commands; every window is
+ * closed. */
 static void peers_close(void) {
     const uint32_t rest = others();
     for (uint32_t cluster = 1; cluster < 4; cluster++) {

@@ -56,7 +56,8 @@ int kmx_main(int core) {
   lowest of the clusters that run this thread: the **lead**. With all three, the lead is
   cluster 1.
 - The lead runs the program. The other clusters call `kmx_serve()`, which waits for the lead's
-  calls and carries them out, until the lead's `kmx_main` returns. `kmx_serve` returns
+  calls and carries them out, until the lead's `kmx_main` returns (and, in a thread that also
+  serves commands, until the lead stops serving them). `kmx_serve` returns
   `KMX_OK` when it ends well.
 - `kmx_parallel_all(piece, ARGUMENT)` is called on core 0 of the lead only. It runs
   `piece(cluster, core, ARGUMENT)` on every core of every cluster, twelve in all, and

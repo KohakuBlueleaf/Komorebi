@@ -118,8 +118,8 @@ int kmx_parallel_all(
     void (*function)(int cluster, int core, uint64_t arg), uint64_t arg
 );
 
-/* Core 0 of a non-lead cluster: runs the lead's kmx_parallel_all calls until the lead's
- * kmx_main returns (KMX_OK), or KMX_LATE / KMX_STOPPED; KMX_NONE on the lead. */
+/* Core 0 of a non-lead cluster: runs the lead's kmx_parallel_all calls until the lead
+ * ends kmx_main and serving commands (KMX_OK), KMX_LATE, KMX_STOPPED; lead: KMX_NONE */
 int kmx_serve(void);
 
 /* Any core: stores `bytes` from `source` at `offset` of `cluster`'s region `id`
