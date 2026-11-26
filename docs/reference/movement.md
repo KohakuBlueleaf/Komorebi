@@ -301,6 +301,17 @@ on NoC 1 and its W stream on NoC 0, as in Kohaku-TT's kernel) is exact and slowe
    pages its walk names.
 5. A mover's halves are its own: no other code of that mover pushes or pops them while
    a stream through them is open.
+6. A half is a buffer index below 32: `move` keeps a bit a half. A stream with a half
+   of 32 or above gives up on the card (`bad_item` at `movebuffer`, the index in the
+   word's slot). Built with `KM_PAIR_CHECK` 1 (`defines={"KM_PAIR_CHECK": 1}` on a
+   `km.Program`; a class refuses `KM_` defines, and its compiler places every pair
+   below index 26), a `km::BufferPair` made in a constant initializer
+   (`constexpr km::BufferPair kInput = {kInputMoverA, kInputMoverB};`, as the
+   examples write theirs) with such a half fails the build instead:
+   the compiler's error gives the index ("array subscript value '40' is outside the
+   bounds of array 'km::kMoveBuffers'") under the line of the pair and the constants
+   it was made from. A pair made at run time is not checked. `KM_PAIR_CHECK` 0, the
+   default, builds as before, byte for byte.
 
 A wait in `move` that runs past the wait limit, or a stop, gives up with the mover's
 word (`kStReader` on mover A, `kStWriter` on mover B) at `data`, like `reserve` and

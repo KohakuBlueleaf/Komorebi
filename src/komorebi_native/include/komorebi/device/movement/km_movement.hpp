@@ -9,6 +9,12 @@
 #include <new>
 #endif
 
+// 1: a km::BufferPair made in a constant initializer (constexpr) with a half of 32 or
+// above fails the build; 0 (default): move gives up on the card (kWhereMoveBuffer).
+#if !defined(KM_PAIR_CHECK)
+#define KM_PAIR_CHECK 0
+#endif
+
 #include "../core/km_bits.hpp"
 #include "../core/km_core.hpp"
 #include "../km_worker.hpp"
@@ -66,11 +72,29 @@ namespace km {
     constexpr Pattern kPatternAAAB = pattern("AAAB");
     constexpr Pattern kPatternBBBBBAAA = pattern("BBBBBAAA");
 
+#if KM_PAIR_CHECK
+    // The indices move takes: a pair's half past them, in a constant initializer, is
+    // an index out of this array's bounds, which the build names with its line.
+    constexpr uint32_t kMoveBuffers[32] = {};
+
+    constexpr uint32_t move_buffer(uint32_t half) {
+        return __builtin_is_constant_evaluated() ? half + kMoveBuffers[half] : half;
+    }
+#endif
+
     // A logical buffer as two circular buffers: mover A's half and mover B's half. Each
     // half has one filling CPU and one draining CPU for the whole life of a load.
     struct BufferPair {
         uint32_t mover_a;
         uint32_t mover_b;
+
+#if KM_PAIR_CHECK
+        BufferPair() = default;
+
+        constexpr BufferPair(uint32_t mover_a, uint32_t mover_b) :
+            mover_a(move_buffer(mover_a)), mover_b(move_buffer(mover_b)) {
+        }
+#endif
 
         constexpr uint32_t half(uint32_t mover) const {
             return mover == kMoverA ? mover_a : mover_b;
