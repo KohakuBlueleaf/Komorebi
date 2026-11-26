@@ -20,11 +20,14 @@ too: one chip, and the chips of a Galaxy as islands
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.5.3 is on PyPI (as `komorebi-tt`), with the packer's formats at a handler's entry
-named at compile time, and the Dst clear at a handler's entry that builds for Wormhole
-([release notes](docs/releases/0.5.3.md)); 0.5.2 brought the make that no longer
-refuses a class's buffers the load takes, a failed load that gives back the L1 it took,
-and two fields whose header names meet refused at the make
+0.6.0 is on PyPI (as `komorebi-tt`), with handlers entered out of line (a make option),
+tensors of pages past 512 KiB through the host channel, a graph's and a stream's
+command that settle their handler against the run, and a class's build folders in the
+cache directory ([release notes](docs/releases/0.6.0.md)); 0.5.3 brought the packer's
+formats at a handler's entry named at compile time, and the Dst clear at a handler's
+entry that builds for Wormhole ([0.5.3](docs/releases/0.5.3.md)); 0.5.2 brought the
+make that no longer refuses a class's buffers the load takes, a failed load that gives
+back the L1 it took, and two fields whose header names meet refused at the make
 ([0.5.2](docs/releases/0.5.2.md)); 0.5.1 brought handlers that share their stream and
 table buffers when a class's do not fit, and messages across islands that compile again
 ([0.5.1](docs/releases/0.5.1.md)); 0.5.0 brought a handler that is a
@@ -65,7 +68,7 @@ kmr doctor
 The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
 or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-From a clone, for what is on `main` after 0.5.3 and for Wormhole (it needs a tt-metal source tree at
+From a clone, for what is on `main` after 0.6.0 and for Wormhole (it needs a tt-metal source tree at
 the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
 runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 

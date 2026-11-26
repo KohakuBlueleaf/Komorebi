@@ -164,6 +164,7 @@ nav:
       - ir/run-scripts.md
   - Measured: measured.md
   - Releases:
+      - releases/0.6.0.md
       - releases/0.5.3.md
       - releases/0.5.2.md
       - releases/0.5.1.md

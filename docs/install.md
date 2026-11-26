@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt 0.5.3 and komorebi-runtime 0.81.1.4), and checking the host with kmr doctor.
+summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt 0.6.0 and komorebi-runtime 0.81.1.4), and checking the host with kmr doctor.
 tags:
   - overview
   - install
@@ -8,7 +8,7 @@ tags:
 
 # Install
 
-Komorebi 0.5.3 is on PyPI as `komorebi-tt` and `komorebi-runtime`, for one card model, the
+Komorebi 0.6.0 is on PyPI as `komorebi-tt` and `komorebi-runtime`, for one card model, the
 Blackhole P150A: one card, or two joined by their Ethernet links ([two cards](#two-cards)).
 Komorebi runs in two ways:
 
@@ -16,7 +16,7 @@ Komorebi runs in two ways:
   [running on a card](#running-on-a-card)): the way to develop Komorebi itself;
 - **from the two wheels**, `komorebi-tt` and `komorebi-runtime`, with no tt-metal tree:
   installed from PyPI ([from 0.1.0: the two wheels](#from-010-the-two-wheels), which is
-  also how 0.5.3 is installed) or built locally ([the runtime package](#the-runtime-package)).
+  also how 0.6.0 is installed) or built locally ([the runtime package](#the-runtime-package)).
 
 What works is the Python package
 (`kmr doctor`, `kmr build`, the layout helpers), the host API that runs a program on a
@@ -107,7 +107,7 @@ packaging/runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 pip install dist/komorebi_runtime-0.81.1.4-py3-none-manylinux_2_38_x86_64.whl \
-    dist/komorebi_tt-0.5.3-cp312-abi3-manylinux_2_32_x86_64.whl
+    dist/komorebi_tt-0.6.0-cp312-abi3-manylinux_2_32_x86_64.whl
 kmr setup                                      # the RISC-V compiler, then the card
 kmr doctor                                     # "from komorebi-runtime 0.81.1.4"
 ```
@@ -124,7 +124,7 @@ card is prepared once with `kmr setup` ([below](#setting-up-once)).
 
 ## From 0.1.0: the two wheels
 
-From the 0.1.0 release on, both wheels are installed from PyPI, 0.5.3 among them. Wheels built as in
+From the 0.1.0 release on, both wheels are installed from PyPI, 0.6.0 among them. Wheels built as in
 [the runtime package](#the-runtime-package) take the same steps, with the two files in
 place of the `pip install` line. You need Linux on x86-64, Python 3.13 and a Blackhole
 P150A; no tt-metal tree, no compiler of your own, neither `ttnn` nor `torch`.
@@ -142,7 +142,7 @@ Komorebi uses that tree instead of the runtime package. The other extras are `de
 (the checks of [development](development.md)) and `scenes` (pillow, only to decode the
 public scenes' textures).
 
-### What 0.5.3 asks for
+### What 0.6.0 asks for
 
 - **The runtime wheel `komorebi-runtime` 0.81.1.4.** The extra `runtime` names
   `komorebi-runtime>=0.81.1.4,<0.81.2`, and `pip install -U "komorebi-tt[runtime]"` takes
@@ -187,7 +187,7 @@ the repository at the release's tag, as a clone or as the source archive of the 
 release:
 
 ```
-git clone --depth 1 --branch v0.5.3 <this repository> komorebi-src
+git clone --depth 1 --branch v0.6.0 <this repository> komorebi-src
 cp -r komorebi-src/examples komorebi-src/tutorial .
 cd tutorial/04_hello_core && python hello.py        # the command is done
 ```

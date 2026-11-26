@@ -1,4 +1,4 @@
-komorebi      0.5.3
+komorebi      0.6.0
 python        3.13.18 (~/komorebi/.venv/bin/python)
 package       ~/komorebi/src/komorebi
 include       ~/komorebi/src/komorebi_native/include
